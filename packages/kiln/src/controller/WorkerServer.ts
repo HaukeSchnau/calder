@@ -1,6 +1,6 @@
 import { BunSocketServer } from "@effect/platform-bun"
 import type { Domain } from "@kiln/api"
-import { Deferred, Effect, Layer, Schedule } from "effect"
+import { Deferred, Effect, Layer, References, Schedule } from "effect"
 import { HttpClient } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { SqlClient } from "effect/sql"
@@ -65,7 +65,7 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
     finish: ({ job, token, result }) =>
       Effect.gen(function*() {
         const active = yield* jobs.authorize(job, token)
-        if (active.lease !== undefined) yield* db(leases.release(active.lease, active.id))
+        if (active.lease !== undefined) yield* leases.release(active.lease, active.id)
         active.lease = undefined
         yield* Deferred.succeed(active.result, result)
       }),
@@ -112,7 +112,7 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const active = yield* deployer(job, token)
         const run = runOf(active)
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
-        const grant = yield* db(leases.acquire(project, { job: active.id, run: run.number }))
+        const grant = yield* leases.acquire(project, { job: active.id, run: run.number })
         if (grant._tag === "Replaced") return grant
         active.lease = project
         return { _tag: "Held" as const, fence: grant.fence, targets: config.projects[project]!.targets.map(Fleet.hostOf) }
@@ -120,7 +120,7 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
     fleetRelease: ({ job, token }) =>
       Effect.gen(function*() {
         const active = yield* jobs.authorize(job, token)
-        if (active.lease !== undefined) yield* db(leases.release(active.lease, active.id))
+        if (active.lease !== undefined) yield* leases.release(active.lease, active.id)
         active.lease = undefined
       }),
     fleetPreflight: ({ job, token, target, descriptor }) =>
@@ -172,5 +172,9 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
     Layer.provide(RpcServer.layerProtocolSocketServer),
     Layer.provide(RpcSerialization.layerNdjson),
   )
-  return Layer.provideMerge(permissions, server).pipe(Layer.provide(BunSocketServer.layer({ path })))
+  // Workers exit right after reporting, which resets their connection; that's not worth an error log.
+  return Layer.provideMerge(permissions, server).pipe(
+    Layer.provide(BunSocketServer.layer({ path })),
+    Layer.provide(Layer.succeed(References.UnhandledLogLevel, "Debug")),
+  )
 }))

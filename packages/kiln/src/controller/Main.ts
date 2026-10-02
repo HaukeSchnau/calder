@@ -21,11 +21,11 @@ import * as Workflow from "./Workflow.ts"
 export const layer = (configPath: string) => {
   const platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunCrypto.layer)
   const config = Config.fromFile(configPath)
-  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Mirror.layer, Live.layer, Jobs.layer, Leases.layer).pipe(
+  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Mirror.layer, Live.layer, Jobs.layer).pipe(
     Layer.provideMerge(config),
     Layer.provideMerge(platform),
   )
-  const fleet = Fleet.layer.pipe(Layer.provideMerge(base))
+  const fleet = Layer.mergeAll(Fleet.layer, Leases.layer).pipe(Layer.provideMerge(base))
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const engine = ClusterWorkflowEngine.layer.pipe(
     Layer.provideMerge(SingleRunner.layer({ runnerStorage: "sql" })),

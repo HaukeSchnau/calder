@@ -3,7 +3,8 @@ import { Schema } from "effect"
 
 /**
  * Turns a step's value or failure into JSON. Instances of registered `Kiln.Result` and `Kiln.Failure`
- * classes keep their class id in `$kiln`, so they decode back into instances.
+ * classes keep their class id in `$kiln` and decode into instances of the registered class, which has
+ * the fields and tag but not methods a subclass adds.
  */
 export const encode = (value: unknown): unknown => {
   if (value === undefined) return null

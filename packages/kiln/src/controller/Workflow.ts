@@ -4,7 +4,7 @@ import { SqlClient } from "effect/sql"
 import { Activity, Workflow, WorkflowEngine } from "effect/workflow"
 import { PlanSpec } from "../Protocol.ts"
 import { Config } from "./Config.ts"
-import * as Db from "./Db.ts"
+import * as Counters from "./Counters.ts"
 import { Gitea } from "./Gitea.ts"
 import { Live } from "./Live.ts"
 import { Mirror } from "./Mirror.ts"
@@ -69,7 +69,7 @@ export const layerRuns = Layer.effect(Runs)(Effect.gen(function*() {
       const branch = event._tag === "Push" ? event.branch : event._tag === "PullRequest" ? event.head : project.defaultBranch
       const pr = event._tag === "PullRequest" ? event.number : null
       const title = pr === null ? null : yield* gitea.pullTitle(project.repo, pr)
-      const number = yield* db(Db.next(`run:${input.project}`))
+      const number = yield* db(Counters.next(`run:${input.project}`))
       const id = `${input.project}-${number}`
       const now = Date.now()
       yield* db(sql`insert into runs (id, project, number, event, sha, branch, pr, title, commit_title, author, change_id, commit_time,

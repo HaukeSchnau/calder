@@ -7,6 +7,8 @@ export interface FlakeRef<out K extends Output = Output> {
   readonly output: K
   /** Attribute name below the system, or a full attribute path for `attr`. */
   readonly name: string
+  /** Attributes below the output, such as `pnpmDeps.web`. */
+  readonly path?: ReadonlyArray<string>
 }
 
 export type Output = "packages" | "checks" | "devShells" | "attr"
@@ -34,8 +36,14 @@ export const make = <const T extends Outputs>(outputs: T): {
 /** Any attribute path of the flake, for outputs outside packages, checks and devShells. */
 export const attr = (path: string): FlakeRef<"attr"> => ({ _tag: "FlakeRef", output: "attr", name: path })
 
+/** An attribute inside an output, such as `Flake.select(flake.packages.t3code, "pnpmDeps.web")`. */
+export const select = <K extends Output>(ref: FlakeRef<K>, path: string): FlakeRef<K> => ({
+  ...ref,
+  path: [...(ref.path ?? []), ...path.split(".")],
+})
+
 /** The attribute path for `system`. */
 export const attrPath = (ref: FlakeRef, system: string): string =>
-  ref.output === "attr" ? ref.name : `${ref.output}.${system}.${quote(ref.name)}`
+  [ref.output === "attr" ? ref.name : `${ref.output}.${system}.${quote(ref.name)}`, ...(ref.path ?? []).map(quote)].join(".")
 
 const quote = (name: string) => (/^[A-Za-z_][A-Za-z0-9_'-]*$/.test(name) ? name : JSON.stringify(name))

@@ -104,12 +104,3 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
   const migrate = SqliteMigrator.layer({ loader: SqliteMigrator.fromRecord(migrations), table: "kiln_migrations" })
   return Layer.provideMerge(migrate, client)
 }))
-
-/** Increments and returns a named counter. */
-export const next = (name: string) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ value: number }>`insert into counters (name, value) values (${name}, 1)
-      on conflict (name) do update set value = value + 1 returning value`
-    return rows[0]!.value
-  })

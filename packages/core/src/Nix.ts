@@ -10,4 +10,4 @@ export const build = (
   ref: FlakeRef<"packages" | "checks" | "attr">,
   options: { readonly name?: string } = {},
 ): Step<StorePath, BuildFailed> =>
-  make("build", options.name ?? ref.name.split(".").at(-1)!, { _tag: "Build", ref }) as Step<StorePath, BuildFailed>
+  make("build", options.name ?? [ref.name, ...(ref.path ?? [])].join("."), { _tag: "Build", ref }) as Step<StorePath, BuildFailed>

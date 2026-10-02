@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Event, Kiln } from "@kiln/core"
-import { Console, Effect, Layer, Option } from "effect"
+import { Console, Effect, Layer, Option, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { resolve } from "node:path"
 import * as Controller from "./controller/Main.ts"
 import * as Gen from "./Gen.ts"
+import * as Remote from "./Remote.ts"
 import * as Load from "./worker/Load.ts"
 import * as Worker from "./worker/Main.ts"
 
@@ -63,6 +64,29 @@ const plan = Command.make("plan", {
     }
   }))
 
-const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, gen, plan]))
+const url = Flag.String("url").pipe(Flag.withDefault(process.env.KILN_URL ?? "https://kiln.schnau.dev"))
+
+const trigger = Command.make("trigger", {
+  project: Argument.String("project"),
+  branch: Flag.String("branch").pipe(Flag.optional),
+  url,
+}, ({ project, branch, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const run = yield* client.trigger({ project, ...Option.match(branch, { onNone: () => ({}), onSome: (b) => ({ branch: b }) }) })
+    yield* Console.log(`${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`)
+    yield* client.changes().pipe(
+      Stream.filter((c) => (c._tag === "StepChanged" ? c.step.runId === run.id : c._tag === "RunChanged" && c.run.id === run.id)),
+      Stream.tap((c) =>
+        c._tag === "StepChanged"
+          ? Console.log(`  ${c.step.status.padEnd(9)} ${c.step.name}${c.step.error ? `: ${c.step.error.message.split("\n")[0]}` : ""}`)
+          : Console.log(`${c._tag === "RunChanged" ? c.run.status : ""}${c._tag === "RunChanged" && c.run.error ? `: ${c.run.error}` : ""}`)
+      ),
+      Stream.takeUntil((c) => c._tag === "RunChanged" && ["passed", "failed", "cancelled", "errored"].includes(c.run.status)),
+      Stream.runDrain,
+    )
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
+const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, gen, plan, trigger]))
 
 Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)
