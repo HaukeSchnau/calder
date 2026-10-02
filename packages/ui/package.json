@@ -1,0 +1,29 @@
+{
+  "name": "@kiln/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "mock": "bun mock/server.ts",
+    "check": "tsc -p ."
+  },
+  "dependencies": {
+    "@effect/atom-react": "4.0.0",
+    "@fontsource-variable/instrument-sans": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@kiln/api": "workspace:*",
+    "effect": "4.0.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "scheduler": "0.27.0"
+  },
+  "devDependencies": {
+    "@effect/platform-bun": "4.0.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "8.3.2"
+  }
+}

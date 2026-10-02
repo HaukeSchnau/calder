@@ -102,7 +102,7 @@ export const ProjectTypeId = "~@kiln/core/Project" as const
 export interface Project {
   readonly [ProjectTypeId]: typeof ProjectTypeId
   readonly shared: Files | undefined
-  readonly layer: Layer.Layer<any, any, any> | undefined
+  readonly layer: Layer.Layer<never, unknown, Base> | undefined
   readonly rules: ReadonlyArray<Rule<"pr" | "trusted", any>>
 }
 
@@ -123,4 +123,4 @@ export const project = <ROut = never, E = never>(options: {
   rules: options.rules,
 })
 
-export { plan, PlanError, type Plan, type PlannedStep } from "./Plan.ts"
+export { plan, PlanError, type Plan, type PlannedStep, universe } from "./Plan.ts"

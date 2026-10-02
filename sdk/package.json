@@ -1,0 +1,11 @@
+{
+  "name": "@kiln/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The node_modules that `.kiln/node_modules` links to: what ci.ts may import.",
+  "dependencies": {
+    "@kiln/core": "workspace:*",
+    "@kiln/std": "workspace:*",
+    "effect": "4.0.0"
+  }
+}

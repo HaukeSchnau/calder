@@ -1,0 +1,4 @@
+# Dependency trees the persistent CI workspace keeps between runs.
+/node_modules/
+/packages/*/node_modules/
+/sdk/node_modules/
