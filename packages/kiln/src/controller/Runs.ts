@@ -172,6 +172,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       const spec = result.plan
+      // A push to a branch no rule names, for example: nothing to run, nothing to report.
+      if (spec.steps.length === 0) {
+        yield* db(sql`delete from runs where id = ${runId}`)
+        yield* Effect.logInfo(`${runId} matches no rule, dropped`)
+        return null
+      }
       yield* db(sql.withTransaction(Effect.gen(function*() {
         yield* sql`update runs set plan = ${JSON.stringify(spec)}, status = 'running' where id = ${runId}`
         for (const [position, step] of spec.steps.entries()) {
