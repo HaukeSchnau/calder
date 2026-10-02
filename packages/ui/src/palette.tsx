@@ -55,7 +55,16 @@ export function Palette({ route, onClose }: { readonly route: Route; readonly on
   }, [ov, current])
 
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  const shown = commands.filter((c) => words.every((w) => `${c.group} ${c.label} ${c.hint}`.toLowerCase().includes(w))).slice(0, 60)
+  // Matches in the label beat matches in the group or hint; groups keep their order among equals.
+  const score = (c: Command) => {
+    const label = c.label.toLowerCase()
+    return words.length && label.startsWith(words.join(" ")) ? 3 : words.every((w) => label.includes(w)) ? 2 : 1
+  }
+  const matched = commands.filter((c) => words.every((w) => `${c.group} ${c.label} ${c.hint}`.toLowerCase().includes(w)))
+  const best = new Map<string, number>()
+  for (const c of matched) best.set(c.group, Math.max(best.get(c.group) ?? 0, score(c)))
+  const groups = [...best.keys()].sort((a, b) => (best.get(b) ?? 0) - (best.get(a) ?? 0))
+  const shown = groups.flatMap((g) => matched.filter((c) => c.group === g).sort((a, b) => score(b) - score(a))).slice(0, 60)
   const at = Math.min(index, Math.max(0, shown.length - 1))
 
   useEffect(() => {

@@ -63,10 +63,10 @@ type Level = Domain.LogLine["level"]
 type LogStream = Domain.LogLine["stream"]
 
 // Filters outlive a step switch, like an editor panel's.
-const memory = {
-  scope: "step" as "step" | "run",
-  levels: { error: true, warn: true, info: true, debug: false } as Record<Level, boolean>,
-  streams: { stdout: true, stderr: true, kiln: true } as Record<LogStream, boolean>,
+const memory: { scope: "step" | "run"; levels: Record<Level, boolean>; streams: Record<LogStream, boolean> } = {
+  scope: "step",
+  levels: { error: true, warn: true, info: true, debug: false },
+  streams: { stdout: true, stderr: true, kiln: true },
 }
 
 const LEVELS: ReadonlyArray<Level> = ["error", "warn", "info", "debug"]
@@ -380,7 +380,7 @@ function niceTicks(total: number): Array<number> {
   return out
 }
 
-const axisLabel = (ms: number) => (ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${ms / 1000}s` : `${Math.floor(ms / 60_000)}m${ms % 60_000 ? `${Math.round((ms % 60_000) / 1000)}s` : ""}`)
+const axisLabel = (ms: number) => (ms === 0 ? "0" : ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${ms / 1000}s` : `${Math.floor(ms / 60_000)}m${ms % 60_000 ? `${Math.round((ms % 60_000) / 1000)}s` : ""}`)
 
 /* ------------------------------------------------------------------ */
 /* Metrics                                                             */

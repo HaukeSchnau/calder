@@ -1,7 +1,7 @@
 import { Context, Deferred, Effect, Fiber, Layer, Option, Schedule } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { randomBytes } from "node:crypto"
-import { chownSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import type { Job, JobEvent, JobResult } from "../Protocol.ts"
@@ -50,6 +50,11 @@ export class Jobs extends Context.Service<Jobs, {
   readonly active: () => ReadonlyArray<ActiveJob>
 }>()("kiln/controller/Jobs") {}
 
+const groupId = (name: string) => {
+  const line = readText("/etc/group")?.split("\n").find((l) => l.startsWith(`${name}:`))
+  return line === undefined ? undefined : Number(line.split(":")[2])
+}
+
 const parseCpuUsec = (stat: string) => Number(/usage_usec (\d+)/.exec(stat)?.[1] ?? 0)
 const readNumber = (path: string) => {
   try {
@@ -72,6 +77,15 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
   const jobs = new Map<string, ActiveJob>()
   const jobsDir = join(config.runtimeDir, "jobs")
   mkdirSync(jobsDir, { recursive: true, mode: 0o751 })
+  // systemd creates the runtime directory with the controller's own group; workers need to reach the
+  // socket and their token files in it.
+  const workers = groupId("kiln-workers")
+  if (workers !== undefined) {
+    chownSync(config.runtimeDir, process.getuid!(), workers)
+    chmodSync(config.runtimeDir, 0o750)
+    chownSync(jobsDir, process.getuid!(), workers)
+    chmodSync(jobsDir, 0o750)
+  }
   const exec = (argv: ReadonlyArray<string>) => Exec.exec(argv).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
 
   const unit = (pool: Pool, id: string) => `kiln-job-${pool}@${id}.service`
@@ -81,10 +95,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
     yield* exec(["systemctl", "stop", "kiln-job-pr@*.service", "kiln-job-trusted@*.service"]).pipe(Effect.ignore)
   }
 
-  const groupOf = (pool: Pool) => {
-    const line = readText("/etc/group")?.split("\n").find((l) => l.startsWith(`kiln-${pool}:`))
-    return line === undefined ? undefined : Number(line.split(":")[2])
-  }
+  const groupOf = (pool: Pool) => groupId(`kiln-${pool}`)
 
   const cgroupOf = (pool: Pool, id: string) =>
     exec(["systemctl", "show", "-p", "ControlGroup", "--value", unit(pool, id)]).pipe(
@@ -144,7 +155,9 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
 
       const systemd = Effect.gen(function*() {
-        const started = yield* exec(["systemctl", "start", "--no-block", unit(options.pool, id)])
+        // Without --no-block this returns once systemd has executed the worker (Type=exec), so the unit
+        // is active when the watch below first looks.
+        const started = yield* exec(["systemctl", "start", unit(options.pool, id)])
         if (started.exitCode !== 0) {
           return { _tag: "Died", message: `could not start the worker: ${started.stderr.trim()}` } satisfies JobResult
         }

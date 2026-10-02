@@ -24,6 +24,7 @@ export function App() {
         e.preventDefault()
         setPalette((open) => !open)
       }
+      if (e.key === "Escape" && e.target instanceof HTMLInputElement && !e.target.closest("[data-modal]")) e.target.blur()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
@@ -96,7 +97,12 @@ function StatusBar() {
         {red[0] ? <a className="sb" href={href({ page: "run", id: red[0].id, step: null })}><Fail /><b>{red.length}</b> red</a> : <span className="sb dim">nothing red</span>}
         {running[0] ? <a className="sb" href={href({ page: "run", id: running[0].id, step: null })}><Ring p={0.6} /><b>{running.length}</b> running</a> : <span className="sb dim">nothing running</span>}
         {deploying[0]?.deployingRun ? (
-          <a className="sb" href={href({ page: "rollout", id: deploying[0].deployingRun })}><Ring p={0.5} /><span className="sbw">{deploying[0].project} deploying to</span> <b className="heat">{deploying.map((d) => d.host).join(", ")}</b></a>
+          <a className="sb" href={href({ page: "rollout", id: deploying[0].deployingRun })}>
+            <Ring p={0.5} />
+            {new Set(deploying.map((d) => d.project)).size > 1
+              ? <span><b>{new Set(deploying.map((d) => d.project)).size}</b> deploying</span>
+              : <span><span className="sbw">{deploying[0].project} </span>deploying<span className="sbw"> to</span> <b className="heat">{deploying.map((d) => d.host).join(", ")}</b></span>}
+          </a>
         ) : null}
       </span>
       <span className={`toast${message?.kind === "bad" ? " bad" : ""}`} role="status" aria-live="polite">{message ? <span className="toast-t" key={message.at}>{message.text}</span> : null}</span>

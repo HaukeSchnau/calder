@@ -138,10 +138,13 @@ export function layout(steps: ReadonlyArray<Domain.StepRun>): Layout {
   }
 
   const solid = [...nodes.map((n) => boxes.get(n))].filter((b): b is Box => b !== undefined)
+  // Each source in a column gets its own vertical lane, so trunks of different sources never merge.
+  const lanes = new Map<string, number>()
+  for (const col of columns) col.filter((n) => links.some((l) => l.from === n)).forEach((n, i) => lanes.set(n, i))
   const edges = links.map((l) => {
     const a = boxes.get(l.from)
     const b = boxes.get(l.to)
-    return a && b ? { ...l, d: route(a, b, solid) } : null
+    return a && b ? { ...l, d: route(a, b, solid, lanes.get(l.from) ?? 0) } : null
   }).filter((e): e is Edge => e !== null)
 
   const all = [...boxes.values()]
@@ -155,7 +158,7 @@ export function layout(steps: ReadonlyArray<Domain.StepRun>): Layout {
 }
 
 /** Right side of the source to left side of the target with one vertical, placed where it doesn't cut through a node. */
-function route(a: Box, b: Box, obstacles: ReadonlyArray<Box>): string {
+function route(a: Box, b: Box, obstacles: ReadonlyArray<Box>, lane: number): string {
   const x1 = a.x + a.w
   const y1 = a.y + a.h / 2
   const x2 = b.x
@@ -163,7 +166,7 @@ function route(a: Box, b: Box, obstacles: ReadonlyArray<Box>): string {
   if (Math.abs(y1 - y2) < 1) return `M${x1} ${y1}H${x2}`
   const between = obstacles.filter((o) => o !== a && o !== b && o.x > x1 && o.x + o.w < x2)
   const blocked = (y: number, from: number, to: number) => between.some((o) => o.x < to && o.x + o.w > from && y > o.y - 4 && y < o.y + o.h + 4)
-  const lead = Math.min(22, (x2 - x1) / 2)
+  const lead = 12 + (lane % 4) * 8
   const nearSource = x1 + lead
   const nearTarget = x2 - lead
   const xm = !blocked(y2, nearSource, x2) ? nearSource : nearTarget

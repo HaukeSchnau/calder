@@ -4,6 +4,15 @@ import { Cause } from "effect"
 import { type ReactNode, useSyncExternalStore } from "react"
 import { glaze } from "./format.ts"
 
+declare module "react" {
+  interface CSSProperties {
+    /** A glaze colour, read by `.sw` and `.mx`. */
+    readonly "--g"?: string
+    readonly "--ocols"?: string
+    readonly "--panel-h"?: string
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Time                                                                */
 
@@ -112,7 +121,7 @@ export function StepMark({ status }: { readonly status: Domain.StepStatus }) {
 /** A step's identity: solid once its bits exist, an outline while only its inputs are known. */
 export function Swatch({ k, solid = true }: { readonly k: string | null; readonly solid?: boolean }) {
   if (k === null) return <i className="sw none" aria-hidden="true" />
-  return <i className={solid ? "sw" : "sw hollow"} data-key={k} style={{ "--g": glaze(k) } as React.CSSProperties} aria-hidden="true" />
+  return <i className={solid ? "sw" : "sw hollow"} data-key={k} style={{ "--g": glaze(k) }} aria-hidden="true" />
 }
 
 export const hasBits = (status: Domain.StepStatus) => status === "passed" || status === "reused"
@@ -140,7 +149,7 @@ export function Loaded<A, E>({ result, children, what }: {
 function failureText<E>(cause: Cause.Cause<E>, what: string): string {
   const error: unknown = Cause.squash(cause)
   if (typeof error === "object" && error !== null && "_tag" in error) {
-    if (error._tag === "NotFound") return `No ${what} here. It may have been removed.`
+    if (error._tag === "NotFound") return `Kiln has no record of ${what}.`
     if (error._tag === "Refused" && "reason" in error) return String(error.reason)
   }
   return `Couldn't load ${what}.`

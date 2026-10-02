@@ -134,11 +134,8 @@ function Rollout({ detail, step, deployments }: { readonly detail: Domain.RunDet
           </table>
           <header className="sub-h"><h3>Deploy trace</h3><span className="dim">spans of {step.name}</span></header>
           <DeployTrace detail={detail} step={step} />
-        </section>
-        <aside className="ro-side">
-          <header className="sub-h"><h3>Deploy log</h3><span className="dim">{step.name}, {isTerminal(step.status) ? step.status : "live"}</span></header>
           <DeployLog runId={run.id} step={step} />
-        </aside>
+        </section>
       </div>
     </>
   )
@@ -164,16 +161,29 @@ const since = (ms: number) => (ms < 60_000 ? `${(Math.max(0, ms) / 1000).toFixed
 
 function DeployLog({ runId, step }: { readonly runId: string; readonly step: Domain.StepRun }) {
   const [follow] = useState(() => !isTerminal(step.status))
+  const [debug, setDebug] = useState(false)
   const result = useAtomValue(logsAtom({ runId, step: step.name, follow }))
   const box = useRef<HTMLDivElement>(null)
-  const lines = AsyncResult.isSuccess(result) ? result.value : []
+  const all = AsyncResult.isSuccess(result) ? result.value : []
+  const hidden = all.filter((l) => l.level === "debug").length
+  const lines = debug ? all : all.filter((l) => l.level !== "debug")
   useLayoutEffect(() => {
     const el = box.current
     if (el && follow) el.scrollTop = el.scrollHeight
   }, [lines.length, follow])
   const origin = step.startedAt ?? lines[0]?.timestamp ?? 0
-  if (!lines.length) return <p className="empty">{AsyncResult.isInitial(result) ? "Loading the deploy log" : follow ? `Waiting for ${step.name} to start.` : "No log lines."}</p>
+  const head = (
+    <header className="sub-h">
+      <h3>Deploy log</h3>
+      <span className="dim">{step.name}, {isTerminal(step.status) ? step.status : "live"}</span>
+      <span className="grow" />
+      {hidden ? <button type="button" className={`lvtog${debug ? " on" : ""}`} aria-pressed={debug} onClick={() => setDebug(!debug)}>debug<span className="n">{hidden}</span></button> : null}
+    </header>
+  )
+  if (!lines.length) return <>{head}<p className="empty">{AsyncResult.isInitial(result) ? "Loading the deploy log" : follow ? `Waiting for ${step.name} to start.` : "No log lines."}</p></>
   return (
+    <>
+    {head}
     <div className="dlog" ref={box}>
       {lines.map((l, i) => (
         <div key={i} className={`dl lv-${l.level}`}>
@@ -182,5 +192,6 @@ function DeployLog({ runId, step }: { readonly runId: string; readonly step: Dom
         </div>
       ))}
     </div>
+    </>
   )
 }

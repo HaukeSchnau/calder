@@ -204,7 +204,7 @@ export function Legend() {
       <span><svg width="22" height="6"><path d="M0 3H22" className="lg-after" /></svg>runs after</span>
       <span><svg width="22" height="6"><path d="M0 3H22" className="lg-required" /></svg>required check</span>
       <span><svg width="22" height="6"><path d="M0 3H18" className="lg-exit" /><circle cx="19" cy="3" r="2.4" className="lg-exit-end" /></svg>reads the outcome</span>
-      <span><i className="sw" style={{ "--g": "#8fc1a9" } as React.CSSProperties} /><i className="sw" style={{ "--g": "#86a8e7" } as React.CSSProperties} />glaze: same colour, same inputs</span>
+      <span><i className="sw" style={{ "--g": "#8fc1a9" }} /><i className="sw" style={{ "--g": "#86a8e7" }} />glaze: same colour, same inputs</span>
     </p>
   )
 }

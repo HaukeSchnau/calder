@@ -6,16 +6,16 @@ import type { Domain } from "@kiln/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
-import { isActive, isSibling, overviewAtom, runAtom } from "./data.ts"
+import { isActive, overviewAtom, runAtom } from "./data.ts"
 import { useRunCommands } from "./commands.ts"
 import { ago, bytes, clockS, count, dur, eventLine, refOf, runDuration, shortKey, shortSha, spanDur, stepDuration, titleOf, totalSteps } from "./format.ts"
 import { Graph, GraphList, Legend, Meta } from "./graph.tsx"
 import { layout, shapeKey } from "./layout.ts"
 import { statusClass } from "./overview.tsx"
-import { Panel, TABS, TestHistory, testOrder, type Tab } from "./panel.tsx"
+import { Panel, TABS, testOrder, type Tab } from "./panel.tsx"
 import { go, href } from "./route.ts"
 import { useKeys, usePhone } from "./keys.ts"
-import { Fail, Kbd, Loaded, RunGlyph, StepMark, Swatch, hasBits, useNow } from "./ui.tsx"
+import { Fail, Kbd, Loaded, Ring, RunGlyph, StepMark, Swatch, hasBits, useNow } from "./ui.tsx"
 
 const failedStatus = (s: Domain.StepStatus) => s === "failed" || s === "died"
 
@@ -41,7 +41,7 @@ export const isDeployStep = (s: Domain.StepRun) =>
   s.kind === "action" && ((s.value?.type ?? "").startsWith("@kiln/std/Release/") || /Release\.promote/.test(s.detail))
 
 // The panel's tab and visibility outlive the run being looked at.
-const prefs = { tab: "logs" as Tab, open: true, height: 270 }
+const prefs: { tab: Tab; open: boolean; height: number } = { tab: "logs", open: true, height: 270 }
 
 export function RunPage({ id, step }: { readonly id: string; readonly step: string | null }) {
   const result = useAtomValue(runAtom(id))
@@ -56,8 +56,9 @@ export function RunPage({ id, step }: { readonly id: string; readonly step: stri
 function RunView({ detail, requested }: { readonly detail: Domain.RunDetail; readonly requested: string | null }) {
   const phone = usePhone()
   const steps = detail.steps
-  const fallback = useMemo(() => defaultStep(steps), [shapeKey(steps), detail.run.id, steps.some((s) => failedStatus(s.status))])
-  const selected = steps.find((s) => s.name === requested) ?? fallback ?? null
+  // The default selection is decided once per run, and again when a failure shows up.
+  const fallback = useMemo(() => defaultStep(steps)?.name, [shapeKey(steps), detail.run.id, steps.some((s) => failedStatus(s.status))])
+  const selected = steps.find((s) => s.name === requested) ?? steps.find((s) => s.name === fallback) ?? steps[0] ?? null
   const [tab, setTabState] = useState<Tab>(prefs.tab)
   const [open, setOpenState] = useState(prefs.open)
   const [height, setHeight] = useState(prefs.height)
@@ -76,6 +77,13 @@ function RunView({ detail, requested }: { readonly detail: Domain.RunDetail; rea
 
   useKeys((e) => {
     const k = e.key
+    if (e.metaKey || e.ctrlKey || e.altKey) {
+      if (k.toLowerCase() === "j" && !e.altKey) {
+        e.preventDefault()
+        setOpen(!prefs.open)
+      }
+      return
+    }
     if (k >= "1" && k <= "5") return setTab(TABS[Number(k) - 1] ?? "logs")
     if ((k === "]" || k === "[") && selected) {
       const i = ordered.findIndex((s) => s.name === selected.name)
@@ -92,30 +100,25 @@ function RunView({ detail, requested }: { readonly detail: Domain.RunDetail; rea
       e.preventDefault()
       setTab("logs")
       requestAnimationFrame(() => document.getElementById("logq")?.focus())
-      return
-    }
-    if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === "j") {
-      e.preventDefault()
-      setOpen(!prefs.open)
     }
   }, { withModifiers: true })
 
   return (
     <>
-      <main className="editor" style={{ "--panel-h": `${height}px` } as React.CSSProperties} data-panel={open ? "open" : "closed"}>
+      <main className="editor" style={{ "--panel-h": `${height}px` }} data-panel={open ? "open" : "closed"}>
         <div className="doc">
           <div className="chg">
             <RunHeader detail={detail} />
             <FailureBlock detail={detail} step={selected} onSelect={select} onTab={setTab} runLabel={runLabel} />
             <section className="canvas" aria-label="Step graph">
-              {steps.length === 0 ? <p className="empty">{detail.run.status === "planning" ? "Planning: the steps appear once the plan is known." : "No steps."}</p>
+              {steps.length === 0 ? (detail.run.status === "planning" ? <p className="empty">Planning. The steps appear once the plan is known.</p> : null)
                 : phone ? <GraphList steps={steps} selected={selected?.name ?? null} onSelect={select} runLabel={runLabel} />
                 : <Graph steps={steps} selected={selected?.name ?? null} onSelect={select} runLabel={runLabel} />}
               {steps.length > 0 && !phone ? <Legend /> : null}
             </section>
           </div>
         </div>
-        {open ? (
+        {steps.length === 0 ? null : open ? (
           <>
             <Resizer onResize={(h) => { prefs.height = h; setHeight(h) }} />
             <Panel detail={detail} step={selected} tab={tab} onTab={setTab} onSelect={select} onClose={() => setOpen(false)} />
@@ -277,20 +280,21 @@ function FailureBlock({ detail, step, onSelect, onTab, runLabel }: {
         {tests.length ? <button type="button" className="btn" onClick={() => { onSelect(shown.name); onTab("tests") }}>Tests <Kbd>4</Kbd></button> : null}
         {newer ? <a className="lnk" href={href({ page: "run", id: newer.id, step: null })}>#{newer.number} {newer.status}</a> : null}
       </p>
-      {tests.length ? (
-        <div className="fl-tests">
-          {tests.slice(0, 4).map((t) => (
-            <div key={`${t.suite}›${t.name}`} className="fl-test">
-              <span className="tg">{t.status === "timeout" ? <span className="heat">timeout</span> : <Fail />}</span>
-              <span className="tname"><b>{t.suite} › {t.name}</b>{t.flaky ? <span className="flaky">flaky</span> : null}</span>
-              <span className="tmsg1">{t.message?.split("\n")[0] ?? ""}</span>
-              <TestHistory project={run.project} test={t} />
-            </div>
-          ))}
-          {tests.length > 4 ? <p className="dim">{tests.length - 4} more in the tests tab</p> : null}
-        </div>
-      ) : null}
-      {shown.error.excerpt ? <pre className="excerpt">{shown.error.excerpt}</pre> : null}
+      <div className={`fl-body${tests.length && shown.error.excerpt ? " two" : ""}`}>
+        {tests.length ? (
+          <div className="fl-tests">
+            {tests.slice(0, 4).map((t) => (
+              <div key={`${t.suite}›${t.name}`} className="fl-test" data-tip={t.message ?? undefined}>
+                <span className="tg">{t.status === "timeout" ? <Ring p={1} /> : <Fail />}</span>
+                <span className="tname">{t.suite} › {t.name}</span>
+                <span className="ttag">{t.status === "timeout" ? <span className="heat">timed out</span> : null}{t.flaky ? <span className="flaky">flaky</span> : null}</span>
+              </div>
+            ))}
+            {tests.length > 4 ? <p className="dim">{tests.length - 4} more in the tests tab</p> : null}
+          </div>
+        ) : null}
+        {shown.error.excerpt ? <pre className="excerpt">{shown.error.excerpt}</pre> : null}
+      </div>
       {shown.attempts > 1 || shown.reusedFrom ? (
         <p className="fl-act dim">
           {shown.attempts > 1 ? <span>{shown.attempts} attempts</span> : null}

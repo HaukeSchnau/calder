@@ -8,10 +8,10 @@ import { Kiln } from "./client.ts"
 import { useRunCommands } from "./commands.ts"
 import { isActive, overviewAtom, projectRunsAtom, runAtom } from "./data.ts"
 import { ago, count, dur, refOf, runDuration, shortSha, titleOf, totalSteps, when } from "./format.ts"
-import { hostsOf, statusClass } from "./overview.tsx"
+import { hostsOf } from "./overview.tsx"
 import { href } from "./route.ts"
 import { graphOrder } from "./run.tsx"
-import { Kbd, Loaded, RunGlyph, Swatch, useNow } from "./ui.tsx"
+import { Loaded, RunGlyph, Swatch, useNow } from "./ui.tsx"
 
 type StatusFilter = "all" | "failed" | "running" | "passed"
 const STATUS_FILTERS: ReadonlyArray<StatusFilter> = ["all", "failed", "running", "passed"]
@@ -125,7 +125,7 @@ function RunRow({ run }: { readonly run: Domain.Run }) {
       <span className="dim">{run.commit.author}</span>
       <span className="mono dim">{shortSha(run.commit.sha)}</span>
       <span>{run.status === "errored" ? <span className="bad">plan failed</span> : failed ? <span className="bad">{failed} failed</span> : isActive(run.status) ? <span className="heat">{run.status}</span> : reused ? <span className="dim">{reused} of {total} reused</span> : <span className="dim">{total} ran</span>}</span>
-      <span className={`num ${isActive(run.status) ? "heat" : statusClass(run.status) === "bad" ? "" : ""}`}>{d !== null ? dur(d) : ""}</span>
+      <span className={`num${isActive(run.status) ? " heat" : ""}`}>{d !== null ? dur(d) : ""}</span>
       <span className="num dim">{when(run.createdAt, now)}</span>
     </a>
   )
@@ -138,7 +138,7 @@ function StepHistory({ project, mainId }: { readonly project: string; readonly m
       {(detail) => (
         <div className="shist">
           {graphOrder(detail.steps).map((s) => <StepRow key={s.name} project={project} step={s.name} />)}
-          <p className="dim skeys">Bars are runs, height is time. <Kbd>Hover</Kbd> for a run, click to open it.</p>
+          <p className="dim skeys">One bar per run, height is time, reused runs are flat. Click a bar to open its run.</p>
         </div>
       )}
     </Loaded>

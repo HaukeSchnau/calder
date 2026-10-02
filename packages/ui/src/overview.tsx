@@ -136,14 +136,14 @@ function DeployingRow({ runId, deployments, run, project, first }: {
   return (
     <a className={`at at-run${first ? "" : " cont"}`} href={href({ page: "rollout", id: runId })}>
       <span className="at-k"><Ring p={0.5} />Deploying</span>
-      <span className="at-s"><b>{from?.project}</b> {run ? shortSha(run.commit.sha) : ""} <span className="dim">to</span> {hosts.join(", ")}{waiting.length ? <span className="dim">, then {waiting.join(", ")}</span> : null}</span>
+      <span className="at-s"><b>{from?.project}</b> {run ? shortSha(run.commit.sha) : ""} <span className="dim">to</span> {hosts.join(", ")}</span>
       <span className="at-d">
         {from?.revision ? <><Swatch k={from.storePath ?? from.revision} /><code>{shortSha(from.revision)}</code><span className="arrow">→</span></> : null}
         {run ? <code>{shortSha(run.commit.sha)}</code> : null}
         {run ? <span className="fact">#{run.number} {titleOf(run)}</span> : null}
       </span>
       <span className="at-t tnum">{deploy ? dur(stepDuration(deploy, now) ?? 0) : ""}</span>
-      <span className="at-a">rollout</span>
+      <span className="at-a">{waiting.length ? `then ${waiting.join(", ")}` : "last host"}</span>
     </a>
   )
 }
@@ -158,7 +158,7 @@ export function StepStrip({ steps }: { readonly steps: ReadonlyArray<Domain.Step
           className={`mx s-${s.status}`}
           data-key={hasBits(s.status) ? (s.key ?? undefined) : undefined}
           data-tip={`${s.name}, ${s.status}`}
-          style={hasBits(s.status) && s.key ? ({ "--g": glaze(s.key) } as React.CSSProperties) : undefined}
+          style={hasBits(s.status) && s.key ? ({ "--g": glaze(s.key) }) : undefined}
         />
       ))}
     </span>
@@ -172,10 +172,10 @@ function Board({ ov }: { readonly ov: Domain.Overview }) {
   const hosts = hostsOf(ov.projects)
   const cols = `minmax(250px, 1.5fr) 128px 140px 64px 52px ${hosts.map(() => "minmax(170px, 0.8fr)").join(" ")}`
   return (
-    <section className="board" aria-label="Projects" style={{ "--ocols": cols } as React.CSSProperties}>
+    <section className="board" aria-label="Projects" style={{ "--ocols": cols }}>
       <div className="board-bar">
         <span className="olegend">
-          <span><i className="mx" style={{ "--g": "#86a8e7" } as React.CSSProperties} /><i className="mx" style={{ "--g": "#8fc1a9" } as React.CSSProperties} />result, by key</span>
+          <span><i className="mx" style={{ "--g": "#86a8e7" }} /><i className="mx" style={{ "--g": "#8fc1a9" }} />result, by key</span>
           <span><i className="mx s-running" />running</span>
           <span><i className="mx s-failed" />failed</span>
           <span><svg width="14" height="10"><rect x="1" y="2" width="3" height="8" rx="1" className="lg-bar" /><rect x="6" y="5" width="3" height="5" rx="1" className="lg-bar" /><rect x="11" y="0" width="3" height="10" rx="1" className="lg-bar s-failed" /></svg>runs on main, height is duration</span>
@@ -210,6 +210,8 @@ function Slots({ slots }: { readonly slots: Domain.Overview["slots"] }) {
 function ProjectRows({ project, hosts, recent }: { readonly project: Domain.Project; readonly hosts: ReadonlyArray<string>; readonly recent: ReadonlyArray<Domain.Run> }) {
   const now = useNow()
   const main = project.main
+  const deployingId = project.deployments.find((d) => d.deployingRun !== null)?.deployingRun
+  const deploying = deployingId ? (recent.find((r) => r.id === deployingId) ?? (main?.id === deployingId ? main : undefined)) : undefined
   const prs = new Map<number, Domain.Run>()
   for (const r of recent) {
     if (r.project !== project.name || r.event._tag !== "PullRequest" || prs.has(r.event.number)) continue
@@ -226,7 +228,7 @@ function ProjectRows({ project, hosts, recent }: { readonly project: Domain.Proj
         <span className="cell spk"><RunSpark history={project.history} /></span>
         <span className="cell num">{main ? <Took run={main} /> : null}</span>
         <span className="cell num dim">{main ? ago(main.createdAt, now) : ""}</span>
-        {hosts.map((h) => <HostCell key={h} deployment={project.deployments.find((d) => d.host === h)} />)}
+        {hosts.map((h) => <HostCell key={h} deployment={project.deployments.find((d) => d.host === h)} next={deploying} main={main} />)}
       </div>
       {[...prs.values()].slice(0, 3).map((r) => (
         <div key={r.id} className="br br-change">
@@ -267,17 +269,21 @@ function Took({ run }: { readonly run: Domain.Run }) {
   return <span className={isActive(run.status) ? "heat" : ""}>{dur(d)}</span>
 }
 
-function HostCell({ deployment: d }: { readonly deployment: Domain.Deployment | undefined }) {
+function HostCell({ deployment: d, next, main }: { readonly deployment: Domain.Deployment | undefined; readonly next: Domain.Run | undefined; readonly main: Domain.Run | null }) {
   const now = useNow()
   if (!d) return <span className="cell host" />
-  const live = d.revision ? <><Swatch k={d.storePath ?? d.revision} /><code>{shortSha(d.revision)}</code></> : <span className="dim">nothing live</span>
+  // The latest main run is the only run the overview can tie to a live revision.
+  const linked = !d.deployingRun && main !== null && main.commit.sha === d.revision
+  const sha = d.revision ? (linked && main ? <a className="hsha" href={href({ page: "rollout", id: main.id })}>{shortSha(d.revision)}</a> : shortSha(d.revision)) : null
+  const live = d.revision ? <><span className="hl">{d.host}</span><Swatch k={d.storePath ?? d.revision} /><code>{sha}</code></> : <><span className="hl">{d.host}</span><span className="dim">nothing live</span></>
   if (d.deployingRun) {
     return <a className="cell host" href={href({ page: "rollout", id: d.deployingRun })}>{live}<span className="arrow">→</span><span className="heat">deploying</span></a>
   }
   return (
     <span className="cell host">
       {live}
-      {d.pending ? <span data-tip={`${shortSha(d.pending)} was asked for but isn't active`}><span className="arrow">→</span><code className="pend">{shortSha(d.pending)}</code> <span>pending</span></span>
+      {next && d.revision !== next.commit.sha ? <a className="hstate" href={href({ page: "rollout", id: next.id })}><span className="arrow">→</span><span className="dim">waits</span></a>
+        : d.pending ? <span className="hstate" data-tip={`${shortSha(d.pending)} was asked for but isn't active`}><span className="arrow">→</span><code className="pend">{shortSha(d.pending)}</code><span>pending</span></span>
         : d.healthy === false ? <span className="bad">unhealthy</span>
         : d.since !== null ? <span className="dim">{ago(d.since, now)}</span> : null}
     </span>

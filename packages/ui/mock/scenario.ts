@@ -30,7 +30,7 @@ interface Spec {
   readonly at: number
   readonly event: Event
   readonly title: string | null
-  readonly commit: { readonly title: string; readonly author: string; readonly changeId: string | null }
+  readonly commit: { readonly title: string; readonly author: string; readonly changeId: string | null; readonly sha?: string }
   readonly outcomes?: Readonly<Record<string, Outcome>>
   /** Step name to the spec key of the run whose result this one reuses. */
   readonly reused?: Readonly<Record<string, string>>
@@ -327,7 +327,7 @@ const PLANNING = 2
 function plan(spec: Spec, id: string, number: number, t0: number, built: ReadonlyMap<string, SimRun>, stableKeys: Map<string, { key: string; run: string }>): SimRun {
   const r = rng(`run:${spec.key}`)
   const createdAt = t0 + spec.at * 1000
-  const sha = hex(`sha:${spec.key}`, 40)
+  const sha = spec.commit.sha ?? hex(`sha:${spec.key}`, 40)
   const startedAt = createdAt + PLANNING * 1000
   const plans = spec.error ? [] : pipeline(spec.project, spec.event)
   const done = new Map<string, SimStep>()
@@ -441,7 +441,7 @@ export class World {
       at: (now - this.t0) / 1000,
       event: inputs ? { _tag: "Manual", inputs } : push,
       title: null,
-      commit: head ? { title: head.commit.title, author: "hauke", changeId: head.commit.changeId } : { title: "Manual run", author: "hauke", changeId: null },
+      commit: head ? { title: head.commit.title, author: "hauke", changeId: head.commit.changeId, sha: head.commit.sha } : { title: "Manual run", author: "hauke", changeId: null },
       reused: Object.fromEntries(Object.keys(reused).map((name) => [name, `${key}:head`])),
       durations: { promote: 6 },
     })
@@ -451,14 +451,14 @@ export class World {
   rerun(source: SimRun, now: number): SimRun {
     const key = `${source.project}:rerun:${source.id}:${now}`
     this.bySpec.set(`${key}:source`, source)
-    const outcomes = Object.fromEntries(source.steps.filter((s) => s.outcome === "failed" || s.outcome === "died").map((s) => [s.plan.name, s.outcome as Outcome]))
+    const outcomes = Object.fromEntries(source.steps.flatMap((s) => (s.outcome === "failed" || s.outcome === "died" ? [[s.plan.name, s.outcome] as const] : [])))
     return this.add({
       key,
       project: source.project,
       at: (now - this.t0) / 1000,
       event: source.event,
       title: source.title,
-      commit: { title: source.commit.title, author: source.commit.author, changeId: source.commit.changeId },
+      commit: { title: source.commit.title, author: source.commit.author, changeId: source.commit.changeId, sha: source.commit.sha },
       outcomes,
       reused: Object.fromEntries(Object.keys(this.reusable(source)).map((name) => [name, `${key}:source`])),
     })
@@ -778,7 +778,6 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
     [0, "info", "kiln", `lease deploy:${run.project} acquired (latest wins, fencing token ${1100 + run.number})`],
     [0.002, "info", "kiln", `required checks passed: ${after.join(", ")}`],
   ]
-  const url = urlOf(run.project)
   for (const ph of phases(run)) {
     const span = ph.activate - ph.from
     const at = (f: number) => ph.from + span * f
@@ -788,7 +787,7 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
     lines.push([at(0.08), "info", "kiln", `POST ${ph.host}:18100/deploy/${run.project} 202 (fence ${1100 + run.number})`])
     const polls = Math.max(1, Math.floor((span * duration) / 15))
     for (let i = 1; i < polls; i++) {
-      lines.push([at(0.1 + (0.88 * i) / polls), "debug", "kiln", `readiness: ${url}/api/health/ready reports the previous revision, retry in 15 s`])
+      lines.push([at(0.1 + (0.88 * i) / polls), "debug", "kiln", `readiness: ${ph.host} still reports the previous revision, retry in 15 s`])
     }
     lines.push([at(1), "info", "kiln", `readiness: ${ph.host} reports ${sha}`])
   }
