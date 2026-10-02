@@ -66,8 +66,8 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   '';
 
   passthru = {
-    sdk = "${placeholder "out"}/lib/kiln/sdk/node_modules";
-    ui = "${placeholder "out"}/lib/kiln/packages/ui/dist";
+    sdk = "${finalAttrs.finalPackage}/lib/kiln/sdk/node_modules";
+    ui = "${finalAttrs.finalPackage}/lib/kiln/packages/ui/dist";
   };
 
   meta = {
