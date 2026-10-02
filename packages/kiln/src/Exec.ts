@@ -22,11 +22,13 @@ export interface Options {
   readonly stdin?: string
 }
 
+// A child's stdin is a socket unless ignored, and NixOS's bash takes a socket on stdin for sshd and
+// resets PATH from /etc/bashrc.
 const command = (argv: ReadonlyArray<string>, options: Options) =>
   ChildProcess.make(argv[0]!, argv.slice(1), {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     ...(options.env === undefined ? {} : { env: options.env, extendEnv: true }),
-    ...(options.stdin === undefined ? {} : { stdin: Stream.make(new TextEncoder().encode(options.stdin)) }),
+    stdin: options.stdin === undefined ? "ignore" : Stream.make(new TextEncoder().encode(options.stdin)),
   })
 
 /** Runs a command to completion and returns stdout. Fails with its stderr on a non-zero exit. */
