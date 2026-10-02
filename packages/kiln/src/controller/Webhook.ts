@@ -50,7 +50,10 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     const start = (sha: string, run: Effect.Effect<unknown, unknown>) =>
       Effect.gen(function*() {
         yield* mirror.fetch(project)
-        if (!(yield* mirror.hasPipeline(project, sha))) return
+        if (!(yield* mirror.hasPipeline(project, sha))) {
+          return yield* Effect.logInfo(`${event} for ${project}@${sha.slice(0, 12)} has no .kiln/ci.ts, ignored`)
+        }
+        yield* Effect.logInfo(`${event} for ${project}@${sha.slice(0, 12)}`)
         yield* run
       }).pipe(
         Effect.catchCause((cause) => Effect.logError(`webhook for ${project}@${sha} failed`, cause)),
