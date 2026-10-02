@@ -44,6 +44,16 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     tasks: Semaphore.makeUnsafe(config.jobs.slots.tasks),
     actions: Semaphore.makeUnsafe(config.jobs.slots.actions),
   }
+  // One project's shards may not take every task slot, so other projects can always start.
+  const projectTaskSlots = new Map<string, Semaphore.Semaphore>()
+  const projectTasks = (project: string) => {
+    let slot = projectTaskSlots.get(project)
+    if (slot === undefined) {
+      slot = Semaphore.makeUnsafe(Math.max(1, config.jobs.slots.tasks - 1))
+      projectTaskSlots.set(project, slot)
+    }
+    return slot
+  }
   const cancels = new Map<string, Deferred.Deferred<string>>()
   const cancelSignal = (runId: string) => {
     let d = cancels.get(runId)
@@ -328,7 +338,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     run: Rows.RunRow,
     row: Rows.StepRow,
     job: Job,
-    options: { readonly slot: Semaphore.Semaphore; readonly action: boolean; readonly shard: number | null },
+    options: {
+      readonly slot: Semaphore.Semaphore
+      readonly action: boolean
+      readonly shard: number | null
+      readonly perProject?: boolean
+    },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
     Effect.gen(function*() {
@@ -356,9 +371,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* publishStep(run.id, row.name)
         yield* status(run, `kiln/${row.name}`, "pending", "running")
       })
-      const work = options.slot.withPermits(1)(
-        Effect.andThen(started, jobs.run(job, { pool: poolOf(run), onEvent, uninterruptible: options.action })),
-      )
+      const running = Effect.andThen(started, jobs.run(job, { pool: poolOf(run), onEvent, uninterruptible: options.action }))
+      const global = options.slot.withPermits(1)(running)
+      const work = options.perProject ? projectTasks(run.project).withPermits(1)(global) : global
       if (options.action) return yield* work
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
         Effect.map((reason) => ({ result: { _tag: "Died", message: reason } satisfies JobResult, usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", cancelled: true })),
@@ -452,7 +467,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             run,
             row,
             stepJob({ workspace: ws.path, secrets, shard: count === 1 ? null : { index, count } }),
-            { slot: slots.tasks, action: false, shard: count === 1 ? null : index },
+            { slot: slots.tasks, action: false, shard: count === 1 ? null : index, perProject: true },
             collect,
           )
         })), { concurrency: "unbounded" })
