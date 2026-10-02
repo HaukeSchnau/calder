@@ -115,6 +115,7 @@ export const step = (row: StepRow): Domain.StepRun => {
     after: s.after,
     required: s.required,
     target: s.target,
+    deploys: s.action?.deploy ?? false,
     detail: s.detail,
     queuedAt: row.queued_at,
     startedAt: row.started_at,

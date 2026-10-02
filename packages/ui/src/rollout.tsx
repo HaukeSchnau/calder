@@ -11,7 +11,6 @@ import { ago, clock, clockS, dur, eventLine, shortSha, stepDuration, titleOf } f
 import { statusClass } from "./overview.tsx"
 import { Waterfall } from "./panel.tsx"
 import { href } from "./route.ts"
-import { isDeployStep } from "./run.tsx"
 import { Check, Fail, Loaded, Ring, Stopped, Swatch, Waiting, useNow } from "./ui.tsx"
 
 export function RolloutPage({ id }: { readonly id: string }) {
@@ -22,7 +21,7 @@ export function RolloutPage({ id }: { readonly id: string }) {
       <Loaded result={result} what="this rollout">
         {(detail) => {
           const project = AsyncResult.isSuccess(ov) ? ov.value.projects.find((p) => p.name === detail.run.project) : undefined
-          const step = detail.steps.find(isDeployStep)
+          const step = detail.steps.find((s) => s.deploys)
           if (!step) return <p className="empty">#{detail.run.number} has no deploy step. <a className="lnk" href={href({ page: "run", id, step: null })}>Back to the run</a></p>
           return <Rollout detail={detail} step={step} deployments={project?.deployments ?? []} />
         }}

@@ -102,6 +102,8 @@ export const StepRun = Schema.Struct({
   /** Required checks that `after` gained from branch protection. */
   required: Schema.Array(Schema.String),
   target: Schema.Boolean,
+  /** An action with `grants: { deploy: true }`: the step behind a rollout. */
+  deploys: Schema.Boolean,
   /** What it runs: the flake attribute, the command, or the action name. */
   detail: Schema.String,
   queuedAt: Schema.NullOr(Schema.Number),

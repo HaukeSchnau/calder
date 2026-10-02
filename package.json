@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@11.27.0",
   "scripts": {
-    "check": "tsc -p packages/core && tsc -p packages/std && tsc -p packages/api && tsc -p packages/kiln",
+    "check": "tsc -p packages/core && tsc -p packages/std && tsc -p packages/api && tsc -p packages/kiln && tsc -p packages/ui",
     "test": "vitest run"
   },
   "devDependencies": {

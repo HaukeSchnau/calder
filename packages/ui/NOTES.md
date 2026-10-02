@@ -12,7 +12,6 @@ The mock's scenario is planned once at start and is a pure function of the clock
 
 The UI works around each of these today. None blocks v0.
 
-1. **Which step deploys.** Nothing marks a step as the deploy, and a `Deployment` names its run but not the step. The UI treats an action as the deploy when its value type starts with `@kiln/std/Release/` or its detail mentions `Release.promote` (`isDeployStep` in `src/run.tsx`). A `deploys: boolean` on `StepRun`, or `step` next to `Deployment.deployingRun`, would replace the guess.
 2. **Labels for `reusedFrom`.** It is a bare run id. To write "reused from #611" the UI looks the id up among the siblings and the overview's runs, and falls back to "reused". Carrying `{ id, project, number }` would make it exact.
 3. **Gaps in `changes`.** Changes have no sequence number, so a client can't tell whether it missed one between loading a snapshot and the stream starting, or across a reconnect. The UI subscribes before it loads, reloads after reconnecting, and refetches the overview every 15 seconds. A `seq` on each change and on snapshots would let it resume exactly.
 4. **Failing tests after a failure.** `failingTests` only come with `run`, so the UI refetches the whole run when a step turns failed.

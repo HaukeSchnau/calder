@@ -31,14 +31,11 @@ export function defaultStep(steps: ReadonlyArray<Domain.StepRun>): Domain.StepRu
   const ordered = graphOrder(steps)
   return ordered.find((s) => failedStatus(s.status))
     ?? ordered.find((s) => s.status === "running")
-    ?? ordered.find((s) => isDeployStep(s))
+    ?? ordered.find((s) => s.deploys)
     ?? ordered.find((s) => s.target)
     ?? ordered[0]
 }
 
-/** The API has no deploy marker yet, so this reads the action's result type and name. */
-export const isDeployStep = (s: Domain.StepRun) =>
-  s.kind === "action" && ((s.value?.type ?? "").startsWith("@kiln/std/Release/") || /Release\.promote/.test(s.detail))
 
 // The panel's tab and visibility outlive the run being looked at.
 const prefs: { tab: Tab; open: boolean; height: number } = { tab: "logs", open: true, height: 270 }
@@ -181,7 +178,7 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
   const d = runDuration(run, now)
   const total = totalSteps(run.counts)
   const finished = count(run.counts, "passed", "reused", "failed", "died", "blocked", "cancelled")
-  const deploys = detail.steps.some(isDeployStep)
+  const deploys = detail.steps.some((s) => s.deploys)
   const statusWord = run.status === "passed" ? `passed in ${dur(d ?? 0)}`
     : run.status === "failed" ? `failed after ${dur(d ?? 0)}`
     : run.status === "running" ? `running ${dur(d ?? 0)}`
@@ -199,7 +196,7 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
           <span className="mono">{shortSha(run.commit.sha)}</span>
         </p>
         <h1>{titleOf(run)}</h1>
-        <p className="who">{run.commit.author}{run.title && run.title !== run.commit.title ? <>, commit <b>{run.commit.title}</b></> : null}, {eventLine(run.event)}{run.trust === "pr" ? ", untrusted" : ""}</p>
+        <p className="who">{run.commit.author}{run.title && run.title !== run.commit.title ? <>, commit <b>{run.commit.title}</b></> : null}, {eventLine(run.event)}</p>
         <p className="runline">
           <span className="rstat"><RunGlyph run={run} /><b>#{run.number}</b> <span className={statusClass(run.status)}>{statusWord}</span></span>
           {total ? <span><b>{finished}</b> of {total} steps done{count(run.counts, "reused") ? `, ${count(run.counts, "reused")} reused` : ""}{count(run.counts, "running") ? <>, <span className="heat">{count(run.counts, "running")} running</span></> : null}</span> : null}

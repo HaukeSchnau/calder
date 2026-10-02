@@ -9,7 +9,6 @@ import { useRunCommands } from "./commands.ts"
 import { isActive, overviewAtom, runAtom } from "./data.ts"
 import { refOf, titleOf } from "./format.ts"
 import { go, type Route } from "./route.ts"
-import { isDeployStep } from "./run.tsx"
 import { Kbd } from "./ui.tsx"
 
 interface Command {
@@ -41,7 +40,7 @@ export function Palette({ route, onClose }: { readonly route: Route; readonly on
       else add("This run", `Rerun ${r.project} ${label}`, `same revision, ${refOf(r)}`, () => void rerun(r))
       const failed = detail.steps.find((s) => s.status === "failed" || s.status === "died")
       if (failed) add("This run", `Jump to the failure in ${failed.name}`, failed.error?.tag ?? "failed", () => go({ page: "run", id: r.id, step: failed.name }))
-      if (detail.steps.some(isDeployStep)) add("This run", `Open the rollout of ${label}`, "deploy", () => go({ page: "rollout", id: r.id }))
+      if (detail.steps.some((s) => s.deploys)) add("This run", `Open the rollout of ${label}`, "deploy", () => go({ page: "rollout", id: r.id }))
       for (const s of detail.steps) add("Steps", s.name, `${s.kind} ${s.status}`, () => go({ page: "run", id: r.id, step: s.name }))
     }
     add("Go to", "Overview", "home", () => go({ page: "overview" }))

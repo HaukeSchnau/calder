@@ -547,6 +547,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     after: s.plan.after ?? [],
     required: s.plan.required ?? [],
     target: s.plan.target ?? false,
+    deploys: s.plan.detail === "Release.promote",
     detail: s.plan.detail,
     queuedAt: st.queuedAt,
     startedAt: st.startedAt,
