@@ -1,16 +1,20 @@
 import type { Domain } from "@kiln/api"
-import { Context, Deferred, Duration, Effect, Layer, Semaphore } from "effect"
+import { Context, Deferred, Duration, Effect, Layer } from "effect"
+import { HttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import * as Exec from "../Exec.ts"
 import { sha256, taskKey } from "../Keys.ts"
 import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Config } from "./Config.ts"
+import * as Estimates from "./Estimates.ts"
 import { Gitea, type StatusState } from "./Gitea.ts"
 import { type Pool, Jobs, type Usage } from "./Jobs.ts"
 import { Live } from "./Live.ts"
 import { Mirror } from "./Mirror.ts"
 import * as Rows from "./Rows.ts"
+import * as Slots from "./Slots.ts"
 import * as Telemetry from "./Telemetry.ts"
 
 const activeStatuses = ["queued", "planning", "running"] as const
@@ -38,21 +42,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const gitea = yield* Gitea
   const live = yield* Live
   const telemetry = yield* Telemetry.Telemetry
+  const spawner = yield* Exec.SpawnerTag
+  const http = yield* HttpClient.HttpClient
   const slots = {
-    plans: Semaphore.makeUnsafe(config.jobs.slots.plans),
-    builds: Semaphore.makeUnsafe(config.jobs.slots.builds),
-    tasks: Semaphore.makeUnsafe(config.jobs.slots.tasks),
-    actions: Semaphore.makeUnsafe(config.jobs.slots.actions),
-  }
-  // One project's shards may not take every task slot, so other projects can always start.
-  const projectTaskSlots = new Map<string, Semaphore.Semaphore>()
-  const projectTasks = (project: string) => {
-    let slot = projectTaskSlots.get(project)
-    if (slot === undefined) {
-      slot = Semaphore.makeUnsafe(Math.max(1, config.jobs.slots.tasks - 1))
-      projectTaskSlots.set(project, slot)
-    }
-    return slot
+    plans: Slots.make({ capacity: config.jobs.slots.plans }),
+    builds: Slots.make({ capacity: config.jobs.slots.builds }),
+    // One project's shards may not take every task slot, so other projects can always start.
+    tasks: Slots.make({ capacity: config.jobs.slots.tasks, perProject: Math.max(1, config.jobs.slots.tasks - 1) }),
+    actions: Slots.make({ capacity: config.jobs.slots.actions }),
   }
   const cancels = new Map<string, Deferred.Deferred<string>>()
   const cancelSignal = (runId: string) => {
@@ -73,7 +70,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         let i = 0
         while (used.has(i)) i++
         used.add(i)
-        return { index: i, path: join(config.stateDir, "workspaces", pool, project, String(i)) }
+        return { index: i, path: join(config.stateDir, "workspaces", pool, project, `slot-${i}`) }
       }),
       (slot) => Effect.sync(() => workspaces.get(`${pool}/${project}`)?.delete(slot.index)),
     )
@@ -95,7 +92,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const publishStep = (runId: string, name: string) =>
     Effect.gen(function*() {
       const row = yield* db(Rows.loadStep(runId, name))
-      if (row !== undefined) yield* live.publish({ _tag: "StepChanged", step: Rows.step(row) })
+      const run = yield* db(Rows.loadRun(runId))
+      if (row === undefined || run === undefined) return
+      const estimates = yield* db(Estimates.forProject(run.project))
+      const failingTests = row.status === "failed" ? yield* db(Rows.failingTests(runId, name)) : []
+      yield* live.publish({ _tag: "StepChanged", step: Rows.step(row, estimates.get(name) ?? null), failingTests })
     })
 
   const status = (run: Rows.RunRow, context: string, state: StatusState, description: string) =>
@@ -173,7 +174,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
       const job: Job = { _tag: "Plan", run: runInfo(run, kilnDir.dir), requiredChecks: required }
-      const { result } = yield* slots.plans.withPermits(1)(
+      const { result } = yield* slots.plans.with(
+        run.project,
+        0,
         jobs.run(job, { pool: poolOf(run), onEvent: logTo(run, "plan", run.span_id, null) }),
       )
       live.finish(runId, "plan")
@@ -244,7 +247,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       case "passed":
         return ["success", `passed${took}`]
       case "reused":
-        return ["success", "reused an identical result"]
+        return ["success", row.kind === "build" ? "already built" : "reused an identical result"]
       case "failed":
         return ["failure", s.error?.message.split("\n")[0] ?? "failed"]
       case "died":
@@ -333,16 +336,20 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     }
   }
 
-  /** Runs a job unless the run is cancelled first. Actions are never cut short. */
+  /**
+   * Runs a job in a slot unless the run is cancelled first. Tasks get their workspace only once they
+   * hold a slot, so waiting tasks don't each claim (and warm up) a workspace. Actions are never cut short.
+   */
   const execute = (
     run: Rows.RunRow,
     row: Rows.StepRow,
-    job: Job,
+    job: (workspace: string | null) => Job,
     options: {
-      readonly slot: Semaphore.Semaphore
+      readonly slots: Slots.Slots
+      readonly priority: number
       readonly action: boolean
       readonly shard: number | null
-      readonly perProject?: boolean
+      readonly workspace: boolean
     },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
@@ -371,9 +378,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* publishStep(run.id, row.name)
         yield* status(run, `kiln/${row.name}`, "pending", "running")
       })
-      const running = Effect.andThen(started, jobs.run(job, { pool: poolOf(run), onEvent, uninterruptible: options.action }))
-      const global = options.slot.withPermits(1)(running)
-      const work = options.perProject ? projectTasks(run.project).withPermits(1)(global) : global
+      const running = Effect.scoped(Effect.gen(function*() {
+        const ws = options.workspace ? (yield* workspace(poolOf(run), run.project)).path : null
+        yield* started
+        return yield* jobs.run(job(ws), { pool: poolOf(run), onEvent, uninterruptible: options.action })
+      }))
+      const work = options.slots.with(run.project, options.priority, running)
       if (options.action) return yield* work
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
         Effect.map((reason) => ({ result: { _tag: "Died", message: reason } satisfies JobResult, usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", cancelled: true })),
@@ -399,6 +409,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* publishStep(runId, name)
 
       const inputs = Object.fromEntries([...spec.needs, ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
+      const priority = Estimates.of(yield* db(Estimates.forProject(run.project)), name)
       const plan = JSON.parse(run.plan ?? "{}") as PlanSpec
       const kilnDir = yield* mirror.kilnDir(run.project, run.sha).pipe(Effect.orDie)
       const info = runInfo(run, kilnDir)
@@ -412,6 +423,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         workspace: null,
         inputs,
         secrets: {},
+        derivation: null,
+        deps: null,
         ...extra,
       })
 
@@ -425,14 +438,18 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       if (spec.build !== null) {
-        const r = yield* execute(run, row, stepJob(), { slot: slots.builds, action: false, shard: null }, collect)
+        const { drv, out } = spec.build
+        if (drv !== null && out !== null && (yield* available(out))) {
+          return yield* settle(run, row, { status: "reused", value: out, key: drv })
+        }
+        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: slots.builds, priority, action: false, shard: null, workspace: false }, collect)
         if ("cancelled" in r) return yield* settle(run, row, { status: "cancelled" })
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
       }
 
       if (spec.action !== null) {
         const secrets = run.trust === "trusted" ? readSecrets(run.project, spec.action.secrets) : {}
-        const r = yield* execute(run, row, stepJob({ secrets }), { slot: slots.actions, action: true, shard: null }, collect)
+        const r = yield* execute(run, row, () => stepJob({ secrets }), { slots: slots.actions, priority, action: true, shard: null, workspace: false }, collect)
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
       }
 
@@ -445,8 +462,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       const reusable = !spec.neverReuse && (plan.reuse === "all" || (plan.reuse === "builds" && task.outputs.length > 0))
       if (reusable) {
-        const found = yield* db(sql<{ run_id: string; value: string | null; outputs: string | null }>`select run_id, value, outputs from results
-          where key = ${key} and (${run.trust} = 'pr' or trust = 'trusted') order by created_at desc limit 1`)
+        // Pull-request runs take any result. Trusted runs take trusted ones, and with reuse "all" also
+        // those of same-repo pull requests, which the same people push.
+        const prResults = run.trust === "pr" || plan.reuse === "all"
+        const found = yield* db(sql<{ run_id: string; value: string | null; outputs: string | null }>`select results.run_id, results.value,
+            results.outputs from results join runs on runs.id = results.run_id
+          where results.key = ${key} and (results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))
+          order by results.created_at desc limit 1`)
         const hit = found[0]
         if (hit !== undefined) {
           return yield* settle(run, row, {
@@ -461,16 +483,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
       const shards = yield* Effect.forEach(Array.from({ length: count }, (_, i) => i + 1), (index) =>
-        Effect.scoped(Effect.gen(function*() {
-          const ws = yield* workspace(poolOf(run), run.project)
-          return yield* execute(
-            run,
-            row,
-            stepJob({ workspace: ws.path, secrets, shard: count === 1 ? null : { index, count } }),
-            { slot: slots.tasks, action: false, shard: count === 1 ? null : index, perProject: true },
-            collect,
-          )
-        })), { concurrency: "unbounded" })
+        execute(
+          run,
+          row,
+          (ws) => stepJob({ workspace: ws, secrets, shard: count === 1 ? null : { index, count }, deps: task.deps }),
+          { slots: slots.tasks, priority: priority / count, action: false, shard: count === 1 ? null : index, workspace: true },
+          collect,
+        ), { concurrency: "unbounded" })
       if (shards.some((r) => "cancelled" in r)) return yield* settle(run, row, { status: "cancelled" })
       const usage: Usage = {
         cpuSeconds: shards.reduce((sum, r) => sum + (r.usage.cpuSeconds ?? 0), 0),
@@ -490,6 +509,17 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         })
       ),
     )
+
+  /** Whether a build output exists here or in the binary cache, which means its derivation built before. */
+  const available = (out: string) =>
+    Effect.gen(function*() {
+      const local = yield* Exec.exec(["nix-store", "--check-validity", out]).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
+      if (local.exitCode === 0) return true
+      const hash = /^\/nix\/store\/([a-z0-9]{32})-/.exec(out)?.[1]
+      if (hash === undefined) return false
+      const response = yield* http.head(`${config.cacheUrl.replace(/\/$/, "")}/${hash}.narinfo`)
+      return response.status === 200
+    }).pipe(Effect.timeout("20 seconds"), Effect.orElseSucceed(() => false))
 
   const readSecrets = (project: string, names: ReadonlyArray<string>) =>
     Object.fromEntries(names.flatMap((name) => {

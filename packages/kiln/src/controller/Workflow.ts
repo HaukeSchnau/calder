@@ -40,6 +40,8 @@ export class Runs extends Context.Service<Runs, {
     readonly project: string
     readonly event: Domain.Event
     readonly sha: string
+    /** A pull request whose head lives in another repository. */
+    readonly fork?: boolean
   }) => Effect.Effect<Domain.Run, RunError>
   readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
   readonly rerun: (runId: string) => Effect.Effect<Domain.Run, RunError>
@@ -73,9 +75,10 @@ export const layerRuns = Layer.effect(Runs)(Effect.gen(function*() {
       const id = `${input.project}-${number}`
       const now = Date.now()
       yield* db(sql`insert into runs (id, project, number, event, sha, branch, pr, title, commit_title, author, change_id, commit_time,
-          trust, status, created_at, trace_id, span_id)
+          trust, status, created_at, trace_id, span_id, fork)
         values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
-          ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()})`)
+          ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
+          ${input.fork === true ? 1 : 0})`)
 
       // A newer revision of the same pull request or branch makes older runs pointless.
       const older = yield* db(
@@ -103,7 +106,7 @@ export const layerRuns = Layer.effect(Runs)(Effect.gen(function*() {
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
         if (row === undefined) return yield* new RunError({ message: `no run ${runId}` })
-        return yield* create({ project: row.project, event: JSON.parse(row.event) as Domain.Event, sha: row.sha })
+        return yield* create({ project: row.project, event: JSON.parse(row.event) as Domain.Event, sha: row.sha, fork: row.fork === 1 })
       }),
   }
 }))

@@ -94,8 +94,8 @@ export const StepRun = Schema.Struct({
   status: StepStatus,
   /** Content key: same key means same inputs, so same color in the UI. Builds use the derivation. */
   key: Schema.NullOr(Schema.String),
-  /** The run whose result was reused. */
-  reusedFrom: Schema.NullOr(Schema.String),
+  /** The run whose result was reused; null for a build whose output already existed. */
+  reusedFrom: Schema.NullOr(Schema.Struct({ id: Schema.String, number: Schema.Number })),
   needs: Schema.Array(Schema.String),
   exits: Schema.Array(Schema.String),
   after: Schema.Array(Schema.String),
@@ -109,6 +109,8 @@ export const StepRun = Schema.Struct({
   queuedAt: Schema.NullOr(Schema.Number),
   startedAt: Schema.NullOr(Schema.Number),
   finishedAt: Schema.NullOr(Schema.Number),
+  /** Median duration of the step's last ten executions, for progress and scheduling. */
+  expectedMs: Schema.NullOr(Schema.Number),
   attempts: Schema.Number,
   shards: Schema.NullOr(Schema.Number),
   value: Schema.NullOr(Value),
@@ -135,6 +137,8 @@ export const TestResult = Schema.Struct({
 export type TestResult = typeof TestResult.Type
 
 export const RunDetail = Schema.Struct({
+  /** The last change included; apply only changes with a higher seq. */
+  seq: Schema.Number,
   run: Run,
   steps: Schema.Array(StepRun),
   /** Failing tests of this run, with flakiness from history. */
@@ -155,6 +159,11 @@ export const LogLine = Schema.Struct({
 })
 export type LogLine = typeof LogLine.Type
 
+/**
+ * A span of a run's trace. Kiln's own spans carry `kiln.project`, `kiln.run`, `kiln.step`, `kiln.kind`,
+ * `kiln.status` and `kiln.key`; Nix activities carry `nix.activity` and `nix.drv`; deploy calls carry
+ * `http.url`, `http.status` and `kiln.fence`.
+ */
 export const Span = Schema.Struct({
   spanId: Schema.String,
   parentId: Schema.NullOr(Schema.String),
@@ -196,6 +205,8 @@ export const Project = Schema.Struct({
 export type Project = typeof Project.Type
 
 export const Overview = Schema.Struct({
+  /** The last change included; apply only changes with a higher seq. */
+  seq: Schema.Number,
   projects: Schema.Array(Project),
   /** Runs that are queued, planning or running. */
   active: Schema.Array(Run),
@@ -231,10 +242,29 @@ export const Metrics = Schema.Struct({
 })
 export type Metrics = typeof Metrics.Type
 
-/** Pushed to UI subscribers whenever something changes. */
+/** A deploy Kiln made: one promotion of one revision to one host. */
+export const DeploymentRecord = Schema.Struct({
+  project: Schema.String,
+  host: Schema.String,
+  revision: Schema.String,
+  storePath: Schema.String,
+  runId: Schema.String,
+  at: Schema.Number,
+})
+export type DeploymentRecord = typeof DeploymentRecord.Type
+
+/**
+ * Pushed to UI subscribers whenever something changes. `seq` rises by one per change, so a client can
+ * tell whether it missed one and reload.
+ */
 export const Change = Schema.Union([
-  Schema.TaggedStruct("RunChanged", { run: Run }),
-  Schema.TaggedStruct("StepChanged", { step: StepRun }),
-  Schema.TaggedStruct("DeploymentChanged", { deployment: Deployment }),
+  Schema.TaggedStruct("RunChanged", { seq: Schema.Number, run: Run }),
+  Schema.TaggedStruct("StepChanged", {
+    seq: Schema.Number,
+    step: StepRun,
+    /** Failing tests of the step, when it just failed. */
+    failingTests: Schema.Array(TestResult),
+  }),
+  Schema.TaggedStruct("DeploymentChanged", { seq: Schema.Number, deployment: Deployment }),
 ])
 export type Change = typeof Change.Type

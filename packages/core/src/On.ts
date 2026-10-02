@@ -5,7 +5,7 @@ export const TypeId = "~@kiln/core/Rule" as const
 
 /** How much of an earlier run a run may reuse. Builds are always reused by Nix. */
 export type Reuse =
-  /** Tasks with the same key, from any run this run trusts. */
+  /** Tasks with the same key, from any run this run trusts (for pushes: trusted runs and same-repo pull requests). */
   | "all"
   /** Only tasks with outputs; other tasks run again. */
   | "builds"
@@ -40,11 +40,22 @@ export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, an
   targets: T,
 ): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "PullRequest" }, "all", targets)
 
-/** Runs on pushes to `branch` (`*` matches within a segment). Tasks run again unless they build outputs. */
-export const push = <const T extends ReadonlyArray<Step.Any>>(
-  branch: string,
-  targets: T,
-): Rule<"trusted", Step.Services<T[number]>> => make("trusted", { _tag: "Push", branch }, "builds", targets)
+/**
+ * Runs on pushes to `branch` (`*` matches within a segment). By default tasks run again unless they build
+ * outputs; with `reuse: "all"` a push reuses results with the same key, also from pull requests of the
+ * same repository, so merging a green pull request without new commits on the branch reruns nothing.
+ */
+export const push: {
+  <const T extends ReadonlyArray<Step.Any>>(branch: string, targets: T): Rule<"trusted", Step.Services<T[number]>>
+  <const T extends ReadonlyArray<Step.Any>>(
+    branch: string,
+    options: { readonly reuse?: Reuse },
+    targets: T,
+  ): Rule<"trusted", Step.Services<T[number]>>
+} = (branch: string, ...args: ReadonlyArray<unknown>) => {
+  const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [{ readonly reuse?: Reuse }, ReadonlyArray<Step.Any>]
+  return make("trusted", { _tag: "Push", branch }, options.reuse ?? "builds", targets)
+}
 
 /** Runs the default branch's head on a cron schedule. */
 export const schedule = <const T extends ReadonlyArray<Step.Any>>(

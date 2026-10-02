@@ -20,7 +20,8 @@ export const PlannedStep = Schema.Struct({
   neverReuse: Schema.Boolean,
   /** What it runs, for people: the attribute, the command or the action. */
   detail: Schema.String,
-  build: Schema.NullOr(Schema.Struct({ attr: Schema.String })),
+  /** The derivation and output, when the plan could evaluate them. */
+  build: Schema.NullOr(Schema.Struct({ attr: Schema.String, drv: Schema.NullOr(Schema.String), out: Schema.NullOr(Schema.String) })),
   task: Schema.NullOr(Schema.Struct({
     /** The dev shell's attribute path, or null for the host's PATH. */
     shell: Schema.NullOr(Schema.String),
@@ -29,6 +30,8 @@ export const PlannedStep = Schema.Struct({
     inputs: Schema.Array(Schema.String),
     interpolates: Schema.Array(Schema.String),
     shards: Schema.NullOr(Schema.Number),
+    /** Hash of manifests, lockfiles, patches, `.ci/`, `flake.lock` and the dev shell. */
+    deps: Schema.String,
     outputs: Schema.Array(Schema.String),
     secrets: Schema.Array(Schema.String),
     platform: Schema.NullOr(Schema.String),
@@ -90,6 +93,10 @@ export const StepJob = Schema.TaggedStruct("Step", {
   inputs: Schema.Record(Schema.String, Outcome),
   /** Granted secrets: name to value. Only trusted runs get any. */
   secrets: Schema.Record(Schema.String, Schema.String),
+  /** For builds the plan evaluated: the derivation to realise without evaluating again. */
+  derivation: Schema.NullOr(Schema.String),
+  /** For tasks: the dependency key, so slots set up for it can be cloned. */
+  deps: Schema.NullOr(Schema.String),
 })
 
 export const Job = Schema.Union([PlanJob, StepJob])

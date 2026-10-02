@@ -27,6 +27,7 @@ export interface RunRow {
   readonly trace_id: string
   readonly span_id: string
   readonly plan: string | null
+  readonly fork: number
 }
 
 export interface StepRow {
@@ -101,7 +102,10 @@ const value = (json: string | null): Domain.Value | null => {
   }
 }
 
-export const step = (row: StepRow): Domain.StepRun => {
+/** Run ids are `<project>-<number>`. */
+const runNumber = (id: string) => Number(id.slice(id.lastIndexOf("-") + 1))
+
+export const step = (row: StepRow, expectedMs: number | null = null): Domain.StepRun => {
   const s = spec(row)
   return {
     runId: row.run_id,
@@ -109,7 +113,7 @@ export const step = (row: StepRow): Domain.StepRun => {
     kind: row.kind,
     status: row.status,
     key: row.key,
-    reusedFrom: row.reused_from,
+    reusedFrom: row.reused_from === null ? null : { id: row.reused_from, number: runNumber(row.reused_from) },
     needs: s.needs,
     exits: s.exits,
     after: s.after,
@@ -120,6 +124,7 @@ export const step = (row: StepRow): Domain.StepRun => {
     queuedAt: row.queued_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    expectedMs,
     attempts: row.attempts,
     shards: s.task?.shards ?? null,
     value: value(row.value),
@@ -170,3 +175,35 @@ export const counts = (runIds: ReadonlyArray<string>) =>
 
 export const runsWithCounts = (rows: ReadonlyArray<RunRow>) =>
   Effect.map(counts(rows.map((r) => r.id)), (c) => rows.map((r) => run(r, c.get(r.id) ?? {})))
+
+export interface TestRow {
+  readonly run_id: string
+  readonly step: string
+  readonly suite: string
+  readonly name: string
+  readonly file: string | null
+  readonly status: Domain.TestResult["status"]
+  readonly duration_ms: number
+  readonly message: string | null
+}
+
+export const testResult = (row: TestRow, flaky: boolean): Domain.TestResult => ({
+  runId: row.run_id,
+  step: row.step,
+  suite: row.suite,
+  name: row.name,
+  file: row.file,
+  status: row.status,
+  durationMs: row.duration_ms,
+  message: row.message,
+  flaky,
+})
+
+/** Failing tests of a step, without flakiness (that needs history; the run page computes it). */
+export const failingTests = (runId: string, step: string) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const rows = yield* sql<TestRow>`select * from tests where run_id = ${runId} and step = ${step}
+      and status in ('failed', 'timeout') limit 200`
+    return rows.map((r) => testResult(r, false))
+  }).pipe(Effect.orDie)

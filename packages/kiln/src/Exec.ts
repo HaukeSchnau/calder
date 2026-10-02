@@ -78,7 +78,7 @@ export const stream = (
         forceKillAfter: "10 seconds",
       }),
     )
-    const lines = (s: Stream.Stream<Uint8Array, unknown>, name: "stdout" | "stderr") =>
+    const lines = (s: Stream.Stream<Uint8Array, PlatformError.PlatformError>, name: "stdout" | "stderr") =>
       s.pipe(Stream.decodeText, Stream.splitLines, Stream.runForEach((line) => onLine(name, line)))
     const [, , exitCode] = yield* Effect.all([
       lines(handle.stdout, "stdout"),

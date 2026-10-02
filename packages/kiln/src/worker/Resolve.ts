@@ -102,8 +102,40 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
     }
   })
 
-export const devShellDrv = (run: RunInfo, attr: string) =>
-  Exec.run(["nix", "eval", "--raw", `${run.flake}#${attr}.drvPath`]).pipe(Effect.map((s) => s.trim()))
+/** Files whose change means dependencies must be set up again. */
+const dependencyFiles = [
+  /(^|\/)package\.json$/,
+  /(^|\/)(pnpm-lock\.yaml|pnpm-workspace\.yaml|bun\.lockb?|package-lock\.json|yarn\.lock|\.npmrc|\.?pnpmfile\.cjs)$/,
+  /(^|\/)(composer\.json|composer\.lock|Cargo\.lock|uv\.lock|go\.sum|Gemfile\.lock|pyproject\.toml|requirements[^/]*\.txt)$/,
+  /^patches\//,
+  /^\.ci\//,
+  /^flake\.lock$/,
+]
+
+export interface Derivation {
+  readonly drv: string
+  readonly out: string
+}
+
+/**
+ * Evaluates every attribute's derivation in one evaluator, so nixpkgs is instantiated once per plan.
+ * Attributes that throw come back as null; if the whole evaluation fails (a missing attribute isn't
+ * catchable), every attribute does, and builds evaluate on their own as before.
+ */
+export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    if (attrs.length === 0) return new Map<string, Derivation | null>()
+    const body = attrs.map((attr, i) => `a${i} = one f.${attr};`).join(" ")
+    const expr = `let f = builtins.getFlake ${JSON.stringify(run.flake)};
+      one = x: let t = builtins.tryEval (builtins.seq x.drvPath x); in
+        if t.success then { drv = t.value.drvPath; out = t.value.outPath; } else null;
+      in { ${body} }`
+    const out = yield* Exec.run(["nix", "eval", "--json", "--expr", expr]).pipe(
+      Effect.map((json) => JSON.parse(json) as Record<string, Derivation | null>),
+      Effect.orElseSucceed(() => ({}) as Record<string, Derivation | null>),
+    )
+    return new Map(attrs.map((attr, i) => [attr, out[`a${i}`] ?? null]))
+  })
 
 const describeCmd = (run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unknown>), count: number) =>
   Cmd.show(typeof run === "function" ? run({ index: 1, count, files: ["<files>"] }) : run)
@@ -112,14 +144,16 @@ const describeCmd = (run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unk
 export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, repo: Repo) =>
   Effect.gen(function*() {
     const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared)
-    const shellAttrs = new Set(
-      plan.steps.flatMap((p) => (p.step.def._tag === "Task" && p.step.def.shell !== undefined ? [Flake.attrPath(p.step.def.shell, run.system)] : [])),
-    )
-    const shells = new Map(
-      yield* Effect.forEach(shellAttrs, (attr) => devShellDrv(run, attr).pipe(Effect.map((drv) => [attr, drv] as const)), {
-        concurrency: "unbounded",
+    const attrs = new Set(
+      plan.steps.flatMap((p) => {
+        const def = p.step.def
+        if (def._tag === "Build") return [Flake.attrPath(def.ref, run.system)]
+        if (def._tag === "Task" && def.shell !== undefined) return [Flake.attrPath(def.shell, run.system)]
+        return []
       }),
     )
+    const evaluated = yield* derivations(run, [...attrs])
+    const dependencies = (yield* repo.entries).filter((e) => dependencyFiles.some((re) => re.test(e.path)))
 
     const steps = yield* Effect.forEach(plan.steps, (p) =>
       Effect.gen(function*() {
@@ -141,7 +175,8 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
         switch (def._tag) {
           case "Build": {
             const attr = Flake.attrPath(def.ref, run.system)
-            return { ...base, detail: attr, build: { attr } }
+            const derivation = evaluated.get(attr) ?? null
+            return { ...base, detail: attr, build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null } }
           }
           case "Output":
             return {
@@ -161,7 +196,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
             const split = def.shards?.split === undefined ? [] : yield* paths(repo, def.shards.split)
             const splitIds = split.length === 0 ? new Map<string, string>() : yield* repo.objectIds(split)
             const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system)
-            const toolchain = shell === null ? null : shells.get(shell) ?? null
+            const toolchain = shell === null ? null : evaluated.get(shell)?.drv ?? null
             const count = def.shards?.count ?? 1
             const command = typeof def.run === "function" ? def.run({ index: 1, count, files: [] }) : def.run
             const keyBase = sha256({
@@ -186,6 +221,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
                 inputs,
                 interpolates: command.steps.map((s) => s.name),
                 shards: def.shards?.count ?? null,
+                deps: sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
                 outputs: Object.keys(def.outputs),
                 secrets: Object.values(def.secrets).map((s) => s.name),
                 platform: def.platform ?? null,

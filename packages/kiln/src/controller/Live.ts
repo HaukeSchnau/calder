@@ -14,8 +14,13 @@ interface Buffer {
  * What only exists while it happens: output of running steps and the change feed. Finished output
  * lives in VictoriaLogs; this keeps it a while after a step ends so the UI doesn't wait for ingestion.
  */
+type Unsequenced<C> = C extends unknown ? Omit<C, "seq"> : never
+
 export class Live extends Context.Service<Live, {
-  readonly publish: (change: Domain.Change) => Effect.Effect<void>
+  /** Numbers the change and sends it to every subscriber. */
+  readonly publish: (change: Unsequenced<Domain.Change>) => Effect.Effect<void>
+  /** The seq of the last published change, for snapshots. */
+  readonly seq: () => number
   readonly changes: Stream.Stream<Domain.Change>
   readonly append: (runId: string, line: Domain.LogLine) => void
   readonly finish: (runId: string, step: string) => void
@@ -29,6 +34,7 @@ export class Live extends Context.Service<Live, {
 export const layer = Layer.effect(Live)(Effect.gen(function*() {
   const pubsub = yield* PubSub.unbounded<Domain.Change>()
   const buffers = new Map<string, Buffer>()
+  let seq = 0
   const id = (runId: string, step: string) => `${runId}/${step}`
   const buffer = (runId: string, step: string) => {
     let b = buffers.get(id(runId, step))
@@ -42,7 +48,8 @@ export const layer = Layer.effect(Live)(Effect.gen(function*() {
     [...buffers.entries()].filter(([key]) => (step === undefined ? key.startsWith(`${runId}/`) : key === id(runId, step))).map(([, b]) => b)
 
   return {
-    publish: (change) => PubSub.publish(pubsub, change).pipe(Effect.asVoid),
+    publish: (change) => Effect.suspend(() => PubSub.publish(pubsub, { ...change, seq: ++seq } as Domain.Change)).pipe(Effect.asVoid),
+    seq: () => seq,
     changes: Stream.fromPubSub(pubsub),
     append: (runId, line) => {
       const b = buffer(runId, line.step)

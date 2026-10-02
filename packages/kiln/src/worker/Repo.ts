@@ -15,6 +15,17 @@ export const make = (mirror: string, revision: string) =>
     const files = yield* Effect.cached(
       git(["ls-tree", "-r", "-z", "--name-only", revision]).pipe(Effect.map((out) => out.split("\0").filter(Boolean))),
     )
+    /** Every file of the revision with its blob id. */
+    const entries = yield* Effect.cached(
+      git(["ls-tree", "-r", "-z", revision]).pipe(
+        Effect.map((out) =>
+          out.split("\0").filter(Boolean).map((entry) => {
+            const [meta, path] = entry.split("\t")
+            return { path: path!, oid: meta!.split(" ")[2]! }
+          })
+        ),
+      ),
+    )
     const show = (path: string) =>
       git(["show", `${revision}:${path}`]).pipe(Effect.orElseSucceed(() => undefined))
     /** Object ids of paths at the revision: trees for directories, blobs for files. Missing paths are left out. */
@@ -32,7 +43,7 @@ export const make = (mirror: string, revision: string) =>
         }
         return ids as ReadonlyMap<string, string>
       })
-    return { files, show, objectIds }
+    return { files, entries, show, objectIds }
   })
 
 export type Repo = Effect.Success<ReturnType<typeof make>>

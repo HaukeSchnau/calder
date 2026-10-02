@@ -96,6 +96,11 @@ const migrations = {
     yield* sql`create index deployments_project on deployments (project, host, at desc)`
     yield* sql`create table schedules (project text not null, cron text not null, primary key (project, cron))`
   }),
+  "0002_forks": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Pull requests from forks never count for trusted runs; same-repo ones may.
+    yield* sql`alter table runs add column fork integer not null default 0`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

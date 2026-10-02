@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/rpc"
-import { Change, LogLine, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
+import { Change, DeploymentRecord, LogLine, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
 
 export class NotFound extends Schema.TaggedError<NotFound>("@kiln/api/NotFound")("NotFound", {
   what: Schema.String,
@@ -27,9 +27,18 @@ export class UiRpcs extends RpcGroup.make(
     success: Schema.Array(Run),
   }),
   Rpc.make("run", { payload: { id: Schema.String }, success: RunDetail, error: NotFound }),
-  /** History from VictoriaLogs, then live lines while the step runs. */
+  /**
+   * History from VictoriaLogs, then live lines while the step runs. `limit` keeps the last lines of the
+   * history (default 5000); `before` pages back from a timestamp.
+   */
   Rpc.make("logs", {
-    payload: { runId: Schema.String, step: Schema.optional(Schema.String), follow: Schema.optional(Schema.Boolean) },
+    payload: {
+      runId: Schema.String,
+      step: Schema.optional(Schema.String),
+      follow: Schema.optional(Schema.Boolean),
+      limit: Schema.optional(Schema.Number),
+      before: Schema.optional(Schema.Number),
+    },
     success: LogLine,
     error: NotFound,
     stream: true,
@@ -37,6 +46,11 @@ export class UiRpcs extends RpcGroup.make(
   /** The run's trace from Tempo: steps, Nix builds, HTTP calls of deploys. */
   Rpc.make("trace", { payload: { runId: Schema.String }, success: Schema.Array(Span), error: NotFound }),
   Rpc.make("stepStats", { payload: { project: Schema.String, step: Schema.String }, success: StepStats }),
+  /** Deploys Kiln made, newest first. */
+  Rpc.make("deployments", {
+    payload: { project: Schema.String, host: Schema.optional(Schema.String), limit: Schema.optional(Schema.Number) },
+    success: Schema.Array(DeploymentRecord),
+  }),
   Rpc.make("stepMetrics", { payload: { runId: Schema.String, step: Schema.String }, success: Metrics, error: NotFound }),
   Rpc.make("testHistory", {
     payload: { project: Schema.String, suite: Schema.String, name: Schema.String },

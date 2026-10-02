@@ -45,6 +45,8 @@ export interface SimStep {
   readonly outcome: Outcome | "reused" | "blocked"
   readonly key: string | null
   readonly reusedFrom: string | null
+  /** Median of the step's last ten executions before this run was planned. */
+  readonly expectedMs: number | null
   readonly queuedAt: number
   readonly startedAt: number
   readonly finishedAt: number
@@ -132,7 +134,7 @@ const NUMBER_BASE: Readonly<Record<string, number>> = {
 }
 
 const release = (project: string): StepPlan => ({
-  name: "projectRelease", kind: "build", detail: ".#packages.aarch64-linux.projectRelease", duration: project === "t3code" ? 164 : 96,
+  name: "projectRelease", kind: "build", detail: ".#packages.aarch64-linux.projectRelease", duration: project === "t3code" ? 380 : 96,
 })
 
 const promote = (after: ReadonlyArray<string>, required: ReadonlyArray<string>, duration: number): StepPlan => ({
@@ -146,11 +148,11 @@ function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
   if (project === "t3code") {
     const steps: Array<StepPlan> = [
       { name: "pnpmDeps", kind: "build", detail: ".#packages.aarch64-linux.pnpmDeps", duration: 212, stable: true },
-      { name: "static", kind: "task", detail: "just qa-static", duration: 40, needs: ["pnpmDeps"] },
-      { name: "typecheck clients", kind: "task", detail: "just qa-typecheck-clients", duration: 55, needs: ["pnpmDeps"] },
-      { name: "typecheck rest", kind: "task", detail: "just qa-typecheck-rest", duration: 48, needs: ["pnpmDeps"] },
-      { name: "test web", kind: "task", detail: "just qa-test-non-server", duration: 65, needs: ["pnpmDeps"] },
-      { name: "test server", kind: "task", detail: "just qa-test-server-shard $SHARD 3", duration: 92, needs: ["pnpmDeps"], shards: 3 },
+      { name: "static", kind: "task", detail: "just qa-static", duration: 75, needs: ["pnpmDeps"] },
+      { name: "typecheck clients", kind: "task", detail: "just qa-typecheck-clients", duration: 150, needs: ["pnpmDeps"] },
+      { name: "typecheck rest", kind: "task", detail: "just qa-typecheck-rest", duration: 120, needs: ["pnpmDeps"] },
+      { name: "test web", kind: "task", detail: "just qa-test-non-server", duration: 420, needs: ["pnpmDeps"] },
+      { name: "test server", kind: "task", detail: "just qa-test-server-shard $SHARD 3", duration: 330, needs: ["pnpmDeps"], shards: 3 },
       release(project),
       { name: "releaseGate", kind: "build", detail: ".#checks.aarch64-linux.projectReleaseGate", duration: 50, needs: ["projectRelease"] },
     ]
@@ -164,7 +166,7 @@ function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
   }
   if (project === "studienbuch") {
     const steps: Array<StepPlan> = [
-      { name: "qa", kind: "task", detail: "just qa", duration: 182 },
+      { name: "qa", kind: "task", detail: "just qa", duration: 540 },
       { name: "releaseGate", kind: "build", detail: ".#checks.aarch64-linux.projectReleaseGate", duration: 78 },
       release(project),
     ]
@@ -276,7 +278,7 @@ const SCRIPTED: ReadonlyArray<Spec> = [
     title: "Show token usage per turn", commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
     outcomes: { "test web": "failed" },
     reused: { static: "t3:pr418-2", "typecheck rest": "t3:pr418-2", "test server": "t3:pr418-2" },
-    durations: { "test web": 62 },
+    durations: { "test web": 400 },
   },
   {
     key: "t3:main-merge", project: "t3code", at: -8 * 60, event: push, title: null,
@@ -288,7 +290,7 @@ const SCRIPTED: ReadonlyArray<Spec> = [
     key: "t3:pr418-4", project: "t3code", at: -75, event: pr(418, "codex/token-usage"),
     title: "Show token usage per turn", commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
     reused: { static: "t3:pr418-3", "typecheck rest": "t3:pr418-3" },
-    durations: { "typecheck clients": 140, "test web": 9 * 60, "test server": 6 * 60, projectRelease: 7 * 60 },
+    durations: { "typecheck clients": 170, "test web": 9 * 60, "test server": 400, projectRelease: 430 },
   },
   {
     key: "sb:main-calendar", project: "studienbuch", at: -88, event: push, title: null,
@@ -324,7 +326,15 @@ const SCRIPTED: ReadonlyArray<Spec> = [
 
 const PLANNING = 2
 
-function plan(spec: Spec, id: string, number: number, t0: number, built: ReadonlyMap<string, SimRun>, stableKeys: Map<string, { key: string; run: string }>): SimRun {
+interface Memory {
+  readonly built: ReadonlyMap<string, SimRun>
+  readonly stableKeys: Map<string, { key: string; run: string }>
+  readonly durations: Map<string, Array<number>>
+}
+
+const median = (xs: ReadonlyArray<number>) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+
+function plan(spec: Spec, id: string, number: number, t0: number, { built, stableKeys, durations }: Memory): SimRun {
   const r = rng(`run:${spec.key}`)
   const createdAt = t0 + spec.at * 1000
   const sha = spec.commit.sha ?? hex(`sha:${spec.key}`, 40)
@@ -342,6 +352,8 @@ function plan(spec: Spec, id: string, number: number, t0: number, built: Readonl
     const reusedRun = reusedSpec ? built.get(reusedSpec) : undefined
     const reusedStep = reusedRun?.steps.find((s) => s.plan.name === p.name)
     const stable = p.stable ? stableKeys.get(`${spec.project}:${p.name}`) : undefined
+    const history = durations.get(`${spec.project}:${p.name}`) ?? []
+    const expectedMs = history.length ? (median(history.slice(-10)) ?? null) : null
     const ownKey = p.kind === "build"
       ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:${sha}`, 32)}-${spec.project}-${p.name}.drv`
       : hex(`key:${spec.project}:${p.name}:${sha}`, 64)
@@ -349,18 +361,19 @@ function plan(spec: Spec, id: string, number: number, t0: number, built: Readonl
     const queue = (p.kind === "action" ? 0.3 : 0.6 + r() * 2.4) * 1000
     let step: SimStep
     if (blockedBy) {
-      step = { plan: p, outcome: "blocked", key: null, reusedFrom: null, queuedAt: blockedBy.finishedAt, startedAt: blockedBy.finishedAt, finishedAt: blockedBy.finishedAt, attempts: 0 }
+      step = { plan: p, outcome: "blocked", key: null, reusedFrom: null, expectedMs, queuedAt: blockedBy.finishedAt, startedAt: blockedBy.finishedAt, finishedAt: blockedBy.finishedAt, attempts: 0 }
     } else if (reusedStep && reusedRun) {
-      step = { plan: p, outcome: "reused", key: reusedStep.key, reusedFrom: reusedStep.reusedFrom ?? reusedRun.id, queuedAt: ready, startedAt: ready, finishedAt: ready, attempts: 0 }
+      step = { plan: p, outcome: "reused", key: reusedStep.key, reusedFrom: reusedStep.reusedFrom ?? reusedRun.id, expectedMs, queuedAt: ready, startedAt: ready, finishedAt: ready, attempts: 0 }
     } else if (stable && spec.event._tag !== "Schedule") {
-      step = { plan: p, outcome: "reused", key: stable.key, reusedFrom: stable.run, queuedAt: ready, startedAt: ready, finishedAt: ready, attempts: 0 }
+      step = { plan: p, outcome: "reused", key: stable.key, reusedFrom: stable.run, expectedMs, queuedAt: ready, startedAt: ready, finishedAt: ready, attempts: 0 }
     } else {
       const key = p.stable ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:lock`, 32)}-${spec.project}-${p.name}.drv` : ownKey
       step = {
-        plan: p, outcome: spec.outcomes?.[p.name] ?? "passed", key, reusedFrom: null,
+        plan: p, outcome: spec.outcomes?.[p.name] ?? "passed", key, reusedFrom: null, expectedMs,
         queuedAt: ready, startedAt: ready + queue, finishedAt: ready + queue + duration, attempts: spec.attempts?.[p.name] ?? 1,
       }
       if (p.stable && step.outcome === "passed") stableKeys.set(`${spec.project}:${p.name}`, { key, run: id })
+      durations.set(`${spec.project}:${p.name}`, [...history, step.finishedAt - step.startedAt])
     }
     done.set(p.name, step)
   }
@@ -408,7 +421,7 @@ const runId = (project: string, number: number) => `r${hex(`id:${project}:${numb
 export class World {
   readonly runs: Array<SimRun> = []
   private readonly bySpec = new Map<string, SimRun>()
-  private readonly stableKeys = new Map<string, { key: string; run: string }>()
+  private readonly memory = { built: this.bySpec, stableKeys: new Map<string, { key: string; run: string }>(), durations: new Map<string, Array<number>>() }
   private readonly numbers = new Map<string, number>()
 
   constructor(readonly t0: number) {
@@ -419,7 +432,7 @@ export class World {
   private add(spec: Spec): SimRun {
     const number = (this.numbers.get(spec.project) ?? NUMBER_BASE[spec.project] ?? 1) + 1
     this.numbers.set(spec.project, number)
-    const run = plan(spec, runId(spec.project, number), number, this.t0, this.bySpec, this.stableKeys)
+    const run = plan(spec, runId(spec.project, number), number, this.t0, this.memory)
     this.bySpec.set(spec.key, run)
     this.runs.push(run)
     return run
@@ -541,7 +554,8 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     kind: s.plan.kind,
     status: st.status,
     key: s.key,
-    reusedFrom: st.status === "reused" ? s.reusedFrom : null,
+    // A reused build is one whose output already existed; reused tasks point at the run that ran them.
+    reusedFrom: st.status === "reused" && s.plan.kind !== "build" && s.reusedFrom !== null ? { id: s.reusedFrom, number: world.run(s.reusedFrom)?.number ?? 0 } : null,
     needs: s.plan.needs ?? [],
     exits: s.plan.exits ?? [],
     after: s.plan.after ?? [],
@@ -552,6 +566,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     queuedAt: st.queuedAt,
     startedAt: st.startedAt,
     finishedAt: st.finishedAt,
+    expectedMs: s.expectedMs === null ? null : Math.round(s.expectedMs),
     attempts: ran ? s.attempts : 0,
     shards: s.plan.shards ?? null,
     value: st.status === "passed" || st.status === "reused" ? valueOf(world, run, s) : null,

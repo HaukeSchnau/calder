@@ -13,8 +13,8 @@ interface Payload {
   readonly number?: number
   readonly repository?: { readonly full_name?: string }
   readonly pull_request?: {
-    readonly head?: { readonly ref?: string; readonly sha?: string }
-    readonly base?: { readonly ref?: string }
+    readonly head?: { readonly ref?: string; readonly sha?: string; readonly repo?: { readonly full_name?: string } }
+    readonly base?: { readonly ref?: string; readonly repo?: { readonly full_name?: string } }
   }
 }
 
@@ -85,6 +85,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
         project,
         event: { _tag: "PullRequest", number, base: pr.base?.ref ?? "main", head: pr.head?.ref ?? `pr-${number}` },
         sha,
+        fork: pr.head?.repo?.full_name !== undefined && pr.head.repo.full_name !== pr.base?.repo?.full_name,
       }))
       return HttpServerResponse.text("accepted", { status: 202 })
     }

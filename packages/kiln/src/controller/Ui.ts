@@ -9,18 +9,9 @@ import { Leases } from "./Leases.ts"
 import { Live } from "./Live.ts"
 import * as Rows from "./Rows.ts"
 import * as Telemetry from "./Telemetry.ts"
+import * as Estimates from "./Estimates.ts"
 import { Runs } from "./Workflow.ts"
 
-interface TestRow {
-  readonly run_id: string
-  readonly step: string
-  readonly suite: string
-  readonly name: string
-  readonly file: string | null
-  readonly status: Domain.TestResult["status"]
-  readonly duration_ms: number
-  readonly message: string | null
-}
 
 export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const config = yield* Config
@@ -81,25 +72,16 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       return flaky
     })
 
-  const testResult = (row: TestRow, flaky: boolean): Domain.TestResult => ({
-    runId: row.run_id,
-    step: row.step,
-    suite: row.suite,
-    name: row.name,
-    file: row.file,
-    status: row.status,
-    durationMs: row.duration_ms,
-    message: row.message,
-    flaky,
-  })
 
   const detail = (id: string) =>
     Effect.gen(function*() {
       const row = yield* db(Rows.loadRun(id))
       if (row === undefined) return yield* new NotFound({ what: `run ${id}` })
+      const seq = live.seq()
       const [run] = yield* db(Rows.runsWithCounts([row]))
-      const steps = (yield* db(Rows.loadSteps(id))).map(Rows.step)
-      const failing = yield* db(sql<TestRow>`select * from tests where run_id = ${id} and status in ('failed', 'timeout') limit 200`)
+      const estimates = yield* db(Estimates.forProject(row.project))
+      const steps = (yield* db(Rows.loadSteps(id))).map((s) => Rows.step(s, estimates.get(s.name) ?? null))
+      const failing = yield* db(sql<Rows.TestRow>`select * from tests where run_id = ${id} and status in ('failed', 'timeout') limit 200`)
       const flaky = yield* flakyKeys(row.project, failing)
       const siblings = yield* db(
         row.pr !== null
@@ -110,9 +92,10 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
           : sql<Rows.RunRow>`select * from runs where project = ${row.project} and sha = ${row.sha} and id != ${id} order by created_at desc limit 10`,
       )
       return {
+        seq,
         run: run!,
         steps,
-        failingTests: failing.map((t) => testResult(t, flaky.has(`${t.suite}\u0000${t.name}`))),
+        failingTests: failing.map((t) => Rows.testResult(t, flaky.has(`${t.suite}\u0000${t.name}`))),
         siblings: yield* db(Rows.runsWithCounts(siblings)),
       } satisfies Domain.RunDetail
     })
@@ -149,6 +132,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   return {
     overview: () =>
       Effect.gen(function*() {
+        const seq = live.seq()
         const projects = yield* Effect.forEach(Object.entries(config.projects), ([name, project]) =>
           Effect.gen(function*() {
             const history = yield* db(sql<Rows.RunRow>`select * from runs where project = ${name} and branch = ${project.defaultBranch}
@@ -171,6 +155,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         const recent = yield* db(sql<Rows.RunRow>`select * from runs order by created_at desc limit 40`)
         const running = jobs.active()
         return {
+          seq,
           projects,
           active: yield* db(Rows.runsWithCounts(active)),
           recent: yield* db(Rows.runsWithCounts(recent)),
@@ -193,15 +178,31 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         return yield* db(Rows.runsWithCounts(rows))
       }),
     run: ({ id }) => detail(id),
-    logs: ({ runId, step, follow }) =>
+    logs: ({ runId, step, follow, limit, before }) =>
       Stream.unwrap(Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
         if (row === undefined) return Stream.fail(new NotFound({ what: `run ${runId}` }))
         const recent = live.lines(runId, step)
-        const history = recent.length > 0 ? recent : yield* telemetry.logs({ run: runId, ...(step === undefined ? {} : { step }) })
-        const tail = follow === true && live.running(runId, step) ? live.follow(runId, step) : Stream.empty
-        return Stream.concat(Stream.fromIterable(history), tail)
+        const all = recent.length > 0 ? recent : yield* telemetry.logs({ run: runId, ...(step === undefined ? {} : { step }) })
+        const page = (before === undefined ? all : all.filter((l) => l.timestamp < before)).slice(-(limit ?? 5000))
+        const tail = follow === true && before === undefined && live.running(runId, step) ? live.follow(runId, step) : Stream.empty
+        return Stream.concat(Stream.fromIterable(page), tail)
       })),
+    deployments: ({ project, host, limit }) =>
+      db(sql<{ project: string; host: string; revision: string; store_path: string; run_id: string; at: number }>`
+        select * from deployments where project = ${project} ${host === undefined ? sql`` : sql`and host = ${host}`}
+        order by at desc limit ${Math.min(limit ?? 50, 500)}`).pipe(
+        Effect.map((rows) =>
+          rows.map((r): Domain.DeploymentRecord => ({
+            project: r.project,
+            host: r.host,
+            revision: r.revision,
+            storePath: r.store_path,
+            runId: r.run_id,
+            at: r.at,
+          }))
+        ),
+      ),
     trace: ({ runId }) =>
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
@@ -237,10 +238,10 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       } satisfies Domain.Metrics),
     testHistory: ({ project, suite, name }) =>
       Effect.gen(function*() {
-        const rows = yield* db(sql<TestRow>`select * from tests where project = ${project} and suite = ${suite} and name = ${name}
+        const rows = yield* db(sql<Rows.TestRow>`select * from tests where project = ${project} and suite = ${suite} and name = ${name}
           order by created_at desc limit 30`)
         const flaky = (yield* flakyKeys(project, [{ suite, name }])).size > 0
-        return rows.map((r) => testResult(r, flaky))
+        return rows.map((r) => Rows.testResult(r, flaky))
       }),
     trigger: ({ project, branch, inputs }) =>
       Effect.gen(function*() {
