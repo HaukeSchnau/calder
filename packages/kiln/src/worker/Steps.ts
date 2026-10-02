@@ -6,6 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
+import { link, sdkPath } from "../Gen.ts"
 import type { Job as JobSpec, JobResult, Outcome, RunInfo } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 import { Job } from "./Client.ts"
@@ -119,6 +120,8 @@ const prepare = (job: StepJob, workspace: string) =>
     yield* git(["fetch", "-q", "--no-tags", "--depth=1", job.run.mirror, job.run.revision])
     yield* git(["-c", "advice.detachedHead=false", "checkout", "-q", "-f", "--detach", job.run.revision])
     yield* git(["clean", "-q", "-ffdx", ...preserved(workspace).flatMap((p) => ["-e", p])])
+    // What `kiln gen` sets up locally, so the repository's own tools (type-aware lint) resolve ci.ts too.
+    if (existsSync(join(workspace, ".kiln"))) link(join(workspace, ".kiln", "node_modules"), sdkPath)
     yield* log("kiln", `checked out ${job.run.revision.slice(0, 12)} in ${Date.now() - started} ms`)
   })
 
