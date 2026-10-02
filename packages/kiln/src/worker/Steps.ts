@@ -52,8 +52,12 @@ const toResult = <A>(exit: Exit.Exit<A, unknown>, extra: { readonly outputs?: Re
   return { _tag: "Died", message: Cause.pretty(exit.cause) }
 }
 
+// Gitea's host runners gave jobs the system profile (curl, ssh, ...) and pipelines rely on it.
+const hostPath = existsSync("/run/current-system/sw/bin") ? ":/run/current-system/sw/bin" : ""
+
 const env = (run: RunInfo, step: string, extra: Record<string, string> = {}): Record<string, string | undefined> => ({
   ...process.env,
+  PATH: `${process.env.PATH ?? ""}${hostPath}`,
   CI: "true",
   KILN: "1",
   KILN_RUN: run.id,
