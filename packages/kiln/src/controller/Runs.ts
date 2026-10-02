@@ -240,8 +240,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     }
   }
 
-  const settle = (run: Rows.RunRow, row: Rows.StepRow, s: Settled) =>
+  const settle = (run: Rows.RunRow, stale: Rows.StepRow, s: Settled) =>
     Effect.gen(function*() {
+      // The step's row changed while it ran (started_at, attempts); read it again.
+      const row = (yield* db(Rows.loadStep(run.id, stale.name))) ?? stale
       const now = Date.now()
       const failed = s.status === "failed" || s.status === "died"
       const excerpt = failed ? live.excerpt(run.id, row.name) : null
