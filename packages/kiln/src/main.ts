@@ -87,6 +87,20 @@ const trigger = Command.make("trigger", {
     )
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
-const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, gen, plan, trigger]))
+const rerun = Command.make("rerun", { run: Argument.String("run"), url }, ({ run, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const created = yield* client.rerun({ runId: run })
+    yield* Console.log(`${created.id}: ${created.commit.sha.slice(0, 12)} ${created.commit.title}`)
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
+const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ run, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    yield* client.cancel({ runId: run })
+    yield* Console.log(`cancelled ${run}`)
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
+const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, gen, plan, trigger, rerun, cancel]))
 
 Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)

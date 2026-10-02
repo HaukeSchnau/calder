@@ -37,6 +37,10 @@ export default Kiln.project({
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`kiln/<step>`).
 
+`kiln gen` writes `.kiln/flake.ts` and `.kiln/tsconfig.json` in its own style; if the repository runs a
+formatter over everything, format `.kiln/` with it. Task workspaces get the same `.kiln/node_modules` link
+as `kiln gen` creates, so the repository's type-aware lint can check `ci.ts` in CI too.
+
 `Step.exit(step)` hands an action a step's outcome instead of blocking on its failure. `Step.retry`
 and `Step.timeout` take Effect's options and apply in pipe order. Task shards (`shards: { count }`)
 run in parallel and report as one step.
@@ -47,6 +51,7 @@ run in parallel and report as one step.
 kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.json, links .kiln/node_modules
 kiln plan [dir] --event push:main    # what a push, pr:<n>, schedule:<cron> or manual run would run
 kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
+kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12
 kiln controller --config <file>      # the service
 kiln worker <job>                    # started by the controller in a systemd unit
 ```
