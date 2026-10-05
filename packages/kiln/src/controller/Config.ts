@@ -43,6 +43,8 @@ export const ConfigSchema = Schema.Struct({
   owners: Schema.Array(Schema.String),
   /** The hosts' promotion endpoints, in deploy order. Kiln asks each which apps it runs. */
   fleet: Schema.Array(Schema.String),
+  /** Agents on other hosts authenticate with the secret in this file. Without it none may connect. */
+  agents: Schema.NullOr(Schema.Struct({ tokenFile: Schema.String })),
   projects: Schema.Record(Schema.String, ProjectConfig),
 })
 export type ConfigShape = typeof ConfigSchema.Type

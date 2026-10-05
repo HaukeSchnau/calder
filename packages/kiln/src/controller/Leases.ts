@@ -74,6 +74,9 @@ export const make = (nextFence: (project: string) => Effect.Effect<number>): Lea
     acquire: (project, holder) =>
       Effect.gen(function*() {
         const s = state(project)
+        // A worker that lost its connection asks again for the lease it already holds.
+        const held = fences.get(`${project}/${holder.job}`)
+        if (s.holder?.job === holder.job && held !== undefined) return { _tag: "Held", fence: held } satisfies Grant
         if (holder.run < s.newest) return { _tag: "Replaced" } satisfies Grant
         if (s.holder === undefined) return yield* grant(project, holder)
         if (s.waiter !== undefined) {

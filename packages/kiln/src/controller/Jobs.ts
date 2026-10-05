@@ -6,6 +6,7 @@ import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import type { Job, JobEvent, JobResult } from "../Protocol.ts"
 import { Unauthorized } from "../Protocol.ts"
+import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 
 export type Pool = "pr" | "trusted"
@@ -21,6 +22,8 @@ export interface ActiveJob {
   readonly token: string
   readonly spec: Job
   readonly pool: Pool
+  /** Runs on an agent, which fetches over HTTP what local workers read from disk. */
+  readonly remote: boolean
   readonly onEvent: (event: JobEvent) => Effect.Effect<void>
   readonly result: Deferred.Deferred<JobResult>
   readonly samples: Array<Sample>
@@ -44,6 +47,8 @@ export class Jobs extends Context.Service<Jobs, {
     readonly onStart?: (job: ActiveJob) => Effect.Effect<void>
     /** Actions finish what they started: cancelling waits for them instead of stopping them. */
     readonly uninterruptible?: boolean
+    /** Another platform than the controller's runs on an agent of that platform. */
+    readonly platform?: string | null
   }) => Effect.Effect<{ readonly result: JobResult; readonly usage: Usage; readonly id: string }>
   readonly authorize: (id: string, token: string) => Effect.Effect<ActiveJob, Unauthorized>
   readonly get: (id: string) => ActiveJob | undefined
@@ -73,6 +78,7 @@ const readText = (path: string) => {
 
 export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
   const config = yield* Config
+  const agents = yield* Agents
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const jobs = new Map<string, ActiveJob>()
   const jobsDir = join(config.runtimeDir, "jobs")
@@ -116,7 +122,9 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const id = randomBytes(8).toString("hex")
       const token = randomBytes(32).toString("hex")
       const result = yield* Deferred.make<JobResult>()
-      const job: ActiveJob = { id, token, spec, pool: options.pool, onEvent: options.onEvent, result, samples: [], lease: undefined }
+      const platform = options.platform ?? config.system
+      const remote = platform !== config.system
+      const job: ActiveJob = { id, token, spec, pool: options.pool, remote, onEvent: options.onEvent, result, samples: [], lease: undefined }
       const tokenFile = join(jobsDir, `${id}.token`)
 
       const start = Effect.gen(function*() {
@@ -208,12 +216,32 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         return value
       })
 
-      const stop = config.jobs.mode === "systemd"
+      const agentMode = Effect.gen(function*() {
+        yield* options.onEvent({ _tag: "Log", stream: "kiln", text: `waiting for a ${platform} agent`, timestamp: Date.now() })
+        const exited = yield* agents.run({ id, token }, platform).pipe(
+          Effect.flatMap((code) =>
+            Effect.sleep("1 second").pipe(
+              Effect.andThen(Deferred.succeed(result, {
+                _tag: "Died",
+                message: code === -1 ? "the agent lost the worker" : `the worker exited with ${code} without a result`,
+              })),
+            )
+          ),
+          Effect.forkScoped,
+        )
+        const value = yield* Deferred.await(result)
+        yield* Fiber.interrupt(exited)
+        return value
+      })
+
+      const stop = remote
+        ? agents.stop(id)
+        : config.jobs.mode === "systemd"
         ? exec(["systemctl", "stop", unit(options.pool, id)]).pipe(Effect.ignore)
         : Effect.void
 
       const body = Effect.scoped(
-        (config.jobs.mode === "systemd" ? systemd : processMode).pipe(Effect.onInterrupt(() => stop)),
+        (remote ? agentMode : config.jobs.mode === "systemd" ? systemd : processMode).pipe(Effect.onInterrupt(() => stop)),
       ).pipe(
         Effect.catch((error) => Effect.succeed({ _tag: "Died", message: `the worker failed to run: ${error.message}` } satisfies JobResult)),
       )

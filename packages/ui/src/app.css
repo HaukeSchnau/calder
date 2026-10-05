@@ -490,9 +490,13 @@ a.at:hover, .br-project:hover, .br-change:hover, a.jrow:hover {
 .olegend .mx + .mx { margin-left: -3px; }
 .lg-bar { fill: #6a6e79; }
 .lg-bar.s-failed { fill: var(--bad); }
-.oslots { display: flex; gap: 20px; font-size: 12px; color: var(--ink-3); white-space: nowrap; }
-.oslots > span { display: inline-flex; align-items: center; gap: 7px; }
-.oslots b { color: var(--ink-2); font-weight: 500; }
+.hslots { display: flex; gap: 20px; font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.hsl { display: inline-flex; align-items: center; gap: 7px; }
+.hsl b { color: var(--ink-2); font-weight: 600; }
+.hsl .n { color: var(--ink-2); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.hslots.compact { gap: 14px; }
+.hslots.compact .hsl { gap: 5px; }
+.at-wait .at-k { color: var(--ink); }
 .slots { display: inline-flex; gap: 2px; }
 .slots i { width: 6px; height: 10px; border-radius: 1px; box-shadow: inset 0 0 0 1px var(--rule-2); }
 .slots i.on { background: var(--ink-2); box-shadow: none; }
@@ -705,6 +709,7 @@ a.sb:hover { background: var(--hover); color: var(--ink); }
   .at-d > * + .fact { margin-left: 0; }
   .at.cont .at-k { visibility: visible; }
   .at-a { display: none; }
+  .at-wait .at-a { display: block; }
   a.at:hover, .br-project:hover, .br-change:hover, a.jrow:hover { box-shadow: -14px 0 0 var(--hover), 14px 0 0 var(--hover); }
   .board-bar { display: none; }
   .br { grid-template-columns: minmax(0, 1fr) auto; row-gap: 3px; padding: 8px 0; }

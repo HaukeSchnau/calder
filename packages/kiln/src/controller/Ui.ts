@@ -1,6 +1,7 @@
 import { Domain, NotFound, Refused, UiRpcs } from "@kiln/api"
 import { Effect, Stream } from "effect"
 import { SqlClient } from "effect/sql"
+import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 import * as Fleet from "./Fleet.ts"
 import { Gitea } from "./Gitea.ts"
@@ -19,6 +20,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient
   const live = yield* Live
   const jobs = yield* Jobs
+  const agents = yield* Agents
   const leases = yield* Leases
   const fleet = yield* Fleet.Fleet
   const gitea = yield* Gitea
@@ -173,11 +175,12 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
           active: yield* db(Rows.runsWithCounts(active)),
           recent: yield* db(Rows.runsWithCounts(recent)),
           slots: {
-            tasks: running.filter((j) => j.spec._tag === "Step" && j.spec.workspace !== null).length,
+            tasks: running.filter((j) => !j.remote && j.spec._tag === "Step" && j.spec.workspace !== null).length,
             tasksMax: config.jobs.slots.tasks,
             builds: running.filter((j) => j.spec._tag === "Step" && j.spec.workspace === null).length,
             buildsMax: config.jobs.slots.builds,
           },
+          agents: agents.usage(),
         } satisfies Domain.Overview
       }),
     changes: () => live.changes,

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { connectionAtom } from "./client.ts"
 import { overviewAtom, runAtom } from "./data.ts"
 import { clockS, titleOf } from "./format.ts"
+import { HostSlots } from "./hosts.tsx"
 import { useKeys } from "./keys.ts"
 import { OverviewPage, redRuns } from "./overview.tsx"
 import { Palette } from "./palette.tsx"
@@ -107,7 +108,7 @@ function StatusBar() {
       </span>
       <span className={`toast${message?.kind === "bad" ? " bad" : ""}`} role="status" aria-live="polite">{message ? <span className="toast-t" key={message.at}>{message.text}</span> : null}</span>
       <span className="sbr">
-        {data ? <span className="sb dim">tasks <b className="tnum">{data.slots.tasks}/{data.slots.tasksMax}</b> builds <b className="tnum">{data.slots.builds}/{data.slots.buildsMax}</b></span> : null}
+        {data ? <span className="sb dim"><HostSlots ov={data} compact /></span> : null}
         <span className={`sb conn-${connection}`}>{connection === "live" ? <><span className="live-dot" />live</> : connection === "offline" ? <span className="bad">reconnecting</span> : "connecting"}</span>
         <span className="sb tnum dim">{clockS(now)}</span>
       </span>

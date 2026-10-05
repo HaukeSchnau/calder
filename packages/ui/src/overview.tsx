@@ -6,10 +6,11 @@ import type { Domain } from "@kiln/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { RunSpark } from "./charts.tsx"
-import { deployHistoryAtom, isActive, overviewAtom, runAtom } from "./data.ts"
-import { ago, count, dur, glaze, refOf, runDuration, shortSha, stepDuration, titleOf, totalSteps, when } from "./format.ts"
+import { type AgentWait, agentWaitsAtom, deployHistoryAtom, isActive, overviewAtom, runAtom } from "./data.ts"
+import { ago, article, count, dur, glaze, refOf, runDuration, shortSha, stepDuration, titleOf, totalSteps, when } from "./format.ts"
+import { HostSlots } from "./hosts.tsx"
 import { href } from "./route.ts"
-import { Fail, Loaded, Ring, RunGlyph, Swatch, hasBits, useNow } from "./ui.tsx"
+import { Fail, Loaded, Ring, RunGlyph, Swatch, Waiting, hasBits, useNow } from "./ui.tsx"
 
 export function OverviewPage() {
   const result = useAtomValue(overviewAtom)
@@ -61,14 +62,16 @@ function Attention({ ov }: { readonly ov: Domain.Overview }) {
   const deploying = ov.projects.flatMap((p) => p.deployments.filter((d) => d.deployingRun !== null))
   const deployingRuns = new Set(deploying.map((d) => d.deployingRun))
   const running = ov.active.filter((r) => !deployingRuns.has(r.id))
+  const waits = useAtomValue(agentWaitsAtom)
   const byRun = new Map<string, Array<Domain.Deployment>>()
   for (const d of deploying) if (d.deployingRun) byRun.set(d.deployingRun, [...(byRun.get(d.deployingRun) ?? []), d])
-  if (!red.length && !running.length && !deploying.length) {
+  if (!red.length && !running.length && !deploying.length && !waits.length) {
     return <section className="attn" aria-label="Needs attention"><p className="at calm"><span className="at-k dim">Quiet</span><span className="at-s dim">Nothing is red, running or deploying.</span></p></section>
   }
   return (
     <section className="attn" aria-label="Needs attention">
       {red.map((r, i) => <RedRow key={r.id} run={r} first={i === 0} newer={ov.active.find((a) => a.project === r.project && a.createdAt > r.createdAt && sameRef(a, r))} />)}
+      {waits.map((w, i) => <WaitingRow key={`${w.run.id}:${w.step.name}`} wait={w} first={i === 0} />)}
       {running.map((r, i) => <RunningRow key={r.id} run={r} first={i === 0} />)}
       {[...byRun].map(([runId, deps], i) => <DeployingRow key={runId} runId={runId} deployments={deps} run={ov.active.find((r) => r.id === runId)} project={ov.projects.find((p) => p.name === deps[0]?.project)} first={i === 0} />)}
     </section>
@@ -94,6 +97,23 @@ function RedRow({ run, first, newer }: { readonly run: Domain.Run; readonly firs
       </span>
       <span className="at-t">{ago(run.createdAt, now)} ago</span>
       <span className="at-a">{newer ? <span className="heat">#{newer.number} running</span> : run.commit.author}</span>
+    </a>
+  )
+}
+
+function WaitingRow({ wait, first }: { readonly wait: AgentWait; readonly first: boolean }) {
+  const now = useNow()
+  const { run, step } = wait
+  return (
+    <a className={`at at-wait${first ? "" : " cont"}`} href={href({ page: "run", id: run.id, step: step.name })}>
+      <span className="at-k"><Waiting />Waiting</span>
+      <span className="at-s"><b>{run.project}</b> {refOf(run)} <span className="dim">#{run.number}</span></span>
+      <span className="at-d">
+        <span className="fact strong">{step.name}</span>
+        <span className="clip">{step.status === "running" ? `ran on ${wait.agent ?? "an agent"}, which is gone` : `waits for ${article(wait.platform)} ${wait.platform} agent`}</span>
+      </span>
+      <span className="at-t tnum">{dur(now - (step.queuedAt ?? now))}</span>
+      <span className="at-a"><span className="bad">{wait.agent ? `${wait.agent} offline` : "no agent connected"}</span></span>
     </a>
   )
 }
@@ -181,7 +201,7 @@ function Board({ ov }: { readonly ov: Domain.Overview }) {
           <span><i className="mx s-failed" />failed</span>
           <span><svg width="14" height="10"><rect x="1" y="2" width="3" height="8" rx="1" className="lg-bar" /><rect x="6" y="5" width="3" height="5" rx="1" className="lg-bar" /><rect x="11" y="0" width="3" height="10" rx="1" className="lg-bar s-failed" /></svg>runs on main, height is duration</span>
         </span>
-        <Slots slots={ov.slots} />
+        <HostSlots ov={ov} />
       </div>
       <div className="br br-head">
         <span className="cell">Project</span>
@@ -193,18 +213,6 @@ function Board({ ov }: { readonly ov: Domain.Overview }) {
       </div>
       {ov.projects.map((p) => <ProjectRows key={p.name} project={p} hosts={hosts} recent={ov.recent} />)}
     </section>
-  )
-}
-
-function Slots({ slots }: { readonly slots: Domain.Overview["slots"] }) {
-  const meter = (used: number, max: number) => (
-    <span className="slots" aria-hidden="true">{Array.from({ length: max }, (_, i) => <i key={i} className={i < used ? "on" : ""} />)}</span>
-  )
-  return (
-    <span className="oslots">
-      <span>tasks {meter(slots.tasks, slots.tasksMax)}<b className="tnum">{slots.tasks}/{slots.tasksMax}</b></span>
-      <span>builds {meter(slots.builds, slots.buildsMax)}<b className="tnum">{slots.builds}/{slots.buildsMax}</b></span>
-    </span>
   )
 }
 

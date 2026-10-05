@@ -1,6 +1,8 @@
 import type { Domain } from "@kiln/api"
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
-import { dur, stepDuration } from "./format.ts"
+import { useAtomValue } from "@effect/atom-react"
+import { agentWaitsAtom } from "./data.ts"
+import { article, dur, stepDuration } from "./format.ts"
 import { GROUP, layout, shapeKey, type Box, type Layout } from "./layout.ts"
 import { StepMark, Swatch, hasBits, useNow } from "./ui.tsx"
 
@@ -26,6 +28,7 @@ export const progressOf = (step: Domain.StepRun, now: number) =>
 /** The short line under a step: how long, or why not. */
 export function Meta({ step, steps, short = false }: { readonly step: Domain.StepRun; readonly steps: ReadonlyArray<Domain.StepRun>; readonly short?: boolean }) {
   const now = useNow()
+  const wait = useAtomValue(agentWaitsAtom).find((w) => w.run.id === step.runId && w.step.name === step.name)
   const d = stepDuration(step, now)
   switch (step.status) {
     case "running":
@@ -36,6 +39,7 @@ export function Meta({ step, steps, short = false }: { readonly step: Domain.Ste
         </span>
       )
     case "queued":
+      if (wait && !short) return <span className="dim">waits for {wait.agent ?? `${article(wait.platform)} ${wait.platform} agent`} {dur(now - (step.queuedAt ?? now))}</span>
       return <span className="dim">queued{short ? "" : ` ${dur(now - (step.queuedAt ?? now))}`}</span>
     case "pending": {
       if (short) return <span className="dim">pending</span>

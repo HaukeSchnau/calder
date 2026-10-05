@@ -116,4 +116,7 @@ export const count = (counts: Domain.Run["counts"], ...statuses: ReadonlyArray<D
 
 export const totalSteps = (counts: Domain.Run["counts"]) => Object.values(counts).reduce((a, b) => a + b, 0)
 
+/** "a" or "an" before a word, by its first letter: an aarch64-darwin agent. */
+export const article = (word: string) => (/^[aeiou]/i.test(word) ? "an" : "a")
+
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`

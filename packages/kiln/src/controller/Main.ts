@@ -1,7 +1,7 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { Layer } from "effect"
-import { ClusterWorkflowEngine, SingleRunner } from "effect/cluster"
 import { FetchHttpClient } from "effect/http"
+import * as Agents from "./Agents.ts"
 import * as Config from "./Config.ts"
 import * as Db from "./Db.ts"
 import * as Fleet from "./Fleet.ts"
@@ -18,21 +18,17 @@ import * as Telemetry from "./Telemetry.ts"
 import * as WorkerServer from "./WorkerServer.ts"
 import * as Workflow from "./Workflow.ts"
 
-/** The controller: every service, the workflow engine on SQLite, the worker socket and the HTTP server. */
+/** The controller: every service, the run driver, the worker socket and the HTTP server. */
 export const layer = (configPath: string) => {
   const platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunCrypto.layer)
   const config = Config.fromFile(configPath)
-  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Live.layer, Jobs.layer).pipe(
+  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Live.layer, Jobs.layer.pipe(Layer.provideMerge(Agents.layer))).pipe(
     Layer.provideMerge(config),
     Layer.provideMerge(platform),
   )
   const projects = Projects.layer.pipe(Layer.provideMerge(base))
   const fleet = Layer.mergeAll(Fleet.layer, Leases.layer, Mirror.layer).pipe(Layer.provideMerge(projects))
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
-  const engine = ClusterWorkflowEngine.layer.pipe(
-    Layer.provideMerge(SingleRunner.layer({ runnerStorage: "sql" })),
-    Layer.provideMerge(core),
-  )
-  const workflows = Layer.mergeAll(Workflow.layerWorkflow, Workflow.layerRuns).pipe(Layer.provideMerge(engine))
-  return Layer.mergeAll(WorkerServer.layer, Scheduler.layer, Http.layer).pipe(Layer.provide(workflows))
+  const runs = Workflow.layer.pipe(Layer.provideMerge(core))
+  return Layer.mergeAll(WorkerServer.layer, Scheduler.layer, Http.layer).pipe(Layer.provide(runs))
 }

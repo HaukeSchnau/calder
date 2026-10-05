@@ -1,9 +1,6 @@
 import { Domain } from "@kiln/api"
-import { Context, Deferred, Effect, Layer, Schema } from "effect"
+import { Context, Deferred, Effect, FiberMap, Layer, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { Activity, Workflow, WorkflowEngine } from "effect/workflow"
-import { PlanSpec } from "../Protocol.ts"
-import { Config } from "./Config.ts"
 import * as Counters from "./Counters.ts"
 import { Gitea } from "./Gitea.ts"
 import { Live } from "./Live.ts"
@@ -12,26 +9,6 @@ import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 import { RunsCore } from "./Runs.ts"
 import * as Telemetry from "./Telemetry.ts"
-
-/** A run is a durable workflow: after a restart it continues where the journal says it was. */
-export const RunWorkflow = Workflow.make("KilnRun", {
-  payload: { runId: Schema.String },
-  idempotencyKey: ({ runId }) => runId,
-})
-
-export const layerWorkflow = RunWorkflow.toLayer(Effect.fnUntraced(function*({ runId }) {
-  const core = yield* RunsCore
-  const plan = yield* Activity.make({ name: "plan", success: Schema.NullOr(PlanSpec), execute: core.plan(runId) })
-  if (plan === null) return
-  const done = new Map(plan.steps.map((s) => [s.name, Deferred.makeUnsafe<void>()]))
-  yield* Effect.forEach(plan.steps, (step) =>
-    Effect.gen(function*() {
-      yield* Effect.forEach([...step.needs, ...step.exits, ...step.after], (dep) => Deferred.await(done.get(dep)!), { discard: true })
-      yield* Activity.make({ name: `step:${step.name}`, success: Domain.StepStatus, execute: core.step(runId, step.name) })
-      yield* Deferred.succeed(done.get(step.name)!, undefined)
-    }), { concurrency: "unbounded", discard: true })
-  yield* Activity.make({ name: "finish", execute: core.finish(runId) })
-}))
 
 export class RunError extends Schema.TaggedError<RunError>("kiln/RunError")("RunError", { message: Schema.String }) {}
 
@@ -48,17 +25,41 @@ export class Runs extends Context.Service<Runs, {
   readonly rerun: (runId: string) => Effect.Effect<Domain.Run, RunError>
 }>()("kiln/controller/Runs") {}
 
-export const layerRuns = Layer.effect(Runs)(Effect.gen(function*() {
-  const config = yield* Config
+export const layer = Layer.effect(Runs)(Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient
   const core = yield* RunsCore
   const mirror = yield* Mirror
   const gitea = yield* Gitea
   const live = yield* Live
   const projects = yield* Projects
-  const engine = yield* WorkflowEngine.WorkflowEngine
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
+
+  /**
+   * Drives a run: its plan, each step once its dependencies settled, then the outcome. Every stage reads
+   * and writes the journal and skips what already finished, so driving a run again after a restart
+   * continues where it stopped.
+   */
+  const drive = (runId: string) =>
+    Effect.gen(function*() {
+      const plan = yield* core.plan(runId)
+      if (plan === null) return
+      const done = new Map(plan.steps.map((s) => [s.name, Deferred.makeUnsafe<void>()]))
+      yield* Effect.forEach(plan.steps, (step) =>
+        Effect.gen(function*() {
+          yield* Effect.forEach([...step.needs, ...step.exits, ...step.after], (dep) => Deferred.await(done.get(dep)!), { discard: true })
+          yield* core.step(runId, step.name)
+          yield* Deferred.succeed(done.get(step.name)!, undefined)
+        }), { concurrency: "unbounded", discard: true })
+      yield* core.finish(runId)
+    }).pipe(Effect.catchCause((cause) => Effect.logError(`driving ${runId} failed`, cause)))
+
+  const drivers = yield* FiberMap.make<string>()
+  const start = (runId: string) => FiberMap.run(drivers, runId, drive(runId), { onlyIfMissing: true })
+
+  // A restart interrupted these; their steps that were running start over.
+  const unfinished = yield* db(sql<{ id: string }>`select id from runs where status in ('queued', 'planning', 'running') order by created_at`)
+  yield* Effect.forEach(unfinished, (r) => start(r.id), { discard: true })
 
   const create: Runs["Service"]["create"] = (input) =>
     Effect.gen(function*() {
@@ -94,7 +95,7 @@ export const layerRuns = Layer.effect(Runs)(Effect.gen(function*() {
       )
       yield* Effect.forEach(older, (r) => core.cancel(r.id, `superseded by #${number}`), { discard: true })
 
-      yield* RunWorkflow.execute({ runId: id }, { discard: true }).pipe(Effect.provideService(WorkflowEngine.WorkflowEngine, engine))
+      yield* start(id)
       const row = yield* db(Rows.loadRun(id))
       const run = Rows.run(row!)
       yield* live.publish({ _tag: "RunChanged", run })

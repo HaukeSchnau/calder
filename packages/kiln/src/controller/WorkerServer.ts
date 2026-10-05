@@ -16,7 +16,7 @@ import { Live } from "./Live.ts"
 import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 
-const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
+export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const config = yield* Config
   const jobs = yield* Jobs
   const leases = yield* Leases

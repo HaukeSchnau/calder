@@ -1,7 +1,8 @@
 /**
  * What the controller and its workers say to each other. Workers run user code (planning, tasks,
  * actions) as unprivileged users in systemd units; they call the controller over a unix socket and
- * authenticate every call with their job's token.
+ * authenticate every call with their job's token. Agents on other hosts (`kiln agent`) start workers
+ * for their platform, and those call the same RPCs over a WebSocket.
  */
 import { Domain } from "@kiln/api"
 import { Schema } from "effect"
@@ -60,11 +61,11 @@ export const RunInfo = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   trust: Domain.Trust,
   event: Domain.Event,
-  /** `git+file:` URL of the revision in the controller's mirror. */
+  /** `git+file:` URL of the revision in the controller's mirror. Empty for agents' workers, which use their checkout. */
   flake: Schema.String,
-  /** The bare mirror, for tree ids and file listings. */
+  /** The bare mirror, for tree ids and file listings. For agents' workers, its URL on the controller. */
   mirror: Schema.String,
-  /** The revision's `.kiln/` directory, extracted, with `node_modules` linked to Kiln's SDK. */
+  /** The revision's `.kiln/` directory, extracted, with `node_modules` linked to Kiln's SDK. Empty for agents' workers. */
   kilnDir: Schema.String,
   system: Schema.String,
 })
@@ -207,4 +208,27 @@ export class WorkerRpcs extends RpcGroup.make(
     payload: { ...auth, target: Schema.String, revision: Schema.String, storePath: Schema.String },
     error: Schema.Union([Unauthorized, FleetBusy, FleetRejected]),
   }),
+) {}
+
+/** What the controller tells an agent: start a worker for a job, or stop one. */
+export const AgentOrder = Schema.Union([
+  Schema.TaggedStruct("Start", { job: Schema.String, token: Schema.String }),
+  Schema.TaggedStruct("Stop", { job: Schema.String }),
+])
+export type AgentOrder = typeof AgentOrder.Type
+
+const agentAuth = { token: Schema.String, name: Schema.String }
+
+export class AgentRpcs extends RpcGroup.make(
+  /**
+   * The agent's orders while it is connected. `running` lists the jobs whose workers it still runs, so
+   * a reconnect doesn't lose them.
+   */
+  Rpc.make("work", {
+    payload: { ...agentAuth, platform: Schema.String, slots: Schema.Number, running: Schema.Array(Schema.String) },
+    success: AgentOrder,
+    error: Unauthorized,
+    stream: true,
+  }),
+  Rpc.make("exited", { payload: { ...agentAuth, job: Schema.String, code: Schema.Number }, error: Unauthorized }),
 ) {}

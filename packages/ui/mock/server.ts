@@ -1,7 +1,8 @@
 // A stand-in controller for UI work: implements `UiRpcs` over the same WebSocket transport the
 // real controller uses, on deterministic fake data from ./scenario.ts.
 //
-//   bun mock/server.ts            listens on 127.0.0.1:8791 (KILN_MOCK_PORT overrides)
+//   bun mock/server.ts                       listens on 127.0.0.1:8791 (KILN_MOCK_PORT overrides)
+//   KILN_MOCK_M1=offline bun mock/server.ts  the m1 agent is gone and t3code's testflight waits for it
 
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { type Domain, NotFound, Refused, UiRpcs } from "@kiln/api"
@@ -9,11 +10,12 @@ import { Effect, Layer, PubSub, Stream } from "effect"
 import { HttpRouter } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import {
-  PROJECTS, World, deployRecords, deployments, logLines, metrics, runStatus, stepState, testResults, toRun, toStep, trace,
+  DARWIN, PROJECTS, World, deployRecords, deployments, logLines, metrics, runStatus, stepState, testResults, toRun, toStep, trace,
   type SimRun, type SimStep,
 } from "./scenario.ts"
 
 const port = Number(process.env["KILN_MOCK_PORT"] ?? 8791)
+const m1 = process.env["KILN_MOCK_M1"] === "offline" ? "offline" : "online"
 
 const terminal = new Set<Domain.StepStatus>(["passed", "reused", "failed", "died", "blocked", "cancelled"])
 const isActive = (status: Domain.RunStatus) => status === "queued" || status === "planning" || status === "running"
@@ -42,11 +44,12 @@ function overview(world: World, now: number, seq: number): Domain.Overview {
     active: visible.filter((r) => isActive(runStatus(r, now))).reverse().map((r) => toRun(r, now)),
     recent: visible.slice(-40).reverse().map((r) => toRun(r, now)),
     slots: {
-      tasks: running.filter((s) => s.plan.kind === "task").length,
+      tasks: running.filter((s) => s.plan.kind === "task" && s.plan.platform === undefined).length,
       tasksMax: 6,
       builds: running.filter((s) => s.plan.kind === "build").length,
       buildsMax: 3,
     },
+    agents: [{ name: "m1", platform: DARWIN, slots: 2, running: running.filter((s) => s.plan.platform === DARWIN).length, connected: world.agentGoneAt === null }],
   }
 }
 
@@ -89,7 +92,7 @@ function follow(run: SimRun, steps: ReadonlyArray<SimStep>, sent: number): Strea
 }
 
 const Handlers = UiRpcs.toLayer(Effect.gen(function*() {
-  const world = new World(Date.now())
+  const world = new World(Date.now(), m1)
   const changes = yield* PubSub.unbounded<Domain.Change>()
   const seen = new Map<string, string>()
   const recorded = new Set<string>()

@@ -1,6 +1,6 @@
 import type { Domain } from "@kiln/api"
 import { type Duration, Effect, PubSub, Stream } from "effect"
-import { Atom } from "effect/reactivity"
+import { AsyncResult, Atom } from "effect/reactivity"
 import { RpcClientError } from "effect/rpc/RpcClientError"
 import { Kiln } from "./client.ts"
 
@@ -251,3 +251,30 @@ export const deployHistoryAtom = Atom.family((key: HistoryKey) =>
       apply: applyHistory(key),
     })
   ))
+
+/* ------------------------------------------------------------------ */
+/* Agents                                                              */
+
+export interface AgentWait {
+  readonly run: Domain.Run
+  readonly step: Domain.StepRun
+  readonly platform: string
+  /** The gone agent that served the platform, or null when the controller has never seen one. */
+  readonly agent: string | null
+}
+
+/** Queued or running steps of active runs whose platform no connected agent serves. */
+export const agentWaitsAtom = Atom.make((get): ReadonlyArray<AgentWait> => {
+  const ov = get(overviewAtom)
+  if (!AsyncResult.isSuccess(ov)) return []
+  const { agents, active } = ov.value
+  const served = (platform: string) => agents.some((a) => a.connected && a.platform === platform)
+  return active.flatMap((run) => {
+    const detail = get(runAtom(run.id))
+    if (!AsyncResult.isSuccess(detail)) return []
+    return detail.value.steps.flatMap((step) =>
+      (step.status === "queued" || step.status === "running") && step.platform !== null && !served(step.platform)
+        ? [{ run, step, platform: step.platform, agent: agents.find((a) => a.platform === step.platform)?.name ?? null }]
+        : [])
+  })
+})

@@ -52,6 +52,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     // One project's shards may not take every task slot, so other projects can always start.
     tasks: Slots.make({ capacity: config.jobs.slots.tasks, perProject: Math.max(1, config.jobs.slots.tasks - 1) }),
     actions: Slots.make({ capacity: config.jobs.slots.actions }),
+    // Agents limit themselves; this only orders their jobs.
+    agents: Slots.make({ capacity: 64 }),
   }
   const cancels = new Map<string, Deferred.Deferred<string>>()
   const cancelSignal = (runId: string) => {
@@ -63,19 +65,22 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     return d
   }
   const workspaces = new Map<string, Set<number>>()
-  const workspace = (pool: Pool, project: string) =>
-    Effect.acquireRelease(
+  /** An agent's worker gets the path relative to its agent's workspace directory. */
+  const workspace = (pool: Pool, project: string, remote: boolean) => {
+    const key = `${remote ? "agent" : "local"}/${pool}/${project}`
+    return Effect.acquireRelease(
       Effect.sync(() => {
-        const key = `${pool}/${project}`
         const used = workspaces.get(key) ?? new Set<number>()
         workspaces.set(key, used)
         let i = 0
         while (used.has(i)) i++
         used.add(i)
-        return { index: i, path: join(config.stateDir, "workspaces", pool, project, `slot-${i}`) }
+        const relative = join(pool, project, `slot-${i}`)
+        return { index: i, path: remote ? relative : join(config.stateDir, "workspaces", relative) }
       }),
-      (slot) => Effect.sync(() => workspaces.get(`${pool}/${project}`)?.delete(slot.index)),
+      (slot) => Effect.sync(() => workspaces.get(key)?.delete(slot.index)),
     )
+  }
 
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
@@ -352,6 +357,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly action: boolean
       readonly shard: number | null
       readonly workspace: boolean
+      readonly platform?: string | null
     },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
@@ -381,9 +387,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* status(run, `kiln/${row.name}`, "pending", "running")
       })
       const running = Effect.scoped(Effect.gen(function*() {
-        const ws = options.workspace ? (yield* workspace(poolOf(run), run.project)).path : null
+        const remote = options.platform != null && options.platform !== config.system
+        const ws = options.workspace ? (yield* workspace(poolOf(run), run.project, remote)).path : null
         yield* started
-        return yield* jobs.run(job(ws), { pool: poolOf(run), onEvent, uninterruptible: options.action })
+        return yield* jobs.run(job(ws), { pool: poolOf(run), onEvent, uninterruptible: options.action, platform: options.platform ?? null })
       }))
       const work = options.slots.with(run.project, options.priority, running)
       if (options.action) return yield* work
@@ -484,12 +491,28 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
+      const remote = task.platform !== null && task.platform !== config.system
+      if (remote && run.trust !== "trusted") {
+        return yield* settle(run, row, {
+          status: "died",
+          error: { tag: "Died", message: `${task.platform} tasks run on agents, which only take trusted runs`, json: null },
+        })
+      }
+      // An agent's worker fetches the revision and .kiln/ from the controller instead of reading its disk.
+      const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, kilnDir: "", system: task.platform! } : info
       const shards = yield* Effect.forEach(Array.from({ length: count }, (_, i) => i + 1), (index) =>
         execute(
           run,
           row,
-          (ws) => stepJob({ workspace: ws, secrets, shard: count === 1 ? null : { index, count }, deps: task.deps }),
-          { slots: slots.tasks, priority: priority / count, action: false, shard: count === 1 ? null : index, workspace: true },
+          (ws) => stepJob({ run: where, workspace: ws, secrets, shard: count === 1 ? null : { index, count }, deps: task.deps }),
+          {
+            slots: remote ? slots.agents : slots.tasks,
+            priority: priority / count,
+            action: false,
+            shard: count === 1 ? null : index,
+            workspace: true,
+            platform: task.platform,
+          },
           collect,
         ), { concurrency: "unbounded" })
       if (shards.some((r) => "cancelled" in r)) return yield* settle(run, row, { status: "cancelled" })

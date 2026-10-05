@@ -125,6 +125,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     expectedMs,
+    platform: s.task?.platform ?? null,
     attempts: row.attempts,
     shards: s.task?.shards ?? null,
     value: value(row.value),

@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
 
@@ -72,8 +72,23 @@ export const remember = (slot: Slot, deps: string, keep = 3) =>
     mkdirSync(dir, { recursive: true })
     rmSync(join(slot.cache, "tmp"), { recursive: true, force: true })
     const target = join(dir, deps)
-    if (!existsSync(target)) yield* btrfs(["subvolume", "snapshot", slot.root, target])
+    // Slots set up for the same key at once race for the snapshot: each takes its own, and only the
+    // first rename wins.
+    if (!existsSync(target)) {
+      const own = `${target}.${process.pid}`
+      yield* btrfs(["subvolume", "snapshot", slot.root, own])
+      const won = yield* Effect.sync(() => {
+        try {
+          renameSync(own, target)
+          return true
+        } catch {
+          return false
+        }
+      })
+      if (!won) yield* remove(own)
+    }
     const old = readdirSync(dir)
+      .filter((name) => !name.includes("."))
       .map((name) => ({ path: join(dir, name), at: statSync(join(dir, name)).mtimeMs }))
       .sort((a, b) => b.at - a.at)
       .slice(keep)

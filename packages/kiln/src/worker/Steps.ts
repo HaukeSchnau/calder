@@ -2,14 +2,14 @@ import { Attic, Busy, Cmd, CurrentRun, Flake, Fleet, Git, Gitea, Kiln, PullReque
 import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, dirname, isAbsolute, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link, sdkPath } from "../Gen.ts"
 import type { Job as JobSpec, JobResult, Outcome, RunInfo } from "../Protocol.ts"
 import * as Values from "../Values.ts"
-import { Job } from "./Client.ts"
+import { gitEnv, Job, reconnecting } from "./Client.ts"
 import * as NixLog from "./NixLog.ts"
 import * as Repo from "./Repo.ts"
 import { paths } from "./Resolve.ts"
@@ -119,17 +119,32 @@ const preserved = (workspace: string): ReadonlyArray<string> => {
 /** Checks out the revision in the slot's checkout and removes everything `.ci/preserve` doesn't keep. */
 const checkout = (job: StepJob, src: string) =>
   Effect.gen(function*() {
-    const { log } = yield* Job
-    const git = (args: ReadonlyArray<string>) => Exec.run(["git", "-C", src, ...args], { env: { ...process.env, ...Repo.gitEnv } })
+    const self = yield* Job
+    const { log } = self
+    const git = (args: ReadonlyArray<string>) => Exec.run(["git", "-C", src, ...args], { env: { ...process.env, ...gitEnv(self) } })
     if (!existsSync(join(src, ".git"))) yield* git(["init", "-q"])
     const started = Date.now()
-    yield* git(["fetch", "-q", "--no-tags", "--depth=1", job.run.mirror, job.run.revision])
+    // Tasks that need history deepen the checkout from `origin` (local workers only; the controller's
+    // URL needs the job's token).
+    yield* git(["remote", "add", "origin", job.run.mirror]).pipe(Effect.catch(() => git(["remote", "set-url", "origin", job.run.mirror])))
+    yield* git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision])
     yield* git(["-c", "advice.detachedHead=false", "checkout", "-q", "-f", "--detach", job.run.revision])
     yield* git(["clean", "-q", "-ffdx", ...preserved(src).flatMap((p) => ["-e", p])])
     // What `kiln gen` sets up locally, so the repository's own tools (type-aware lint) resolve ci.ts too.
     if (existsSync(join(src, ".kiln"))) link(join(src, ".kiln", "node_modules"), sdkPath)
     yield* log("kiln", `checked out ${job.run.revision.slice(0, 12)} in ${Date.now() - started} ms`)
   })
+
+/** A snapshot only saves the next slot an install; failing to take one never fails the task. */
+const remember = (slot: Workspace.Slot, deps: string) =>
+  Workspace.remember(slot, deps).pipe(
+    Effect.catch((error) =>
+      Effect.gen(function*() {
+        const { log } = yield* Job
+        yield* log("kiln", `could not snapshot the slot: ${error.message}`)
+      })
+    ),
+  )
 
 const shardFiles = (files: ReadonlyArray<string>, index: number, count: number) =>
   [...files].sort().filter((_, i) => i % count === index - 1)
@@ -138,18 +153,20 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
   Effect.gen(function*() {
     const def = step.def
     if (def._tag !== "Task") return yield* Effect.die(new Error(`${step.name} is not a task`))
-    const { emit, log } = yield* Job
+    const self = yield* Job
+    const { emit, log, remote } = self
     if (job.workspace === null) return yield* Effect.die(new Error("tasks need a workspace"))
     const opened = Date.now()
-    const slot = yield* Workspace.open(job.workspace, job.deps)
+    const slot = yield* Workspace.open(isAbsolute(job.workspace) || remote === null ? job.workspace : join(remote.workspaces, job.workspace), job.deps)
     if (slot.restored) yield* log("kiln", `cloned a slot set up for these dependencies in ${Date.now() - opened} ms`)
     const workspace = slot.src
     yield* checkout(job, workspace)
+    if (remote !== null) yield* fetchInputs(self, values)
 
     const shard = job.shard ?? { index: 1, count: 1 }
     let files: ReadonlyArray<string> = []
     if (typeof def.run === "function" && def.shards?.split !== undefined) {
-      const repo = yield* Repo.make(job.run.mirror, job.run.revision)
+      const repo = yield* Repo.make(remote === null ? job.run.mirror : join(workspace, ".git"), job.run.revision)
       files = shardFiles(yield* paths(repo, def.shards.split), shard.index, shard.count)
     }
     const command = typeof def.run === "function" ? def.run({ index: shard.index, count: shard.count, files }) : def.run
@@ -166,8 +183,9 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       secretEnv[name] = path
     }
 
+    const flake = remote === null ? job.run.flake : `git+file://${workspace}?rev=${job.run.revision}`
     const inShell = (argv: ReadonlyArray<string>) =>
-      def.shell === undefined ? argv : ["nix", "develop", `${job.run.flake}#${Flake.attrPath(def.shell, job.run.system)}`, "--command", ...argv]
+      def.shell === undefined ? argv : ["nix", "develop", `${flake}#${Flake.attrPath(def.shell, job.run.system)}`, "--command", ...argv]
     const environment = "set -euo pipefail; if [ -f .ci/environment ]; then source .ci/environment; fi"
     const full = inShell(["bash", "-c", `${environment}; exec "$@"`, "kiln-task", ...argv])
     const taskEnv = env(job.run, step.name, {
@@ -189,11 +207,11 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       )
       if (setupExit !== 0) return toResult(Exit.fail(new Kiln.TaskFailed({ exitCode: setupExit, failures: [] })))
       if (slot.fresh && job.deps !== null) {
-        yield* Workspace.remember(slot, job.deps)
+        yield* remember(slot, job.deps)
         yield* log("kiln", `set up dependencies in ${Math.round((Date.now() - setupStarted) / 1000)} s; other slots clone this one`)
       }
     } else if (slot.fresh && job.deps !== null) {
-      yield* Workspace.remember(slot, job.deps)
+      yield* remember(slot, job.deps)
     }
 
     let attempt = 0
@@ -226,10 +244,57 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
 
     const outputs: Record<string, string> = {}
     for (const [name, path] of Object.entries(def.outputs)) {
-      const added = yield* Exec.run(["nix", "store", "add", "--name", `${step.name}-${name}`.replace(/[^A-Za-z0-9+._?=-]/g, "-"), join(workspace, path)])
-      outputs[name] = added.trim()
+      const storeName = `${step.name}-${name}`.replace(/[^A-Za-z0-9+._?=-]/g, "-")
+      outputs[name] = remote === null
+        ? (yield* Exec.run(["nix", "store", "add", "--name", storeName, join(workspace, path)])).trim()
+        : yield* upload(self, storeName, join(workspace, path))
     }
     return toResult(exit, { outputs })
+  })
+
+const storePath = /^\/nix\/store\/[a-z0-9]{32}-([^/]+)$/
+
+/**
+ * Makes the store paths a task interpolates valid on an agent's host: builds substitute from the
+ * binary cache, outputs of tasks that ran on the controller's host come from there.
+ */
+const fetchInputs = (self: Job["Service"], values: Record<string, unknown>) =>
+  Effect.forEach(Object.values(values), (value) =>
+    Effect.gen(function*() {
+      const match = typeof value === "string" ? storePath.exec(value) : null
+      if (match === null || existsSync(value as string)) return
+      const path = value as string
+      if ((yield* Exec.exec(["nix-store", "--realise", path])).exitCode === 0) return
+      const dir = mkdtempSync(join(tmpdir(), "kiln-input-"))
+      const response = yield* Effect.tryPromise(() =>
+        fetch(`${self.remote!.url}/store?path=${encodeURIComponent(path)}`, {
+          headers: { Authorization: `Bearer ${self.id}:${self.token}` },
+        })
+      )
+      if (!response.ok) return yield* Effect.die(new Error(`fetching ${path} failed: ${response.status}`))
+      yield* Effect.tryPromise(() => Bun.write(join(dir, "input.tar"), response))
+      yield* Exec.run(["tar", "-x", "-C", dir, "-f", join(dir, "input.tar")])
+      const added = (yield* Exec.run(["nix", "store", "add", "--name", match[1]!, join(dir, match[1]!)])).trim()
+      rmSync(dir, { recursive: true, force: true })
+      if (added !== path) return yield* Effect.die(new Error(`${path} arrived as ${added}`))
+    }), { discard: true })
+
+/** Sends an output to the controller, which adds it to its store under the same content-addressed path. */
+const upload = (self: Job["Service"], name: string, path: string) =>
+  Effect.gen(function*() {
+    const archive = join(mkdtempSync(join(tmpdir(), "kiln-output-")), "output.tar")
+    yield* Exec.run(["tar", "-c", "-f", archive, "-C", dirname(path), basename(path)])
+    const response = yield* Effect.tryPromise(() =>
+      fetch(`${self.remote!.url}/outputs?name=${encodeURIComponent(name)}`, {
+        method: "PUT",
+        body: Bun.file(archive),
+        headers: { Authorization: `Bearer ${self.id}:${self.token}` },
+      })
+    )
+    const text = yield* Effect.tryPromise(() => response.text())
+    rmSync(dirname(archive), { recursive: true, force: true })
+    if (!response.ok) return yield* Effect.die(new Error(`uploading ${name} failed: ${response.status} ${text}`))
+    return text.trim()
   })
 
 // --------------------------------------------------------------------------------------------- action
@@ -264,7 +329,7 @@ const services = (job: StepJob, project: Kiln.Project, grants: Step.Grants) =>
   Effect.gen(function*() {
     const { client, id, token } = yield* Job
     const auth = { job: id, token }
-    const rpc = <A, E>(effect: Effect.Effect<A, E>) => Effect.orDie(effect)
+    const rpc = <A, E>(effect: Effect.Effect<A, E>) => Effect.orDie(reconnecting(effect))
     const run = job.run
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const descriptor = yield* Effect.cached(
@@ -316,13 +381,13 @@ const services = (job: StepJob, project: Kiln.Project, grants: Step.Grants) =>
               targets: lease.targets.map((target) => ({
                 host: target,
                 preflight: (descriptor: unknown) =>
-                  client.fleetPreflight({ ...auth, target, descriptor }).pipe(
+                  reconnecting(client.fleetPreflight({ ...auth, target, descriptor })).pipe(
                     Effect.catchTag("FleetRejected", (e) => Effect.fail(new Rejected({ target, status: e.status, reason: e.reason }))),
                     Effect.catchTag("Unauthorized", (e) => Effect.die(e)),
                     Effect.catchTag("RpcClientError", (e) => Effect.die(e)),
                   ),
                 deploy: (release: { readonly revision: Kiln.Sha; readonly storePath: Kiln.StorePath }) =>
-                  client.fleetDeploy({ ...auth, target, revision: release.revision, storePath: release.storePath }).pipe(
+                  reconnecting(client.fleetDeploy({ ...auth, target, revision: release.revision, storePath: release.storePath })).pipe(
                     Effect.catchTag("FleetBusy", () => Effect.fail(new Busy({ target }))),
                     Effect.catchTag("FleetRejected", (e) => Effect.fail(new Rejected({ target, status: e.status, reason: e.reason }))),
                     Effect.catchTag("Unauthorized", (e) => Effect.die(e)),

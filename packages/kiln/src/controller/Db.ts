@@ -105,6 +105,13 @@ const migrations = {
     const sql = yield* SqlClient.SqlClient
     yield* sql`create table projects (name text primary key, repo text not null, default_branch text not null, created_at integer not null)`
   }),
+  "0004_no_workflow_engine": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Runs are driven from the journal; effect/cluster's tables held the old workflow engine's state.
+    for (const table of ["cluster_messages", "cluster_replies", "cluster_runners", "cluster_locks", "cluster_migrations"]) {
+      yield* sql`drop table if exists ${sql(table)}`
+    }
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

@@ -111,6 +111,8 @@ export const StepRun = Schema.Struct({
   finishedAt: Schema.NullOr(Schema.Number),
   /** Median duration of the step's last ten executions, for progress and scheduling. */
   expectedMs: Schema.NullOr(Schema.Number),
+  /** The platform a task asked for; one other than the controller's runs on an agent of it. */
+  platform: Schema.NullOr(Schema.String),
   attempts: Schema.Number,
   shards: Schema.NullOr(Schema.Number),
   value: Schema.NullOr(Value),
@@ -220,8 +222,16 @@ export const Overview = Schema.Struct({
   active: Schema.Array(Run),
   /** Recent runs across projects, newest first. */
   recent: Schema.Array(Run),
-  /** Slot use right now. */
+  /** Slot use right now on the controller's host. */
   slots: Schema.Struct({ tasks: Schema.Number, tasksMax: Schema.Number, builds: Schema.Number, buildsMax: Schema.Number }),
+  /** Agents on other hosts seen since the controller started, and their slot use. */
+  agents: Schema.Array(Schema.Struct({
+    name: Schema.String,
+    platform: Schema.String,
+    slots: Schema.Number,
+    running: Schema.Number,
+    connected: Schema.Boolean,
+  })),
 })
 export type Overview = typeof Overview.Type
 

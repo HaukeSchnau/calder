@@ -21,6 +21,8 @@ interface StepPlan {
   readonly target?: boolean
   /** Inputs that rarely change, such as a lockfile: the key survives commits, so later runs reuse it. */
   readonly stable?: boolean
+  /** Runs on an agent of this platform rather than on the controller's host. */
+  readonly platform?: string
 }
 
 interface Spec {
@@ -142,6 +144,7 @@ const promote = (after: ReadonlyArray<string>, required: ReadonlyArray<string>, 
 })
 
 const T3_CHECKS = ["static", "typecheck clients", "typecheck rest", "test web", "test server"]
+export const DARWIN = "aarch64-darwin"
 
 function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
   const main = event._tag === "Push" || event._tag === "Manual"
@@ -158,7 +161,8 @@ function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
     ]
     if (main) {
       steps.push(promote(["releaseGate"], T3_CHECKS, 90))
-      steps.push({ name: "desktop and mobile", kind: "action", detail: "Apple.dispatch desktop.yml, mobile.yml", duration: 18, after: ["promote"], target: true })
+      steps.push({ name: "desktop-package", kind: "task", detail: "just desktop-package", duration: 300, needs: ["pnpmDeps"], platform: DARWIN, target: true })
+      steps.push({ name: "testflight", kind: "task", detail: "just testflight", duration: 140, needs: ["desktop-package"], after: ["releaseGate"], platform: DARWIN, target: true })
     } else {
       steps.push({ name: "report failures", kind: "action", detail: "Gitea.comment", duration: 2, exits: ["test web", "test server"], target: true })
     }
@@ -284,7 +288,7 @@ const SCRIPTED: ReadonlyArray<Spec> = [
     key: "t3:main-merge", project: "t3code", at: -8 * 60, event: push, title: null,
     commit: { title: "Stream tool output in the thread view (#415)", author: "codex", changeId: jjId("t3code:pr415", 32) },
     reused: Object.fromEntries(T3_CHECKS.map((name) => [name, "t3:pr415"])),
-    durations: { projectRelease: 168, releaseGate: 47, promote: 18 * 60, "desktop and mobile": 21 },
+    durations: { projectRelease: 168, releaseGate: 47, promote: 18 * 60, "desktop-package": 12 * 60, testflight: 150 },
   },
   {
     key: "t3:pr418-4", project: "t3code", at: -75, event: pr(418, "codex/token-usage"),
@@ -334,7 +338,13 @@ interface Memory {
 
 const median = (xs: ReadonlyArray<number>) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
 
-function plan(spec: Spec, id: string, number: number, t0: number, { built, stableKeys, durations }: Memory): SimRun {
+/**
+ * With m1 gone (`KILN_MOCK_M1=offline`), it left six minutes before the server started: the deploying
+ * main run's desktop package finished just before, so its testflight waits for an agent ever since.
+ */
+const OFFLINE_DURATIONS: Readonly<Record<string, Readonly<Record<string, number>>>> = { "t3:main-merge": { "desktop-package": 100 } }
+
+function plan(spec: Spec, id: string, number: number, t0: number, { built, stableKeys, durations }: Memory, agentGoneAt: number | null): SimRun {
   const r = rng(`run:${spec.key}`)
   const createdAt = t0 + spec.at * 1000
   const sha = spec.commit.sha ?? hex(`sha:${spec.key}`, 40)
@@ -357,7 +367,8 @@ function plan(spec: Spec, id: string, number: number, t0: number, { built, stabl
     const ownKey = p.kind === "build"
       ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:${sha}`, 32)}-${spec.project}-${p.name}.drv`
       : hex(`key:${spec.project}:${p.name}:${sha}`, 64)
-    const duration = (spec.durations?.[p.name] ?? p.duration * (0.88 + r() * 0.24)) * 1000
+    const offline = agentGoneAt === null ? undefined : OFFLINE_DURATIONS[spec.key]?.[p.name]
+    const duration = (offline ?? spec.durations?.[p.name] ?? p.duration * (0.88 + r() * 0.24)) * 1000
     const queue = (p.kind === "action" ? 0.3 : 0.6 + r() * 2.4) * 1000
     let step: SimStep
     if (blockedBy) {
@@ -368,12 +379,14 @@ function plan(spec: Spec, id: string, number: number, t0: number, { built, stabl
       step = { plan: p, outcome: "reused", key: stable.key, reusedFrom: stable.run, expectedMs, queuedAt: ready, startedAt: ready, finishedAt: ready, attempts: 0 }
     } else {
       const key = p.stable ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:lock`, 32)}-${spec.project}-${p.name}.drv` : ownKey
+      // No agent for its platform: it stays queued, and whatever needs it stays pending.
+      const stranded = p.platform !== undefined && agentGoneAt !== null && ready + queue > agentGoneAt
       step = {
         plan: p, outcome: spec.outcomes?.[p.name] ?? "passed", key, reusedFrom: null, expectedMs,
-        queuedAt: ready, startedAt: ready + queue, finishedAt: ready + queue + duration, attempts: spec.attempts?.[p.name] ?? 1,
+        queuedAt: ready, startedAt: stranded ? Infinity : ready + queue, finishedAt: stranded ? Infinity : ready + queue + duration, attempts: spec.attempts?.[p.name] ?? 1,
       }
       if (p.stable && step.outcome === "passed") stableKeys.set(`${spec.project}:${p.name}`, { key, run: id })
-      durations.set(`${spec.project}:${p.name}`, [...history, step.finishedAt - step.startedAt])
+      if (!stranded) durations.set(`${spec.project}:${p.name}`, [...history, step.finishedAt - step.startedAt])
     }
     done.set(p.name, step)
   }
@@ -424,7 +437,11 @@ export class World {
   private readonly memory = { built: this.bySpec, stableKeys: new Map<string, { key: string; run: string }>(), durations: new Map<string, Array<number>>() }
   private readonly numbers = new Map<string, number>()
 
-  constructor(readonly t0: number) {
+  /** When the m1 agent disconnected, or null while it is connected. */
+  readonly agentGoneAt: number | null
+
+  constructor(readonly t0: number, agents: "online" | "offline" = "online") {
+    this.agentGoneAt = agents === "offline" ? t0 - 6 * 60_000 : null
     const specs = [...PROJECTS.flatMap(history), ...SCRIPTED].sort((a, b) => a.at - b.at)
     for (const spec of specs) this.add(spec)
   }
@@ -432,7 +449,7 @@ export class World {
   private add(spec: Spec): SimRun {
     const number = (this.numbers.get(spec.project) ?? NUMBER_BASE[spec.project] ?? 1) + 1
     this.numbers.set(spec.project, number)
-    const run = plan(spec, runId(spec.project, number), number, this.t0, this.memory)
+    const run = plan(spec, runId(spec.project, number), number, this.t0, this.memory, this.agentGoneAt)
     this.bySpec.set(spec.key, run)
     this.runs.push(run)
     return run
@@ -561,6 +578,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     after: s.plan.after ?? [],
     required: s.plan.required ?? [],
     target: s.plan.target ?? false,
+    platform: s.plan.platform ?? null,
     deploys: s.plan.detail === "Release.promote",
     detail: s.plan.detail,
     queuedAt: st.queuedAt,
@@ -599,9 +617,6 @@ function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
       if (s.plan.name === "promote") {
         const hosts = hostsOf(run.project)
         return { type: "@kiln/std/Release/Live", render: "text", label: "Live", text: `${short(run.commit.sha)} on ${hosts.join(", ")}`, json: { _tag: "Live", revision: run.commit.sha, hosts } }
-      }
-      if (s.plan.name === "desktop and mobile") {
-        return { type: "@kiln/std/Apple/Dispatched", render: "link", label: "workflow runs", text: "https://git.schnau.dev/schnau/t3code/actions", json: { workflows: ["desktop.yml", "mobile.yml"] } }
       }
       return { type: null, render: "text", label: null, text: "comment posted", json: null }
     }
@@ -776,6 +791,18 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
         if (s.attempts > 1) lines.splice(6, 0, [0.4, "warn", "kiln", "shard 2 of 3: TestTimeout, retrying once", 2])
         return lines
       }
+      case "desktop-package":
+        return [
+          cmd, [0.002, "info", "kiln", "running on m1 (aarch64-darwin)"], ws,
+          ...files(["electron-vite build: main, preload, renderer", "electron-builder --mac --arm64", "packaging T3 Code.app for darwin arm64", "signing with Developer ID Application: Hauke Schnau", "notarizing T3 Code.app with notarytool", "notarytool: status Accepted", "stapling the notarization ticket"], 0.05, 0.92),
+          [0.97, "info", "stdout", "dist/T3 Code-0.9.4-arm64.dmg (148.2 MB)"], [0.99, "info", "kiln", "exit 0"],
+        ]
+      case "testflight":
+        return [
+          cmd, [0.002, "info", "kiln", "running on m1 (aarch64-darwin)"], ws,
+          [0.1, "info", "stdout", "xcodebuild archive -scheme T3Mobile -configuration Release"], [0.55, "info", "stdout", "** ARCHIVE SUCCEEDED **"],
+          [0.6, "info", "stdout", "xcrun altool --upload-app -f T3Mobile.ipa"], [0.97, "info", "stdout", "uploaded build 0.9.4 (412) to TestFlight"], [0.99, "info", "kiln", "exit 0"],
+        ]
       case "qa": {
         const lines: Array<Line> = [cmd, ws, [0.02, "info", "stdout", "oxlint: 0 problems in 318 files"], [0.12, "info", "stdout", "tsc -b: 0 errors"]]
         const total = 412
@@ -787,9 +814,6 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
     return [cmd, ws, [0.99, "info", "kiln", "exit 0"]]
   }
   if (s.plan.name === "promote") return promoteScript(run, s)
-  if (s.plan.name === "desktop and mobile") {
-    return [[0, "info", "kiln", "Apple.dispatch desktop.yml, mobile.yml"], [0.3, "info", "kiln", "POST git.schnau.dev/api/v1/repos/schnau/t3code/actions/workflows/desktop.yml/dispatches 204"], [0.6, "info", "kiln", "POST git.schnau.dev/api/v1/repos/schnau/t3code/actions/workflows/mobile.yml/dispatches 204"], [0.99, "info", "kiln", "dispatched 2 workflows on m1"]]
-  }
   return [[0, "info", "kiln", "Gitea.comment"], [0.9, "info", "kiln", `comment posted on PR #${run.event._tag === "PullRequest" ? run.event.number : 0}`]]
 }
 
@@ -832,6 +856,9 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
   }
   if (st.status === "blocked") {
     return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.finishedAt, text: "blocked: a step it depends on didn't pass" }]
+  }
+  if (st.status === "queued" && s.plan.platform !== undefined) {
+    return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.queuedAt, text: `waiting for a ${s.plan.platform} agent` }]
   }
   if (st.startedAt === null) return []
   const duration = s.finishedAt - s.startedAt

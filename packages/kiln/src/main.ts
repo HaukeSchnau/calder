@@ -4,6 +4,7 @@ import { Event, Kiln } from "@kiln/core"
 import { Console, Effect, Layer, Option, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { resolve } from "node:path"
+import * as Agent from "./Agent.ts"
 import * as Controller from "./controller/Main.ts"
 import * as Gen from "./Gen.ts"
 import * as Remote from "./Remote.ts"
@@ -17,9 +18,29 @@ const controller = Command.make("controller", {
 }, ({ config }) => Layer.launch(Controller.layer(config)))
 
 const worker = Command.make("worker", { job: Argument.String("job") }, ({ job }) =>
-  Worker.run(job, {
-    socket: process.env.KILN_SOCKET ?? "/run/kiln/worker.sock",
-    tokenFile: process.env.KILN_TOKEN_FILE ?? `/run/kiln/jobs/${job}.token`,
+  Worker.run(
+    job,
+    process.env.KILN_URL !== undefined && process.env.KILN_TOKEN !== undefined && process.env.KILN_WORKSPACES !== undefined
+      ? { remote: { url: process.env.KILN_URL, workspaces: process.env.KILN_WORKSPACES }, token: process.env.KILN_TOKEN }
+      : {
+        socket: process.env.KILN_SOCKET ?? "/run/kiln/worker.sock",
+        tokenFile: process.env.KILN_TOKEN_FILE ?? `/run/kiln/jobs/${job}.token`,
+      },
+  ))
+
+const agent = Command.make("agent", {
+  url: Flag.String("url"),
+  tokenFile: Flag.String("token-file"),
+  name: Flag.String("name"),
+  slots: Flag.Int("slots").pipe(Flag.withDefault(1)),
+  workspaces: Flag.String("workspaces"),
+  admission: Flag.String("admission").pipe(Flag.optional),
+}, (flags) =>
+  Agent.run({
+    ...flags,
+    platform: system,
+    kiln: [process.argv[0]!, process.argv[1]!],
+    admission: Option.getOrNull(flags.admission),
   }))
 
 const gen = Command.make("gen", { dir: Argument.String("dir").pipe(Argument.withDefault(".")) }, ({ dir }) =>
@@ -102,6 +123,6 @@ const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ r
     yield* Console.log(`cancelled ${run}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
-const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, gen, plan, trigger, rerun, cancel]))
+const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, trigger, rerun, cancel]))
 
 Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)

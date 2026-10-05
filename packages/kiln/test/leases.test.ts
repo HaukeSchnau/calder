@@ -28,4 +28,11 @@ describe("Leases", () => {
       yield* leases.release("p", "c")
       expect((yield* leases.acquire("p", { job: "d", run: 11 }))._tag).toBe("Replaced")
     }))
+
+  it.effect("asking again for a held lease returns the same fence", () =>
+    Effect.gen(function*() {
+      const leases = Leases.make(counter())
+      const first = yield* leases.acquire("p", { job: "a", run: 1 })
+      expect(yield* leases.acquire("p", { job: "a", run: 1 })).toEqual(first)
+    }))
 })
