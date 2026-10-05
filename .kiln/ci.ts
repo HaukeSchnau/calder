@@ -1,4 +1,5 @@
-import { Kiln, Nix, On, Report, Task, cmd } from "@kiln/core"
+import { Report, Task, cmd } from "@kiln/core"
+import { Project } from "@kiln/std"
 import { flake } from "./flake.ts"
 
 const shell = flake.devShells.default
@@ -11,11 +12,4 @@ export const test = Task.make("test", {
   report: Report.junit("reports/junit.xml"),
 })
 
-export const kiln = Nix.build(flake.packages.kiln)
-
-export default Kiln.project({
-  rules: [
-    On.pullRequest([check, test, kiln]),
-    On.push("main", [check, test, kiln]),
-  ],
-})
+export default Project.standard({ flake, checks: [check, test] })
