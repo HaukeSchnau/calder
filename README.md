@@ -7,23 +7,23 @@ across pull requests and revisions. The design is in `~/Code/CI-CD-Lab`
 
 ## A pipeline
 
+Most projects run the standard pipeline, which `kiln gen` writes into a repository without one:
+
 ```ts
 // .kiln/ci.ts
-import { Action, Kiln, Nix, On, Step, Task, cmd } from "@kiln/core"
-import { Release } from "@kiln/std"
+import { Step, Task, cmd } from "@kiln/core"
+import { Project } from "@kiln/std"
 import { flake } from "./flake.ts"
 
 export const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` }).pipe(Step.timeout("30 minutes"))
-export const release = Nix.build(flake.packages.projectRelease, { name: "release" })
 
-export const promote = Action.make("promote", { needs: { release }, after: [qa], grants: { deploy: true } }, function*({ release }) {
-  return yield* Release.promote(release)
-})
-
-export default Kiln.project({
-  rules: [On.pullRequest([qa, release]), On.push("main", [promote])],
-})
+export default Project.standard({ flake, checks: [qa] })
 ```
+
+Every flake check is a step, plus `checks`. Pull requests run them and build `packages.projectRelease`;
+the default branch reuses identical results (also from same-repo pull requests) and promotes the release
+once every check passed. `afterDeploy` adds steps that run after the release is live. A pipeline beyond
+that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `Project.ts`).
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
@@ -31,7 +31,9 @@ export default Kiln.project({
   `.ci/preserve` lists; `.ci/environment` is sourced and `.ci/setup` runs first. A task is reused
   when its key matches: git tree ids of its inputs (`inputs: Files.workspace(...)`, the whole
   repository by default), the dev shell, the command and the values it interpolates. Pull requests
-  reuse everything; pushes rerun tasks unless they build `outputs`.
+  reuse everything; pushes rerun tasks unless they build `outputs`. A task with another `platform`
+  than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only).
+  Pull-request tasks reach the network only through the controller's egress allowlist.
 - **action** (`Action.make`): Effect code with side effects. `needs` are the steps whose values the
   body reads, `after` the steps that must pass first, `grants` what it may do (`deploy`, `secrets`).
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
@@ -48,12 +50,16 @@ run in parallel and report as one step.
 ## Commands
 
 ```
-kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.json, links .kiln/node_modules
-kiln plan [dir] --event push:main    # what a push, pr:<n>, schedule:<cron> or manual run would run
+kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.json, links .kiln/node_modules,
+                                     # and the standard .kiln/ci.ts if there is none
+kiln plan [dir] --event push:main    # what a push, pr:<n>, check, schedule:<cron> or manual run would run
+kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
 kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12
 kiln controller --config <file>      # the service
-kiln worker <job>                    # started by the controller in a systemd unit
+kiln worker <job>                    # started by the controller in a systemd unit, or by an agent
+kiln agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
+                                     # runs the controller's jobs for this host's platform
 ```
 
 ## Layout
@@ -61,9 +67,9 @@ kiln worker <job>                    # started by the controller in a systemd un
 | Path | What |
 | --- | --- |
 | `packages/core` | `@kiln/core`: the API and the plan engine (`Kiln.plan` is pure and testable) |
-| `packages/std` | `@kiln/std`: `Release.promote` (deploy lease, preflight, head check, fencing token, readiness) |
+| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness) |
 | `packages/api` | Schemas and the RPC group the UI speaks |
-| `packages/kiln` | The CLI: controller (Gitea webhooks, durable runs on effect/workflow + SQLite, statuses, leases) and worker |
+| `packages/kiln` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
 | `sdk` | What `.kiln/node_modules` links to, so ci.ts and the worker share one copy of Effect |
 
