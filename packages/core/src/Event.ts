@@ -8,8 +8,10 @@ export const PullRequest = Schema.TaggedStruct("PullRequest", {
 export const Push = Schema.TaggedStruct("Push", { branch: Schema.String })
 export const Scheduled = Schema.TaggedStruct("Schedule", { cron: Schema.String })
 export const Manual = Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown) })
+/** A working copy checked before it is pushed (`kiln check`), pushed as `ref`. It runs what a pull request would. */
+export const Check = Schema.TaggedStruct("Check", { ref: Schema.String, base: Schema.String })
 
-export const Event = Schema.Union([PullRequest, Push, Scheduled, Manual])
+export const Event = Schema.Union([PullRequest, Push, Scheduled, Manual, Check])
 export type Event = typeof Event.Type
 
 export const pullRequest = (options: { readonly number: number; readonly base?: string; readonly head?: string }): Event =>
@@ -21,6 +23,9 @@ export const schedule = (cron: string): Event => Scheduled.make({ cron })
 
 export const manual = (inputs: { readonly [name: string]: unknown } = {}): Event => Manual.make({ inputs })
 
+export const check = (options: { readonly ref: string; readonly base?: string }): Event =>
+  Check.make({ ref: options.ref, base: options.base ?? "main" })
+
 export const describe = (event: Event): string => {
   switch (event._tag) {
     case "PullRequest":
@@ -31,5 +36,7 @@ export const describe = (event: Event): string => {
       return `schedule ${event.cron}`
     case "Manual":
       return "manual"
+    case "Check":
+      return `check of ${event.ref}`
   }
 }

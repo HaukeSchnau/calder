@@ -6,6 +6,7 @@ import * as Exec from "../Exec.ts"
 import { link, sdkPath } from "../Gen.ts"
 import type { Job as JobSpec, JobResult } from "../Protocol.ts"
 import * as Client from "./Client.ts"
+import * as Egress from "./Egress.ts"
 import * as Load from "./Load.ts"
 import * as Repo from "./Repo.ts"
 import { resolve } from "./Resolve.ts"
@@ -74,6 +75,7 @@ export const run = (
   options: { readonly socket: string; readonly tokenFile: string } | { readonly remote: Client.Remote; readonly token: string },
 ) =>
   Effect.gen(function*() {
+    if (process.env.KILN_EGRESS !== undefined) yield* Egress.bridge(process.env.KILN_EGRESS)
     const remote = "remote" in options ? options.remote : null
     const token = "token" in options ? options.token : readFileSync(options.tokenFile, "utf8").trim()
     const job = yield* Client.make(id, token, remote)

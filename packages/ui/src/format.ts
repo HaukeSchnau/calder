@@ -83,6 +83,8 @@ export function refOf(run: Domain.Run): string {
       return "cron"
     case "Manual":
       return "manual"
+    case "Check":
+      return "check"
   }
 }
 
@@ -96,6 +98,8 @@ export function eventLine(event: Domain.Event): string {
       return `schedule ${event.cron}`
     case "Manual":
       return Object.keys(event.inputs).length ? `manual, ${Object.entries(event.inputs).map(([k, v]) => `${k} ${String(v)}`).join(", ")}` : "manual"
+    case "Check":
+      return `check of a working copy based on ${event.base}`
   }
 }
 

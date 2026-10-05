@@ -327,7 +327,7 @@ const inputsOf = (needs: Step.Needs, job: StepJob) =>
 
 const services = (job: StepJob, project: Kiln.Project, grants: Step.Grants) =>
   Effect.gen(function*() {
-    const { client, id, token } = yield* Job
+    const { client, id, token, log } = yield* Job
     const auth = { job: id, token }
     const rpc = <A, E>(effect: Effect.Effect<A, E>) => Effect.orDie(reconnecting(effect))
     const run = job.run
@@ -366,6 +366,15 @@ const services = (job: StepJob, project: Kiln.Project, grants: Step.Grants) =>
         base: pr.base,
         head: pr.head,
         comment: (markdown) => rpc(client.pullRequestComment({ ...auth, markdown })),
+      }))
+    }
+    // A check runs the pull-request rules without a pull request; its comments go to the log.
+    if (run.event._tag === "Check") {
+      context = context.pipe(Context.add(PullRequest, {
+        number: 0,
+        base: run.event.base,
+        head: run.event.ref,
+        comment: (markdown) => log("kiln", `pull request comment:\n${markdown}`),
       }))
     }
     if (grants.deploy === true && run.trust === "trusted") {

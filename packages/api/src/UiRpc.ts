@@ -67,6 +67,12 @@ export class UiRpcs extends RpcGroup.make(
     success: Run,
     error: Schema.Union([NotFound, Refused]),
   }),
+  /** Runs a working copy that `kiln check` pushed as `ref` (under `kiln/check/`) the way a pull request would. */
+  Rpc.make("check", {
+    payload: { repo: Schema.String, ref: Schema.String, sha: Schema.String },
+    success: Run,
+    error: Schema.Union([NotFound, Refused]),
+  }),
   Rpc.make("cancel", { payload: { runId: Schema.String }, error: Schema.Union([NotFound, Refused]) }),
   /** Runs the same revision and event again. */
   Rpc.make("rerun", { payload: { runId: Schema.String }, success: Run, error: Schema.Union([NotFound, Refused]) }),

@@ -70,8 +70,11 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
         Effect.mapError((e) => new RunError({ message: `revision ${input.sha} not found: ${e.message}` })),
       )
       const event = input.event
-      const trust: Domain.Trust = event._tag === "PullRequest" ? "pr" : "trusted"
-      const branch = event._tag === "Push" ? event.branch : event._tag === "PullRequest" ? event.head : project.defaultBranch
+      const trust: Domain.Trust = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted"
+      const branch = event._tag === "Push" ? event.branch
+        : event._tag === "PullRequest" ? event.head
+        : event._tag === "Check" ? event.ref
+        : project.defaultBranch
       const pr = event._tag === "PullRequest" ? event.number : null
       const title = pr === null ? null : yield* gitea.pullTitle(project.repo, pr)
       const number = yield* db(Counters.next(`run:${input.project}`))

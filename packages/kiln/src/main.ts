@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
+import type { Domain } from "@kiln/api"
 import { Event, Kiln } from "@kiln/core"
 import { Console, Effect, Layer, Option, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { resolve } from "node:path"
 import * as Agent from "./Agent.ts"
+import * as Check from "./Check.ts"
 import * as Controller from "./controller/Main.ts"
 import * as Gen from "./Gen.ts"
 import * as Remote from "./Remote.ts"
@@ -61,6 +63,8 @@ const parseEvent = (text: string): Event.Event => {
       return Event.pullRequest({ number: Number(arg ?? 1) })
     case "schedule":
       return Event.schedule(arg ?? "")
+    case "check":
+      return Event.check({ ref: arg ?? "kiln/check/local" })
     default:
       return Event.manual(arg === undefined ? {} : JSON.parse(arg) as Record<string, unknown>)
   }
@@ -88,6 +92,27 @@ const plan = Command.make("plan", {
 
 const url = Flag.String("url").pipe(Flag.withDefault(process.env.KILN_URL ?? "https://kiln.schnau.dev"))
 
+/** Prints a run's steps as they change until it ends; returns its final status. */
+const follow = (client: Effect.Success<typeof Remote.client>, run: Domain.Run) =>
+  Effect.gen(function*() {
+    yield* Console.log(`${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`)
+    let status: string = run.status
+    yield* client.changes().pipe(
+      Stream.filter((c) => (c._tag === "StepChanged" ? c.step.runId === run.id : c._tag === "RunChanged" && c.run.id === run.id)),
+      Stream.tap((c) =>
+        c._tag === "StepChanged"
+          ? Console.log(`  ${c.step.status.padEnd(9)} ${c.step.name}${c.step.error ? `: ${c.step.error.message.split("\n")[0]}` : ""}`)
+          : Console.log(`${c._tag === "RunChanged" ? c.run.status : ""}${c._tag === "RunChanged" && c.run.error ? `: ${c.run.error}` : ""}`)
+      ),
+      Stream.tap((c) => Effect.sync(() => {
+        if (c._tag === "RunChanged") status = c.run.status
+      })),
+      Stream.takeUntil((c) => c._tag === "RunChanged" && ["passed", "failed", "cancelled", "errored"].includes(c.run.status)),
+      Stream.runDrain,
+    )
+    return status
+  })
+
 const trigger = Command.make("trigger", {
   project: Argument.String("project"),
   branch: Flag.String("branch").pipe(Flag.optional),
@@ -96,17 +121,24 @@ const trigger = Command.make("trigger", {
   Effect.gen(function*() {
     const client = yield* Remote.client
     const run = yield* client.trigger({ project, ...Option.match(branch, { onNone: () => ({}), onSome: (b) => ({ branch: b }) }) })
-    yield* Console.log(`${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`)
-    yield* client.changes().pipe(
-      Stream.filter((c) => (c._tag === "StepChanged" ? c.step.runId === run.id : c._tag === "RunChanged" && c.run.id === run.id)),
-      Stream.tap((c) =>
-        c._tag === "StepChanged"
-          ? Console.log(`  ${c.step.status.padEnd(9)} ${c.step.name}${c.step.error ? `: ${c.step.error.message.split("\n")[0]}` : ""}`)
-          : Console.log(`${c._tag === "RunChanged" ? c.run.status : ""}${c._tag === "RunChanged" && c.run.error ? `: ${c.run.error}` : ""}`)
-      ),
-      Stream.takeUntil((c) => c._tag === "RunChanged" && ["passed", "failed", "cancelled", "errored"].includes(c.run.status)),
-      Stream.runDrain,
-    )
+    yield* follow(client, run)
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
+/**
+ * `kiln check`: runs the working copy the way a pull request would, before anything is pushed for
+ * review. Later runs of the same inputs reuse its results.
+ */
+const check = Command.make("check", { dir: Argument.String("dir").pipe(Argument.withDefault(".")), url }, ({ dir, url }) =>
+  Effect.gen(function*() {
+    const copy = yield* Check.workingCopy(resolve(dir))
+    const ref = `kiln/check/${copy.sha.slice(0, 12)}`
+    yield* Check.push(copy, ref)
+    const client = yield* Remote.client
+    const status = yield* Effect.gen(function*() {
+      const run = yield* client.check({ repo: copy.repo, ref, sha: copy.sha })
+      return yield* follow(client, run)
+    }).pipe(Effect.ensuring(Check.drop(copy, ref)))
+    if (status !== "passed") return yield* Effect.fail(new Error(`the check ${status}`))
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
 const rerun = Command.make("rerun", { run: Argument.String("run"), url }, ({ run, url }) =>
@@ -123,6 +155,6 @@ const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ r
     yield* Console.log(`cancelled ${run}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
-const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, trigger, rerun, cancel]))
+const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, trigger, rerun, cancel]))
 
 Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)

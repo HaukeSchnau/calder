@@ -53,6 +53,7 @@ const matches = (rule: Rule<any, any>, event: Event): boolean => {
   const t = rule.trigger
   switch (event._tag) {
     case "PullRequest":
+    case "Check":
       return t._tag === "PullRequest"
     case "Push":
       return t._tag === "Push" && matchesBranch(t.branch, event.branch)
@@ -109,7 +110,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
     const canonical = (step: Step.Any) => all.get(step.name) ?? step
 
     const rules = project.rules.filter((rule) => matches(rule, event))
-    const trust: "pr" | "trusted" = event._tag === "PullRequest" ? "pr" : "trusted"
+    const trust: "pr" | "trusted" = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted"
     const reuse: Reuse = rules.some((r) => r.reuse === "none") ? "none"
       : rules.some((r) => r.reuse === "builds") ? "builds"
       : rules[0]?.reuse ?? (trust === "pr" ? "all" : "builds")

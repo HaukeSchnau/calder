@@ -32,6 +32,8 @@ export const Event = Schema.Union([
   Schema.TaggedStruct("Push", { branch: Schema.String }),
   Schema.TaggedStruct("Schedule", { cron: Schema.String }),
   Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown) }),
+  /** A working copy checked before it is pushed (`kiln check`), pushed as `ref`. It runs what a pull request would. */
+  Schema.TaggedStruct("Check", { ref: Schema.String, base: Schema.String }),
 ])
 export type Event = typeof Event.Type
 

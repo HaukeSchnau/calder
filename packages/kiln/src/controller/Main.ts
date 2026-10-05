@@ -4,6 +4,7 @@ import { FetchHttpClient } from "effect/http"
 import * as Agents from "./Agents.ts"
 import * as Config from "./Config.ts"
 import * as Db from "./Db.ts"
+import * as Egress from "./Egress.ts"
 import * as Fleet from "./Fleet.ts"
 import * as Gitea from "./Gitea.ts"
 import * as Http from "./Http.ts"
@@ -30,5 +31,5 @@ export const layer = (configPath: string) => {
   const fleet = Layer.mergeAll(Fleet.layer, Leases.layer, Mirror.layer).pipe(Layer.provideMerge(projects))
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const runs = Workflow.layer.pipe(Layer.provideMerge(core))
-  return Layer.mergeAll(WorkerServer.layer, Scheduler.layer, Http.layer).pipe(Layer.provide(runs))
+  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Http.layer).pipe(Layer.provide(runs))
 }

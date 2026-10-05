@@ -29,6 +29,11 @@ export const ConfigSchema = Schema.Struct({
   gitea: Schema.Struct({ url: Schema.String, tokenFile: Schema.String, webhookSecretFile: Schema.String }),
   promotion: Schema.Struct({ tokenFile: Schema.String }),
   cacheUrl: Schema.String,
+  /**
+   * Pushes a release's closure to the binary cache right away instead of waiting for the host's upload
+   * queue: argv before the store path, run with `XDG_CONFIG_HOME` set to `configHome`.
+   */
+  cachePush: Schema.NullOr(Schema.Struct({ command: Schema.Array(Schema.String), configHome: Schema.String })),
   telemetry: Schema.Struct({
     otlp: Schema.NullOr(Schema.String),
     victoriaLogs: Schema.NullOr(Schema.String),
@@ -43,6 +48,11 @@ export const ConfigSchema = Schema.Struct({
   owners: Schema.Array(Schema.String),
   /** The hosts' promotion endpoints, in deploy order. Kiln asks each which apps it runs. */
   fleet: Schema.Array(Schema.String),
+  /**
+   * Sandboxed workers reach the network only through the controller's egress proxy: hosts in `allow`
+   * (`*.example.org` for subdomains) on public addresses, plus `allowPrivate` hosts on private ones.
+   */
+  egress: Schema.NullOr(Schema.Struct({ allow: Schema.Array(Schema.String), allowPrivate: Schema.Array(Schema.String) })),
   /** Agents on other hosts authenticate with the secret in this file. Without it none may connect. */
   agents: Schema.NullOr(Schema.Struct({ tokenFile: Schema.String })),
   projects: Schema.Record(Schema.String, ProjectConfig),
