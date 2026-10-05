@@ -6,7 +6,7 @@ import type { Domain } from "@kiln/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { RunSpark } from "./charts.tsx"
-import { isActive, overviewAtom, runAtom } from "./data.ts"
+import { deployHistoryAtom, isActive, overviewAtom, runAtom } from "./data.ts"
 import { ago, count, dur, glaze, refOf, runDuration, shortSha, stepDuration, titleOf, totalSteps, when } from "./format.ts"
 import { href } from "./route.ts"
 import { Fail, Loaded, Ring, RunGlyph, Swatch, hasBits, useNow } from "./ui.tsx"
@@ -104,7 +104,8 @@ function RunningRow({ run, first }: { readonly run: Domain.Run; readonly first: 
   const steps = AsyncResult.isSuccess(detail) ? detail.value.steps : []
   const total = totalSteps(run.counts)
   const finished = count(run.counts, "passed", "reused", "failed", "died", "blocked", "cancelled")
-  const longest = steps.filter((s) => s.status === "running").sort((a, b) => (stepDuration(b, now) ?? 0) - (stepDuration(a, now) ?? 0))[0]
+  const left = (s: Domain.StepRun) => (s.expectedMs ?? 0) - (stepDuration(s, now) ?? 0)
+  const longest = steps.filter((s) => s.status === "running").sort((a, b) => left(b) - left(a))[0]
   return (
     <a className={`at at-run${first ? "" : " cont"}`} href={href({ page: "run", id: run.id, step: null })}>
       <span className="at-k"><Ring p={total ? finished / total : 0} />Running</span>
@@ -112,7 +113,7 @@ function RunningRow({ run, first }: { readonly run: Domain.Run; readonly first: 
       <span className="at-d">
         <StepStrip steps={steps} />
         <span className="fact">{finished} of {total} done</span>
-        {longest ? <span className="fact">{longest.name} <span className="num">{dur(stepDuration(longest, now) ?? 0)}</span></span> : null}
+        {longest ? <span className="fact">{longest.name} <span className="num">{dur(stepDuration(longest, now) ?? 0)}</span>{longest.expectedMs ? ` of ~${dur(longest.expectedMs)}` : ""}</span> : null}
       </span>
       <span className="at-t tnum">{dur(runDuration(run, now) ?? 0)}</span>
       <span className="at-a"><span className="bar heat"><i style={{ width: `${total ? ((finished / total) * 100).toFixed(1) : 0}%` }} /></span></span>
@@ -228,7 +229,7 @@ function ProjectRows({ project, hosts, recent }: { readonly project: Domain.Proj
         <span className="cell spk"><RunSpark history={project.history} /></span>
         <span className="cell num">{main ? <Took run={main} /> : null}</span>
         <span className="cell num dim">{main ? ago(main.createdAt, now) : ""}</span>
-        {hosts.map((h) => <HostCell key={h} deployment={project.deployments.find((d) => d.host === h)} next={deploying} main={main} />)}
+        {hosts.map((h) => <HostCell key={h} deployment={project.deployments.find((d) => d.host === h)} next={deploying} />)}
       </div>
       {[...prs.values()].slice(0, 3).map((r) => (
         <div key={r.id} className="br br-change">
@@ -269,12 +270,15 @@ function Took({ run }: { readonly run: Domain.Run }) {
   return <span className={isActive(run.status) ? "heat" : ""}>{dur(d)}</span>
 }
 
-function HostCell({ deployment: d, next, main }: { readonly deployment: Domain.Deployment | undefined; readonly next: Domain.Run | undefined; readonly main: Domain.Run | null }) {
+function HostCell({ deployment, next }: { readonly deployment: Domain.Deployment | undefined; readonly next: Domain.Run | undefined }) {
+  return deployment ? <Host d={deployment} next={next} /> : <span className="cell host" />
+}
+
+function Host({ d, next }: { readonly d: Domain.Deployment; readonly next: Domain.Run | undefined }) {
   const now = useNow()
-  if (!d) return <span className="cell host" />
-  // The latest main run is the only run the overview can tie to a live revision.
-  const linked = !d.deployingRun && main !== null && main.commit.sha === d.revision
-  const sha = d.revision ? (linked && main ? <a className="hsha" href={href({ page: "rollout", id: main.id })}>{shortSha(d.revision)}</a> : shortSha(d.revision)) : null
+  const history = useAtomValue(deployHistoryAtom({ project: d.project, host: null, limit: 10 }))
+  const by = AsyncResult.isSuccess(history) ? history.value.find((r) => r.host === d.host && r.revision === d.revision) : undefined
+  const sha = d.revision ? (by && !d.deployingRun ? <a className="hsha" href={href({ page: "rollout", id: by.runId })} data-tip={`deployed by #${by.runNumber}`}>{shortSha(d.revision)}</a> : shortSha(d.revision)) : null
   const live = d.revision ? <><span className="hl">{d.host}</span><Swatch k={d.storePath ?? d.revision} /><code>{sha}</code></> : <><span className="hl">{d.host}</span><span className="dim">nothing live</span></>
   if (d.deployingRun) {
     return <a className="cell host" href={href({ page: "rollout", id: d.deployingRun })}>{live}<span className="arrow">→</span><span className="heat">deploying</span></a>

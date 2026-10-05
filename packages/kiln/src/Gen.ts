@@ -30,9 +30,16 @@ const names = (dir: string, output: string, system: string) =>
     Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
   )
 
+const standard = `import { Project } from "@kiln/std"
+import { flake } from "./flake.ts"
+
+export default Project.standard({ flake })
+`
+
 /**
  * `kiln gen`: writes `.kiln/flake.ts` from the flake's outputs, a tsconfig for editors, and links
- * `.kiln/node_modules` to Kiln's SDK so `@kiln/core`, `@kiln/std` and `effect` resolve.
+ * `.kiln/node_modules` to Kiln's SDK so `@kiln/core`, `@kiln/std` and `effect` resolve. A repository
+ * without `.kiln/ci.ts` gets the standard pipeline.
  */
 export const gen = (repo: string, system: string) =>
   Effect.gen(function*() {
@@ -59,7 +66,9 @@ export const flake = Flake.make({
     writeFileSync(join(kiln, "tsconfig.json"), `${JSON.stringify(tsconfig, null, 2)}\n`)
     writeFileSync(join(kiln, ".gitignore"), "node_modules\n")
     link(join(kiln, "node_modules"), sdkPath)
-    return { packages, checks, devShells }
+    const created = !existsSync(join(kiln, "ci.ts"))
+    if (created) writeFileSync(join(kiln, "ci.ts"), standard)
+    return { packages, checks, devShells, created }
   })
 
 export const link = (path: string, target: string) => {

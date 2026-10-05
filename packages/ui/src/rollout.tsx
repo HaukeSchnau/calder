@@ -6,8 +6,8 @@ import type { Domain } from "@kiln/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { useLayoutEffect, useRef, useState } from "react"
-import { isActive, isTerminal, logsAtom, overviewAtom, runAtom, traceAtom } from "./data.ts"
-import { ago, clock, clockS, dur, eventLine, shortSha, stepDuration, titleOf } from "./format.ts"
+import { deployHistoryAtom, isActive, isTerminal, logsAtom, overviewAtom, runAtom, traceAtom } from "./data.ts"
+import { ago, clock, clockS, dur, eventLine, shortSha, stepDuration, titleOf, when } from "./format.ts"
 import { statusClass } from "./overview.tsx"
 import { Waterfall } from "./panel.tsx"
 import { href } from "./route.ts"
@@ -61,6 +61,9 @@ function Rollout({ detail, step, deployments }: { readonly detail: Domain.RunDet
   const now = useNow()
   const { run } = detail
   const sha = run.commit.sha
+  const history = useAtomValue(deployHistoryAtom({ project: run.project, host: null, limit: 40 }))
+  const records = AsyncResult.isSuccess(history) ? history.value : []
+  const deployedBy = (d: Domain.Deployment) => records.find((r) => r.host === d.host && r.revision === d.revision)
   const hosts = [...deployments].sort((a, b) => order(a, run, step) - order(b, run, step))
   const elapsed = stepDuration(step, now)
   const waitsFor = [...step.needs, ...step.after].filter((n) => {
@@ -119,7 +122,7 @@ function Rollout({ detail, step, deployments }: { readonly detail: Domain.RunDet
                     <td><span className="hs"><StateGlyph state={state} /><code>{shortSha(sha)}</code><span className={statusClass(state === "deploying" ? "running" : state === "failed" ? "failed" : "passed")}>{state}</span></span></td>
                     <td>
                       <span className="hs">
-                        {d.revision ? <><Swatch k={d.storePath ?? d.revision} /><code>{shortSha(d.revision)}</code></> : <span className="dim">nothing live</span>}
+                        {d.revision ? <><Swatch k={d.storePath ?? d.revision} /><RevisionLink revision={d.revision} record={deployedBy(d)} /></> : <span className="dim">nothing live</span>}
                         {d.pending ? <span data-tip="asked for but not active"><span className="arrow">→</span><code>{shortSha(d.pending)}</code> pending</span> : null}
                       </span>
                     </td>
@@ -131,9 +134,18 @@ function Rollout({ detail, step, deployments }: { readonly detail: Domain.RunDet
               })}
             </tbody>
           </table>
-          <header className="sub-h"><h3>Deploy trace</h3><span className="dim">spans of {step.name}</span></header>
-          <DeployTrace detail={detail} step={step} />
-          <DeployLog runId={run.id} step={step} />
+          <div className="ro-cols">
+            <div className="ro-now">
+              <header className="sub-h"><h3>Deploy trace</h3><span className="dim">spans of {step.name}</span></header>
+              <DeployTrace detail={detail} step={step} />
+              <DeployLog runId={run.id} step={step} />
+            </div>
+            <aside className="ro-hist">
+              <header className="sub-h"><h3>History</h3><span className="dim">deploys of {run.project} by Kiln, per host</span></header>
+              {hosts.map((d) => <HostHistory key={d.host} deployment={d} records={records.filter((r) => r.host === d.host)} runId={run.id} />)}
+              {AsyncResult.isSuccess(history) && !records.length ? <p className="empty">Kiln hasn't deployed {run.project} yet.</p> : null}
+            </aside>
+          </div>
         </section>
       </div>
     </>
@@ -153,6 +165,39 @@ function DeployTrace({ detail, step }: { readonly detail: Domain.RunDetail; read
     <Loaded result={result} what="the deploy trace">
       {(spans) => spans.some((s) => s.spanId === root) ? <Waterfall spans={spans} step={step} root={root} live={step.status === "running"} compact /> : <p className="empty">The trace has no span for {step.name} yet.</p>}
     </Loaded>
+  )
+}
+
+function RevisionLink({ revision, record }: { readonly revision: string; readonly record: Domain.DeploymentRecord | undefined }) {
+  return (
+    <>
+      <code>{shortSha(revision)}</code>
+      {record ? <a className="lnk" href={href({ page: "rollout", id: record.runId })} data-tip="the rollout that deployed it">#{record.runNumber}</a> : null}
+    </>
+  )
+}
+
+/** Newest first: what is live, what this run deployed, what each deploy replaced. */
+function HostHistory({ deployment, records, runId }: { readonly deployment: Domain.Deployment; readonly records: ReadonlyArray<Domain.DeploymentRecord>; readonly runId: string }) {
+  const now = useNow()
+  if (!records.length) return null
+  return (
+    <section className="hh">
+      <p className="hh-h"><b>{deployment.host}</b></p>
+      {records.slice(0, 6).map((r, i) => {
+        const live = i === 0 && r.revision === deployment.revision
+        return (
+          <a key={`${r.runId}-${r.at}`} className={`hh-r${r.runId === runId ? " this" : ""}`} href={href({ page: "rollout", id: r.runId })}>
+            <Swatch k={r.storePath} />
+            <code>{shortSha(r.revision)}</code>
+            <span className="tnum">#{r.runNumber}</span>
+            <span className="tnum">{when(r.at, now)}</span>
+            <span className="dim tnum">{ago(r.at, now)}</span>
+            <span className={live ? "" : "dim"}>{r.runId === runId ? "this run" : live ? "live" : "replaced"}</span>
+          </a>
+        )
+      })}
+    </section>
   )
 }
 

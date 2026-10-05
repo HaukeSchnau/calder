@@ -12,6 +12,8 @@ import * as Fleet from "./Fleet.ts"
 import { Gitea } from "./Gitea.ts"
 import { type ActiveJob, Jobs } from "./Jobs.ts"
 import { Leases } from "./Leases.ts"
+import { Live } from "./Live.ts"
+import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 
 const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
@@ -19,9 +21,11 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const jobs = yield* Jobs
   const leases = yield* Leases
   const fleet = yield* Fleet.Fleet
+  const live = yield* Live
   const gitea = yield* Gitea
   const sql = yield* SqlClient.SqlClient
   const http = yield* HttpClient.HttpClient
+  const projects = yield* Projects
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
@@ -50,10 +54,13 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const holding = (active: ActiveJob) =>
     active.lease === undefined
       ? refuse("deploy calls need the project's lease (Fleet.deploying)")
-      : Effect.succeed({ project: active.lease, fence: leases.fenceOf(active.lease, active.id) })
+      : Effect.succeed({ ...active.lease, fence: leases.fenceOf(active.lease.project, active.id) })
 
-  const targetUrl = (project: string, host: string) =>
-    config.projects[project]?.targets.find((t) => Fleet.hostOf(t) === host)
+  const targetUrl = (targets: ReadonlyArray<string>, host: string) => targets.find((t) => Fleet.hostOf(t) === host)
+
+  /** The app a run's release deploys as: what its flake declares, else the project's name. */
+  const appOf = (runId: string, project: string) =>
+    Effect.map(db(Rows.loadRun(runId)), (row) => (row?.plan ? (JSON.parse(row.plan) as { app?: string | null }).app : null) ?? project)
 
   return {
     job: ({ job, token }) => Effect.map(jobs.authorize(job, token), (active) => active.spec),
@@ -65,20 +72,21 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
     finish: ({ job, token, result }) =>
       Effect.gen(function*() {
         const active = yield* jobs.authorize(job, token)
-        if (active.lease !== undefined) yield* leases.release(active.lease, active.id)
+        if (active.lease !== undefined) yield* leases.release(active.lease.project, active.id)
         active.lease = undefined
         yield* Deferred.succeed(active.result, result)
       }),
     gitHead: ({ job, token, branch }) =>
       Effect.gen(function*() {
         const active = yield* trusted(job, token)
-        return yield* gitea.head(config.projects[runOf(active).project]!.repo, branch)
+        return yield* gitea.head(projects.get(runOf(active).project)!.repo, branch)
       }),
     giteaDispatch: ({ job, token, workflow, ref, inputs }) =>
       Effect.gen(function*() {
         const active = yield* trusted(job, token)
         const run = runOf(active)
-        yield* gitea.dispatch(config.projects[run.project]!.repo, workflow, ref ?? run.branch ?? config.projects[run.project]!.defaultBranch, inputs)
+        const project = projects.get(run.project)!
+        yield* gitea.dispatch(project.repo, workflow, ref ?? run.branch ?? project.defaultBranch, inputs)
       }),
     atticPush: ({ job, token, path }) =>
       Effect.gen(function*() {
@@ -103,7 +111,7 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const existing = yield* db(sql<{ comment_id: number }>`select comment_id from comments
           where project = ${run.project} and pr = ${event.number} and step = ${step}`)
         const body = `${markdown}\n\n<sub>Kiln · ${step} · [run ${run.number}](${config.publicUrl.replace(/\/$/, "")}/#/run/${run.id})</sub>`
-        const id = yield* gitea.comment(config.projects[run.project]!.repo, event.number, body, existing[0]?.comment_id ?? null)
+        const id = yield* gitea.comment(projects.get(run.project)!.repo, event.number, body, existing[0]?.comment_id ?? null)
         yield* db(sql`insert into comments (project, pr, step, comment_id) values (${run.project}, ${event.number}, ${step}, ${id})
           on conflict (project, pr, step) do update set comment_id = ${id}`)
       }),
@@ -114,38 +122,41 @@ const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
         const grant = yield* leases.acquire(project, { job: active.id, run: run.number })
         if (grant._tag === "Replaced") return grant
-        active.lease = project
-        return { _tag: "Held" as const, fence: grant.fence, targets: config.projects[project]!.targets.map(Fleet.hostOf) }
+        const app = yield* appOf(run.id, project)
+        const targets = yield* fleet.targets(projects.get(project)!, app)
+        active.lease = { project, app, targets }
+        return { _tag: "Held" as const, fence: grant.fence, targets: targets.map(Fleet.hostOf) }
       }),
     fleetRelease: ({ job, token }) =>
       Effect.gen(function*() {
         const active = yield* jobs.authorize(job, token)
-        if (active.lease !== undefined) yield* leases.release(active.lease, active.id)
+        if (active.lease !== undefined) yield* leases.release(active.lease.project, active.id)
         active.lease = undefined
       }),
     fleetPreflight: ({ job, token, target, descriptor }) =>
       Effect.gen(function*() {
         const active = yield* deployer(job, token)
-        const { project } = yield* holding(active)
-        const url = targetUrl(project, target)
+        const { project, app, targets } = yield* holding(active)
+        const url = targetUrl(targets, target)
         if (url === undefined) return yield* new FleetRejected({ target, status: 0, reason: `${target} is not a target of ${project}` })
         const run = runOf(active)
         const parent = yield* stepSpan(run.id, active)
-        yield* fleet.preflight(url, project, descriptor, parent)
+        yield* fleet.preflight(url, app, descriptor, parent)
       }),
     fleetDeploy: ({ job, token, target, revision, storePath }) =>
       Effect.gen(function*() {
         const active = yield* deployer(job, token)
-        const { project, fence } = yield* holding(active)
+        const { project, app, targets, fence } = yield* holding(active)
         if (fence === undefined) return yield* refuse("the lease was lost")
-        const url = targetUrl(project, target)
+        const url = targetUrl(targets, target)
         if (url === undefined) return yield* new FleetRejected({ target, status: 0, reason: `${target} is not a target of ${project}` })
         const run = runOf(active)
         if (revision !== run.revision) return yield* refuse("a run may only deploy its own revision")
         const parent = yield* stepSpan(run.id, active)
-        yield* fleet.deploy(url, project, { revision, storePath, fence }, parent)
-        yield* db(sql`insert into deployments (project, host, revision, store_path, run_id, at)
-          values (${project}, ${target}, ${revision}, ${storePath}, ${run.id}, ${Date.now()})`)
+        yield* fleet.deploy(url, app, { revision, storePath, fence }, parent)
+        const row: Rows.DeploymentRow = { project, host: target, revision, store_path: storePath, run_id: run.id, at: Date.now() }
+        yield* db(sql`insert into deployments ${sql.insert(row)}`)
+        yield* live.publish({ _tag: "DeploymentRecorded", record: Rows.deployment(row) })
       }),
   }
 

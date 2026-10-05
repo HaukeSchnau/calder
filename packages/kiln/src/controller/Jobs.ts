@@ -24,8 +24,8 @@ export interface ActiveJob {
   readonly onEvent: (event: JobEvent) => Effect.Effect<void>
   readonly result: Deferred.Deferred<JobResult>
   readonly samples: Array<Sample>
-  /** Set by the RPC server while the job holds a deploy lease. */
-  lease: string | undefined
+  /** Set by the RPC server while the job holds a deploy lease: the project, its app and its endpoints. */
+  lease: { readonly project: string; readonly app: string; readonly targets: ReadonlyArray<string> } | undefined
 }
 
 export interface Usage {

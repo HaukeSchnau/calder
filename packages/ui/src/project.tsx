@@ -92,7 +92,7 @@ function Runs({ project }: { readonly project: string }) {
           const more = async () => {
             if (!oldest) return
             const exit = await fetchRuns({ payload: pullRequest === null ? { project, before: oldest.createdAt, limit: 60 } : { project, pullRequest, before: oldest.createdAt, limit: 60 } })
-            if (exit._tag === "Success") setOlder({ key, runs: [...extra, ...exit.value], done: exit.value.length === 0 })
+            if (exit._tag === "Success") setOlder({ key, runs: [...extra, ...exit.value.runs], done: exit.value.runs.length === 0 })
           }
           return (
             <>

@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { FleetBusy, FleetRejected } from "../Protocol.ts"
 import { Config } from "./Config.ts"
+import type { Project } from "./Projects.ts"
 import * as Telemetry from "./Telemetry.ts"
 
 export const hostOf = (target: string) => new URL(target).hostname
@@ -26,6 +27,11 @@ export class Fleet extends Context.Service<Fleet, {
     trace: Telemetry.Parent,
   ) => Effect.Effect<void, FleetBusy | FleetRejected>
   readonly status: (target: string, project: string) => Effect.Effect<Status | null>
+  /**
+   * The promotion endpoints that run `app`, in the fleet's deploy order: the project's configured targets,
+   * or every endpoint whose `/health` lists the app.
+   */
+  readonly targets: (project: Project, app: string) => Effect.Effect<ReadonlyArray<string>>
 }>()("kiln/controller/Fleet") {}
 
 export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
@@ -39,6 +45,22 @@ export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
       Effect.flatMap((response) => response.text.pipe(Effect.map((text) => ({ status: response.status, text })))),
       Effect.timeout("2 minutes"),
     )
+  const Health = Schema.Struct({ apps: Schema.Array(Schema.String) })
+  const apps = new Map<string, { readonly at: number; readonly apps: ReadonlyArray<string> }>()
+  const appsOf = (endpoint: string) =>
+    Effect.gen(function*() {
+      const hit = apps.get(endpoint)
+      if (hit !== undefined && Date.now() - hit.at < 60_000) return hit.apps
+      const health = yield* client.get(`${endpoint}/health`).pipe(
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(Health)),
+        Effect.timeout("5 seconds"),
+        Effect.map((h) => h.apps),
+        Effect.orElseSucceed(() => hit?.apps ?? []),
+      )
+      apps.set(endpoint, { at: Date.now(), apps: health })
+      return health
+    })
+
   const reason = (text: string) => {
     try {
       const json = JSON.parse(text) as { error?: string; compatibility?: { reasons?: ReadonlyArray<string> } }
@@ -70,6 +92,10 @@ export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
           return Effect.fail(new FleetRejected({ target: hostOf(target), status: r.status, reason: reason(r.text) }))
         }),
       )),
+    targets: (project, app) =>
+      project.targets !== null
+        ? Effect.succeed(project.targets)
+        : Effect.filter(config.fleet, (endpoint) => Effect.map(appsOf(endpoint), (list) => list.includes(app)), { concurrency: "unbounded" }),
     status: (target, project) =>
       client.get(`${target}/status/${project}`).pipe(
         Effect.flatMap(HttpClientResponse.schemaBodyJson(Status)),

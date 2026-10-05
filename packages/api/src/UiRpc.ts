@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/rpc"
-import { Change, DeploymentRecord, LogLine, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
+import { Change, DeploymentRecord, LogEntry, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
 
 export class NotFound extends Schema.TaggedError<NotFound>("@kiln/api/NotFound")("NotFound", {
   what: Schema.String,
@@ -24,12 +24,13 @@ export class UiRpcs extends RpcGroup.make(
       /** Runs created before this time, for paging. */
       before: Schema.optional(Schema.Number),
     },
-    success: Schema.Array(Run),
+    /** `seq` is the last change included; apply only changes with a higher one. */
+    success: Schema.Struct({ seq: Schema.Number, runs: Schema.Array(Run) }),
   }),
   Rpc.make("run", { payload: { id: Schema.String }, success: RunDetail, error: NotFound }),
   /**
    * History from VictoriaLogs, then live lines while the step runs. `limit` keeps the last lines of the
-   * history (default 5000); `before` pages back from a timestamp.
+   * history (default 5000); `before` pages back from a line's `index`.
    */
   Rpc.make("logs", {
     payload: {
@@ -39,7 +40,7 @@ export class UiRpcs extends RpcGroup.make(
       limit: Schema.optional(Schema.Number),
       before: Schema.optional(Schema.Number),
     },
-    success: LogLine,
+    success: LogEntry,
     error: NotFound,
     stream: true,
   }),

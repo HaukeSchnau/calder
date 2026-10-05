@@ -3,6 +3,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { Config } from "./Config.ts"
 import { Mirror } from "./Mirror.ts"
+import { Projects } from "./Projects.ts"
 import { Runs } from "./Workflow.ts"
 import { SqlClient } from "effect/sql"
 
@@ -11,7 +12,7 @@ interface Payload {
   readonly after?: string
   readonly action?: string
   readonly number?: number
-  readonly repository?: { readonly full_name?: string }
+  readonly repository?: { readonly full_name?: string; readonly default_branch?: string }
   readonly pull_request?: {
     readonly head?: { readonly ref?: string; readonly sha?: string; readonly repo?: { readonly full_name?: string } }
     readonly base?: { readonly ref?: string; readonly repo?: { readonly full_name?: string } }
@@ -37,15 +38,16 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     const mirror = yield* Mirror
     const runs = yield* Runs
     const sql = yield* SqlClient.SqlClient
+    const projects = yield* Projects
     const body = yield* request.text
     if (!verified(config.webhookSecret, body, request.headers["x-gitea-signature"])) {
       return HttpServerResponse.text("bad signature", { status: 401 })
     }
     const event = request.headers["x-gitea-event"]
     const payload = JSON.parse(body) as Payload
-    const enrolled = config.projectByRepo(payload.repository?.full_name ?? "")
+    const enrolled = yield* projects.byRepo(payload.repository?.full_name ?? "", payload.repository?.default_branch)
     if (enrolled === undefined) return HttpServerResponse.text("not enrolled")
-    const [project] = enrolled
+    const project = enrolled.name
 
     const start = (sha: string, run: Effect.Effect<unknown, unknown>) =>
       Effect.gen(function*() {

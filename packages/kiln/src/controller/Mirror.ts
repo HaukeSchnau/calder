@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync } from "node
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { Config } from "./Config.ts"
+import { Projects } from "./Projects.ts"
 
 export class NoPipeline extends Schema.TaggedError<NoPipeline>("kiln/NoPipeline")("NoPipeline", {
   revision: Schema.String,
@@ -43,6 +44,7 @@ const groupReadable = (dir: string) => {
 export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
   const config = yield* Config
   const spawner = yield* Exec.SpawnerTag
+  const projects = yield* Projects
   const locks = new Map<string, Semaphore.Semaphore>()
   const lock = (project: string) => {
     let s = locks.get(project)
@@ -68,7 +70,7 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
       if (existsSync(join(dir, "HEAD"))) return
       mkdirSync(dir, { recursive: true })
       yield* git(project, ["init", "-q", "--bare"])
-      const repo = config.projects[project]!.repo
+      const repo = projects.get(project)!.repo
       yield* git(project, ["remote", "add", "origin", `${config.gitea.url.replace(/\/$/, "")}/${repo}.git`])
       yield* git(project, ["config", "core.sharedRepository", "group"])
       yield* git(project, ["config", "uploadpack.allowAnySHA1InWant", "true"])

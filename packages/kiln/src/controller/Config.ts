@@ -1,14 +1,15 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { readFileSync } from "node:fs"
 
+/** Overrides for a project; every repository of an allowed owner is a project without any. */
 export const ProjectConfig = Schema.Struct({
   /** Gitea `owner/name`. */
   repo: Schema.String,
-  defaultBranch: Schema.String,
-  /** Promotion endpoints of the hosts that run the project's release, in deploy order. */
-  targets: Schema.Array(Schema.String),
+  defaultBranch: Schema.optional(Schema.String),
+  /** Promotion endpoints in deploy order, instead of asking the fleet which hosts run the app. */
+  targets: Schema.optional(Schema.Array(Schema.String)),
   /** Secrets steps of this project may be granted: name to a file the controller can read. */
-  secrets: Schema.Record(Schema.String, Schema.String),
+  secrets: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 })
 export type ProjectConfig = typeof ProjectConfig.Type
 
@@ -38,6 +39,10 @@ export const ConfigSchema = Schema.Struct({
     mode: Schema.Literals(["systemd", "process"]),
     slots: Schema.Struct({ plans: Schema.Number, builds: Schema.Number, tasks: Schema.Number, actions: Schema.Number }),
   }),
+  /** Gitea owners whose repositories are enrolled when they carry `.kiln/ci.ts`. */
+  owners: Schema.Array(Schema.String),
+  /** The hosts' promotion endpoints, in deploy order. Kiln asks each which apps it runs. */
+  fleet: Schema.Array(Schema.String),
   projects: Schema.Record(Schema.String, ProjectConfig),
 })
 export type ConfigShape = typeof ConfigSchema.Type
@@ -46,7 +51,6 @@ export class Config extends Context.Service<Config, ConfigShape & {
   readonly giteaToken: string
   readonly webhookSecret: string
   readonly promotionToken: string
-  readonly projectByRepo: (repo: string) => readonly [string, ProjectConfig] | undefined
 }>()("kiln/controller/Config") {}
 
 const readSecret = (path: string) => readFileSync(path, "utf8").trim()
@@ -54,12 +58,10 @@ const readSecret = (path: string) => readFileSync(path, "utf8").trim()
 export const fromFile = (path: string) =>
   Layer.effect(Config)(Effect.gen(function*() {
     const config = yield* Schema.decodeUnknownEffect(ConfigSchema)(JSON.parse(readFileSync(path, "utf8")))
-    const byRepo = new Map(Object.entries(config.projects).map(([name, p]) => [p.repo.toLowerCase(), [name, p] as const]))
     return {
       ...config,
       giteaToken: readSecret(config.gitea.tokenFile),
       webhookSecret: readSecret(config.gitea.webhookSecretFile),
       promotionToken: readSecret(config.promotion.tokenFile),
-      projectByRepo: (repo: string) => byRepo.get(repo.toLowerCase()),
     }
   }))

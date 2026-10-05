@@ -159,6 +159,14 @@ export const LogLine = Schema.Struct({
 })
 export type LogLine = typeof LogLine.Type
 
+/** A line as the `logs` RPC serves it. */
+export const LogEntry = Schema.Struct({
+  ...LogLine.fields,
+  /** Position in the log as the controller serves it; `before` pages back by it. */
+  index: Schema.Number,
+})
+export type LogEntry = typeof LogEntry.Type
+
 /**
  * A span of a run's trace. Kiln's own spans carry `kiln.project`, `kiln.run`, `kiln.step`, `kiln.kind`,
  * `kiln.status` and `kiln.key`; Nix activities carry `nix.activity` and `nix.drv`; deploy calls carry
@@ -249,6 +257,7 @@ export const DeploymentRecord = Schema.Struct({
   revision: Schema.String,
   storePath: Schema.String,
   runId: Schema.String,
+  runNumber: Schema.Number,
   at: Schema.Number,
 })
 export type DeploymentRecord = typeof DeploymentRecord.Type
@@ -266,5 +275,6 @@ export const Change = Schema.Union([
     failingTests: Schema.Array(TestResult),
   }),
   Schema.TaggedStruct("DeploymentChanged", { seq: Schema.Number, deployment: Deployment }),
+  Schema.TaggedStruct("DeploymentRecorded", { seq: Schema.Number, record: DeploymentRecord }),
 ])
 export type Change = typeof Change.Type

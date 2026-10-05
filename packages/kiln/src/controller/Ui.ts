@@ -10,6 +10,7 @@ import { Live } from "./Live.ts"
 import * as Rows from "./Rows.ts"
 import * as Telemetry from "./Telemetry.ts"
 import * as Estimates from "./Estimates.ts"
+import { type Project, Projects } from "./Projects.ts"
 import { Runs } from "./Workflow.ts"
 
 
@@ -22,6 +23,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const fleet = yield* Fleet.Fleet
   const gitea = yield* Gitea
   const runs = yield* Runs
+  const enrolled = yield* Projects
   const telemetry = yield* Telemetry.Telemetry
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
@@ -37,17 +39,27 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       return value
     })
 
-  const deployments = (project: string) =>
-    Effect.forEach(config.projects[project]!.targets, (target) =>
+  /** The app the project's latest planned release deploys as. */
+  const appOf = (project: string) =>
+    Effect.map(
+      db(sql<{ plan: string }>`select plan from runs where project = ${project} and plan is not null order by created_at desc limit 1`),
+      (rows) => (rows[0] === undefined ? null : (JSON.parse(rows[0].plan) as { app?: string | null }).app) ?? project,
+    )
+
+  const deployments = (project: Project) =>
+    Effect.gen(function*() {
+      const app = yield* appOf(project.name)
+      return yield* fleet.targets(project, app)
+    }).pipe(Effect.flatMap((targets) => Effect.forEach(targets, (target) =>
       Effect.gen(function*() {
         const host = Fleet.hostOf(target)
-        const status = yield* cachedStatus(target, project)
+        const status = yield* cachedStatus(target, project.name)
         const last = yield* db(sql<{ revision: string; store_path: string; at: number }>`select revision, store_path, at from deployments
-          where project = ${project} and host = ${host} order by at desc limit 1`)
-        const holder = leases.holder(project)
+          where project = ${project.name} and host = ${host} order by at desc limit 1`)
+        const holder = leases.holder(project.name)
         const holderJob = holder === undefined ? undefined : jobs.get(holder.job)
         return {
-          project,
+          project: project.name,
           host,
           revision: status?.revision ?? last[0]?.revision ?? null,
           storePath: status?.storePath ?? last[0]?.store_path ?? null,
@@ -58,7 +70,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
           url: null,
           deployingRun: holderJob?.spec.run.id ?? null,
         } satisfies Domain.Deployment
-      }), { concurrency: "unbounded" })
+      }), { concurrency: "unbounded" })))
 
   const flakyKeys = (project: string, tests: ReadonlyArray<{ readonly suite: string; readonly name: string }>) =>
     Effect.gen(function*() {
@@ -133,8 +145,9 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     overview: () =>
       Effect.gen(function*() {
         const seq = live.seq()
-        const projects = yield* Effect.forEach(Object.entries(config.projects), ([name, project]) =>
+        const projects = yield* Effect.forEach(enrolled.all(), (project) =>
           Effect.gen(function*() {
+            const name = project.name
             const history = yield* db(sql<Rows.RunRow>`select * from runs where project = ${name} and branch = ${project.defaultBranch}
               and pr is null order by created_at desc limit 20`)
             const main = history[0] === undefined ? null : (yield* db(Rows.runsWithCounts([history[0]])))[0]!
@@ -143,7 +156,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
               repo: project.repo,
               defaultBranch: project.defaultBranch,
               main,
-              deployments: yield* deployments(name),
+              deployments: yield* deployments(project),
               history: [...history].reverse().map((r) => ({
                 id: r.id,
                 status: r.status,
@@ -175,7 +188,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
           ${pullRequest === undefined ? sql`` : sql`and pr = ${pullRequest}`}
           ${before === undefined ? sql`` : sql`and created_at < ${before}`}
           order by created_at desc limit ${Math.min(limit ?? 50, 200)}`)
-        return yield* db(Rows.runsWithCounts(rows))
+        return { seq: live.seq(), runs: yield* db(Rows.runsWithCounts(rows)) }
       }),
     run: ({ id }) => detail(id),
     logs: ({ runId, step, follow, limit, before }) =>
@@ -184,25 +197,18 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         if (row === undefined) return Stream.fail(new NotFound({ what: `run ${runId}` }))
         const recent = live.lines(runId, step)
         const all = recent.length > 0 ? recent : yield* telemetry.logs({ run: runId, ...(step === undefined ? {} : { step }) })
-        const page = (before === undefined ? all : all.filter((l) => l.timestamp < before)).slice(-(limit ?? 5000))
-        const tail = follow === true && before === undefined && live.running(runId, step) ? live.follow(runId, step) : Stream.empty
+        const end = Math.min(before ?? all.length, all.length)
+        const start = Math.max(0, end - (limit ?? 5000))
+        const page = all.slice(start, end).map((line, i): Domain.LogEntry => ({ ...line, index: start + i }))
+        const tail = follow === true && before === undefined && live.running(runId, step)
+          ? live.follow(runId, step).pipe(Stream.mapAccum(() => all.length, (index, line) => [index + 1, [{ ...line, index }]] as const))
+          : Stream.empty
         return Stream.concat(Stream.fromIterable(page), tail)
       })),
     deployments: ({ project, host, limit }) =>
-      db(sql<{ project: string; host: string; revision: string; store_path: string; run_id: string; at: number }>`
+      db(sql<Rows.DeploymentRow>`
         select * from deployments where project = ${project} ${host === undefined ? sql`` : sql`and host = ${host}`}
-        order by at desc limit ${Math.min(limit ?? 50, 500)}`).pipe(
-        Effect.map((rows) =>
-          rows.map((r): Domain.DeploymentRecord => ({
-            project: r.project,
-            host: r.host,
-            revision: r.revision,
-            storePath: r.store_path,
-            runId: r.run_id,
-            at: r.at,
-          }))
-        ),
-      ),
+        order by at desc limit ${Math.min(limit ?? 50, 500)}`).pipe(Effect.map((rows) => rows.map(Rows.deployment))),
     trace: ({ runId }) =>
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
@@ -245,7 +251,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       }),
     trigger: ({ project, branch, inputs }) =>
       Effect.gen(function*() {
-        const p = config.projects[project]
+        const p = enrolled.get(project)
         if (p === undefined) return yield* new NotFound({ what: `project ${project}` })
         const target = branch ?? p.defaultBranch
         const sha = yield* gitea.head(p.repo, target)

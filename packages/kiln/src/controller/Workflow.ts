@@ -8,6 +8,7 @@ import * as Counters from "./Counters.ts"
 import { Gitea } from "./Gitea.ts"
 import { Live } from "./Live.ts"
 import { Mirror } from "./Mirror.ts"
+import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 import { RunsCore } from "./Runs.ts"
 import * as Telemetry from "./Telemetry.ts"
@@ -54,13 +55,14 @@ export const layerRuns = Layer.effect(Runs)(Effect.gen(function*() {
   const mirror = yield* Mirror
   const gitea = yield* Gitea
   const live = yield* Live
+  const projects = yield* Projects
   const engine = yield* WorkflowEngine.WorkflowEngine
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
   const create: Runs["Service"]["create"] = (input) =>
     Effect.gen(function*() {
-      const project = config.projects[input.project]
+      const project = projects.get(input.project)
       if (project === undefined) return yield* new RunError({ message: `unknown project ${input.project}` })
       const commit = yield* mirror.commit(input.project, input.sha).pipe(
         Effect.catch(() => mirror.fetch(input.project).pipe(Effect.andThen(mirror.commit(input.project, input.sha)))),

@@ -2,12 +2,12 @@
 // the run's trace, its metrics and history, its failing tests and its value or error.
 
 import type { Domain } from "@kiln/api"
-import { useAtomValue } from "@effect/atom-react"
+import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { BarChart, LineChart } from "./charts.tsx"
 import { Kiln } from "./client.ts"
-import { isActive, isTerminal, logsAtom, metricsAtom, traceAtom } from "./data.ts"
+import { LOG_PAGE, earlierLogs, isActive, isTerminal, logsAtom, metricsAtom, traceAtom } from "./data.ts"
 import { bytes, clockS, dur, spanDur, stepDuration } from "./format.ts"
 import { Check, Fail, Kbd, Loaded, Ring, useNow } from "./ui.tsx"
 
@@ -71,7 +71,6 @@ const memory: { scope: "step" | "run"; levels: Record<Level, boolean>; streams: 
 
 const LEVELS: ReadonlyArray<Level> = ["error", "warn", "info", "debug"]
 const STREAMS: ReadonlyArray<LogStream> = ["stdout", "stderr", "kiln"]
-const MAX_LINES = 3000
 
 function LogsTab({ detail, step, onSelect }: { readonly detail: Domain.RunDetail; readonly step: Domain.StepRun; readonly onSelect: (name: string) => void }) {
   const [scope, setScope] = useState(memory.scope)
@@ -98,7 +97,12 @@ function LogsView({ detail, step, scope, follow, onScope, onSelect }: {
   const [streams, setStreams] = useState(memory.streams)
   const [query, setQuery] = useState("")
   const [stick, setStick] = useState(true)
-  const lines = AsyncResult.isSuccess(result) ? result.value : AsyncResult.isFailure(result) && result.previousSuccess._tag === "Some" ? result.previousSuccess.value.value : []
+  const latest = AsyncResult.isSuccess(result) ? result.value : AsyncResult.isFailure(result) && result.previousSuccess._tag === "Some" ? result.previousSuccess.value.value : []
+  const [earlier, setEarlier] = useState<ReadonlyArray<Domain.LogEntry>>([])
+  const [paging, setPaging] = useState(false)
+  const fetchEarlier = useAtomSet(earlierLogs, { mode: "promiseExit" })
+  const lines = useMemo(() => (earlier.length ? [...earlier, ...latest] : latest), [earlier, latest])
+  const oldest = lines[0]
   const streaming = followKey && AsyncResult.isWaiting(result)
   const q = query.trim().toLowerCase()
   const shown = useMemo(
@@ -110,10 +114,24 @@ function LogsView({ detail, step, scope, follow, onScope, onSelect }: {
 
   const body = useRef<HTMLDivElement>(null)
   const jumped = useRef(false)
+  // The scroll height before earlier lines went in on top, so the view stays on the same line.
+  const anchor = useRef<number | null>(null)
+  const loadEarlier = async () => {
+    if (!oldest || paging) return
+    setPaging(true)
+    const exit = await fetchEarlier({ runId: detail.run.id, step: scope === "step" ? step.name : null, before: oldest.index })
+    setPaging(false)
+    if (exit._tag !== "Success") return
+    anchor.current = body.current?.scrollHeight ?? null
+    setEarlier((e) => [...exit.value, ...e])
+  }
   useLayoutEffect(() => {
     const el = body.current
     if (!el) return
-    if (followKey && stick) {
+    if (anchor.current !== null) {
+      el.scrollTop += el.scrollHeight - anchor.current
+      anchor.current = null
+    } else if (followKey && stick) {
       el.scrollTop = el.scrollHeight
     } else if (!jumped.current && lines.length) {
       jumped.current = true
@@ -171,8 +189,12 @@ function LogsView({ detail, step, scope, follow, onScope, onSelect }: {
       >
         {AsyncResult.isFailure(result) && !lines.length ? <Loaded result={result} what="log lines">{() => null}</Loaded> : null}
         <div className={`loglist${scope === "run" ? " run" : ""}${sharded ? " sharded" : ""}`}>
-          {shown.length > MAX_LINES && <p className="empty">Showing the last {MAX_LINES} of {shown.length} lines.</p>}
-          {shown.slice(-MAX_LINES).map((l, i) => (
+          {oldest && oldest.index > 0 ? (
+            <button type="button" className="ll-more" onClick={loadEarlier} disabled={paging}>
+              {paging ? "Loading earlier lines" : "Load earlier lines"}<span className="dim">{oldest.index} before these, {LOG_PAGE} at a time</span>
+            </button>
+          ) : earlier.length ? <p className="ll-more dim">Start of the log</p> : null}
+          {shown.map((l, i) => (
             <div key={i} className={`ll lv-${l.level} st-${l.stream}${scope === "run" && l.step === step.name ? " cur" : ""}`}>
               <span className="lt">{offset(l.timestamp - origin)}</span>
               {scope === "run" && <button type="button" className="ls step-link" onClick={() => onSelect(l.step)}>{l.step}</button>}
@@ -231,7 +253,7 @@ function spanKind(s: Domain.Span): SpanKind {
   const kind = s.attributes["kiln.kind"]
   if (kind === "build" || kind === "task" || kind === "action") return kind
   if (s.attributes["http.status"] !== undefined) return "http"
-  if (Object.keys(s.attributes).some((k) => k.startsWith("nix.")) || s.name.startsWith("nix ")) return "nix"
+  if (s.attributes["nix.activity"] !== undefined) return "nix"
   return "detail"
 }
 
@@ -340,7 +362,7 @@ export function Waterfall({ spans, step, live, onSelect, root, compact = false }
               own && span.spanId === own.spanId ? "on" : inside.has(span.spanId) ? "in" : "",
               selected && span.spanId === selected.spanId ? "sel" : "",
             ].join(" ")
-            const tag = span.attributes["http.status"] ? `http ${span.attributes["http.status"]}` : kind === "nix" ? "nix" : span.attributes["kiln.status"] === "reused" ? "reused" : ""
+            const tag = span.attributes["http.status"] ? `http ${span.attributes["http.status"]}` : span.attributes["nix.activity"] ?? (span.attributes["kiln.status"] === "reused" ? "reused" : "")
             return (
               <div key={span.spanId} className={cls} onClick={() => {
                 setPicked(span.spanId)

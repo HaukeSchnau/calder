@@ -69,7 +69,6 @@ function RunView({ detail, requested }: { readonly detail: Domain.RunDetail; rea
     setOpenState(o)
   }
   const select = (name: string) => go({ page: "run", id: detail.run.id, step: name }, { replace: true })
-  const runLabel = useRunLabels(detail)
   const ordered = graphOrder(steps)
 
   useKeys((e) => {
@@ -106,11 +105,11 @@ function RunView({ detail, requested }: { readonly detail: Domain.RunDetail; rea
         <div className="doc">
           <div className="chg">
             <RunHeader detail={detail} />
-            <FailureBlock detail={detail} step={selected} onSelect={select} onTab={setTab} runLabel={runLabel} />
+            <FailureBlock detail={detail} step={selected} onSelect={select} onTab={setTab} />
             <section className="canvas" aria-label="Step graph">
               {steps.length === 0 ? (detail.run.status === "planning" ? <p className="empty">Planning. The steps appear once the plan is known.</p> : null)
-                : phone ? <GraphList steps={steps} selected={selected?.name ?? null} onSelect={select} runLabel={runLabel} />
-                : <Graph steps={steps} selected={selected?.name ?? null} onSelect={select} runLabel={runLabel} />}
+                : phone ? <GraphList steps={steps} selected={selected?.name ?? null} onSelect={select} />
+                : <Graph steps={steps} selected={selected?.name ?? null} onSelect={select} />}
               {steps.length > 0 && !phone ? <Legend /> : null}
             </section>
           </div>
@@ -125,7 +124,7 @@ function RunView({ detail, requested }: { readonly detail: Domain.RunDetail; rea
         )}
       </main>
       <aside className="inspector" aria-label="Inspector">
-        {selected ? <Inspector detail={detail} step={selected} onSelect={select} onTab={setTab} runLabel={runLabel} /> : null}
+        {selected ? <Inspector detail={detail} step={selected} onSelect={select} onTab={setTab} /> : null}
       </aside>
     </>
   )
@@ -154,19 +153,6 @@ function Resizer({ onResize }: { readonly onResize: (height: number) => void }) 
       }}
     />
   )
-}
-
-/** "#612" for every run the page has heard of: siblings, and the overview's recent runs. */
-function useRunLabels(detail: Domain.RunDetail) {
-  const ov = useAtomValue(overviewAtom)
-  const known = new Map<string, Domain.Run>()
-  if (AsyncResult.isSuccess(ov)) for (const r of [...ov.value.recent, ...ov.value.active]) known.set(r.id, r)
-  for (const r of detail.siblings) known.set(r.id, r)
-  known.set(detail.run.id, detail.run)
-  return (id: string) => {
-    const r = known.get(id)
-    return r ? (r.project === detail.run.project ? `#${r.number}` : `${r.project} #${r.number}`) : null
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -242,12 +228,11 @@ function Siblings({ runs, current }: { readonly runs: ReadonlyArray<Domain.Run>;
 /* ------------------------------------------------------------------ */
 /* Failure                                                             */
 
-function FailureBlock({ detail, step, onSelect, onTab, runLabel }: {
+function FailureBlock({ detail, step, onSelect, onTab }: {
   readonly detail: Domain.RunDetail
   readonly step: Domain.StepRun | null
   readonly onSelect: (name: string) => void
   readonly onTab: (tab: Tab) => void
-  readonly runLabel: (id: string) => string | null
 }) {
   const { run } = detail
   if (run.status === "errored") {
@@ -292,12 +277,7 @@ function FailureBlock({ detail, step, onSelect, onTab, runLabel }: {
         ) : null}
         {shown.error.excerpt ? <pre className="excerpt">{shown.error.excerpt}</pre> : null}
       </div>
-      {shown.attempts > 1 || shown.reusedFrom ? (
-        <p className="fl-act dim">
-          {shown.attempts > 1 ? <span>{shown.attempts} attempts</span> : null}
-          {shown.reusedFrom ? <span>failed in {runLabel(shown.reusedFrom) ?? "an earlier run"}</span> : null}
-        </p>
-      ) : null}
+      {shown.attempts > 1 ? <p className="fl-act dim">{shown.attempts} attempts</p> : null}
     </section>
   )
 }
@@ -315,12 +295,11 @@ function Kv({ rows }: { readonly rows: ReadonlyArray<readonly [string, ReactNode
 
 const Row = ({ k, v }: { readonly k: string; readonly v: ReactNode }) => <><dt>{k}</dt><dd>{v}</dd></>
 
-function Inspector({ detail, step, onSelect, onTab, runLabel }: {
+function Inspector({ detail, step, onSelect, onTab }: {
   readonly detail: Domain.RunDetail
   readonly step: Domain.StepRun
   readonly onSelect: (name: string) => void
   readonly onTab: (tab: Tab) => void
-  readonly runLabel: (id: string) => string | null
 }) {
   const now = useNow()
   const byName = new Map(detail.steps.map((s) => [s.name, s]))
@@ -349,9 +328,9 @@ function Inspector({ detail, step, onSelect, onTab, runLabel }: {
       <section className="isec">
         <h3>Result</h3>
         <Kv rows={[
-          ["status", <Meta step={step} steps={detail.steps} runLabel={runLabel} />],
+          ["status", <Meta step={step} steps={detail.steps} />],
           ["key", step.key ? <><Swatch k={step.key} solid={hasBits(step.status)} /><code data-tip={step.key} data-key={step.key}>{shortKey(step.key)}</code></> : <span className="dim">not known yet</span>],
-          step.reusedFrom !== null && ["from", <a className="lnk" href={href({ page: "run", id: step.reusedFrom, step: step.name })}>{runLabel(step.reusedFrom) ?? "the earlier run"}</a>],
+          step.status === "reused" && ["from", step.reusedFrom ? <a className="lnk" href={href({ page: "run", id: step.reusedFrom.id, step: step.name })}>#{step.reusedFrom.number}</a> : <span className="dim">already built, nothing ran</span>],
           step.startedAt !== null && ["started", <span className="tnum">{clockS(step.startedAt)}</span>],
           d !== null && step.status !== "running" && ["took", <span className="tnum">{dur(d)}</span>],
           queue !== null && ["queue", <span className="tnum">{spanDur(queue)}</span>],

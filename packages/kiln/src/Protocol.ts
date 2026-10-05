@@ -43,6 +43,8 @@ export type PlannedStep = typeof PlannedStep.Type
 
 export const PlanSpec = Schema.Struct({
   version: Schema.Literal(1),
+  /** The app the release deploys as (`lib.project.project`), when the flake declares one. */
+  app: Schema.NullOr(Schema.String),
   trust: Domain.Trust,
   reuse: Reuse,
   schedules: Schema.Array(Schema.String),

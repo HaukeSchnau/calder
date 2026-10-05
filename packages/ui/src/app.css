@@ -210,6 +210,9 @@ kbd + kbd { margin-left: 2px; }
 .ll.lv-warn .lv, .ll.lv-warn .lm { color: var(--heat-ink); }
 .ll.lv-debug .lm { color: var(--ink-3); }
 .ll.caret { background: none; }
+.ll-more { display: flex; align-items: center; gap: 12px; width: 100%; height: 28px; margin-bottom: 4px; padding: 0 12px 0 82px; border-bottom: 1px solid var(--rule); font: 12px var(--sans); color: var(--ink-2); }
+button.ll-more:hover { background: var(--hover); color: var(--ink); }
+button.ll-more:disabled { cursor: default; }
 .cursor { display: inline-block; width: 7px; height: 13px; background: var(--heat); vertical-align: -2px; animation: pulse 1s steps(2) infinite; }
 mark { background: color-mix(in oklab, var(--heat) 32%, transparent); color: inherit; border-radius: 2px; }
 
@@ -400,6 +403,9 @@ mark { background: color-mix(in oklab, var(--heat) 32%, transparent); color: inh
 .gr .trk i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 1.5px; background: #6a6e79; max-width: 100%; }
 .gr .trk i.run { background: var(--heat); }
 .gr .trk i.failed { background: var(--bad); }
+.gr .trk b { position: absolute; top: -2px; width: 1px; height: 7px; background: var(--ink-3); }
+.gn .prog { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: color-mix(in oklab, var(--heat) 16%, transparent); }
+.gn .prog i { display: block; height: 100%; background: var(--heat); }
 .shards { margin-left: 7px; font-size: 11.5px; color: var(--ink-3); font-weight: 400; }
 .legend { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px 22px; color: var(--ink-3); font-size: 11.5px; }
 .legend span { display: inline-flex; align-items: center; gap: 7px; }
@@ -553,6 +559,15 @@ a.cell.host:hover .heat { text-decoration: underline; text-underline-offset: 3px
 .ro-count .big { font-size: 32px; font-weight: 500; line-height: 1.05; letter-spacing: -0.02em; }
 .ro-body { flex: 1; }
 .ro-main { min-width: 0; padding: 4px 24px 24px; }
+.ro-cols { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 32px; align-items: start; }
+.ro-now { min-width: 0; }
+.hh { border-top: 1px solid var(--rule); padding: 6px 0 10px; }
+.hh-h { display: flex; align-items: baseline; gap: 10px; height: 26px; font-size: 12.5px; }
+.hh-h b { font-weight: 600; }
+.hh-r { display: grid; grid-template-columns: 10px 60px 40px 50px minmax(0, 1fr) auto; column-gap: 10px; align-items: center; height: 24px; font-size: 12.5px; }
+.hh-r:hover { background: var(--hover); box-shadow: -6px 0 0 var(--hover), 6px 0 0 var(--hover); }
+.hh-r code { font-size: 11.5px; color: var(--ink-2); }
+.hh-r.this code, .hh-r.this span:last-child { color: var(--ink); font-weight: 600; }
 .sub-h { display: flex; align-items: baseline; gap: 10px; padding: 16px 0 8px; }
 .sub-h h3 { font-size: 12.5px; font-weight: 600; }
 .gtt { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
@@ -736,6 +751,7 @@ a.sb:hover { background: var(--hover); color: var(--ink); }
   .ro-head { grid-template-columns: 1fr; padding: 14px; }
   .ro-count { align-items: flex-start; text-align: left; }
   .ro-main { padding: 0 14px 14px; }
+  .ro-cols { grid-template-columns: 1fr; gap: 0; }
   .gtt th:nth-child(n+5), .gtt td:nth-child(n+5) { display: none; }
   .hosts-t th, .hosts-t td { padding-right: 12px; }
 

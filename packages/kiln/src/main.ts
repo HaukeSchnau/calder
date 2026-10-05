@@ -28,6 +28,7 @@ const gen = Command.make("gen", { dir: Argument.String("dir").pipe(Argument.with
     yield* Console.log(
       `wrote .kiln/flake.ts (${outputs.packages.length} packages, ${outputs.checks.length} checks, ${outputs.devShells.length} dev shells)`,
     )
+    if (outputs.created) yield* Console.log("wrote .kiln/ci.ts with the standard pipeline")
   }))
 
 const parseEvent = (text: string): Event.Event => {

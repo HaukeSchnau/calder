@@ -11,6 +11,7 @@ import * as Jobs from "./Jobs.ts"
 import * as Leases from "./Leases.ts"
 import * as Live from "./Live.ts"
 import * as Mirror from "./Mirror.ts"
+import * as Projects from "./Projects.ts"
 import * as Runs from "./Runs.ts"
 import * as Scheduler from "./Scheduler.ts"
 import * as Telemetry from "./Telemetry.ts"
@@ -21,11 +22,12 @@ import * as Workflow from "./Workflow.ts"
 export const layer = (configPath: string) => {
   const platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunCrypto.layer)
   const config = Config.fromFile(configPath)
-  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Mirror.layer, Live.layer, Jobs.layer).pipe(
+  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Live.layer, Jobs.layer).pipe(
     Layer.provideMerge(config),
     Layer.provideMerge(platform),
   )
-  const fleet = Layer.mergeAll(Fleet.layer, Leases.layer).pipe(Layer.provideMerge(base))
+  const projects = Projects.layer.pipe(Layer.provideMerge(base))
+  const fleet = Layer.mergeAll(Fleet.layer, Leases.layer, Mirror.layer).pipe(Layer.provideMerge(projects))
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const engine = ClusterWorkflowEngine.layer.pipe(
     Layer.provideMerge(SingleRunner.layer({ runnerStorage: "sql" })),

@@ -2,6 +2,7 @@ import { Cron, Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
 import { Config } from "./Config.ts"
 import { Gitea } from "./Gitea.ts"
+import { Projects } from "./Projects.ts"
 import { Runs } from "./Workflow.ts"
 
 /** Starts the runs of `On.schedule` rules. The schedules come from the last plan of each default branch. */
@@ -10,12 +11,13 @@ export const layer = Layer.effectDiscard(Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient
   const gitea = yield* Gitea
   const runs = yield* Runs
+  const projects = yield* Projects
   const tick = Effect.gen(function*() {
     const now = new Date()
     now.setSeconds(0, 0)
     const rows = yield* sql<{ project: string; cron: string }>`select project, cron from schedules`
     for (const row of rows) {
-      const project = config.projects[row.project]
+      const project = projects.get(row.project)
       if (project === undefined) continue
       const cron = Cron.parse(row.cron)
       if (cron._tag === "Failure" || !Cron.match(cron.success, now)) continue

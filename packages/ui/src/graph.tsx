@@ -8,8 +8,6 @@ interface Props {
   readonly steps: ReadonlyArray<Domain.StepRun>
   readonly selected: string | null
   readonly onSelect: (name: string) => void
-  /** "#612" for a run id the page knows about. */
-  readonly runLabel: (id: string) => string | null
 }
 
 const done = (s: Domain.StepStatus | undefined) => s === "passed" || s === "reused"
@@ -21,13 +19,22 @@ function groupStatus(steps: ReadonlyArray<Domain.StepRun>): Domain.StepStatus {
   return "pending"
 }
 
+/** Elapsed against the step's usual duration, 0 to 1; null when there is no history to compare with. */
+export const progressOf = (step: Domain.StepRun, now: number) =>
+  step.status === "running" && step.startedAt !== null && step.expectedMs ? Math.min(1, (now - step.startedAt) / step.expectedMs) : null
+
 /** The short line under a step: how long, or why not. */
-export function Meta({ step, steps, runLabel, short = false }: { readonly step: Domain.StepRun; readonly steps: ReadonlyArray<Domain.StepRun>; readonly runLabel: Props["runLabel"]; readonly short?: boolean }) {
+export function Meta({ step, steps, short = false }: { readonly step: Domain.StepRun; readonly steps: ReadonlyArray<Domain.StepRun>; readonly short?: boolean }) {
   const now = useNow()
   const d = stepDuration(step, now)
   switch (step.status) {
     case "running":
-      return <span className="heat">{short ? "" : "running "}{dur(d ?? 0)}</span>
+      return (
+        <span>
+          <span className="heat">{short || step.expectedMs ? "" : "running "}{dur(d ?? 0)}</span>
+          {!short && step.expectedMs ? <span className="dim"> of ~{dur(step.expectedMs)}</span> : null}
+        </span>
+      )
     case "queued":
       return <span className="dim">queued{short ? "" : ` ${dur(now - (step.queuedAt ?? now))}`}</span>
     case "pending": {
@@ -37,10 +44,9 @@ export function Meta({ step, steps, runLabel, short = false }: { readonly step: 
     }
     case "passed":
       return <span>{dur(d ?? 0)}</span>
-    case "reused": {
-      const from = step.reusedFrom ? runLabel(step.reusedFrom) : null
-      return <span className="dim">{short || !from ? "reused" : `reused from ${from}`}</span>
-    }
+    case "reused":
+      if (step.reusedFrom === null) return <span className="dim">{short ? "built" : "already built"}</span>
+      return <span className="dim">{short ? "reused" : `reused from #${step.reusedFrom.number}`}</span>
     case "failed":
       return <span className="bad">{short ? "" : "failed after "}{dur(d ?? 0)}</span>
     case "died":
@@ -55,7 +61,7 @@ export function Meta({ step, steps, runLabel, short = false }: { readonly step: 
   }
 }
 
-export function Graph({ steps, selected, onSelect, runLabel }: Props) {
+export function Graph({ steps, selected, onSelect }: Props) {
   const key = shapeKey(steps)
   // Positions depend only on the graph's shape, not on statuses.
   const shape: Layout = useMemo(() => layout(steps), [key])
@@ -80,7 +86,7 @@ export function Graph({ steps, selected, onSelect, runLabel }: Props) {
   const scale = avail > 0 ? Math.max(0.72, Math.min(1, avail / W)) : 1
 
   const now = useNow()
-  const longest = Math.max(30_000, ...members.map((s) => stepDuration(s, now) ?? 0))
+  const longest = Math.max(30_000, ...members.map((s) => Math.max(stepDuration(s, now) ?? 0, s.status === "running" ? (s.expectedMs ?? 0) : 0)))
 
   return (
     <div ref={frame} className="graph-frame">
@@ -113,7 +119,7 @@ export function Graph({ steps, selected, onSelect, runLabel }: Props) {
                   <Swatch k={s.key} solid={hasBits(s.status)} />
                   <span className="nm">{s.name}{s.shards ? <span className="shards">×{s.shards}</span> : null}{s.attempts > 1 ? <span className="shards">retried</span> : null}</span>
                   <Track step={s} max={longest} now={now} />
-                  <span className="mt"><Meta step={s} steps={steps} runLabel={runLabel} short /></span>
+                  <span className="mt"><Meta step={s} steps={steps} short /></span>
                   <span className="mk"><StepMark status={s.status} /></span>
                 </button>
               ))}
@@ -129,7 +135,8 @@ export function Graph({ steps, selected, onSelect, runLabel }: Props) {
                   <span className="nm">{s.name}{s.shards ? <span className="shards">×{s.shards}</span> : null}</span>
                   <StepMark status={s.status} />
                 </span>
-                <span className="sub"><Meta step={s} steps={steps} runLabel={runLabel} /></span>
+                <span className="sub"><Meta step={s} steps={steps} /></span>
+                <Progress step={s} now={now} />
               </button>
             )
           })}
@@ -147,18 +154,26 @@ function GroupSummary({ steps }: { readonly steps: ReadonlyArray<Domain.StepRun>
   return <span className="mt">{steps.filter((s) => done(s.status)).length} of {steps.length}</span>
 }
 
+function Progress({ step, now }: { readonly step: Domain.StepRun; readonly now: number }) {
+  const p = progressOf(step, now)
+  return p === null ? null : <span className="prog" aria-hidden="true"><i style={{ width: `${(p * 100).toFixed(1)}%` }} /></span>
+}
+
+/** Duration on the group's shared scale; a running step also marks where it usually ends. */
 function Track({ step, max, now }: { readonly step: Domain.StepRun; readonly max: number; readonly now: number }) {
   const d = stepDuration(step, now)
   const cls = step.status === "running" ? "run" : step.status === "failed" || step.status === "died" ? "failed" : ""
+  const pct = (ms: number) => `${Math.min(100, (ms / max) * 100).toFixed(1)}%`
   return (
     <span className="trk" aria-hidden="true">
-      {d !== null && step.status !== "reused" ? <i className={cls} style={{ width: `${Math.min(100, (d / max) * 100).toFixed(1)}%` }} /> : null}
+      {d !== null && step.status !== "reused" ? <i className={cls} style={{ width: pct(d) }} /> : null}
+      {step.status === "running" && step.expectedMs ? <b style={{ left: pct(step.expectedMs) }} /> : null}
     </span>
   )
 }
 
 /** Narrow screens: the same steps as a list in graph order, the required checks kept together. */
-export function GraphList({ steps, selected, onSelect, runLabel }: Props) {
+export function GraphList({ steps, selected, onSelect }: Props) {
   const shape = useMemo(() => layout(steps), [shapeKey(steps)])
   const ordered = [...steps].sort((a, b) => {
     const pa = shape.group?.members.includes(a.name) ? shape.group.box : shape.boxes.get(a.name)
@@ -176,22 +191,22 @@ export function GraphList({ steps, selected, onSelect, runLabel }: Props) {
       rows.push(
         <div key={GROUP} className="gl-group">
           <span className="gh"><span>Required checks</span><GroupSummary steps={list} /></span>
-          {list.map((m) => <ListRow key={m.name} step={m} steps={steps} selected={selected} onSelect={onSelect} runLabel={runLabel} />)}
+          {list.map((m) => <ListRow key={m.name} step={m} steps={steps} selected={selected} onSelect={onSelect} />)}
         </div>,
       )
       continue
     }
-    rows.push(<ListRow key={s.name} step={s} steps={steps} selected={selected} onSelect={onSelect} runLabel={runLabel} />)
+    rows.push(<ListRow key={s.name} step={s} steps={steps} selected={selected} onSelect={onSelect} />)
   }
   return <div className="graph-list">{rows}</div>
 }
 
-function ListRow({ step, steps, selected, onSelect, runLabel }: { readonly step: Domain.StepRun } & Props) {
+function ListRow({ step, steps, selected, onSelect }: { readonly step: Domain.StepRun } & Props) {
   return (
     <button type="button" className={`gr s-${step.status}${selected === step.name ? " sel" : ""}`} onClick={() => onSelect(step.name)}>
       <Swatch k={step.key} solid={hasBits(step.status)} />
       <span className="nm">{step.name}{step.shards ? <span className="shards">×{step.shards}</span> : null}</span>
-      <span className="mt"><Meta step={step} steps={steps} runLabel={runLabel} /></span>
+      <span className="mt"><Meta step={step} steps={steps} /></span>
       <span className="mk"><StepMark status={step.status} /></span>
     </button>
   )

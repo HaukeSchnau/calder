@@ -101,6 +101,10 @@ const migrations = {
     // Pull requests from forks never count for trusted runs; same-repo ones may.
     yield* sql`alter table runs add column fork integer not null default 0`
   }),
+  "0003_projects": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`create table projects (name text primary key, repo text not null, default_branch text not null, created_at integer not null)`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

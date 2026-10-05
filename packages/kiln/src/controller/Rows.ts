@@ -207,3 +207,22 @@ export const failingTests = (runId: string, step: string) =>
       and status in ('failed', 'timeout') limit 200`
     return rows.map((r) => testResult(r, false))
   }).pipe(Effect.orDie)
+
+export type DeploymentRow = {
+  readonly project: string
+  readonly host: string
+  readonly revision: string
+  readonly store_path: string
+  readonly run_id: string
+  readonly at: number
+}
+
+export const deployment = (row: DeploymentRow): Domain.DeploymentRecord => ({
+  project: row.project,
+  host: row.host,
+  revision: row.revision,
+  storePath: row.store_path,
+  runId: row.run_id,
+  runNumber: runNumber(row.run_id),
+  at: row.at,
+})

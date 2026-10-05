@@ -231,6 +231,10 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
         }
       }), { concurrency: 4 })
 
-    const spec: PlanSpec = { version: 1, trust: plan.trust, reuse: plan.reuse, schedules: plan.schedules, steps }
+    const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`]).pipe(
+      Effect.map((name) => name.trim() || null),
+      Effect.orElseSucceed(() => null),
+    )
+    const spec: PlanSpec = { version: 1, app, trust: plan.trust, reuse: plan.reuse, schedules: plan.schedules, steps }
     return spec
   })

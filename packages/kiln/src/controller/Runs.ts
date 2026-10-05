@@ -13,6 +13,7 @@ import { Gitea, type StatusState } from "./Gitea.ts"
 import { type Pool, Jobs, type Usage } from "./Jobs.ts"
 import { Live } from "./Live.ts"
 import { Mirror } from "./Mirror.ts"
+import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 import * as Slots from "./Slots.ts"
 import * as Telemetry from "./Telemetry.ts"
@@ -42,6 +43,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const gitea = yield* Gitea
   const live = yield* Live
   const telemetry = yield* Telemetry.Telemetry
+  const projects = yield* Projects
   const spawner = yield* Exec.SpawnerTag
   const http = yield* HttpClient.HttpClient
   const slots = {
@@ -78,7 +80,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
-  const repoOf = (project: string) => config.projects[project]!.repo
+  const repoOf = (project: string) => projects.get(project)!.repo
   const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`
   const poolOf = (run: Rows.RunRow): Pool => (run.trust === "pr" ? "pr" : "trusted")
 
@@ -199,7 +201,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             on conflict do nothing`
         }
         const event = JSON.parse(run.event) as Domain.Event
-        if (event._tag === "Push" && event.branch === config.projects[run.project]!.defaultBranch) {
+        if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
           yield* sql`delete from schedules where project = ${run.project}`
           for (const cron of spec.schedules) yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`
         }
@@ -523,7 +525,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   const readSecrets = (project: string, names: ReadonlyArray<string>) =>
     Object.fromEntries(names.flatMap((name) => {
-      const file = config.projects[project]?.secrets[name]
+      const file = projects.get(project)?.secrets[name]
       return file === undefined ? [] : [[name, readFileSync(file, "utf8").trim()]]
     }))
 

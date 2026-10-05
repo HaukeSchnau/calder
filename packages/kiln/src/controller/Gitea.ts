@@ -13,6 +13,12 @@ const Protection = Schema.Struct({
 const Branch = Schema.Struct({ commit: Schema.Struct({ id: Schema.String }) })
 const Comment = Schema.Struct({ id: Schema.Number })
 const Pull = Schema.Struct({ title: Schema.String })
+const Repo = Schema.Struct({
+  full_name: Schema.String,
+  default_branch: Schema.String,
+  archived: Schema.Boolean,
+  empty: Schema.Boolean,
+})
 
 const matches = (pattern: string, branch: string) =>
   pattern === branch || new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(branch)
@@ -30,6 +36,9 @@ export class Gitea extends Context.Service<Gitea, {
   readonly pullTitle: (repo: string, number: number) => Effect.Effect<string | null>
   readonly comment: (repo: string, number: number, body: string, existing: number | null) => Effect.Effect<number>
   readonly dispatch: (repo: string, workflow: string, ref: string, inputs: Record<string, string>) => Effect.Effect<void>
+  /** The owner's repositories the bot can see, without archived or empty ones. */
+  readonly repos: (owner: string) => Effect.Effect<ReadonlyArray<{ readonly repo: string; readonly defaultBranch: string }>>
+  readonly hasFile: (repo: string, ref: string, path: string) => Effect.Effect<boolean>
 }>()("kiln/controller/Gitea") {}
 
 export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
@@ -74,6 +83,21 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
       send("post", `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs }).pipe(
         Effect.asVoid,
         Effect.orDie,
+      ),
+    repos: (owner) =>
+      Effect.gen(function*() {
+        const found: Array<typeof Repo.Type> = []
+        for (let page = 1;; page++) {
+          const batch = yield* get(`/users/${owner}/repos?limit=50&page=${page}`, Schema.Array(Repo))
+          found.push(...batch)
+          if (batch.length < 50) break
+        }
+        return found.filter((r) => !r.archived && !r.empty).map((r) => ({ repo: r.full_name, defaultBranch: r.default_branch }))
+      }).pipe(Effect.orDie),
+    hasFile: (repo, ref, path) =>
+      client.get(`${base}/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
       ),
   }
 }))

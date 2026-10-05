@@ -274,7 +274,7 @@ const SCRIPTED: ReadonlyArray<Spec> = [
     reused: { static: "t3:pr418-1", "typecheck rest": "t3:pr418-1" },
   },
   {
-    key: "t3:pr418-3", project: "t3code", at: -7 * 60, event: pr(418, "codex/token-usage"),
+    key: "t3:pr418-3", project: "t3code", at: -13 * 60, event: pr(418, "codex/token-usage"),
     title: "Show token usage per turn", commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
     outcomes: { "test web": "failed" },
     reused: { static: "t3:pr418-2", "typecheck rest": "t3:pr418-2", "test server": "t3:pr418-2" },
@@ -682,6 +682,18 @@ const WEB_FILES = [
   "src/thread/Approvals.test.tsx (13 tests) 1.76s", "src/components/Terminal.test.tsx (8 tests) 2.95s", "src/state/notifications.test.ts (10 tests) 0.35s",
 ].map((f) => ` ✓ ${f}`)
 
+const DIRS = ["thread", "components", "state", "settings", "hooks", "lib", "sidebar", "composer", "terminal", "diff"]
+const FILES = ["index", "view", "store", "format", "keys", "layout", "item", "list", "panel", "model", "query", "effects"]
+
+/** A big web build's per-module output: long enough that the log pages back. */
+const transforms = (from: number, to: number): Array<Line> =>
+  Array.from({ length: 3000 }, (_, i) => {
+    const dir = DIRS[i % DIRS.length] ?? "lib"
+    const file = FILES[Math.floor(i / DIRS.length) % FILES.length] ?? "index"
+    const at = from + ((to - from) * i) / 3000
+    return [at, "info", "stdout", `transform apps/web/src/${dir}/${file}${Math.floor(i / 120)}.tsx ${((fnv(`${i}`) % 900) / 100 + 0.1).toFixed(2)} ms`] as const
+  })
+
 function scriptOf(run: SimRun, s: SimStep): Array<Line> {
   const sha = short(run.commit.sha)
   const where = run.event._tag === "PullRequest" ? `pr/${run.project}/1` : `trusted/${run.project}/1`
@@ -715,6 +727,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
       }
       lines.push([0.92, "info", "stdout", " Test Files  12 passed (12)"], [0.93, "info", "stdout", "      Tests  96 passed (96)"])
     }
+    if (s.plan.name === "projectRelease" && run.project === "t3code") lines.push(...transforms(0.2, 0.54))
     if (s.plan.name === "projectRelease") lines.push([0.55, "info", "stdout", "vite v8.3.2 building for production..."], [0.7, "info", "stdout", `${900 + (fnv(p) % 1500)} modules transformed.`], [0.8, "warn", "stderr", "(!) Some chunks are larger than 500 kB after minification."])
     if (s.plan.name === "releaseGate") lines.push([0.5, "info", "stdout", "migrations reversible, 0 pending"], [0.8, "info", "stdout", "bindings compatible with srv-2"])
     if (s.plan.name === "pnpmDeps") lines.push([0.5, "info", "stderr", "pnpm install --offline --frozen-lockfile"], [0.8, "info", "stderr", "Packages: +1412"])
@@ -815,7 +828,7 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
   const st = stepState(run, s, now)
   const name = s.plan.name
   if (st.status === "reused") {
-    return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.queuedAt, text: `reused ${s.key ?? ""} from run ${s.reusedFrom ?? ""}, nothing ran` }]
+    return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.queuedAt, text: s.plan.kind === "build" ? `already built: ${s.key ?? ""}` : `reused ${s.key ?? ""} from run ${s.reusedFrom ?? ""}, nothing ran` }]
   }
   if (st.status === "blocked") {
     return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.finishedAt, text: "blocked: a step it depends on didn't pass" }]
@@ -841,9 +854,9 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
   const spans: Array<Domain.Span> = [{
     spanId: root, parentId: null, name: `run ${run.project} #${run.number}`, start: run.createdAt, end,
     status: isActive(status) ? "unset" : status === "failed" ? "error" : "ok",
-    attributes: { "kiln.run": run.id, "kiln.project": run.project, "vcs.revision": run.commit.sha },
+    attributes: { "kiln.run": run.id, "kiln.project": run.project },
   }]
-  spans.push({ spanId: hex(`span:${run.id}:plan`, 16), parentId: root, name: "plan", start: run.createdAt, end: run.startedAt, status: "ok", attributes: { "kiln.worker": "kiln-worker-plan", "kiln.steps": String(run.steps.length) } })
+  spans.push({ spanId: hex(`span:${run.id}:plan`, 16), parentId: root, name: "plan", start: run.createdAt, end: run.startedAt, status: "ok", attributes: { "kiln.project": run.project, "kiln.run": run.id } })
   for (const s of run.steps) {
     const st = stepState(run, s, now)
     if (st.status === "pending" || st.status === "blocked" || st.status === "queued") continue
@@ -855,8 +868,8 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
       spanId: id, parentId: root, name: s.plan.name, start: from, end: to,
       status: open ? "unset" : st.status === "failed" || st.status === "died" ? "error" : "ok",
       attributes: {
-        "kiln.step": s.plan.name, "kiln.kind": s.plan.kind, "kiln.status": st.status, ...(s.key ? { "kiln.key": s.key } : {}),
-        ...(st.queuedAt !== null && st.startedAt !== null ? { "kiln.queue_ms": String(st.startedAt - st.queuedAt) } : {}),
+        "kiln.project": run.project, "kiln.run": run.id, "kiln.step": s.plan.name, "kiln.kind": s.plan.kind, "kiln.status": st.status,
+        ...(s.key ? { "kiln.key": s.key } : {}),
       },
     })
     if (st.status === "reused" || st.startedAt === null) continue
@@ -868,25 +881,26 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
       spans.push({ spanId: hex(`span:${run.id}:${s.plan.name}:${name}`, 16), parentId: id, name, start: cs, end: ce, status: ce >= to && open ? "unset" : err ? "error" : "ok", attributes })
     }
     if (s.plan.kind === "build") {
-      child("nix eval", 0, 0.03, { "nix.attr": s.plan.detail })
-      child("substitute from attic", 0.03, 0.12, { "nix.paths": String(12 + (fnv(s.plan.name) % 300)) })
-      child(`build ${s.plan.name}.drv`, 0.12, 0.99, { "nix.host": "srv-2" }, st.status === "failed")
+      child("evaluate", 0, 0.03, { "nix.activity": "eval" })
+      child(`substitute ${12 + (fnv(s.plan.name) % 300)} paths`, 0.03, 0.12, { "nix.activity": "substitute" })
+      child(`build ${s.plan.name}`, 0.12, 0.99, { "nix.activity": "build", ...(s.key ? { "nix.drv": s.key } : {}) }, st.status === "failed")
     } else if (s.plan.kind === "task") {
-      child("workspace", 0, 0.01, { "git.revision": short(run.commit.sha) })
+      child("workspace", 0, 0.01, {})
       child(".ci/setup", 0.01, 0.04, {})
       if (s.plan.shards) {
-        for (let i = 1; i <= s.plan.shards; i++) child(`shard ${i} of ${s.plan.shards}`, 0.04, 0.9 + i * 0.03, { "kiln.shard": String(i) })
+        for (let i = 1; i <= s.plan.shards; i++) child(`shard ${i} of ${s.plan.shards}`, 0.04, 0.9 + i * 0.03, {})
       } else {
-        child(s.plan.detail, 0.04, 0.99, { "process.unit": `kiln-task-${hex(`unit:${run.id}:${s.plan.name}`, 6)}.service` }, st.status === "failed")
+        child(s.plan.detail, 0.04, 0.99, {}, st.status === "failed")
       }
     } else if (s.plan.name === "promote") {
       child(`lease deploy:${run.project}`, 0, 0.002, { "kiln.fence": String(1100 + run.number) })
       for (const ph of phases(run)) {
         const span = ph.activate - ph.from
-        child(`POST ${ph.host} /preflight`, ph.from + span * 0.005, ph.from + span * 0.02, { "http.status": "200", "server.address": ph.host })
-        child("attic narinfo", ph.from + span * 0.02, ph.from + span * 0.04, { "attic.cache": "fleet" })
-        child(`POST ${ph.host} /deploy`, ph.from + span * 0.07, ph.from + span * 0.1, { "http.status": "202", "server.address": ph.host })
-        child(`readiness ${ph.host}`, ph.from + span * 0.1, ph.activate, { "url.full": `${urlOf(run.project)}/api/health/ready` })
+        const deploy = `http://${ph.host}:18100`
+        child(`POST ${ph.host} /preflight`, ph.from + span * 0.005, ph.from + span * 0.02, { "http.url": `${deploy}/preflight/${run.project}`, "http.status": "200" })
+        child("query narinfo", ph.from + span * 0.02, ph.from + span * 0.04, { "nix.activity": "query" })
+        child(`POST ${ph.host} /deploy`, ph.from + span * 0.07, ph.from + span * 0.1, { "http.url": `${deploy}/deploy/${run.project}`, "http.status": "202", "kiln.fence": String(1100 + run.number) })
+        child(`readiness ${ph.host}`, ph.from + span * 0.1, ph.activate, { "http.url": `${urlOf(run.project)}/api/health/ready` })
       }
     } else {
       child(s.plan.detail, 0, 0.99, {})
@@ -959,4 +973,21 @@ export function deployments(world: World, now: number): Array<Domain.Deployment>
   const anna = state.get("anna-fotoalbum|srv-2")
   if (anna) anna.pending = hex("sha:anna-fotoalbum:incompatible", 40)
   return [...state.values()]
+}
+
+/** Every activation of a revision on a host by `now`, newest first. */
+export function deployRecords(world: World, now: number): Array<Domain.DeploymentRecord> {
+  const out: Array<Domain.DeploymentRecord> = []
+  for (const run of world.runs) {
+    for (const s of run.steps) {
+      if (s.plan.name !== "promote" || s.outcome !== "passed" || now < s.startedAt) continue
+      const d = s.finishedAt - s.startedAt
+      for (const ph of phases(run)) {
+        const at = s.startedAt + ph.activate * d
+        if (at > now || (run.cancelledAt !== null && run.cancelledAt < at)) continue
+        out.push({ project: run.project, host: ph.host, revision: run.commit.sha, storePath: storePathOf(run), runId: run.id, runNumber: run.number, at: Math.round(at) })
+      }
+    }
+  }
+  return out.sort((a, b) => b.at - a.at)
 }
