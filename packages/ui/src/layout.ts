@@ -1,5 +1,5 @@
 // Layered layout for a run's step graph. Columns come from the longest path over needs, after and
-// exits. Steps that some step requires through branch protection collapse into one "Required
+// exits; a graph without edges wraps into a grid instead. Steps that some step requires through branch protection collapse into one "Required
 // checks" group, as in the prototype, so their gate edges merge into one. Within a column, nodes
 // follow the average height of what feeds them, so a chain of values runs on one straight row.
 
@@ -84,7 +84,14 @@ export function layout(steps: ReadonlyArray<Domain.StepRun>): Layout {
     return c
   }
   const columns: Array<Array<string>> = []
-  for (const n of nodes) (columns[columnOf(n)] ??= []).push(n)
+  if (links.length === 0 && nodes.length > 3) {
+    // Nothing depends on anything (a pull request's checks): one column would be a long list, so the
+    // steps wrap into a grid, in plan order down each column.
+    const rows = Math.ceil(nodes.length / Math.ceil(Math.sqrt(nodes.length / 2)))
+    for (let i = 0; i < nodes.length; i += rows) columns.push(nodes.slice(i, i + rows))
+  } else {
+    for (const n of nodes) (columns[columnOf(n)] ??= []).push(n)
+  }
 
   // A few barycenter sweeps against the previous columns reduce crossings.
   const index = new Map<string, number>()

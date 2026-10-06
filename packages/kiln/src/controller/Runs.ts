@@ -35,6 +35,9 @@ export class RunsCore extends Context.Service<RunsCore, {
   readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
 }>()("kiln/controller/RunsCore") {}
 
+/** Terminal colours and titles some tools write even without a terminal; the UI styles lines itself. */
+const plain = (text: string) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+
 export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const config = yield* Config
   const sql = yield* SqlClient.SqlClient
@@ -126,12 +129,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const logTo = (run: Rows.RunRow, step: string, spanId: string, shard: number | null) => (event: JobEvent) =>
     Effect.gen(function*() {
       if (event._tag !== "Log") return
-      const level: Domain.LogLine["level"] = event.stream === "kiln" ? "info" : event.stream === "stderr" && /\berror\b/i.test(event.text) ? "error" : "info"
-      live.append(run.id, { step, shard, stream: event.stream, level, timestamp: event.timestamp, text: event.text })
+      const text = plain(event.text)
+      const level: Domain.LogLine["level"] = event.stream === "kiln" ? "info" : event.stream === "stderr" && /\berror\b/i.test(text) ? "error" : "info"
+      live.append(run.id, { step, shard, stream: event.stream, level, timestamp: event.timestamp, text })
       yield* telemetry.log({
         parent: { traceId: run.trace_id, spanId },
         timestamp: event.timestamp,
-        text: event.text,
+        text,
         level,
         attributes: {
           "kiln.project": run.project,
