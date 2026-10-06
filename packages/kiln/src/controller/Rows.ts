@@ -62,7 +62,11 @@ export const terminal = (status: Domain.StepStatus) =>
 
 export const succeeded = (status: Domain.StepStatus) => status === "passed" || status === "reused"
 
-export const spec = (row: StepRow): PlannedStep => JSON.parse(row.spec) as PlannedStep
+/** Steps planned before setups existed lack the field. */
+export const spec = (row: StepRow): PlannedStep => {
+  const planned = JSON.parse(row.spec) as Omit<PlannedStep, "setup"> & { readonly setup?: PlannedStep["setup"] }
+  return { ...planned, setup: planned.setup ?? null }
+}
 
 export const run = (row: RunRow, counts: Record<string, number> = {}): Domain.Run => ({
   id: row.id,
