@@ -24,7 +24,7 @@ export const StepStatus = Schema.Literals([
 ])
 export type StepStatus = typeof StepStatus.Type
 
-export const StepKind = Schema.Literals(["build", "task", "action", "output"])
+export const StepKind = Schema.Literals(["build", "setup", "task", "action", "output"])
 export type StepKind = typeof StepKind.Type
 
 export const Event = Schema.Union([

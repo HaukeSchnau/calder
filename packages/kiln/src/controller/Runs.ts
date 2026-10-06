@@ -1,5 +1,5 @@
 import type { Domain } from "@kiln/api"
-import { Context, Deferred, Duration, Effect, Layer } from "effect"
+import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
 import { HttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { readFileSync } from "node:fs"
@@ -263,7 +263,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       case "passed":
         return ["success", `passed${took}`]
       case "reused":
-        return ["success", row.kind === "build" ? "already built" : "reused an identical result"]
+        return ["success", row.kind === "build" ? "already built" : row.kind === "setup" ? "already set up" : "reused an identical result"]
       case "failed":
         return ["failure", s.error?.message.split("\n")[0] ?? "failed"]
       case "died":
@@ -351,6 +351,47 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return { status: "died", error: { tag: "Died", message: `unexpected ${result._tag}`, json: null }, usage, ...extra }
     }
   }
+
+  /** Where a step of `platform` runs: here, or on an agent, whose workers fetch what local ones read from disk. */
+  const place = (run: Rows.RunRow, info: RunInfo, platform: string | null) => {
+    const remote = platform !== null && platform !== config.system
+    if (remote && run.trust !== "trusted") return null
+    const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, kilnDir: "", system: platform } : info
+    return { remote, where }
+  }
+  const agentsRefuse = (platform: string | null): Settled => ({
+    status: "died",
+    error: { tag: "Died", message: `${platform} steps run on agents, which only take trusted runs`, json: null },
+  })
+
+  type Executed = Effect.Success<ReturnType<typeof execute>>
+  const preparing = new Map<string, Deferred.Deferred<Option.Option<Executed>>>()
+  /**
+   * Runs a setup once for concurrent runs that need the same prepared workspace: the others wait and
+   * reuse it, or try themselves if it didn't pass.
+   */
+  const once = <E, R>(key: string, setup: Effect.Effect<Executed, E, R>): Effect.Effect<{ readonly executed: Executed; readonly reused: boolean }, E, R> =>
+    Effect.suspend(() => {
+      const running = preparing.get(key)
+      if (running !== undefined) {
+        return Deferred.await(running).pipe(Effect.flatMap(Option.match({
+          onNone: () => once(key, setup),
+          onSome: (executed) => Effect.succeed({ executed, reused: true }),
+        })))
+      }
+      const done = Deferred.makeUnsafe<Option.Option<Executed>>()
+      preparing.set(key, done)
+      return setup.pipe(
+        Effect.onExit((exit) =>
+          Effect.suspend(() => {
+            preparing.delete(key)
+            const passed = Exit.isSuccess(exit) && !("cancelled" in exit.value) && exit.value.result._tag === "Passed"
+            return Deferred.succeed(done, passed ? Option.some(exit.value) : Option.none())
+          })
+        ),
+        Effect.map((executed) => ({ executed, reused: false })),
+      )
+    })
 
   /**
    * Runs a job in a slot unless the run is cancelled first. Tasks get their workspace only once they
@@ -465,6 +506,29 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
       }
 
+      if (spec.setup !== null) {
+        const { deps, platform } = spec.setup
+        const placed = place(run, info, platform)
+        if (placed === null) return yield* settle(run, row, agentsRefuse(platform))
+        const { executed, reused } = yield* once(
+          `${poolOf(run)}/${run.project}/${platform ?? config.system}/${deps}`,
+          execute(run, row, (ws) => stepJob({ run: placed.where, workspace: ws, deps }), {
+            slots: placed.remote ? slots.agents : slots.tasks,
+            // Every task of the run waits for it.
+            priority: 0,
+            action: false,
+            shard: null,
+            workspace: true,
+            platform,
+          }, collect),
+        )
+        if ("cancelled" in executed) return yield* settle(run, row, { status: "cancelled" })
+        const settled = fromResult(executed.result, executed.usage, { attempts: collect.attempts })
+        const fresh = executed.result._tag === "Passed" && (executed.result.value as { readonly fresh?: boolean } | null)?.fresh === true
+        // Nothing ran when a prepared copy existed or another run prepared it.
+        return yield* settle(run, row, settled.status === "passed" && (reused || !fresh) ? { status: "reused", key: deps } : settled)
+      }
+
       if (spec.action !== null) {
         const secrets = run.trust === "trusted" ? readSecrets(run.project, spec.action.secrets) : {}
         const r = yield* execute(run, row, () => stepJob({ secrets }), { slots: slots.actions, priority, action: true, shard: null, workspace: false }, collect)
@@ -500,15 +564,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
-      const remote = task.platform !== null && task.platform !== config.system
-      if (remote && run.trust !== "trusted") {
-        return yield* settle(run, row, {
-          status: "died",
-          error: { tag: "Died", message: `${task.platform} tasks run on agents, which only take trusted runs`, json: null },
-        })
-      }
-      // An agent's worker fetches the revision and .kiln/ from the controller instead of reading its disk.
-      const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, kilnDir: "", system: task.platform! } : info
+      const placed = place(run, info, task.platform)
+      if (placed === null) return yield* settle(run, row, agentsRefuse(task.platform))
+      const { remote, where } = placed
       const shards = yield* Effect.forEach(Array.from({ length: count }, (_, i) => i + 1), (index) =>
         execute(
           run,

@@ -23,6 +23,8 @@ export const PlannedStep = Schema.Struct({
   detail: Schema.String,
   /** The derivation and output, when the plan could evaluate them. */
   build: Schema.NullOr(Schema.Struct({ attr: Schema.String, drv: Schema.NullOr(Schema.String), out: Schema.NullOr(Schema.String) })),
+  /** A setup: the key its prepared workspace is kept under, and where it runs. */
+  setup: Schema.NullOr(Schema.Struct({ deps: Schema.String, platform: Schema.NullOr(Schema.String) })),
   task: Schema.NullOr(Schema.Struct({
     /** The dev shell's attribute path, or null for the host's PATH. */
     shell: Schema.NullOr(Schema.String),
@@ -31,7 +33,7 @@ export const PlannedStep = Schema.Struct({
     inputs: Schema.Array(Schema.String),
     interpolates: Schema.Array(Schema.String),
     shards: Schema.NullOr(Schema.Number),
-    /** Hash of manifests, lockfiles, patches, `.ci/`, `flake.lock` and the dev shell. */
+    /** The key of the prepared workspace the task starts from: its setup's, or (without one) a hash of manifests, lockfiles, patches, `.ci/`, `flake.lock` and the dev shell. */
     deps: Schema.String,
     outputs: Schema.Array(Schema.String),
     secrets: Schema.Array(Schema.String),

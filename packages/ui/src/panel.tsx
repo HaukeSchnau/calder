@@ -252,6 +252,7 @@ function spanKind(s: Domain.Span): SpanKind {
   if (s.parentId === null) return "run"
   const kind = s.attributes["kiln.kind"]
   if (kind === "build" || kind === "task" || kind === "action") return kind
+  if (kind === "setup") return "task"
   if (s.attributes["http.status"] !== undefined) return "http"
   if (s.attributes["nix.activity"] !== undefined) return "nix"
   return "detail"

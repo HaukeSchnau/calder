@@ -175,7 +175,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
       plan.steps.flatMap((p) => {
         const def = p.step.def
         if (def._tag === "Build") return [Flake.attrPath(def.ref, run.system)]
-        if (def._tag === "Task" && def.shell !== undefined) return [Flake.attrPath(def.shell, run.system)]
+        if ((def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined) return [Flake.attrPath(def.shell, run.system)]
         return []
       }),
     )
@@ -186,6 +186,26 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
       const derivation = def._tag === "Build" ? evaluated.get(Flake.attrPath(def.ref, run.system)) : undefined
       return derivation ? [{ name: p.name, drv: derivation.drv }] : []
     }))
+
+    // A setup's key covers what its prepared workspace depends on; its tasks start from it.
+    const setupKeys = new Map(yield* Effect.forEach(plan.steps.filter((p) => p.step.def._tag === "Setup"), (p) =>
+      Effect.gen(function*() {
+        const def = p.step.def
+        if (def._tag !== "Setup") return [p.name, ""] as const
+        const inputs = (yield* paths(repo, def.inputs)).slice().sort()
+        const ids = yield* repo.objectIds(inputs)
+        const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system)
+        return [p.name, sha256({
+          kind: "setup",
+          inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
+          toolchain: shell === null ? null : evaluated.get(shell)?.drv ?? null,
+          command: Cmd.show(def.run),
+          keep: def.keep,
+          path: def.path,
+          env: Object.entries(def.env).sort(),
+          platform: def.platform ?? null,
+        })] as const
+      })))
 
     const steps = yield* Effect.forEach(plan.steps, (p) =>
       Effect.gen(function*() {
@@ -200,6 +220,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
           target: p.target,
           neverReuse: p.neverReuse,
           build: null,
+          setup: null,
           task: null,
           action: null,
           output: null,
@@ -210,6 +231,12 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
             const derivation = evaluated.get(attr) ?? null
             return { ...base, detail: attr, build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null } }
           }
+          case "Setup":
+            return {
+              ...base,
+              detail: Cmd.show(def.run),
+              setup: { deps: setupKeys.get(p.name)!, platform: def.platform ?? null },
+            }
           case "Output":
             return {
               ...base,
@@ -253,7 +280,9 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
                 inputs,
                 interpolates: command.steps.map((s) => s.name),
                 shards: def.shards?.count ?? null,
-                deps: sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
+                deps: def.setup === undefined
+                  ? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain })
+                  : setupKeys.get(def.setup.name)!,
                 outputs: Object.keys(def.outputs),
                 secrets: Object.values(def.secrets).map((s) => s.name),
                 platform: def.platform ?? null,

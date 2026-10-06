@@ -110,14 +110,16 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
 
 // ----------------------------------------------------------------------------------------------- task
 
+// Tasks without a setup still read the repository's `.ci/` (preserve, environment, setup), the Gitea
+// runners' contract. Remove this once no branch carries `.ci/`.
 const preserved = (workspace: string): ReadonlyArray<string> => {
   const file = join(workspace, ".ci/preserve")
   if (!existsSync(file)) return []
   return readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"))
 }
 
-/** Checks out the revision in the slot's checkout and removes everything `.ci/preserve` doesn't keep. */
-const checkout = (job: StepJob, src: string) =>
+/** Checks out the revision in the slot's checkout and removes everything `keep` doesn't name. */
+const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     const self = yield* Job
     const { log } = self
@@ -129,7 +131,7 @@ const checkout = (job: StepJob, src: string) =>
     yield* git(["remote", "add", "origin", job.run.mirror]).pipe(Effect.catch(() => git(["remote", "set-url", "origin", job.run.mirror])))
     yield* git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision])
     yield* git(["-c", "advice.detachedHead=false", "checkout", "-q", "-f", "--detach", job.run.revision])
-    yield* git(["clean", "-q", "-ffdx", ...preserved(src).flatMap((p) => ["-e", p])])
+    yield* git(["clean", "-q", "-ffdx", ...keep.flatMap((p) => ["-e", p])])
     // What `kiln gen` sets up locally, so the repository's own tools (type-aware lint) resolve ci.ts too.
     if (existsSync(join(src, ".kiln"))) link(join(src, ".kiln", "node_modules"), sdkPath)
     yield* log("kiln", `checked out ${job.run.revision.slice(0, 12)} in ${Date.now() - started} ms`)
@@ -146,6 +148,71 @@ const remember = (slot: Workspace.Slot, deps: string) =>
     ),
   )
 
+type SetupDef = Extract<Step.Any["def"], { readonly _tag: "Setup" }>
+
+const inShell = (job: StepJob, workspace: string, shell: Flake.FlakeRef | undefined, argv: ReadonlyArray<string>) => {
+  if (shell === undefined) return argv
+  const flake = job.run.flake === "" ? `git+file://${workspace}?rev=${job.run.revision}` : job.run.flake
+  return ["nix", "develop", `${flake}#${Flake.attrPath(shell, job.run.system)}`, "--command", ...argv]
+}
+
+/**
+ * Opens the job's slot for its key, checks out the revision keeping what the setup made, and runs
+ * the setup when the slot doesn't start from a prepared copy, which then becomes the copy others
+ * clone. Without a setup, the repository's `.ci/` stands in for it.
+ */
+const prepare = (job: StepJob, name: string, setup: SetupDef | undefined) =>
+  Effect.gen(function*() {
+    const { log, remote } = yield* Job
+    if (job.workspace === null) return yield* Effect.die(new Error(`${name} needs a workspace`))
+    const opened = Date.now()
+    const slot = yield* Workspace.open(isAbsolute(job.workspace) || remote === null ? job.workspace : join(remote.workspaces, job.workspace), job.deps)
+    if (slot.restored) yield* log("kiln", `cloned a prepared workspace in ${Date.now() - opened} ms`)
+    const workspace = slot.src
+    yield* checkout(job, workspace, setup === undefined ? preserved(workspace) : setup.keep)
+    const tmp = join(slot.cache, "tmp")
+    mkdirSync(tmp, { recursive: true })
+    const prelude = [
+      "set -euo pipefail",
+      `if [ -n "\${KILN_PATH:-}" ]; then export PATH="$KILN_PATH:$PATH"; fi`,
+      ...(setup === undefined ? ["if [ -f .ci/environment ]; then source .ci/environment; fi"] : []),
+    ].join("; ")
+    const extraEnv: Record<string, string> = {
+      ...setup?.env,
+      KILN_PATH: (setup?.path ?? []).map((dir) => join(workspace, dir)).join(":"),
+      TMPDIR: tmp,
+      CI_CACHE_ROOT: slot.cache,
+      CI_WORKSPACE_SLOT: job.workspace.split("/").at(-1) ?? "",
+    }
+    const command = setup === undefined
+      ? existsSync(join(workspace, ".ci/setup")) ? [".ci/setup"] : null
+      : Cmd.render(setup.run, {})
+    if (slot.fresh && command !== null) {
+      const started = Date.now()
+      const exitCode = yield* Exec.stream(
+        inShell(job, workspace, setup?.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-setup", ...command]),
+        { cwd: workspace, env: env(job.run, name, extraEnv) },
+        (stream, line) => log(stream, line),
+      )
+      if (exitCode !== 0) {
+        return { _tag: "Failed", result: toResult(Exit.fail(new Kiln.TaskFailed({ exitCode, failures: [] }))) } as const
+      }
+      yield* log("kiln", `set up in ${Math.round((Date.now() - started) / 1000)} s; other slots clone this one`)
+    }
+    if (slot.fresh && job.deps !== null) yield* remember(slot, job.deps)
+    return { _tag: "Ready", slot, workspace, prelude, extraEnv, fresh: slot.fresh && command !== null } as const
+  })
+
+/** A setup step: prepares its key's workspace unless a prepared copy exists. Its value says which. */
+export const setup = (job: StepJob, step: Step.Any) =>
+  Effect.gen(function*() {
+    const def = step.def
+    if (def._tag !== "Setup") return yield* Effect.die(new Error(`${step.name} is not a setup`))
+    const prepared = yield* prepare(job, step.name, def)
+    if (prepared._tag === "Failed") return prepared.result
+    return toResult(Exit.succeed({ fresh: prepared.fresh }), { key: job.deps })
+  })
+
 const shardFiles = (files: ReadonlyArray<string>, index: number, count: number) =>
   [...files].sort().filter((_, i) => i % count === index - 1)
 
@@ -155,12 +222,10 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     if (def._tag !== "Task") return yield* Effect.die(new Error(`${step.name} is not a task`))
     const self = yield* Job
     const { emit, log, remote } = self
-    if (job.workspace === null) return yield* Effect.die(new Error("tasks need a workspace"))
-    const opened = Date.now()
-    const slot = yield* Workspace.open(isAbsolute(job.workspace) || remote === null ? job.workspace : join(remote.workspaces, job.workspace), job.deps)
-    if (slot.restored) yield* log("kiln", `cloned a slot set up for these dependencies in ${Date.now() - opened} ms`)
-    const workspace = slot.src
-    yield* checkout(job, workspace)
+    const setup = def.setup?.def._tag === "Setup" ? def.setup.def : undefined
+    const prepared = yield* prepare(job, step.name, setup)
+    if (prepared._tag === "Failed") return prepared.result
+    const { workspace, prelude, extraEnv } = prepared
     if (remote !== null) yield* fetchInputs(self, values)
 
     const shard = job.shard ?? { index: 1, count: 1 }
@@ -183,36 +248,14 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       secretEnv[name] = path
     }
 
-    const flake = remote === null ? job.run.flake : `git+file://${workspace}?rev=${job.run.revision}`
-    const inShell = (argv: ReadonlyArray<string>) =>
-      def.shell === undefined ? argv : ["nix", "develop", `${flake}#${Flake.attrPath(def.shell, job.run.system)}`, "--command", ...argv]
-    const environment = "set -euo pipefail; if [ -f .ci/environment ]; then source .ci/environment; fi"
-    const full = inShell(["bash", "-c", `${environment}; exec "$@"`, "kiln-task", ...argv])
+    const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-task", ...argv])
     const taskEnv = env(job.run, step.name, {
-      CI_CACHE_ROOT: slot.cache,
-      CI_WORKSPACE_SLOT: job.workspace.split("/").at(-1) ?? "",
+      ...extraEnv,
       KILN_SHARD_INDEX: String(shard.index),
       KILN_SHARD_COUNT: String(shard.count),
       ...def.env,
       ...secretEnv,
     })
-
-    // Setup runs once, before any attempt, so its result can become the slot snapshot others clone.
-    if (existsSync(join(workspace, ".ci/setup"))) {
-      const setupStarted = Date.now()
-      const setupExit = yield* Exec.stream(
-        inShell(["bash", "-c", `${environment}; .ci/setup`]),
-        { cwd: workspace, env: taskEnv },
-        (stream, line) => log(stream, line),
-      )
-      if (setupExit !== 0) return toResult(Exit.fail(new Kiln.TaskFailed({ exitCode: setupExit, failures: [] })))
-      if (slot.fresh && job.deps !== null) {
-        yield* remember(slot, job.deps)
-        yield* log("kiln", `set up dependencies in ${Math.round((Date.now() - setupStarted) / 1000)} s; other slots clone this one`)
-      }
-    } else if (slot.fresh && job.deps !== null) {
-      yield* remember(slot, job.deps)
-    }
 
     let attempt = 0
     const once = Effect.gen(function*() {

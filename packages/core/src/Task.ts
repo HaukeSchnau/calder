@@ -4,11 +4,14 @@ import type { FlakeRef } from "./Flake.ts"
 import type { TaskFailed } from "./Kiln.ts"
 import type { ReportSpec } from "./Report.ts"
 import type { SecretRef } from "./Secret.ts"
+import type { Setup } from "./Setup.ts"
 import { make as makeStep, type Platform, type Shard, type Step } from "./Step.ts"
 
 export interface Options<R, O extends { readonly [name: string]: string }> {
   /** The toolchain: a dev shell of the repository's flake. Without it the task runs with the host's PATH. */
   readonly shell?: FlakeRef<"devShells">
+  /** The setup the workspace starts from, such as installed dependencies. */
+  readonly setup?: Setup
   readonly run: Cmd<R> | ((shard: Shard) => Cmd<R>)
   /** What the task reads. Defaults to the whole repository. */
   readonly inputs?: Files.Files
@@ -36,6 +39,7 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
   makeStep("task", name, {
     _tag: "Task",
     shell: options.shell,
+    setup: options.setup,
     run: options.run,
     inputs: options.inputs ?? Files.all(),
     after: options.after ?? [],

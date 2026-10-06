@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Exit } from "effect"
-import { Action, Event, Files, Kiln, Nix, On, Step, Task, cmd } from "../src/index.ts"
+import { Action, Event, Files, Kiln, Nix, On, Setup, Step, Task, cmd } from "../src/index.ts"
 import { comment, flake, gate, preview, project, promote, qa, release, smoke } from "./fixtures.ts"
 
 const names = (plan: Kiln.Plan) => plan.steps.map((s) => s.name)
@@ -97,5 +97,24 @@ describe("Kiln.plan", () => {
       })
       const plan = yield* Kiln.plan(Kiln.project({ rules: [On.push("main", [upload])] }), Event.push("main"))
       expect(names(plan)).toEqual(["archive", "archive.ipa", "upload"])
+    }))
+
+  it.effect("tasks need their setup, which a plan pulls in once", () =>
+    Effect.gen(function*() {
+      const install = Setup.make("install", { inputs: Files.of("pnpm-lock.yaml"), run: cmd`pnpm install`, keep: ["node_modules"] })
+      const lint = Task.make("lint", { setup: install, run: cmd`just lint` })
+      const test = Task.make("test", { setup: install, run: cmd`just test` })
+      const plan = yield* Kiln.plan(Kiln.project({ rules: [On.pullRequest([lint, test])] }), Event.pullRequest({ number: 1 }))
+      expect(names(plan)).toEqual(["install", "lint", "test"])
+      expect(plan.get(lint)?.needs).toEqual(["install"])
+      expect(plan.get(install)?.kind).toBe("setup")
+    }))
+
+  it.effect("a task and its setup run on the same platform", () =>
+    Effect.gen(function*() {
+      const install = Setup.make("install", { inputs: Files.of("pnpm-lock.yaml"), run: cmd`pnpm install` })
+      const apple = Task.make("apple", { setup: install, platform: "aarch64-darwin", run: cmd`just apple` })
+      const exit = yield* Effect.exit(Kiln.plan(Kiln.project({ rules: [On.push("main", [apple])] }), Event.push("main")))
+      expect(Exit.isFailure(exit)).toBe(true)
     }))
 })

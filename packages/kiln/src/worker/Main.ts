@@ -56,12 +56,14 @@ const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
     const project = yield* Load.project(yield* kilnDir(spec).pipe(Effect.orDie))
     const step = yield* Load.step(project, spec.step)
     const def = step.def
-    if ((yield* Client.Job).remote !== null && def._tag !== "Task") {
-      return { _tag: "Died", message: "agents only run tasks" } satisfies JobResult
+    if ((yield* Client.Job).remote !== null && def._tag !== "Task" && def._tag !== "Setup") {
+      return { _tag: "Died", message: "agents only run tasks and setups" } satisfies JobResult
     }
     switch (def._tag) {
       case "Build":
         return yield* Steps.build(spec, step, Flake.attrPath(def.ref, spec.run.system))
+      case "Setup":
+        return yield* Steps.setup(spec, step)
       case "Task":
         return yield* Steps.task(spec, step, Steps.values(spec))
       case "Action":

@@ -8,7 +8,7 @@ import type { SecretRef } from "./Secret.ts"
 
 export const TypeId = "~@kiln/core/Step" as const
 
-export type Kind = "build" | "task" | "action" | "output"
+export type Kind = "build" | "setup" | "task" | "action" | "output"
 export type Platform = "aarch64-linux" | "x86_64-linux" | "aarch64-darwin"
 
 /**
@@ -101,8 +101,19 @@ export interface Shard {
 export type Def =
   | { readonly _tag: "Build"; readonly ref: FlakeRef }
   | {
+    readonly _tag: "Setup"
+    readonly shell: FlakeRef | undefined
+    readonly run: Cmd<never>
+    readonly inputs: Files
+    readonly keep: ReadonlyArray<string>
+    readonly path: ReadonlyArray<string>
+    readonly env: { readonly [env: string]: string }
+    readonly platform: Platform | undefined
+  }
+  | {
     readonly _tag: "Task"
     readonly shell: FlakeRef | undefined
+    readonly setup: Step.Any | undefined
     readonly run: Cmd<any> | ((shard: Shard) => Cmd<any>)
     readonly inputs: Files
     readonly after: ReadonlyArray<Step.Any>
@@ -181,12 +192,14 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
   const def = step.def
   switch (def._tag) {
     case "Build":
+    case "Setup":
       return []
     case "Output":
       return [{ step: def.task, via: "needs" }]
     case "Task": {
       const run = typeof def.run === "function" ? def.run({ index: 1, count: def.shards?.count ?? 1, files: [] }) : def.run
       return [
+        ...(def.setup === undefined ? [] : [{ step: def.setup, via: "needs" } satisfies Dependency]),
         ...run.steps.map((s): Dependency => ({ step: s, via: "needs" })),
         ...def.after.map((s): Dependency => ({ step: s, via: "after" })),
       ]

@@ -145,6 +145,13 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
         return fail(`pull-request runs don't run steps with grants or secrets, but "${step.name}" has them`)
       }
 
+      const def = step.def
+      if (def._tag === "Setup" && def.run.steps.length > 0) {
+        return fail(`setup "${step.name}" interpolates other steps; its command can only depend on its inputs`)
+      }
+      if (def._tag === "Task" && def.setup !== undefined && def.setup.def._tag === "Setup" && def.setup.def.platform !== def.platform) {
+        return fail(`"${step.name}" runs on ${def.platform ?? "the controller's platform"} but its setup "${def.setup.name}" on ${def.setup.def.platform ?? "the controller's platform"}`)
+      }
       const deps = dependencies(step).map((d) => ({ ...d, step: canonical(d.step) }))
       const needs = deps.filter((d) => d.via === "needs").map((d) => d.step.name)
       const exits = deps.filter((d) => d.via === "exit").map((d) => d.step.name)

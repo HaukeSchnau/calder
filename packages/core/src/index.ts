@@ -10,6 +10,7 @@ export * as Nix from "./Nix.ts"
 export * as On from "./On.ts"
 export * as Report from "./Report.ts"
 export * as Secret from "./Secret.ts"
+export * as Setup from "./Setup.ts"
 export {
   Attic,
   type Base,

@@ -12,10 +12,13 @@ Most projects run the standard pipeline, which `kiln gen` writes into a reposito
 ```ts
 // .kiln/ci.ts
 import { Step, Task, cmd } from "@kiln/core"
-import { Project } from "@kiln/std"
+import { Pnpm, Project } from "@kiln/std"
 import { flake } from "./flake.ts"
 
-export const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` }).pipe(Step.timeout("30 minutes"))
+const shell = flake.devShells.ci
+const install = Pnpm.install({ shell })
+
+export const qa = Task.make("qa", { shell, setup: install, run: cmd`just qa` }).pipe(Step.timeout("30 minutes"))
 
 export default Project.standard({ flake, checks: [qa] })
 ```
@@ -26,9 +29,14 @@ once every check passed. `afterDeploy` adds steps that run after the release is 
 that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `Project.ts`).
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.
+- **setup** (`Setup.make`, or `Pnpm.install` from `@kiln/std`): prepares a workspace once per key,
+  which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
+  name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
+  prepared before settles at once. `keep` names what survives a task's `git clean`, `path` what goes
+  in front of PATH.
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
-  Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what
-  `.ci/preserve` lists; `.ci/environment` is sourced and `.ci/setup` runs first. A task is reused
+  Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
+  setup keeps. A task is reused
   when its key matches: git tree ids of its inputs (`inputs: Files.workspace(...)`, the whole
   repository by default), the dev shell, the command and the values it interpolates. Pull requests
   reuse everything; pushes rerun tasks unless they build `outputs`. A task with another `platform`

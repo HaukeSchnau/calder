@@ -607,6 +607,8 @@ function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
       const path = s.plan.name === "projectRelease" ? storePathOf(source) : `/nix/store/${nixHash(`out:${run.project}:${s.plan.name}:${s.key}`, 32)}-${run.project}-${s.plan.name}`
       return { type: null, render: "text", label: "store path", text: path, json: { path } }
     }
+    case "setup":
+      return null
     case "task": {
       const counts = testCounts(run, s)
       return counts
