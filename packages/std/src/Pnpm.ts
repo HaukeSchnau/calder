@@ -11,8 +11,8 @@ export interface InstallOptions {
 
 /**
  * `pnpm install` of the committed lockfile as a setup: current as long as manifests, the lockfile,
- * pnpm's configuration and patches are. `node_modules`, Vite+ caches and TypeScript build info stay
- * across tasks, and `node_modules/.bin` is on PATH.
+ * pnpm's configuration and the patches it applies are. `node_modules` (with the caches tools keep in
+ * it) and TypeScript build info stay across tasks, and `node_modules/.bin` is on PATH.
  */
 export const install = (options: InstallOptions = {}) =>
   Setup.make("install", {
@@ -24,9 +24,9 @@ export const install = (options: InstallOptions = {}) =>
       ".npmrc",
       ".pnpmfile.cjs",
       "pnpmfile.cjs",
-      "patches/**",
+      "patches/**/*.patch",
     ),
     run: cmd`pnpm install --frozen-lockfile ${[...(options.args ?? [])]}`,
-    keep: ["node_modules", ".pnpm-store", ".vite-plus", "*.tsbuildinfo", ...(options.keep ?? [])],
+    keep: ["node_modules", ".pnpm-store", "*.tsbuildinfo", ...(options.keep ?? [])],
     path: ["node_modules/.bin"],
   })

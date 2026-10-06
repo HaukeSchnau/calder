@@ -41,9 +41,9 @@ export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, an
 ): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "PullRequest" }, "all", targets)
 
 /**
- * Runs on pushes to `branch` (`*` matches within a segment). By default tasks run again unless they build
- * outputs; with `reuse: "all"` a push reuses results with the same key, also from pull requests of the
- * same repository, so merging a green pull request without new commits on the branch reruns nothing.
+ * Runs on pushes to `branch` (`*` matches within a segment). A push reuses results with the same key,
+ * also from pull requests of the same repository, so merging a green pull request without new commits
+ * on the branch reruns nothing; `reuse: "builds"` runs tasks without outputs again.
  */
 export const push: {
   <const T extends ReadonlyArray<Step.Any>>(branch: string, targets: T): Rule<"trusted", Step.Services<T[number]>>
@@ -54,7 +54,7 @@ export const push: {
   ): Rule<"trusted", Step.Services<T[number]>>
 } = (branch: string, ...args: ReadonlyArray<unknown>) => {
   const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [{ readonly reuse?: Reuse }, ReadonlyArray<Step.Any>]
-  return make("trusted", { _tag: "Push", branch }, options.reuse ?? "builds", targets)
+  return make("trusted", { _tag: "Push", branch }, options.reuse ?? "all", targets)
 }
 
 /** Runs the default branch's head on a cron schedule. */

@@ -35,7 +35,7 @@ export const standard = (options: StandardOptions): Kiln.Project => {
   const shared = options.shared === undefined ? {} : { shared: options.shared }
   const ref = options.flake.packages.projectRelease
   if (ref === undefined) {
-    return Kiln.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, { reuse: "all" }, checks)] })
+    return Kiln.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks)] })
   }
   const release = Nix.build(ref, { name: "release" })
   const promote = Action.make("promote", { needs: { release }, after: checks, grants: { deploy: true } }, function*({ release }) {
@@ -45,7 +45,7 @@ export const standard = (options: StandardOptions): Kiln.Project => {
     ...shared,
     rules: [
       On.pullRequest([...checks, release]),
-      On.push(branch, { reuse: "all" }, [promote, ...(options.afterDeploy?.(promote) ?? [])]),
+      On.push(branch, [promote, ...(options.afterDeploy?.(promote) ?? [])]),
     ],
   })
 }

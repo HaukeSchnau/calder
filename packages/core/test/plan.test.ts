@@ -20,7 +20,7 @@ describe("Kiln.plan", () => {
     Effect.gen(function*() {
       const plan = yield* Kiln.plan(project, Event.push("main"))
       expect(plan.trust).toBe("trusted")
-      expect(plan.reuse).toBe("builds")
+      expect(plan.reuse).toBe("all")
       expect(plan.needs(promote)).toEqual([release])
       expect(plan.waitsFor(promote)).toEqual(expect.arrayContaining([qa, gate]))
       expect(names(plan).indexOf("promote")).toBe(names(plan).length - 1)
