@@ -10,11 +10,13 @@ export type Client = Effect.Success<typeof makeClient>
 /**
  * Retries a call that a lost connection cut short; the client reconnects on its own. A controller
  * that stalls past the client's 5-second ping drops the connection, and with it every call in flight.
+ * A restarting controller adopts running workers, but it may first wait two minutes for an action to
+ * finish, so calls keep trying for longer than that.
  */
 export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>) =>
   call.pipe(Effect.retry({
     while: (error) => Predicate.isTagged(error, "RpcClientError"),
-    schedule: Schedule.exponential("500 millis").pipe(Schedule.upTo({ duration: "2 minutes" })),
+    schedule: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("5 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
   }))
 
 /** For workers an agent started on another host: the controller's URL and the agent's workspace directory. */

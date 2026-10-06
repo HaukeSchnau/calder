@@ -129,6 +129,17 @@ const migrations = {
       primary key (run_id, step, shard)
     )`
   }),
+  "0006_jobs": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Local step workers, so a restarted controller adopts the ones still running. Specs without secrets.
+    yield* sql`create table jobs (
+      id text primary key,
+      token_hash text not null,
+      pool text not null,
+      spec text not null,
+      created_at integer not null
+    )`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

@@ -24,7 +24,7 @@ import * as Workflow from "./Workflow.ts"
 export const layer = (configPath: string) => {
   const platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunCrypto.layer)
   const config = Config.fromFile(configPath)
-  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Live.layer, Jobs.layer.pipe(Layer.provideMerge(Agents.layer))).pipe(
+  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Live.layer, Jobs.layer.pipe(Layer.provideMerge(Agents.layer), Layer.provide(Db.layer))).pipe(
     Layer.provideMerge(config),
     Layer.provideMerge(platform),
   )

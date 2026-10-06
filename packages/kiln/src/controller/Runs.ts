@@ -70,6 +70,21 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     return d
   }
   const workspaces = new Map<string, Set<number>>()
+  // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
+  // lands in a workspace that is still in use.
+  for (const adopted of jobs.adopted()) {
+    const { spec } = adopted
+    const pool: Pool = spec.run.trust === "pr" ? "pr" : "trusted"
+    const index = spec.workspace === null ? null : Number(/slot-(\d+)$/.exec(spec.workspace)?.[1] ?? Number.NaN)
+    const key = `local/${pool}/${spec.run.project}`
+    if (index !== null && !Number.isNaN(index)) {
+      workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index))
+    }
+    yield* (spec.derivation === null ? slots.tasks : slots.builds).hold(spec.run.project, jobs.settled(adopted.id)).pipe(
+      Effect.ensuring(Effect.sync(() => index !== null && workspaces.get(key)?.delete(index))),
+      Effect.forkScoped,
+    )
+  }
   /** An agent's worker gets the path relative to its agent's workspace directory. */
   const workspace = (pool: Pool, project: string, remote: boolean) => {
     const key = `${remote ? "agent" : "local"}/${pool}/${project}`
@@ -449,15 +464,31 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* status(run, `kiln/${row.name}`, "pending", "running")
       })
       let startedAt: number | null = null
+      // A worker that ran on while the controller restarted already holds its slot and workspace.
+      const adopted = options.action
+        ? undefined
+        : jobs.adopted().find((a) => a.spec.run.id === run.id && a.spec.step === row.name && (a.spec.shard?.index ?? null) === options.shard)
+      const reattached = adopted === undefined ? undefined : Effect.gen(function*() {
+        startedAt = adopted.startedAt
+        yield* started
+        const done = yield* jobs.reattach(adopted.id, onEvent)
+        return { ...done, startedAt: adopted.startedAt }
+      })
       const running = Effect.scoped(Effect.gen(function*() {
         const remote = options.platform != null && options.platform !== config.system
         const ws = options.workspace ? (yield* workspace(poolOf(run), run.project, remote)).path : null
         startedAt = Date.now()
         yield* started
-        const done = yield* jobs.run(job(ws), { pool: poolOf(run), onEvent, uninterruptible: options.action, platform: options.platform ?? null })
+        const done = yield* jobs.run(job(ws), {
+          pool: poolOf(run),
+          onEvent,
+          uninterruptible: options.action,
+          platform: options.platform ?? null,
+          adoptable: !options.action,
+        })
         return { ...done, startedAt }
       }))
-      const work = options.slots.with({ project: run.project, expected: options.expected, run: run.created_at }, running)
+      const work = reattached ?? options.slots.with({ project: run.project, expected: options.expected, run: run.created_at }, running)
       if (options.action) return yield* work
       const stopped = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
