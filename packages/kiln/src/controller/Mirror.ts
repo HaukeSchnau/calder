@@ -1,7 +1,8 @@
 import { Context, Effect, Layer, Schema, Semaphore } from "effect"
-import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
+import { link } from "../Gen.ts"
 import { Config } from "./Config.ts"
 import { Projects } from "./Projects.ts"
 
@@ -118,15 +119,18 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
       Effect.gen(function*() {
         const root = join(config.stateDir, "revs", project, sha)
         const dir = join(root, ".kiln")
-        if (existsSync(join(dir, "ci.ts"))) return dir
+        // A revision extracted before a deploy still links the SDK of the Kiln that planned it then.
+        if (existsSync(join(dir, "ci.ts"))) {
+          link(join(dir, "node_modules"), config.sdk)
+          return dir
+        }
         const has = yield* git(project, ["cat-file", "-e", `${sha}:.kiln/ci.ts`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
         if (!has) return yield* new NoPipeline({ revision: sha })
         mkdirSync(root, { recursive: true })
         yield* Exec.run(["bash", "-c", `git --git-dir "$1" archive "$2" .kiln | tar -x -C "$3"`, "kiln", path(project), sha, root]).pipe(
           Effect.provideService(Exec.SpawnerTag, spawner),
         )
-        const link = join(dir, "node_modules")
-        if (!existsSync(link)) symlinkSync(config.sdk, link)
+        link(join(dir, "node_modules"), config.sdk)
         groupReadable(root)
         return dir
       }),
