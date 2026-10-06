@@ -21,6 +21,11 @@ export interface StandardOptions {
   readonly afterDeploy?: (promote: Step.Step<unknown, unknown, Base, {}, { readonly deploy: true }>) => ReadonlyArray<Step.Any>
   readonly defaultBranch?: string
   readonly shared?: Files.Files
+  /**
+   * A cron schedule that runs every check on the default branch without reusing anything, for tasks
+   * with `each` the check that their keys still cover what their files depend on.
+   */
+  readonly nightly?: string
 }
 
 /**
@@ -33,9 +38,10 @@ export const standard = (options: StandardOptions): Kiln.Project => {
   const checks = [...flakeChecks, ...(options.checks ?? [])]
   const branch = options.defaultBranch ?? "main"
   const shared = options.shared === undefined ? {} : { shared: options.shared }
+  const nightly = options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)]
   const ref = options.flake.packages.projectRelease
   if (ref === undefined) {
-    return Kiln.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks)] })
+    return Kiln.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly] })
   }
   const release = Nix.build(ref, { name: "release" })
   const promote = Action.make("promote", { needs: { release }, after: checks, grants: { deploy: true } }, function*({ release }) {
@@ -46,6 +52,7 @@ export const standard = (options: StandardOptions): Kiln.Project => {
     rules: [
       On.pullRequest([...checks, release]),
       On.push(branch, [promote, ...(options.afterDeploy?.(promote) ?? [])]),
+      ...nightly,
     ],
   })
 }

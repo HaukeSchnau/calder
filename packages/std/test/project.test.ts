@@ -23,6 +23,13 @@ describe("Project.standard", () => {
       expect(plan.get("apple")?.after).toEqual(["promote"])
     }))
 
+  it.effect("a nightly run checks everything again and deploys nothing", () =>
+    Effect.gen(function*() {
+      const plan = yield* Kiln.plan(Project.standard({ flake, checks: [qa], nightly: "0 3 * * *" }), Event.schedule("0 3 * * *"))
+      expect(plan.steps.map((s) => s.name).sort()).toEqual(["artifact", "projectRelease", "qa"])
+      expect(plan.reuse).toBe("none")
+    }))
+
   it.effect("without a release, main runs the checks again", () =>
     Effect.gen(function*() {
       const checksOnly = Flake.make({ packages: ["default"], checks: ["package"], devShells: [] })
