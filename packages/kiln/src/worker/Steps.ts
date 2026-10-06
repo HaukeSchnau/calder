@@ -200,6 +200,8 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
       yield* log("kiln", `set up in ${Math.round((Date.now() - started) / 1000)} s; other slots clone this one`)
     }
     if (slot.fresh && job.deps !== null) yield* remember(slot, job.deps)
+    // The snapshot leaves temporary files out, which removes TMPDIR.
+    mkdirSync(tmp, { recursive: true })
     return { _tag: "Ready", slot, workspace, prelude, extraEnv, fresh: slot.fresh && command !== null } as const
   })
 
