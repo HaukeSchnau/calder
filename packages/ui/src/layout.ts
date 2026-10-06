@@ -1,5 +1,5 @@
 // Layered layout for a run's step graph. Columns come from the longest path over needs, after and
-// exits; a graph without edges wraps into a grid instead. Steps that some step requires through branch protection collapse into one "Required
+// exits; steps without any edge wrap into a grid. Steps that some step requires through branch protection collapse into one "Required
 // checks" group, as in the prototype, so their gate edges merge into one. Within a column, nodes
 // follow the average height of what feeds them, so a chain of values runs on one straight row.
 
@@ -83,15 +83,13 @@ export function layout(steps: ReadonlyArray<Domain.StepRun>): Layout {
     column.set(n, c)
     return c
   }
+  // Steps nothing connects to (a pull request's checks) would make column 0 a long list, so they wrap
+  // into a grid in plan order: the whole graph when it has no edges, otherwise below the layered part.
+  const linked = new Set(links.flatMap((l) => [l.from, l.to]))
+  const loose = nodes.filter((n) => !linked.has(n))
+  const grid = loose.length > 3 ? loose : []
   const columns: Array<Array<string>> = []
-  if (links.length === 0 && nodes.length > 3) {
-    // Nothing depends on anything (a pull request's checks): one column would be a long list, so the
-    // steps wrap into a grid, in plan order down each column.
-    const rows = Math.ceil(nodes.length / Math.ceil(Math.sqrt(nodes.length / 2)))
-    for (let i = 0; i < nodes.length; i += rows) columns.push(nodes.slice(i, i + rows))
-  } else {
-    for (const n of nodes) (columns[columnOf(n)] ??= []).push(n)
-  }
+  for (const n of nodes) if (!grid.includes(n)) (columns[columnOf(n)] ??= []).push(n)
 
   // A few barycenter sweeps against the previous columns reduce crossings.
   const index = new Map<string, number>()
@@ -138,6 +136,19 @@ export function layout(steps: ReadonlyArray<Domain.StepRun>): Layout {
 
   const top = Math.min(0, ...[...boxes.values()].map((b) => b.y))
   for (const [n, b] of boxes) boxes.set(n, { ...b, y: b.y - top })
+
+  if (grid.length > 0) {
+    const perRow = Math.max(columns.length, Math.ceil(Math.sqrt(grid.length / 2)))
+    const rows = Math.ceil(grid.length / perRow)
+    const gridTop = boxes.size > 0 ? Math.max(...[...boxes.values()].map((b) => b.y + b.h)) + GAP_Y * 2 : 0
+    let gx = 0
+    for (let i = 0; i < grid.length; i += rows) {
+      const col = grid.slice(i, i + rows)
+      const w = Math.max(...col.map(widthOf))
+      col.forEach((n, row) => boxes.set(n, { x: gx, y: gridTop + row * (NODE_H + GAP_Y), w, h: NODE_H }))
+      gx += w + GAP_X
+    }
+  }
 
   const groupBox = boxes.get(GROUP)
   if (groupBox) {

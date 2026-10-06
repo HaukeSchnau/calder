@@ -140,6 +140,33 @@ export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>) =>
 const describeCmd = (run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unknown>), count: number) =>
   Cmd.show(typeof run === "function" ? run({ index: 1, count, files: ["<files>"] }) : run)
 
+/**
+ * Which planned builds each build uses: a build needs another when the other's derivation is in its
+ * closure, keeping only direct links (`deps → release → gate`, not also `deps → gate`). Two steps of
+ * the same derivation are one build to Nix and get no link.
+ */
+export const directUses = (
+  builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>,
+  closures: ReadonlyMap<string, ReadonlySet<string>>,
+) => {
+  const uses = (a: (typeof builds)[number], b: (typeof builds)[number]) => a.drv !== b.drv && (closures.get(b.name)?.has(a.drv) ?? false)
+  const edges = new Map<string, Array<string>>()
+  for (const b of builds) {
+    const direct = builds.filter((a) => uses(a, b) && !builds.some((c) => c !== a && uses(a, c) && uses(c, b)))
+    if (direct.length > 0) edges.set(b.name, direct.map((a) => a.name))
+  }
+  return edges
+}
+
+const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>) =>
+  builds.length < 2
+    ? Effect.succeed(new Map<string, Array<string>>())
+    : Effect.forEach(builds, (b) =>
+      Exec.run(["nix-store", "--query", "--requisites", b.drv]).pipe(
+        Effect.map((out) => [b.name, new Set(out.split("\n").filter(Boolean))] as const),
+        Effect.orElseSucceed(() => [b.name, new Set<string>()] as const),
+      ), { concurrency: 4 }).pipe(Effect.map((closures) => directUses(builds, new Map(closures))))
+
 /** Turns a plan into the wire format, resolving tree ids, dev shells and task keys at the revision. */
 export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, repo: Repo) =>
   Effect.gen(function*() {
@@ -154,6 +181,11 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
     )
     const evaluated = yield* derivations(run, [...attrs])
     const dependencies = (yield* repo.entries).filter((e) => dependencyFiles.some((re) => re.test(e.path)))
+    const uses = yield* buildEdges(plan.steps.flatMap((p) => {
+      const def = p.step.def
+      const derivation = def._tag === "Build" ? evaluated.get(Flake.attrPath(def.ref, run.system)) : undefined
+      return derivation ? [{ name: p.name, drv: derivation.drv }] : []
+    }))
 
     const steps = yield* Effect.forEach(plan.steps, (p) =>
       Effect.gen(function*() {
@@ -161,7 +193,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
         const base = {
           name: p.name,
           kind: p.kind,
-          needs: p.needs,
+          needs: [...p.needs, ...(uses.get(p.name) ?? []).filter((n) => !p.needs.includes(n))],
           exits: p.exits,
           after: p.after,
           required: p.required,

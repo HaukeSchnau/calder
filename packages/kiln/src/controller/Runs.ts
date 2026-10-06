@@ -31,6 +31,8 @@ const duration = (ms: number) => Duration.format(Duration.millis(Math.round(ms /
 export class RunsCore extends Context.Service<RunsCore, {
   readonly plan: (runId: string) => Effect.Effect<PlanSpec | null>
   readonly step: (runId: string, name: string) => Effect.Effect<Domain.StepStatus>
+  /** A build whose output already exists settles at once, without waiting for the builds it uses. */
+  readonly built: (runId: string, name: string) => Effect.Effect<boolean>
   readonly finish: (runId: string) => Effect.Effect<void>
   readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
 }>()("kiln/controller/RunsCore") {}
@@ -416,6 +418,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (run.status === "cancelled") return yield* settle(run, row, { status: "cancelled" })
 
       const spec = Rows.spec(row)
+      if (spec.build !== null && spec.build.drv !== null && spec.build.out !== null && (yield* available(spec.build.out))) {
+        return yield* settle(run, row, { status: "reused", value: spec.build.out, key: spec.build.drv })
+      }
       const all = yield* db(Rows.loadSteps(runId))
       const byName = new Map(all.map((s) => [s.name, s]))
       if ([...spec.needs, ...spec.after].some((n) => !Rows.succeeded(byName.get(n)?.status ?? "blocked"))) {
@@ -454,10 +459,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       if (spec.build !== null) {
-        const { drv, out } = spec.build
-        if (drv !== null && out !== null && (yield* available(out))) {
-          return yield* settle(run, row, { status: "reused", value: out, key: drv })
-        }
+        const { drv } = spec.build
         const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: slots.builds, priority, action: false, shard: null, workspace: false }, collect)
         if ("cancelled" in r) return yield* settle(run, row, { status: "cancelled" })
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
@@ -601,6 +603,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* publishRun(runId)
     })
 
-  return { plan, step, finish, cancel }
+  const built = (runId: string, name: string) =>
+    Effect.gen(function*() {
+      const row = yield* db(Rows.loadStep(runId, name))
+      const build = row === undefined ? null : Rows.spec(row).build
+      return build !== null && build.out !== null && (yield* available(build.out))
+    })
+
+  return { plan, step, built, finish, cancel }
 }))
 

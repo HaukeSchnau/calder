@@ -47,7 +47,9 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
       const done = new Map(plan.steps.map((s) => [s.name, Deferred.makeUnsafe<void>()]))
       yield* Effect.forEach(plan.steps, (step) =>
         Effect.gen(function*() {
-          yield* Effect.forEach([...step.needs, ...step.exits, ...step.after], (dep) => Deferred.await(done.get(dep)!), { discard: true })
+          if (!(step.build !== null && (yield* core.built(runId, step.name)))) {
+            yield* Effect.forEach([...step.needs, ...step.exits, ...step.after], (dep) => Deferred.await(done.get(dep)!), { discard: true })
+          }
           yield* core.step(runId, step.name)
           yield* Deferred.succeed(done.get(step.name)!, undefined)
         }), { concurrency: "unbounded", discard: true })
