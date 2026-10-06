@@ -119,8 +119,8 @@ export const output = (request: HttpServerRequest.HttpServerRequest) =>
   }).pipe(Effect.orDie)
 
 /**
- * A store path among the job's inputs, as a tar of one entry, for an agent's worker that can't
- * substitute it: outputs of tasks that ran here.
+ * A store path among the job's inputs, as a tar of one entry named like the path without its hash,
+ * for an agent's worker that can't substitute it: outputs of tasks that ran here.
  */
 export const store = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function*() {
@@ -130,6 +130,7 @@ export const store = (request: HttpServerRequest.HttpServerRequest) =>
     const input = Object.values(active.spec.inputs).some((o) => o._tag === "Passed" && Values.decode(o.value) === path)
     if (!input || !/^\/nix\/store\/[a-z0-9]{32}-[^/]+$/.test(path)) return HttpServerResponse.text("not an input of this job", { status: 403 })
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const tar = yield* spawner.spawn(ChildProcess.make("tar", ["-c", "-C", "/nix/store", basename(path)], { stdin: "ignore" }))
+    const entry = basename(path)
+    const tar = yield* spawner.spawn(ChildProcess.make("tar", ["-c", "-C", "/nix/store", `--transform=s,^${entry.slice(0, 33)},,`, entry], { stdin: "ignore" }))
     return HttpServerResponse.stream(tar.stdout, { contentType: "application/x-tar" })
   }).pipe(Effect.orDie)
