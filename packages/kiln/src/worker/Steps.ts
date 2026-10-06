@@ -161,7 +161,7 @@ const inShell = (job: StepJob, workspace: string, shell: Flake.FlakeRef | undefi
  * the setup when the slot doesn't start from a prepared copy, which then becomes the copy others
  * clone. Without a setup, the repository's `.ci/` stands in for it.
  */
-const prepare = (job: StepJob, name: string, setup: SetupDef | undefined) =>
+const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacyShell: Flake.FlakeRef | undefined) =>
   Effect.gen(function*() {
     const { log, remote } = yield* Job
     if (job.workspace === null) return yield* Effect.die(new Error(`${name} needs a workspace`))
@@ -190,7 +190,7 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined) =>
     if (slot.fresh && command !== null) {
       const started = Date.now()
       const exitCode = yield* Exec.stream(
-        inShell(job, workspace, setup?.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-setup", ...command]),
+        inShell(job, workspace, setup === undefined ? legacyShell : setup.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-setup", ...command]),
         { cwd: workspace, env: env(job.run, name, extraEnv) },
         (stream, line) => log(stream, line),
       )
@@ -208,7 +208,7 @@ export const setup = (job: StepJob, step: Step.Any) =>
   Effect.gen(function*() {
     const def = step.def
     if (def._tag !== "Setup") return yield* Effect.die(new Error(`${step.name} is not a setup`))
-    const prepared = yield* prepare(job, step.name, def)
+    const prepared = yield* prepare(job, step.name, def, undefined)
     if (prepared._tag === "Failed") return prepared.result
     return toResult(Exit.succeed({ fresh: prepared.fresh }), { key: job.deps })
   })
@@ -223,7 +223,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     const self = yield* Job
     const { emit, log, remote } = self
     const setup = def.setup?.def._tag === "Setup" ? def.setup.def : undefined
-    const prepared = yield* prepare(job, step.name, setup)
+    const prepared = yield* prepare(job, step.name, setup, def.shell)
     if (prepared._tag === "Failed") return prepared.result
     const { workspace, prelude, extraEnv } = prepared
     if (remote !== null) yield* fetchInputs(self, values)
