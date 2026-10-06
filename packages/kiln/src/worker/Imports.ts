@@ -163,7 +163,7 @@ export const make = (repo: Repo, workspace: ReadonlyArray<string>) =>
       ]
       const typeSpecs = statics.filter((m) => m[1] !== undefined).map((m) => m[2]!)
       const urls = [...source.matchAll(urlImport)].map((m) => m[1]!)
-      return { specs, typeSpecs, urls, computed: computedImport.test(source), always: /\bkiln:\s*always\b/.test(source) }
+      return { specs, typeSpecs, urls, computed: computedImport.test(source), always: /^\s*(?:\/\/|\/?\*)\s*kiln:\s*always\b/m.test(source) }
     }
     const load = (paths: ReadonlyArray<string>) =>
       Effect.gen(function*() {
@@ -314,7 +314,7 @@ export const make = (repo: Repo, workspace: ReadonlyArray<string>) =>
       closure,
       packageOf,
       data,
-      /** Whether the file asks to run every time (`kiln: always` in a comment). */
+      /** Whether the file asks to run every time: a comment line starting with `kiln: always`. */
       always: (path: string) => scanned.get(path)?.always === true,
     }
   })

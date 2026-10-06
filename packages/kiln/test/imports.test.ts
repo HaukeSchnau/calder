@@ -34,6 +34,7 @@ const fixture = repo({
   "apps/server/src/fixtures/repo/HEAD": "ref: refs/heads/main",
   "apps/server/src/plugin.ts": `export const load = (name: string) => import(name)`,
   "apps/server/src/plugin.test.ts": `// kiln: always\nimport { load } from "./plugin"`,
+  "apps/server/src/quoted.test.ts": `const marker = "// kiln: always"`,
   "apps/server/README.md": "docs",
   "apps/web/package.json": JSON.stringify({ name: "web" }),
   "apps/web/src/app.test.tsx": `import { x } from "~/lib/x"`,
@@ -69,6 +70,8 @@ describe("Imports", () => {
       expect(yield* graph.closure(["apps/server/src/plugin.test.ts"], { aliases: {}, types: false })).toContain("apps/server")
       expect(graph.always("apps/server/src/plugin.test.ts")).toBe(true)
       expect(graph.always("apps/server/src/git.test.ts")).toBe(false)
+      yield* graph.closure(["apps/server/src/quoted.test.ts"], { aliases: {}, types: false })
+      expect(graph.always("apps/server/src/quoted.test.ts")).toBe(false)
     }))
 
   it.effect("finds a package's data files, without code or docs", () =>
@@ -76,6 +79,6 @@ describe("Imports", () => {
       const graph = yield* graphOf(fixture)
       expect(graph.packageOf("apps/server/src/git.ts")).toBe("apps/server")
       expect(graph.data("apps/server")).toEqual(["apps/server/package.json", "apps/server/src/fixtures/repo/HEAD"])
-      expect(graph.match(["apps/server/**/*.test.ts"])).toEqual(["apps/server/src/git.test.ts", "apps/server/src/plugin.test.ts"])
+      expect(graph.match(["apps/server/**/*.test.ts"])).toEqual(["apps/server/src/git.test.ts", "apps/server/src/plugin.test.ts", "apps/server/src/quoted.test.ts"])
     }))
 })
