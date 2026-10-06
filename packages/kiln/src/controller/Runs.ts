@@ -81,7 +81,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     if (index !== null && !Number.isNaN(index)) {
       workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index))
     }
-    yield* (spec.derivation === null ? slots.tasks : slots.builds).hold(spec.run.project, jobs.settled(adopted.id)).pipe(
+    // Taken before any run is driven again, or the run would claim the same slots for new jobs.
+    const release = (spec.derivation === null ? slots.tasks : slots.builds).reserve(spec.run.project)
+    yield* jobs.settled(adopted.id).pipe(
+      Effect.ensuring(release),
       Effect.ensuring(Effect.sync(() => index !== null && workspaces.get(key)?.delete(index))),
       Effect.forkScoped,
     )

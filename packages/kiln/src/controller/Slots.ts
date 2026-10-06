@@ -93,9 +93,14 @@ export const make = (options: { readonly capacity: number; readonly perProject?:
       Effect.uninterruptibleMask((restore) =>
         restore(acquire(claim)).pipe(Effect.andThen(restore(effect).pipe(Effect.ensuring(release(claim.project)))))
       ),
-    /** Counts a job that already runs, such as one adopted after a restart, even past capacity. */
-    hold: <A, E, R>(project: string, effect: Effect.Effect<A, E, R>) =>
-      Effect.acquireUseRelease(Effect.sync(() => take(project)), () => effect, () => release(project)),
+    /**
+     * Counts a job that already runs, such as one adopted after a restart, at once and even past
+     * capacity. Returns what gives the slot back.
+     */
+    reserve: (project: string) => {
+      take(project)
+      return release(project)
+    },
     usage: () => ({ running, waiting: waiters.length, capacity: options.capacity }),
   }
 }
