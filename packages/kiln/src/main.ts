@@ -131,13 +131,16 @@ const trigger = Command.make("trigger", {
 const check = Command.make("check", { dir: Argument.String("dir").pipe(Argument.withDefault(".")), url }, ({ dir, url }) =>
   Effect.gen(function*() {
     const copy = yield* Check.workingCopy(resolve(dir))
-    const ref = `kiln/check/${copy.sha.slice(0, 12)}`
-    yield* Check.push(copy, ref)
     const client = yield* Remote.client
+    const projects = (yield* client.overview()).projects
+    const target = Check.target(copy.remotes, projects.map((p) => p.repo))
+    if (target === undefined) return yield* Effect.fail(new Error("no git remote points at a repository the controller knows"))
+    const ref = `kiln/check/${copy.sha.slice(0, 12)}`
+    yield* Check.push(copy, target.remote, ref)
     const status = yield* Effect.gen(function*() {
-      const run = yield* client.check({ repo: copy.repo, ref, sha: copy.sha })
+      const run = yield* client.check({ repo: target.repo, ref, sha: copy.sha })
       return yield* follow(client, run)
-    }).pipe(Effect.ensuring(Check.drop(copy, ref)))
+    }).pipe(Effect.ensuring(Check.drop(copy, target.remote, ref)))
     if (status !== "passed") return yield* Effect.fail(new Error(`the check ${status}`))
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 

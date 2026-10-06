@@ -16,6 +16,11 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
   Effect.gen(function*() {
     const project = yield* Load.project(spec.run.kilnDir)
     const planned = yield* Kiln.plan(project, spec.run.event, { requiredChecks: spec.requiredChecks })
+    // Nothing to run (a push to a branch no rule names): skip evaluating the flake.
+    if (planned.steps.length === 0) {
+      const empty = { version: 1, app: null, trust: planned.trust, reuse: planned.reuse, schedules: planned.schedules, steps: [] } as const
+      return { _tag: "Planned", plan: empty } satisfies JobResult
+    }
     const repo = yield* Repo.make(spec.run.mirror, spec.run.revision)
     return { _tag: "Planned", plan: yield* resolve(planned, project, spec.run, repo) } satisfies JobResult
   }).pipe(

@@ -192,6 +192,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       const spec = result.plan
+      const event = JSON.parse(run.event) as Domain.Event
+      // The default branch's plan says which schedules exist, even when its push runs nothing.
+      if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
+        yield* db(sql.withTransaction(Effect.gen(function*() {
+          yield* sql`delete from schedules where project = ${run.project}`
+          for (const cron of spec.schedules) yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`
+        })))
+      }
       // A push to a branch no rule names, for example: nothing to run, nothing to report.
       if (spec.steps.length === 0) {
         yield* db(sql`delete from runs where id = ${runId}`)
@@ -204,11 +212,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
             values (${runId}, ${step.name}, ${step.kind}, 'pending', ${JSON.stringify(step)}, ${position}, ${Telemetry.spanId()})
             on conflict do nothing`
-        }
-        const event = JSON.parse(run.event) as Domain.Event
-        if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
-          yield* sql`delete from schedules where project = ${run.project}`
-          for (const cron of spec.schedules) yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`
         }
       })))
       yield* status(run, "kiln", "pending", `${spec.steps.filter((s) => s.kind !== "output").length} steps`)
