@@ -13,6 +13,11 @@ const Protection = Schema.Struct({
 const Branch = Schema.Struct({ commit: Schema.Struct({ id: Schema.String }) })
 const Comment = Schema.Struct({ id: Schema.Number })
 const Pull = Schema.Struct({ title: Schema.String })
+const OpenPull = Schema.Struct({
+  number: Schema.Number,
+  head: Schema.Struct({ ref: Schema.String, sha: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
+  base: Schema.Struct({ ref: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
+})
 const Repo = Schema.Struct({
   full_name: Schema.String,
   default_branch: Schema.String,
@@ -39,6 +44,14 @@ export class Gitea extends Context.Service<Gitea, {
   /** The owner's repositories the bot can see, without archived or empty ones. */
   readonly repos: (owner: string) => Effect.Effect<ReadonlyArray<{ readonly repo: string; readonly defaultBranch: string }>>
   readonly hasFile: (repo: string, ref: string, path: string) => Effect.Effect<boolean>
+  readonly openPulls: (repo: string) => Effect.Effect<ReadonlyArray<{
+    readonly number: number
+    readonly base: string
+    readonly head: string
+    readonly sha: string
+    /** The head lives in another repository. */
+    readonly fork: boolean
+  }>>
 }>()("kiln/controller/Gitea") {}
 
 export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
@@ -94,6 +107,19 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
         }
         return found.filter((r) => !r.archived && !r.empty).map((r) => ({ repo: r.full_name, defaultBranch: r.default_branch }))
       }).pipe(Effect.orDie),
+    openPulls: (repo) =>
+      get(`/repos/${repo}/pulls?state=open&limit=50`, Schema.Array(OpenPull)).pipe(
+        Effect.map((pulls) =>
+          pulls.map((p) => ({
+            number: p.number,
+            base: p.base.ref,
+            head: p.head.ref,
+            sha: p.head.sha,
+            fork: p.head.repo?.full_name !== p.base.repo?.full_name,
+          }))
+        ),
+        Effect.orDie,
+      ),
     hasFile: (repo, ref, path) =>
       client.get(`${base}/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`).pipe(
         Effect.as(true),

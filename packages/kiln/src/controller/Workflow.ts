@@ -12,17 +12,24 @@ import * as Telemetry from "./Telemetry.ts"
 
 export class RunError extends Schema.TaggedError<RunError>("kiln/RunError")("RunError", { message: Schema.String }) {}
 
+export interface RunInput {
+  readonly project: string
+  readonly event: Domain.Event
+  readonly sha: string
+  /** A pull request whose head lives in another repository. */
+  readonly fork?: boolean
+}
+
 /** Starting, cancelling and repeating runs. */
 export class Runs extends Context.Service<Runs, {
-  readonly create: (input: {
-    readonly project: string
-    readonly event: Domain.Event
-    readonly sha: string
-    /** A pull request whose head lives in another repository. */
-    readonly fork?: boolean
-  }) => Effect.Effect<Domain.Run, RunError>
+  readonly create: (input: RunInput) => Effect.Effect<Domain.Run, RunError>
   readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
   readonly rerun: (runId: string) => Effect.Effect<Domain.Run, RunError>
+  /**
+   * `create`, unless a run of the same project, revision and event exists: what the webhook and the
+   * catch-up after a restart use, so one push never starts two runs.
+   */
+  readonly ensure: (input: RunInput) => Effect.Effect<Domain.Run, RunError>
 }>()("kiln/controller/Runs") {}
 
 export const layer = Layer.effect(Runs)(Effect.gen(function*() {
@@ -107,8 +114,22 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
       return run
     })
 
+  const ensuring = new Set<string>()
+  const ensure: Runs["Service"]["ensure"] = (input) =>
+    Effect.gen(function*() {
+      const event = JSON.stringify(input.event)
+      const key = `${input.project}|${input.sha}|${event}`
+      const existing = yield* db(sql<Rows.RunRow>`select * from runs where project = ${input.project} and sha = ${input.sha}
+        and event = ${event} order by created_at desc limit 1`)
+      if (existing[0] !== undefined) return Rows.run(existing[0])
+      if (ensuring.has(key)) return yield* new RunError({ message: `a run of ${key} is starting` })
+      ensuring.add(key)
+      return yield* create(input).pipe(Effect.ensuring(Effect.sync(() => ensuring.delete(key))))
+    })
+
   return {
     create,
+    ensure,
     cancel: core.cancel,
     rerun: (runId) =>
       Effect.gen(function*() {

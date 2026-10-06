@@ -68,7 +68,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
       const branch = payload.ref.slice("refs/heads/".length)
       // `kiln check` pushes its working copies here and starts their runs itself.
       if (branch.startsWith("kiln/check/")) return HttpServerResponse.text("ignored")
-      yield* start(sha, runs.create({ project, event: { _tag: "Push", branch }, sha }))
+      yield* start(sha, runs.ensure({ project, event: { _tag: "Push", branch }, sha }))
       return HttpServerResponse.text("accepted", { status: 202 })
     }
 
@@ -85,7 +85,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
       if (!["opened", "reopened", "synchronized"].includes(payload.action ?? "")) return HttpServerResponse.text("ignored")
       const sha = pr.head?.sha
       if (sha === undefined) return HttpServerResponse.text("ignored")
-      yield* start(sha, runs.create({
+      yield* start(sha, runs.ensure({
         project,
         event: { _tag: "PullRequest", number, base: pr.base?.ref ?? "main", head: pr.head?.ref ?? `pr-${number}` },
         sha,
