@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
 
@@ -39,6 +39,15 @@ const remove = (path: string) =>
 const snapshotDir = (root: string) => join(dirname(root), ".deps")
 
 /**
+ * Marks a snapshot as just used. A snapshot starts with its slot's modification time, which can be
+ * days old, and the cleanup keeps the most recently used ones.
+ */
+const used = (snapshot: string) => {
+  const now = new Date()
+  utimesSync(snapshot, now, now)
+}
+
+/**
  * Opens a slot for a dependency key. A slot set up for another key is replaced by a writable snapshot of
  * one that was set up for this key, which takes a second instead of an install.
  */
@@ -51,6 +60,7 @@ export const open = (root: string, deps: string | null) =>
     if (snapshots && snapshot !== null && read(join(root, "deps")) !== deps && existsSync(snapshot)) {
       if (existsSync(root)) yield* remove(root)
       yield* btrfs(["subvolume", "snapshot", snapshot, root])
+      used(snapshot)
       restored = true
     } else if (!existsSync(root)) {
       if (snapshots) yield* btrfs(["subvolume", "create", root])
@@ -87,6 +97,7 @@ export const remember = (slot: Slot, deps: string, keep = 3) =>
       })
       if (!won) yield* remove(own)
     }
+    used(target)
     const old = readdirSync(dir)
       .filter((name) => !name.includes("."))
       .map((name) => ({ path: join(dir, name), at: statSync(join(dir, name)).mtimeMs }))
