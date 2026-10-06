@@ -50,7 +50,11 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
   const drive = (runId: string) =>
     Effect.gen(function*() {
       const plan = yield* core.plan(runId)
-      if (plan === null) return
+      if (plan === null) {
+        const row = yield* db(Rows.loadRun(runId))
+        if (row?.status === "cancelled") yield* core.finish(runId)
+        return
+      }
       const done = new Map(plan.steps.map((s) => [s.name, Deferred.makeUnsafe<void>()]))
       yield* Effect.forEach(plan.steps, (step) =>
         Effect.gen(function*() {
@@ -66,8 +70,9 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
   const drivers = yield* FiberMap.make<string>()
   const start = (runId: string) => FiberMap.run(drivers, runId, drive(runId), { onlyIfMissing: true })
 
-  // A restart interrupted these; their steps that were running start over.
-  const unfinished = yield* db(sql<{ id: string }>`select id from runs where status in ('queued', 'planning', 'running') order by created_at`)
+  // A restart interrupted these; their steps that were running start over. Cancelled ones only finish.
+  const unfinished = yield* db(sql<{ id: string }>`select id from runs
+    where status in ('queued', 'planning', 'running') or (status = 'cancelled' and finished_at is null) order by created_at`)
   yield* Effect.forEach(unfinished, (r) => start(r.id), { discard: true })
 
   const create: Runs["Service"]["create"] = (input) =>

@@ -1,17 +1,29 @@
 import { Deferred, Effect } from "effect"
 
-interface Waiter {
+/** What a step asks the pool for. */
+export interface Claim {
   readonly project: string
-  readonly priority: number
+  /** Expected run time in ms: shorter goes first, and waiting earns the same amount back. */
+  readonly expected: number
+  /** When the step's run was created: within a project, older runs go first. */
+  readonly run: number
+}
+
+interface Waiter extends Claim {
   readonly seq: number
+  readonly since: number
   readonly granted: Deferred.Deferred<void>
 }
 
 /**
- * A pool of slots that hands the next free one to the waiting step expected to finish soonest, so short
- * checks report before long ones start. With `perProject`, one project can't hold every slot.
+ * A pool of slots. A project's waiting steps go in run order, the shortest of a run first, so runs
+ * reach a verdict instead of all advancing slowly. Across projects the step expected to finish soonest
+ * goes first, minus the time it has waited, so short checks report quickly and long ones still start.
+ * `perProject` keeps one project from holding every slot while another project waits; while nobody
+ * else waits, it may use them all.
  */
-export const make = (options: { readonly capacity: number; readonly perProject?: number }) => {
+export const make = (options: { readonly capacity: number; readonly perProject?: number; readonly now?: () => number }) => {
+  const now = options.now ?? Date.now
   const waiters: Array<Waiter> = []
   const byProject = new Map<string, number>()
   let running = 0
@@ -24,17 +36,23 @@ export const make = (options: { readonly capacity: number; readonly perProject?:
     byProject.set(project, (byProject.get(project) ?? 0) + 1)
   }
 
+  const inRunOrder = (a: Waiter, b: Waiter) => a.run - b.run || a.expected - b.expected || a.seq - b.seq
+
   const grant = () => {
-    waiters.sort((a, b) => a.priority - b.priority || a.seq - b.seq)
-    for (let i = 0; i < waiters.length && running < options.capacity;) {
-      const waiter = waiters[i]!
-      if (!fits(waiter.project)) {
-        i++
-        continue
+    while (running < options.capacity && waiters.length > 0) {
+      const fronts = new Map<string, Waiter>()
+      for (const waiter of waiters) {
+        const front = fronts.get(waiter.project)
+        if (front === undefined || inRunOrder(waiter, front) < 0) fronts.set(waiter.project, waiter)
       }
-      waiters.splice(i, 1)
-      take(waiter.project)
-      Deferred.doneUnsafe(waiter.granted, Effect.void)
+      const fitting = [...fronts.values()].filter((w) => fits(w.project))
+      const candidates = fitting.length > 0 ? fitting : [...fronts.values()]
+      const at = now()
+      const score = (w: Waiter) => w.expected - (at - w.since)
+      const next = candidates.reduce((best, w) => (score(w) < score(best) || (score(w) === score(best) && w.seq < best.seq) ? w : best))
+      waiters.splice(waiters.indexOf(next), 1)
+      take(next.project)
+      Deferred.doneUnsafe(next.granted, Effect.void)
     }
   }
 
@@ -45,13 +63,13 @@ export const make = (options: { readonly capacity: number; readonly perProject?:
       grant()
     })
 
-  const acquire = (project: string, priority: number) =>
+  const acquire = (claim: Claim) =>
     Effect.suspend(() => {
-      if (running < options.capacity && fits(project) && waiters.length === 0) {
-        take(project)
+      if (running < options.capacity && fits(claim.project) && waiters.length === 0) {
+        take(claim.project)
         return Effect.void
       }
-      const waiter: Waiter = { project, priority, seq: seq++, granted: Deferred.makeUnsafe<void>() }
+      const waiter: Waiter = { ...claim, seq: seq++, since: now(), granted: Deferred.makeUnsafe<void>() }
       waiters.push(waiter)
       grant()
       return Deferred.await(waiter.granted).pipe(
@@ -63,16 +81,18 @@ export const make = (options: { readonly capacity: number; readonly perProject?:
               return Effect.void
             }
             // Granted just as we were interrupted: hand the slot on.
-            return release(project)
+            return release(claim.project)
           })
         ),
       )
     })
 
   return {
-    /** Runs `effect` in a slot. Lower `priority` goes first; use the expected duration in ms. */
-    with: <A, E, R>(project: string, priority: number, effect: Effect.Effect<A, E, R>) =>
-      Effect.acquireUseRelease(acquire(project, priority), () => effect, () => release(project)),
+    /** Runs `effect` in a slot. Interrupting it while it waits gives up its place in the queue. */
+    with: <A, E, R>(claim: Claim, effect: Effect.Effect<A, E, R>) =>
+      Effect.uninterruptibleMask((restore) =>
+        restore(acquire(claim)).pipe(Effect.andThen(restore(effect).pipe(Effect.ensuring(release(claim.project)))))
+      ),
     usage: () => ({ running, waiting: waiters.length, capacity: options.capacity }),
   }
 }

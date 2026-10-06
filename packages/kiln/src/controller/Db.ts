@@ -112,6 +112,23 @@ const migrations = {
       yield* sql`drop table if exists ${sql(table)}`
     }
   }),
+  "0005_shards": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Each shard has its own key, result and timing, so a rerun repeats only the shards that didn't pass.
+    yield* sql`create table shards (
+      run_id text not null,
+      step text not null,
+      shard integer not null,
+      key text not null,
+      status text not null,
+      reused_from text,
+      started_at integer,
+      finished_at integer,
+      cpu_seconds real,
+      memory_peak integer,
+      primary key (run_id, step, shard)
+    )`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {
