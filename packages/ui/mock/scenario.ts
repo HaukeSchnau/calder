@@ -593,6 +593,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     memoryPeakBytes: finished ? Math.round((s.plan.kind === "build" ? 2.4 : s.plan.kind === "task" ? 1.3 : 0.08) * 2 ** 30 * (0.8 + (fnv(s.plan.name) % 40) / 100)) : null,
     spanId: ran || st.status === "reused" ? spanIdOf(run, s.plan.name) : null,
     tests: finished || st.status === "reused" ? testCounts(run, s) : null,
+    files: null,
   }
 }
 

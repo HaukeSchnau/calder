@@ -123,6 +123,8 @@ export const StepRun = Schema.Struct({
   memoryPeakBytes: Schema.NullOr(Schema.Number),
   spanId: Schema.NullOr(Schema.String),
   tests: Schema.NullOr(Schema.Struct({ passed: Schema.Number, failed: Schema.Number, skipped: Schema.Number })),
+  /** For a task with `each`: its files, how many ran rather than being reused, and how many passed only on retry. */
+  files: Schema.NullOr(Schema.Struct({ total: Schema.Number, ran: Schema.Number, flaky: Schema.Number })),
 })
 export type StepRun = typeof StepRun.Type
 

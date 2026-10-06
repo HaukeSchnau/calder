@@ -55,6 +55,10 @@ export interface StepRow {
   readonly tests_passed: number | null
   readonly tests_failed: number | null
   readonly tests_skipped: number | null
+  /** Absent in rows read before migration 0008. */
+  readonly files_total?: number | null
+  readonly files_ran?: number | null
+  readonly files_flaky?: number | null
 }
 
 export const terminal = (status: Domain.StepStatus) =>
@@ -145,6 +149,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     tests: row.tests_passed === null
       ? null
       : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0 },
+    files: row.files_total == null ? null : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
   }
 }
 

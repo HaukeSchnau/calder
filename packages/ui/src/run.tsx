@@ -353,8 +353,9 @@ function Inspector({ detail, step, onSelect, onTab }: {
       </section>
       <section className="isec">
         <h3>Resources</h3>
-        {step.cpuSeconds !== null || step.memoryPeakBytes !== null ? (
+        {step.cpuSeconds !== null || step.memoryPeakBytes !== null || step.files !== null ? (
           <Kv rows={[
+            step.files !== null && ["files", <span className="tnum">{step.files.ran === 0 ? `all ${step.files.total} reused` : `${step.files.ran} of ${step.files.total} ran`}{step.files.flaky ? <>, <span className="bad">{step.files.flaky} flaky</span></> : null}</span>],
             step.cpuSeconds !== null && ["cpu", <span className="tnum">{step.cpuSeconds.toFixed(1)} s</span>],
             step.memoryPeakBytes !== null && ["memory", <span className="tnum">{bytes(step.memoryPeakBytes)} peak</span>],
             step.tests !== null && ["tests", <span>{step.tests.passed} passed{step.tests.failed ? <>, <span className="bad">{step.tests.failed} failed</span></> : null}{step.tests.skipped ? `, ${step.tests.skipped} skipped` : ""}</span>],

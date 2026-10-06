@@ -157,6 +157,12 @@ const migrations = {
     yield* sql`create index file_results_key on file_results (key, created_at desc)`
     yield* sql`create index file_results_file on file_results (project, step, file, created_at desc)`
   }),
+  "0008_step_files": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`alter table steps add column files_total integer`
+    yield* sql`alter table steps add column files_ran integer`
+    yield* sql`alter table steps add column files_flaky integer`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

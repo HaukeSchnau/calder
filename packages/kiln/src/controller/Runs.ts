@@ -280,6 +280,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     readonly usage?: Usage
     readonly tests?: ReadonlyArray<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>
     readonly attempts?: number
+    readonly files?: { readonly total: number; readonly ran: number; readonly flaky: number }
   }
 
   const describe = (s: Settled, row: Rows.StepRow): [StatusState, string] => {
@@ -325,7 +326,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         attempts = max(attempts, ${s.attempts ?? 0}),
         tests_passed = ${counted ? tests.filter((t) => t.status === "passed").length : null},
         tests_failed = ${counted ? tests.filter((t) => t.status === "failed" || t.status === "timeout").length : null},
-        tests_skipped = ${counted ? tests.filter((t) => t.status === "skipped").length : null}
+        tests_skipped = ${counted ? tests.filter((t) => t.status === "skipped").length : null},
+        files_total = ${s.files?.total ?? null},
+        files_ran = ${s.files?.ran ?? null},
+        files_flaky = ${s.files?.flaky ?? null}
         where run_id = ${run.id} and name = ${row.name}`)
       if (counted) {
         yield* db(sql.withTransaction(Effect.forEach(tests, (t) =>
@@ -745,7 +749,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const misses = each.filter((e) => e.always || !passed.has(keys.get(e.file)!) || sampled(e.file)).map((e) => e.file)
       if (misses.length === 0) {
         const from = passed.values().next().value ?? null
-        return yield* settle(run, row, { status: "reused", value: null, key, reusedFrom: from })
+        return yield* settle(run, row, { status: "reused", value: null, key, reusedFrom: from, files: { total: each.length, ran: 0, flaky: 0 } })
       }
 
       const placed = place(run, context.info, task.platform)
@@ -804,7 +808,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         cpuSeconds: jobs.reduce((sum, d) => sum + (d.r.usage.cpuSeconds ?? 0), 0),
         memoryPeakBytes: Math.max(0, ...jobs.map((d) => d.r.usage.memoryPeakBytes ?? 0)),
       }
-      const extra = { attempts: context.collect.attempts, tests: context.collect.tests }
+      const extra = { attempts: context.collect.attempts, tests: context.collect.tests, files: { total: each.length, ran: misses.length, flaky: flaky.size } }
       const bad = [...results].filter(([, o]) => o.status !== "passed").map(([file]) => file)
       if (bad.length > 0) {
         const failed = jobs.find((d) => d.r.result._tag !== "Passed" && d.files.some((f) => bad.includes(f)))
