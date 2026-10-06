@@ -82,6 +82,22 @@ describe("Slots", () => {
       expect(order).toEqual(["busy", "typecheck", "hopwatch"])
     }))
 
+  it.effect("counts reserved jobs at once, even past capacity, until they are given back", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 2, perProject: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      const giveBack = [slots.reserve("t3code"), slots.reserve("t3code"), slots.reserve("t3code")]
+      expect(slots.usage()).toEqual({ running: 3, waiting: 0, capacity: 2 })
+      yield* job("new", { project: "kiln", expected: 0, run: 0 })
+      yield* Effect.yieldNow
+      expect(order).toEqual([])
+      yield* giveBack[0]!
+      yield* giveBack[1]!
+      yield* Effect.yieldNow
+      expect(order).toEqual(["new"])
+      yield* Deferred.succeed(hold, undefined)
+    }))
+
   it.effect("gives up the place in the queue when interrupted while waiting", () =>
     Effect.gen(function*() {
       const slots = Slots.make({ capacity: 1 })
