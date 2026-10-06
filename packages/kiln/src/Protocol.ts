@@ -33,6 +33,8 @@ export const PlannedStep = Schema.Struct({
     inputs: Schema.Array(Schema.String),
     interpolates: Schema.Array(Schema.String),
     shards: Schema.NullOr(Schema.Number),
+    /** For a task with `each`: every file with its own key, and whether it runs even when that key passed. */
+    each: Schema.NullOr(Schema.Array(Schema.Struct({ file: Schema.String, key: Schema.String, always: Schema.Boolean }))),
     /** The key of the prepared workspace the task starts from: its setup's, or (without one) a hash of manifests, lockfiles, patches, `.ci/`, `flake.lock` and the dev shell. */
     deps: Schema.String,
     outputs: Schema.Array(Schema.String),
@@ -102,6 +104,8 @@ export const StepJob = Schema.TaggedStruct("Step", {
   derivation: Schema.NullOr(Schema.String),
   /** For tasks: the dependency key, so slots set up for it can be cloned. */
   deps: Schema.NullOr(Schema.String),
+  /** For a task with `each`: the files this job checks. */
+  files: Schema.NullOr(Schema.Array(Schema.String)),
 })
 
 export const Job = Schema.Union([PlanJob, StepJob])

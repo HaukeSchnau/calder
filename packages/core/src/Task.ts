@@ -13,12 +13,21 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
   /** The setup the workspace starts from, such as installed dependencies. */
   readonly setup?: Setup
   readonly run: Cmd<R> | ((shard: Shard) => Cmd<R>)
-  /** What the task reads. Defaults to the whole repository. */
+  /**
+   * What the task reads. Defaults to the whole repository; with `each`, what every file's key shares,
+   * by default the root manifest and lockfiles (add configs and setup files the files run with).
+   */
   readonly inputs?: Files.Files
+  /**
+   * Files the task checks one by one, such as test files, usually `Files.imports(...)`. Each has its own
+   * key, a file that passed with its key doesn't run again, and `run` gets the files a job should
+   * check. Needs a `report` that names files, so Kiln knows which passed.
+   */
+  readonly each?: Files.Files
   /** Steps that must pass first. They don't enter the task's key. */
   readonly after?: ReadonlyArray<Step.Any>
   readonly report?: ReportSpec
-  /** Runs the task as `count` parallel shards. With `split`, each shard gets a share of the files. */
+  /** Runs the task as `count` parallel shards. With `split`, each shard gets a share of the files; with `each`, at most `count` jobs run. */
   readonly shards?: { readonly count: number; readonly split?: Files.Files }
   /** Paths the task writes, added to the Nix store by content. Each becomes a step: `task.outputs.name`. */
   readonly outputs?: O
@@ -27,6 +36,9 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
   readonly env?: { readonly [env: string]: string }
   readonly platform?: Platform
 }
+
+/** What a task with `each` shares by default: the root manifest and lockfiles. */
+const dependencyFiles = Files.glob("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", ".npmrc")
 
 /**
  * A command in a pinned toolchain, run in a persistent workspace of the repository. It is keyed by the
@@ -41,7 +53,9 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     shell: options.shell,
     setup: options.setup,
     run: options.run,
-    inputs: options.inputs ?? Files.all(),
+    // Every file's key would change with every commit if each one read the whole repository.
+    inputs: options.inputs ?? (options.each === undefined ? Files.all() : dependencyFiles),
+    each: options.each,
     after: options.after ?? [],
     report: options.report,
     shards: options.shards === undefined ? undefined : { count: options.shards.count, split: options.shards.split },

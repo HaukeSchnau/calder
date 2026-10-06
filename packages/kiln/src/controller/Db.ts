@@ -140,6 +140,23 @@ const migrations = {
       created_at integer not null
     )`
   }),
+  "0007_file_results": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Outcomes of the files of tasks with `each`, by the file's key: passed, flaky (passed on retry) or failed.
+    yield* sql`create table file_results (
+      key text not null,
+      project text not null,
+      step text not null,
+      file text not null,
+      run_id text not null,
+      trust text not null,
+      status text not null,
+      duration_ms integer not null,
+      created_at integer not null
+    )`
+    yield* sql`create index file_results_key on file_results (key, created_at desc)`
+    yield* sql`create index file_results_file on file_results (project, step, file, created_at desc)`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

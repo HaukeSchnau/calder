@@ -231,8 +231,8 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     if (remote !== null) yield* fetchInputs(self, values)
 
     const shard = job.shard ?? { index: 1, count: 1 }
-    let files: ReadonlyArray<string> = []
-    if (typeof def.run === "function" && def.shards?.split !== undefined) {
+    let files: ReadonlyArray<string> = job.files ?? []
+    if (job.files === null && typeof def.run === "function" && def.shards?.split !== undefined) {
       const repo = yield* Repo.make(remote === null ? job.run.mirror : join(workspace, ".git"), job.run.revision)
       files = shardFiles(yield* paths(repo, def.shards.split), shard.index, shard.count)
     }
@@ -273,9 +273,11 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
             Effect.tapError((e) => log("kiln", `could not read the report ${def.report!.path}: ${e}`)),
             Effect.orElseSucceed(() => []),
           )
+          // Reporters name files by absolute path; the controller compares them with repository paths.
+          const relative = (file: string | undefined) => (file === undefined ? null : file.startsWith(`${workspace}/`) ? file.slice(workspace.length + 1) : file)
           yield* emit({
             _tag: "Tests",
-            results: results.map((r) => ({ ...r, file: r.file ?? null, message: r.message ?? null })),
+            results: results.map((r) => ({ ...r, file: relative(r.file), message: r.message ?? null })),
           })
           failures = Report.failures(results)
         } else {

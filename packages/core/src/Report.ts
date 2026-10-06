@@ -147,7 +147,8 @@ const testcase = (a: Record<string, string>, body: string, suites: ReadonlyArray
   return {
     suite: a.classname ?? suites.at(-1) ?? "",
     name: a.name ?? "",
-    file: a.file,
+    // Vitest and bun put the file in classname; pytest a module path, which isn't one.
+    file: a.file ?? (a.classname !== undefined && /\.[cm]?[jt]sx?$/.test(a.classname) ? a.classname : undefined),
     status: failure ? (message !== undefined && timedOut(message) ? "timeout" : "failed") : skipped ? "skipped" : "passed",
     durationMs: Math.round(Number(a.time ?? 0) * 1000),
     message,

@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import type { PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
+import * as Imports from "./Imports.ts"
 import type { Repo } from "./Repo.ts"
 
 /** Root files every workspace package reads: manifests, lockfiles and the fleet's `.ci/` contract. */
@@ -63,6 +64,18 @@ const manifests = (repo: Repo) =>
     return out
   })
 
+const graphs = new WeakMap<Repo, Imports.Graph>()
+/** One import graph per revision, however many tasks ask. */
+const graphOf = (repo: Repo) =>
+  Effect.suspend(() => {
+    const known = graphs.get(repo)
+    if (known !== undefined) return Effect.succeed(known)
+    return manifests(repo).pipe(
+      Effect.flatMap((ws) => Imports.make(repo, ws.map((m) => m.dir))),
+      Effect.tap((graph) => Effect.sync(() => graphs.set(repo, graph))),
+    )
+  })
+
 /** Concrete paths for a `Files` value at the revision. Directories stay directories. */
 export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
   Effect.gen(function*() {
@@ -75,6 +88,10 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
         const all = yield* repo.files
         const res = files.patterns.map(Files.globToRegExp)
         return all.filter((f) => res.some((r) => r.test(f)))
+      }
+      case "Imports": {
+        const graph = yield* graphOf(repo)
+        return [...(yield* graph.closure(graph.match(files.patterns), files))].sort()
       }
       case "Union":
         return (yield* Effect.forEach(files.members, (m) => paths(repo, m))).flat()
@@ -100,6 +117,36 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
         return [...rootFiles, ...[...seen].sort()]
       }
     }
+  })
+
+/**
+ * A key for every file of a task's `each`: the task's own key base, the file, everything it imports
+ * and its package's data files.
+ */
+const eachKeys = (repo: Repo, each: Files.Files, keyBase: string) =>
+  Effect.gen(function*() {
+    const graph = yield* graphOf(repo)
+    const entries = each._tag === "Imports" || each._tag === "Glob" ? graph.match(each.patterns) : [...new Set(yield* paths(repo, each))].sort()
+    const byEntry = each._tag === "Imports" ? yield* graph.closures(entries, each) : new Map(entries.map((e) => [e, [e]] as const))
+    const closures = entries.map((entry) => byEntry.get(entry) ?? [entry])
+    const blobs = new Map((yield* repo.entries).map((e) => [e.path, e.oid]))
+    const dirs = [...new Set(closures.flatMap((c) => c.filter((p) => !blobs.has(p))))]
+    const trees = yield* repo.objectIds(dirs)
+    const id = (path: string) => blobs.get(path) ?? trees.get(path) ?? null
+    const data = new Map<string, string>()
+    const dataKey = (dir: string) => {
+      let key = data.get(dir)
+      if (key === undefined) {
+        key = sha256(graph.data(dir).map((p) => [p, id(p)]))
+        data.set(dir, key)
+      }
+      return key
+    }
+    return entries.map((file, i) => ({
+      file,
+      key: sha256({ keyBase, file, closure: [...closures[i]!].sort().map((p) => [p, id(p)]), data: dataKey(graph.packageOf(file)) }),
+      always: graph.always(file),
+    }))
   })
 
 /** Files whose change means dependencies must be set up again. */
@@ -280,6 +327,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
                 inputs,
                 interpolates: command.steps.map((s) => s.name),
                 shards: def.shards?.count ?? null,
+                each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
                 deps: def.setup === undefined
                   ? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain })
                   : setupKeys.get(def.setup.name)!,

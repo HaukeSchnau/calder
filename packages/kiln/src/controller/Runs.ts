@@ -8,6 +8,7 @@ import * as Exec from "../Exec.ts"
 import { sha256, taskKey } from "../Keys.ts"
 import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Config } from "./Config.ts"
+import * as Each from "./Each.ts"
 import * as Estimates from "./Estimates.ts"
 import { Gitea, type StatusState } from "./Gitea.ts"
 import { type Pool, Jobs, type Usage } from "./Jobs.ts"
@@ -538,6 +539,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         secrets: {},
         derivation: null,
         deps: null,
+        files: null,
         ...extra,
       })
 
@@ -588,6 +590,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       const task = spec.task!
       const values = Object.fromEntries(task.interpolates.map((n) => [n, JSON.parse(byName.get(n)?.value ?? "null")]))
+      if (task.each !== null) return yield* eachTask(run, row, task, task.each, values, { plan, info, stepJob, collect })
       const count = task.shards ?? 1
       const shardKeys = count === 1 ? [taskKey(task.keyBase, values, null)] : Array.from({ length: count }, (_, i) => taskKey(task.keyBase, values, { index: i + 1, count }))
       const key = count === 1 ? shardKeys[0]! : sha256(shardKeys)
@@ -697,6 +700,120 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         })
       ),
     )
+
+  type TaskSpec = NonNullable<PlannedStep["task"]>
+  type TestRow = Extract<JobEvent, { _tag: "Tests" }>["results"][number]
+
+  /**
+   * A task with `each`: files whose key passed before don't run, except `always` files and, on trusted
+   * runs, a small sample that checks the keys still hold. The rest run in up to `shards` jobs split by
+   * their recorded durations; files that fail run once more, and a pass then counts as flaky.
+   */
+  const eachTask = (
+    run: Rows.RunRow,
+    row: Rows.StepRow,
+    task: TaskSpec,
+    each: NonNullable<TaskSpec["each"]>,
+    values: Record<string, unknown>,
+    context: {
+      readonly plan: PlanSpec
+      readonly info: RunInfo
+      readonly stepJob: (extra: Partial<Extract<Job, { _tag: "Step" }>>) => Job
+      readonly collect: { tests: Array<TestRow>; attempts: number }
+    },
+  ) =>
+    Effect.gen(function*() {
+      const keys = new Map(each.map((e) => [e.file, task.interpolates.length === 0 ? e.key : taskKey(e.key, values, null)]))
+      const key = sha256([...keys.values()])
+      yield* db(sql`update steps set key = ${key} where run_id = ${run.id} and name = ${row.name}`)
+      const reusable = !Rows.spec(row).neverReuse && context.plan.reuse !== "none"
+      const prResults = run.trust === "pr" || context.plan.reuse === "all"
+
+      const passed = new Map<string, string>()
+      if (reusable) {
+        const all = [...keys.values()]
+        for (let i = 0; i < all.length; i += 400) {
+          const hits = yield* db(sql<{ key: string; run_id: string }>`select file_results.key, file_results.run_id
+            from file_results join runs on runs.id = file_results.run_id
+            where ${sql.in("file_results.key", all.slice(i, i + 400))} and file_results.status in ('passed', 'flaky')
+              and (file_results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))`)
+          for (const hit of hits) passed.set(hit.key, hit.run_id)
+        }
+      }
+      // About one hit in fifty runs again on trusted runs, so a key that misses a dependency shows up.
+      const sampled = (file: string) => run.trust === "trusted" && parseInt(sha256(`${run.id}:${file}`).slice(0, 2), 16) < 5
+      const misses = each.filter((e) => e.always || !passed.has(keys.get(e.file)!) || sampled(e.file)).map((e) => e.file)
+      if (misses.length === 0) {
+        const from = passed.values().next().value ?? null
+        return yield* settle(run, row, { status: "reused", value: null, key, reusedFrom: from })
+      }
+
+      const placed = place(run, context.info, task.platform)
+      if (placed === null) return yield* settle(run, row, agentsRefuse(task.platform))
+      const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
+
+      const history = yield* db(sql<{ file: string; duration_ms: number }>`select file, duration_ms from (
+          select file, duration_ms, row_number() over (partition by file order by created_at desc) as n
+          from file_results where project = ${run.project} and step = ${row.name} and status != 'failed'
+        ) where n <= 5`)
+      const duration = Each.durations(history.map((h) => ({ file: h.file, durationMs: h.duration_ms })))
+      const bins = Each.split(misses, duration, task.shards ?? 1)
+      const count = bins.length
+
+      const job = (files: ReadonlyArray<string>, index: number, total: number, ms: number) =>
+        Effect.gen(function*() {
+          const mine = { tests: [] as Array<TestRow>, attempts: 0 }
+          const r = yield* execute(
+            run,
+            row,
+            (ws) => context.stepJob({ run: placed.where, workspace: ws, secrets, shard: { index, count: total }, deps: task.deps, files }),
+            { slots: placed.remote ? slots.agents : slots.tasks, expected: ms, action: false, shard: index, workspace: true, platform: task.platform },
+            mine,
+          )
+          context.collect.tests.push(...mine.tests)
+          context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
+          return { r, tests: mine.tests, files }
+        })
+      const outcomes = (done: { readonly r: { readonly result: JobResult }; readonly tests: ReadonlyArray<TestRow>; readonly files: ReadonlyArray<string> }) =>
+        Each.outcomes(done.files, done.tests, done.r.result._tag === "Passed")
+
+      const first = yield* Effect.forEach(bins.map((b, i) => [b, i] as const), ([b, i]) => job(b.files, i + 1, count, b.ms), { concurrency: "unbounded" })
+      if (first.some((d) => "cancelled" in d.r)) return yield* settle(run, row, { status: "cancelled" })
+      const results = new Map(first.flatMap((d) => [...outcomes(d)]))
+      const failing = [...results].filter(([, o]) => o.status === "failed").map(([file]) => file)
+      const flaky = new Set<string>()
+      let retry: (typeof first)[number] | undefined
+      if (failing.length > 0 && failing.length <= 10) {
+        retry = yield* job(failing, count + 1, count, failing.reduce((sum, f) => sum + duration(f), 0))
+        if ("cancelled" in retry.r) return yield* settle(run, row, { status: "cancelled" })
+        for (const [file, o] of outcomes(retry)) {
+          if (o.status === "passed") flaky.add(file)
+          results.set(file, o.status === "passed" ? { ...o, status: "passed" } : results.get(file)!)
+        }
+      }
+
+      const now = Date.now()
+      const known = [...results].filter(([, o]) => o.status !== "unknown")
+      yield* db(sql.withTransaction(Effect.forEach(known, ([file, o]) =>
+        sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at)
+          values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
+            ${flaky.has(file) ? "flaky" : o.status}, ${o.ms}, ${now})`, { discard: true })))
+
+      const jobs = retry === undefined ? first : [...first, retry]
+      const usage: Usage = {
+        cpuSeconds: jobs.reduce((sum, d) => sum + (d.r.usage.cpuSeconds ?? 0), 0),
+        memoryPeakBytes: Math.max(0, ...jobs.map((d) => d.r.usage.memoryPeakBytes ?? 0)),
+      }
+      const extra = { attempts: context.collect.attempts, tests: context.collect.tests }
+      const bad = [...results].filter(([, o]) => o.status !== "passed").map(([file]) => file)
+      if (bad.length > 0) {
+        const failed = jobs.find((d) => d.r.result._tag !== "Passed" && d.files.some((f) => bad.includes(f)))
+        const result: JobResult = failed?.r.result ?? { _tag: "Died", message: `no result for ${bad.join(", ")}` }
+        return yield* settle(run, row, { ...fromResult(result, usage, extra), key })
+      }
+      if (flaky.size > 0) yield* Effect.logInfo(`${run.id} ${row.name}: ${[...flaky].join(", ")} passed on retry`)
+      return yield* settle(run, row, { status: "passed", value: null, key, usage, ...extra })
+    })
 
   /** Whether a build output exists here or in the binary cache, which means its derivation built before. */
   const available = (out: string) =>

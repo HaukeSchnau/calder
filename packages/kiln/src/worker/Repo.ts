@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { spawn } from "node:child_process"
 import * as Exec from "../Exec.ts"
 
 /** Git environment that reads the controller's mirror, which another user owns. */
@@ -43,7 +44,33 @@ export const make = (mirror: string, revision: string) =>
         }
         return ids as ReadonlyMap<string, string>
       })
-    return { files, entries, show, objectIds }
+    /** Contents of many files at the revision in one `git cat-file --batch`. Missing ones are left out. */
+    const read = (paths: ReadonlyArray<string>) =>
+      Effect.callback<ReadonlyMap<string, string>, Error>((resume) => {
+        const out = new Map<string, string>()
+        if (paths.length === 0) return resume(Effect.succeed(out))
+        const child = spawn("git", ["--git-dir", mirror, "cat-file", "--batch"], { env: { ...process.env, ...gitEnv }, stdio: ["pipe", "pipe", "ignore"] })
+        const chunks: Array<Buffer> = []
+        child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk))
+        child.on("error", (error) => resume(Effect.fail(error)))
+        child.on("close", () => {
+          const bytes = Buffer.concat(chunks)
+          let at = 0
+          for (const path of paths) {
+            const end = bytes.indexOf(10, at)
+            if (end < 0) break
+            const header = bytes.toString("utf8", at, end)
+            at = end + 1
+            if (header.endsWith(" missing") || header.endsWith(" ambiguous")) continue
+            const size = Number(header.split(" ")[2])
+            out.set(path, bytes.toString("utf8", at, at + size))
+            at += size + 1
+          }
+          resume(Effect.succeed(out))
+        })
+        child.stdin.end(paths.map((p) => `${revision}:${p}\n`).join(""))
+      }).pipe(Effect.orDie)
+    return { files, entries, show, objectIds, read }
   })
 
 export type Repo = Effect.Success<ReturnType<typeof make>>

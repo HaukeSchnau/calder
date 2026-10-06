@@ -149,6 +149,9 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       if (def._tag === "Setup" && def.run.steps.length > 0) {
         return fail(`setup "${step.name}" interpolates other steps; its command can only depend on its inputs`)
       }
+      if (def._tag === "Task" && def.each !== undefined && (typeof def.run !== "function" || def.report === undefined)) {
+        return fail(`"${step.name}" checks files one by one, so its run must take the shard's files and it needs a report`)
+      }
       if (def._tag === "Task" && def.setup !== undefined && def.setup.def._tag === "Setup" && def.setup.def.platform !== def.platform) {
         return fail(`"${step.name}" runs on ${def.platform ?? "the controller's platform"} but its setup "${def.setup.name}" on ${def.setup.def.platform ?? "the controller's platform"}`)
       }

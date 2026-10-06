@@ -116,6 +116,7 @@ export type Def =
     readonly setup: Step.Any | undefined
     readonly run: Cmd<any> | ((shard: Shard) => Cmd<any>)
     readonly inputs: Files
+    readonly each: Files | undefined
     readonly after: ReadonlyArray<Step.Any>
     readonly report: ReportSpec | undefined
     readonly shards: { readonly count: number; readonly split: Files | undefined } | undefined
