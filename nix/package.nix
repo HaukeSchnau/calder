@@ -59,6 +59,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook preInstall
     mkdir -p $out/lib/kiln $out/bin
     cp -a package.json pnpm-workspace.yaml tsconfig.base.json node_modules packages sdk $out/lib/kiln/
+    # The source's path depends only on its content, so every platform's build of it gets the same id.
+    # Twelve characters, because Nix would take the whole hash for a runtime reference to the source.
+    basename "$src" | cut -c1-12 > $out/lib/kiln/build
     makeWrapper ${lib.getExe bun} $out/bin/kiln \
       --add-flags $out/lib/kiln/packages/kiln/src/main.ts \
       --prefix PATH : ${lib.makeBinPath [ git gnutar bash coreutils ]}

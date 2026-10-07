@@ -9,7 +9,8 @@ const Meter = ({ used, max }: { readonly used: number; readonly max: number }) =
 
 /**
  * Slot use per host: the controller's host with tasks and builds, then each agent. A gone agent shows
- * as offline, in red while a step waits for it; a platform no agent ever served shows when awaited.
+ * as offline, in red while a step waits for it, and an agent on another Kiln build in red; a platform
+ * no agent ever served shows when awaited.
  */
 export function HostSlots({ ov, compact = false }: { readonly ov: Domain.Overview; readonly compact?: boolean }) {
   const waits = useAtomValue(agentWaitsAtom)
@@ -24,6 +25,13 @@ export function HostSlots({ ov, compact = false }: { readonly ov: Domain.Overvie
       </span>
       {ov.agents.map((a) => {
         const awaited = waits.filter((w) => w.agent === a.name)
+        if (a.connected && !a.current) {
+          return (
+            <span key={a.name} className="hsl gone" data-tip={`${a.name} runs another Kiln build (${a.build}) and gets no jobs until it is deployed`}>
+              <b>{a.name}</b><span className="bad">other build</span>
+            </span>
+          )
+        }
         return a.connected ? (
           <span key={a.name} className="hsl" data-tip={`${a.name}, ${a.platform} agent`}>
             <b>{a.name}</b>

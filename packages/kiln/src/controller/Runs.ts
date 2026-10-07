@@ -406,7 +406,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     const foreign = platform !== null && platform !== config.system
     if (foreign && run.trust !== "trusted") return null
     const offload = !foreign && run.trust === "trusted" &&
-      agents.usage().some((a) => a.connected && a.platform === config.system && a.running < a.slots)
+      agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
     const remote = foreign || offload
     const system = platform ?? config.system
     const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, kilnDir: "", system } : info

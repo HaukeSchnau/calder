@@ -309,7 +309,9 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
 
       const agentMode = Effect.gen(function*() {
-        yield* options.onEvent({ _tag: "Log", stream: "kiln", text: `waiting for a ${platform} agent`, timestamp: Date.now() })
+        const stale = agents.usage().filter((a) => a.connected && !a.current && a.platform === platform)
+        const why = stale.map((a) => `; ${a.name} runs another Kiln build (${a.build}) and needs a deploy`).join("")
+        yield* options.onEvent({ _tag: "Log", stream: "kiln", text: `waiting for a ${platform} agent${why}`, timestamp: Date.now() })
         const exited = yield* agents.run({ id, token }, platform).pipe(
           Effect.flatMap((code) =>
             Effect.sleep("1 second").pipe(

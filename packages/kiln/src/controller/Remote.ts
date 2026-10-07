@@ -14,7 +14,7 @@ import { Mirror } from "./Mirror.ts"
 export const agentHandlers = AgentRpcs.toLayer(Effect.gen(function*() {
   const agents = yield* Agents
   return {
-    work: ({ token, name, platform, slots, running }) => agents.connect({ token, name }, { platform, slots, running }),
+    work: ({ token, name, ...agent }) => agents.connect({ token, name }, agent),
     exited: ({ token, name, job, code }) => agents.exited({ token, name }, job, code),
   }
 }))

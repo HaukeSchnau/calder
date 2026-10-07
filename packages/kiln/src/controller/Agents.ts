@@ -1,5 +1,6 @@
 import { type Cause, Context, Deferred, Effect, Layer, Queue, Stream } from "effect"
 import { readFileSync } from "node:fs"
+import * as Build from "../Build.ts"
 import { type AgentOrder, Unauthorized } from "../Protocol.ts"
 import { Config } from "./Config.ts"
 
@@ -7,6 +8,7 @@ interface Connection {
   readonly name: string
   readonly platform: string
   readonly slots: number
+  readonly build: string
   readonly orders: Queue.Queue<AgentOrder, Cause.Done>
 }
 
@@ -27,6 +29,9 @@ export interface AgentUsage {
   readonly slots: number
   readonly running: number
   readonly connected: boolean
+  readonly build: string
+  /** Whether it runs the controller's Kiln build; only such agents get jobs. */
+  readonly current: boolean
 }
 
 /** How long an agent may stay away before the jobs it ran count as lost. */
@@ -44,20 +49,21 @@ export class Agents extends Context.Service<Agents, {
     readonly platform: string
     readonly slots: number
     readonly running: ReadonlyArray<string>
+    readonly build: string
   }) => Stream.Stream<AgentOrder, Unauthorized>
   readonly exited: (auth: { readonly token: string; readonly name: string }, job: string, code: number) => Effect.Effect<void, Unauthorized>
   readonly usage: () => ReadonlyArray<AgentUsage>
 }>()("kiln/controller/Agents") {}
 
-/** Agents authenticate with `secret`; with none, no agent may connect. */
-export const make = (secret: string | null): Agents["Service"] => {
+/** Agents authenticate with `secret`; with none, no agent may connect. `build` is the controller's. */
+export const make = (secret: string | null, build: string = Build.id): Agents["Service"] => {
   const connections = new Map<string, Connection>()
   const placed = new Map<string, Placed>()
   const waiters: Array<Waiter> = []
   // Bumped on every connect, so a grace timer knows whether its agent came back.
   const generations = new Map<string, number>()
   // Every agent seen since start, so a missing one stays visible.
-  const seen = new Map<string, { readonly platform: string; readonly slots: number }>()
+  const seen = new Map<string, { readonly platform: string; readonly slots: number; readonly build: string }>()
 
   const check = (auth: { readonly token: string; readonly name: string }) =>
     secret !== null && auth.token === secret ? Effect.void : Effect.fail(new Unauthorized({ reason: "wrong agent token" }))
@@ -66,7 +72,9 @@ export const make = (secret: string | null): Agents["Service"] => {
 
   const assign = Effect.gen(function*() {
     for (const waiter of [...waiters]) {
-      const agent = [...connections.values()].find((c) => c.platform === waiter.platform && runningOn(c.name) < c.slots)
+      const agent = [...connections.values()].find((c) =>
+        c.platform === waiter.platform && c.build === build && runningOn(c.name) < c.slots
+      )
       if (agent === undefined) continue
       waiters.splice(waiters.indexOf(waiter), 1)
       const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>() }
@@ -111,14 +119,17 @@ export const make = (secret: string | null): Agents["Service"] => {
             if (previous !== undefined) Queue.endUnsafe(previous.orders)
             const generation = (generations.get(auth.name) ?? 0) + 1
             generations.set(auth.name, generation)
-            const connection: Connection = { name: auth.name, platform: agent.platform, slots: agent.slots, orders }
+            const connection: Connection = { name: auth.name, platform: agent.platform, slots: agent.slots, build: agent.build, orders }
             connections.set(auth.name, connection)
-            seen.set(auth.name, { platform: agent.platform, slots: agent.slots })
+            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build })
             // Workers that exited while the agent was away can't report it any more.
             for (const [job, p] of placed) {
               if (p.agent === auth.name && !agent.running.includes(job)) yield* finish(job, -1)
             }
             yield* Effect.logInfo(`agent ${auth.name} (${agent.platform}, ${agent.slots} slots) connected`)
+            if (agent.build !== build) {
+              yield* Effect.logWarning(`agent ${auth.name} runs Kiln build ${agent.build}, not ${build}: it gets no jobs until it is deployed`)
+            }
             yield* assign
             yield* Effect.addFinalizer(() =>
               Effect.gen(function*() {
@@ -139,7 +150,7 @@ export const make = (secret: string | null): Agents["Service"] => {
       })),
     exited: (auth, job, code) => check(auth).pipe(Effect.andThen(finish(job, code))),
     usage: () =>
-      [...seen].map(([name, a]) => ({ name, ...a, running: runningOn(name), connected: connections.has(name) })),
+      [...seen].map(([name, a]) => ({ name, ...a, running: runningOn(name), connected: connections.has(name), current: a.build === build })),
   }
 }
 

@@ -49,7 +49,7 @@ function overview(world: World, now: number, seq: number): Domain.Overview {
       builds: running.filter((s) => s.plan.kind === "build").length,
       buildsMax: 3,
     },
-    agents: [{ name: "m1", platform: DARWIN, slots: 2, running: running.filter((s) => s.plan.platform === DARWIN).length, connected: world.agentGoneAt === null }],
+    agents: [{ name: "m1", platform: DARWIN, slots: 2, running: running.filter((s) => s.plan.platform === DARWIN).length, connected: world.agentGoneAt === null, build: "dev", current: true }],
   }
 }
 

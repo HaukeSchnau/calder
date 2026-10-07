@@ -268,7 +268,7 @@ export const agentWaitsAtom = Atom.make((get): ReadonlyArray<AgentWait> => {
   const ov = get(overviewAtom)
   if (!AsyncResult.isSuccess(ov)) return []
   const { agents, active } = ov.value
-  const served = (platform: string) => agents.some((a) => a.connected && a.platform === platform)
+  const served = (platform: string) => agents.some((a) => a.connected && a.current && a.platform === platform)
   return active.flatMap((run) => {
     const detail = get(runAtom(run.id))
     if (!AsyncResult.isSuccess(detail)) return []

@@ -228,10 +228,16 @@ const agentAuth = { token: Schema.String, name: Schema.String }
 export class AgentRpcs extends RpcGroup.make(
   /**
    * The agent's orders while it is connected. `running` lists the jobs whose workers it still runs, so
-   * a reconnect doesn't lose them.
+   * a reconnect doesn't lose them. `build` is the agent's Kiln build (`Build.id`).
    */
   Rpc.make("work", {
-    payload: { ...agentAuth, platform: Schema.String, slots: Schema.Number, running: Schema.Array(Schema.String) },
+    payload: {
+      ...agentAuth,
+      platform: Schema.String,
+      slots: Schema.Number,
+      running: Schema.Array(Schema.String),
+      build: Schema.String,
+    },
     success: AgentOrder,
     error: Unauthorized,
     stream: true,

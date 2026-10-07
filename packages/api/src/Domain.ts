@@ -245,6 +245,9 @@ export const Overview = Schema.Struct({
     slots: Schema.Number,
     running: Schema.Number,
     connected: Schema.Boolean,
+    build: Schema.String,
+    /** Runs the controller's Kiln build; other agents get no jobs. */
+    current: Schema.Boolean,
   })),
 })
 export type Overview = typeof Overview.Type

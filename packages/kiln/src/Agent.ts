@@ -3,6 +3,7 @@ import { Deferred, Effect, Fiber, Layer, Schedule, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { readFileSync } from "node:fs"
+import * as Build from "./Build.ts"
 import { type AgentOrder, AgentRpcs } from "./Protocol.ts"
 
 export interface Options {
@@ -84,7 +85,7 @@ export const run = (options: Options) =>
 
     yield* Effect.logInfo(`agent ${options.name} serving ${options.platform} jobs from ${options.url}`)
     yield* Effect.suspend(() =>
-      client.work({ ...auth, platform: options.platform, slots: options.slots, running: [...running.keys()] }).pipe(
+      client.work({ ...auth, platform: options.platform, slots: options.slots, running: [...running.keys()], build: Build.id }).pipe(
         Stream.runForEach(obey),
       )
     ).pipe(
