@@ -11,6 +11,7 @@ import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 import * as Each from "./Each.ts"
 import * as Estimates from "./Estimates.ts"
+import * as InFlight from "./InFlight.ts"
 import { Gitea, type StatusState } from "./Gitea.ts"
 import { type Pool, Jobs, type Usage } from "./Jobs.ts"
 import { Live } from "./Live.ts"
@@ -37,6 +38,11 @@ export class RunsCore extends Context.Service<RunsCore, {
   readonly built: (runId: string, name: string) => Effect.Effect<boolean>
   readonly finish: (runId: string) => Effect.Effect<void>
   readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
+  /**
+   * Cancels a run a newer one replaces: its waiting work never starts, but jobs already running finish
+   * and keep their results, which the newer run reuses or waits for.
+   */
+  readonly supersede: (runId: string, reason: string) => Effect.Effect<void>
 }>()("kiln/controller/RunsCore") {}
 
 /** Terminal colours and titles some tools write even without a terminal; the UI styles lines itself. */
@@ -64,14 +70,19 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     agents: Slots.make({ capacity: 64 }),
   }
   const cancels = new Map<string, Deferred.Deferred<string>>()
-  const cancelSignal = (runId: string) => {
-    let d = cancels.get(runId)
+  const signal = (map: Map<string, Deferred.Deferred<string>>) => (runId: string) => {
+    let d = map.get(runId)
     if (d === undefined) {
       d = Deferred.makeUnsafe<string>()
-      cancels.set(runId, d)
+      map.set(runId, d)
     }
     return d
   }
+  const cancelSignal = signal(cancels)
+  const supersedes = new Map<string, Deferred.Deferred<string>>()
+  const supersedeSignal = signal(supersedes)
+
+  const { flying, landing, has: inFlight } = InFlight.make()
   const workspaces = new Map<string, Set<number>>()
   // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
   // lands in a workspace that is still in use.
@@ -213,7 +224,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           { project: run.project, expected: 0, run: run.created_at },
           jobs.run(job, { pool: poolOf(run), onEvent: logTo(run, "plan", run.span_id, null) }),
         ).pipe(Effect.map(Option.some)),
-        Deferred.await(cancelSignal(runId)).pipe(Effect.as(Option.none())),
+        Effect.raceFirst(Deferred.await(cancelSignal(runId)), Deferred.await(supersedeSignal(runId))).pipe(Effect.as(Option.none())),
       )
       live.finish(runId, "plan")
       if (Option.isNone(planned)) return null
@@ -407,6 +418,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   })
 
   type Executed = Effect.Success<ReturnType<typeof execute>>
+  /** A job that never ran to a result: its run was cancelled, or replaced before the job started. */
+  const stopped = (r: Executed) => "cancelled" in r || "withdrawn" in r
   const preparing = new Map<string, Deferred.Deferred<Option.Option<Executed>>>()
   /**
    * Runs a setup once for concurrent runs that need the same prepared workspace: the others wait and
@@ -427,7 +440,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         Effect.onExit((exit) =>
           Effect.suspend(() => {
             preparing.delete(key)
-            const passed = Exit.isSuccess(exit) && !("cancelled" in exit.value) && exit.value.result._tag === "Passed"
+            const passed = Exit.isSuccess(exit) && !stopped(exit.value) && exit.value.result._tag === "Passed"
             return Deferred.succeed(done, passed ? Option.some(exit.value) : Option.none())
           })
         ),
@@ -510,13 +523,16 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }))
       const work = reattached ?? options.slots.with({ project: run.project, expected: options.expected, run: run.created_at }, running)
       if (options.action) return yield* work
-      const stopped = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
+      const none = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
-        Effect.map((reason) => ({ ...stopped, result: { _tag: "Died", message: reason } satisfies JobResult, cancelled: true as const })),
+        Effect.map((reason) => ({ ...none, result: { _tag: "Died", message: reason } satisfies JobResult, cancelled: true as const })),
       )
-      const withdrawn = options.withdraw === undefined ? Effect.never : Deferred.await(options.withdraw).pipe(
+      const withdrawal = options.withdraw === undefined
+        ? Deferred.await(supersedeSignal(run.id))
+        : Effect.raceFirst(Deferred.await(options.withdraw), Deferred.await(supersedeSignal(run.id)))
+      const withdrawn = withdrawal.pipe(
         Effect.andThen(Effect.suspend(() => startedAt === null ? Effect.void : Effect.never)),
-        Effect.as({ ...stopped, result: { _tag: "Died", message: "withdrawn" } satisfies JobResult, withdrawn: true as const }),
+        Effect.as({ ...none, result: { _tag: "Died", message: "withdrawn" } satisfies JobResult, withdrawn: true as const }),
       )
       return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, withdrawn))
     })
@@ -574,7 +590,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (spec.build !== null) {
         const { drv } = spec.build
         const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: slots.builds, expected, action: false, shard: null, workspace: false }, collect)
-        if ("cancelled" in r) return yield* settle(run, row, { status: "cancelled" })
+        if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
       }
 
@@ -595,7 +611,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             remote: placed.remote,
           }, collect),
         )
-        if ("cancelled" in executed) return yield* settle(run, row, { status: "cancelled" })
+        if (stopped(executed)) return yield* settle(run, row, { status: "cancelled" })
         const settled = fromResult(executed.result, executed.usage, { attempts: collect.attempts })
         const fresh = executed.result._tag === "Passed" && (executed.result.value as { readonly fresh?: boolean } | null)?.fresh === true
         // Nothing ran when a prepared copy existed or another run prepared it.
@@ -633,6 +649,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         reusedFrom: hit.run_id,
       })
       if (reusable) {
+        yield* landing(count === 1 ? [key] : shardKeys)
         const hit = yield* lookup(key)
         if (hit !== undefined) return yield* settle(run, row, reused(hit))
       }
@@ -655,7 +672,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const pending = shardHits.flatMap((hit, i) => (hit === undefined ? [i + 1] : []))
       const shards = yield* Effect.forEach(pending, (index) =>
         Effect.gen(function*() {
-          const r = yield* execute(
+          const r = yield* flying([count === 1 ? key : shardKeys[index - 1]!], execute(
             run,
             row,
             (ws) => stepJob({ run: where, workspace: ws, secrets, shard: sharded ? { index, count } : null, deps: task.deps }),
@@ -670,8 +687,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
               withdraw,
             },
             collect,
-          )
-          if (!sharded || "cancelled" in r || "withdrawn" in r) return r
+          ))
+          if (!sharded || stopped(r)) return r
           const passed = r.result._tag === "Passed"
           const now = Date.now()
           yield* db(sql`insert or replace into shards (run_id, step, shard, key, status, started_at, finished_at, cpu_seconds, memory_peak)
@@ -689,7 +706,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           }
           return r
         }), { concurrency: "unbounded" })
-      if (shards.some((r) => "cancelled" in r)) return yield* settle(run, row, { status: "cancelled" })
+      // Withdrawn shards without a failure mean the run was replaced.
+      if (shards.some((r) => "cancelled" in r) || (!failed && shards.some((r) => "withdrawn" in r))) {
+        return yield* settle(run, row, { status: "cancelled" })
+      }
       const ran = shards.filter((r) => !("withdrawn" in r))
       const usage: Usage = {
         cpuSeconds: ran.reduce((sum, r) => sum + (r.usage.cpuSeconds ?? 0), 0),
@@ -751,14 +771,23 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const prResults = run.trust === "pr" || context.plan.reuse === "all"
 
       const passed = new Map<string, string>()
+      const look = (wanted: ReadonlyArray<string>) =>
+        Effect.gen(function*() {
+          for (let i = 0; i < wanted.length; i += 400) {
+            const hits = yield* db(sql<{ key: string; run_id: string }>`select file_results.key, file_results.run_id
+              from file_results join runs on runs.id = file_results.run_id
+              where ${sql.in("file_results.key", wanted.slice(i, i + 400))} and file_results.status in ('passed', 'flaky')
+                and (file_results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))`)
+            for (const hit of hits) passed.set(hit.key, hit.run_id)
+          }
+        })
       if (reusable) {
-        const all = [...keys.values()]
-        for (let i = 0; i < all.length; i += 400) {
-          const hits = yield* db(sql<{ key: string; run_id: string }>`select file_results.key, file_results.run_id
-            from file_results join runs on runs.id = file_results.run_id
-            where ${sql.in("file_results.key", all.slice(i, i + 400))} and file_results.status in ('passed', 'flaky')
-              and (file_results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))`)
-          for (const hit of hits) passed.set(hit.key, hit.run_id)
+        yield* look([...keys.values()])
+        // Files another run is checking right now: wait for them rather than check them twice.
+        const inAir = each.filter((e) => !passed.has(keys.get(e.file)!) && inFlight(keys.get(e.file)!)).map((e) => keys.get(e.file)!)
+        if (inAir.length > 0) {
+          yield* landing(inAir)
+          yield* look(inAir)
         }
       }
       const misses = each.filter((e) => e.always || !passed.has(keys.get(e.file)!)).map((e) => e.file)
@@ -782,7 +811,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const job = (files: ReadonlyArray<string>, index: number, total: number, ms: number) =>
         Effect.gen(function*() {
           const mine = { tests: [] as Array<TestRow>, attempts: 0 }
-          const r = yield* execute(
+          const r = yield* flying(files.map((f) => keys.get(f)!), execute(
             run,
             row,
             (ws) => context.stepJob({ run: placed.where, workspace: ws, secrets, shard: { index, count: total }, deps: task.deps, files }),
@@ -796,7 +825,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
               remote: placed.remote,
             },
             mine,
-          )
+          ))
           context.collect.tests.push(...mine.tests)
           context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
           return { r, tests: mine.tests, files }
@@ -805,15 +834,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         Each.outcomes(done.files, done.tests, done.r.result._tag === "Passed")
 
       const first = yield* Effect.forEach(bins.map((b, i) => [b, i] as const), ([b, i]) => job(b.files, i + 1, count, b.ms), { concurrency: "unbounded" })
-      if (first.some((d) => "cancelled" in d.r)) return yield* settle(run, row, { status: "cancelled" })
-      const results = new Map(first.flatMap((d) => [...outcomes(d)]))
+      // Jobs that finished keep their results even when the run was cancelled or replaced meanwhile.
+      const results = new Map(first.filter((d) => !stopped(d.r)).flatMap((d) => [...outcomes(d)]))
       const failing = [...results].filter(([, o]) => o.status === "failed").map(([file]) => file)
       const flaky = new Set<string>()
       let retry: (typeof first)[number] | undefined
-      if (failing.length > 0 && failing.length <= 10) {
+      const interrupted = first.some((d) => stopped(d.r))
+      if (!interrupted && failing.length > 0 && failing.length <= 10) {
         retry = yield* job(failing, count + 1, count, failing.reduce((sum, f) => sum + duration(f), 0))
-        if ("cancelled" in retry.r) return yield* settle(run, row, { status: "cancelled" })
-        for (const [file, o] of outcomes(retry)) {
+        for (const [file, o] of stopped(retry.r) ? [] : outcomes(retry)) {
           if (o.status === "passed") flaky.add(file)
           results.set(file, o.status === "passed" ? { ...o, status: "passed" } : results.get(file)!)
         }
@@ -825,6 +854,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at)
           values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
             ${flaky.has(file) ? "flaky" : o.status}, ${o.ms}, ${now})`, { discard: true })))
+      if (interrupted || (retry !== undefined && stopped(retry.r))) return yield* settle(run, row, { status: "cancelled" })
 
       const jobs = retry === undefined ? first : [...first, retry]
       const usage: Usage = {
@@ -898,6 +928,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         attributes: { "kiln.project": run.project, "kiln.run": run.id, "kiln.status": final, "vcs.revision": run.sha },
       })
       cancels.delete(runId)
+      supersedes.delete(runId)
       yield* publishRun(runId)
     }).pipe(Effect.catchCause((cause) => Effect.logError("finish failed", cause)))
 
@@ -910,6 +941,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* publishRun(runId)
     })
 
+  const supersede = (runId: string, reason: string) =>
+    Effect.gen(function*() {
+      const rows = yield* db(sql<{ id: string }>`update runs set status = 'cancelled', error = ${reason}
+        where id = ${runId} and ${sql.in("status", activeStatuses)} returning id`)
+      if (rows.length === 0) return
+      yield* Deferred.succeed(supersedeSignal(runId), reason)
+      yield* publishRun(runId)
+    })
+
   const built = (runId: string, name: string) =>
     Effect.gen(function*() {
       const row = yield* db(Rows.loadStep(runId, name))
@@ -917,6 +957,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       return build !== null && build.out !== null && (yield* available(build.out))
     })
 
-  return { plan, step, built, finish, cancel }
+  return { plan, step, built, finish, cancel, supersede }
 }))
 

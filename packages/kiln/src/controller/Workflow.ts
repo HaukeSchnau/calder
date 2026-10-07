@@ -110,7 +110,7 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
               and event like '{"_tag":"Push"%' and id != ${id} and status in ('queued', 'planning', 'running')`
           : Effect.succeed([]),
       )
-      yield* Effect.forEach(older, (r) => core.cancel(r.id, `superseded by #${number}`), { discard: true })
+      yield* Effect.forEach(older, (r) => core.supersede(r.id, `superseded by #${number}`), { discard: true })
 
       yield* start(id)
       const row = yield* db(Rows.loadRun(id))
