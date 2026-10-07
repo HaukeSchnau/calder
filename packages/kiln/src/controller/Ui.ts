@@ -252,13 +252,19 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         const flaky = (yield* flakyKeys(project, [{ suite, name }])).size > 0
         return rows.map((r) => Rows.testResult(r, flaky))
       }),
-    trigger: ({ project, branch, inputs }) =>
+    trigger: ({ project, branch, inputs, schedule }) =>
       Effect.gen(function*() {
         const p = enrolled.get(project)
         if (p === undefined) return yield* new NotFound({ what: `project ${project}` })
-        const target = branch ?? p.defaultBranch
+        if (schedule !== undefined) {
+          const known = yield* db(sql<{ cron: string }>`select cron from schedules where project = ${project} and cron = ${schedule}`)
+          if (known.length === 0) return yield* new Refused({ reason: `${project} has no schedule ${schedule}` })
+        }
+        const target = schedule === undefined ? branch ?? p.defaultBranch : p.defaultBranch
         const sha = yield* gitea.head(p.repo, target)
-        const event: Domain.Event = inputs === undefined ? { _tag: "Push", branch: target } : { _tag: "Manual", inputs }
+        const event: Domain.Event = schedule !== undefined ? { _tag: "Schedule", cron: schedule }
+          : inputs === undefined ? { _tag: "Push", branch: target }
+          : { _tag: "Manual", inputs }
         return yield* runs.create({ project, event, sha }).pipe(Effect.mapError((e) => new Refused({ reason: e.message })))
       }),
     check: ({ repo, ref, sha }) =>

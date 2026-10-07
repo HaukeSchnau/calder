@@ -57,12 +57,16 @@ export class UiRpcs extends RpcGroup.make(
     payload: { project: Schema.String, suite: Schema.String, name: Schema.String },
     success: Schema.Array(TestResult),
   }),
-  /** Starts a run of the default branch head, or of a branch, with manual inputs. */
+  /**
+   * Starts a run of the default branch head, or of a branch, with manual inputs; or, with `schedule`,
+   * the run one of the project's schedules starts.
+   */
   Rpc.make("trigger", {
     payload: {
       project: Schema.String,
       branch: Schema.optional(Schema.String),
       inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+      schedule: Schema.optional(Schema.String),
     },
     success: Run,
     error: Schema.Union([NotFound, Refused]),

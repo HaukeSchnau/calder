@@ -116,11 +116,16 @@ const follow = (client: Effect.Success<typeof Remote.client>, run: Domain.Run) =
 const trigger = Command.make("trigger", {
   project: Argument.String("project"),
   branch: Flag.String("branch").pipe(Flag.optional),
+  schedule: Flag.String("schedule").pipe(Flag.optional),
   url,
-}, ({ project, branch, url }) =>
+}, ({ project, branch, schedule, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
-    const run = yield* client.trigger({ project, ...Option.match(branch, { onNone: () => ({}), onSome: (b) => ({ branch: b }) }) })
+    const run = yield* client.trigger({
+      project,
+      ...Option.match(branch, { onNone: () => ({}), onSome: (b) => ({ branch: b }) }),
+      ...Option.match(schedule, { onNone: () => ({}), onSome: (cron) => ({ schedule: cron }) }),
+    })
     yield* follow(client, run)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
