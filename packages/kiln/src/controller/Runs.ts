@@ -712,9 +712,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   type TestRow = Extract<JobEvent, { _tag: "Tests" }>["results"][number]
 
   /**
-   * A task with `each`: files whose key passed before don't run, except `always` files and, on trusted
-   * runs, a small sample that checks the keys still hold. The rest run in up to `shards` jobs split by
-   * their recorded durations; files that fail run once more, and a pass then counts as flaky.
+   * A task with `each`: files whose key passed before don't run, except `always` files. The rest run in
+   * up to `shards` jobs split by their recorded durations; files that fail run once more, and a pass
+   * then counts as flaky. A nightly run without reuse checks that the keys still cover what files read.
    */
   const eachTask = (
     run: Rows.RunRow,
@@ -747,9 +747,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           for (const hit of hits) passed.set(hit.key, hit.run_id)
         }
       }
-      // About one hit in fifty runs again on trusted runs, so a key that misses a dependency shows up.
-      const sampled = (file: string) => run.trust === "trusted" && parseInt(sha256(`${run.id}:${file}`).slice(0, 2), 16) < 5
-      const misses = each.filter((e) => e.always || !passed.has(keys.get(e.file)!) || sampled(e.file)).map((e) => e.file)
+      const misses = each.filter((e) => e.always || !passed.has(keys.get(e.file)!)).map((e) => e.file)
       if (misses.length === 0) {
         const from = passed.values().next().value ?? null
         return yield* settle(run, row, { status: "reused", value: null, key, reusedFrom: from, files: { total: each.length, ran: 0, flaky: 0 } })
