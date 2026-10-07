@@ -1,6 +1,5 @@
 import type { Domain } from "@kiln/api"
 import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
-import { HttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -8,6 +7,7 @@ import * as Exec from "../Exec.ts"
 import { sha256, taskKey } from "../Keys.ts"
 import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
+import { Cache } from "./Cache.ts"
 import { Config } from "./Config.ts"
 import * as Each from "./Each.ts"
 import * as Estimates from "./Estimates.ts"
@@ -59,7 +59,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const telemetry = yield* Telemetry.Telemetry
   const projects = yield* Projects
   const spawner = yield* Exec.SpawnerTag
-  const http = yield* HttpClient.HttpClient
+  const cache = yield* Cache
   const slots = {
     plans: Slots.make({ capacity: config.jobs.slots.plans }),
     builds: Slots.make({ capacity: config.jobs.slots.builds }),
@@ -575,6 +575,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       const spec = Rows.spec(row)
       if (spec.build !== null && spec.build.drv !== null && spec.build.out !== null && (yield* available(spec.build.out))) {
+        yield* share(run, name, spec.build.out)
         return yield* settle(run, row, { status: "reused", value: spec.build.out, key: spec.build.drv })
       }
       const all = yield* db(Rows.loadSteps(runId))
@@ -619,6 +620,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         const { drv } = spec.build
         const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: slots.builds, expected, action: false, shard: null, workspace: false }, collect)
         if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
+        if (r.result._tag === "Passed" && typeof r.result.value === "string") yield* share(run, name, r.result.value)
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
       }
 
@@ -908,12 +910,22 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const available = (out: string) =>
     Effect.gen(function*() {
       const local = yield* Exec.exec(["nix-store", "--check-validity", out]).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
-      if (local.exitCode === 0) return true
-      const hash = /^\/nix\/store\/([a-z0-9]{32})-/.exec(out)?.[1]
-      if (hash === undefined) return false
-      const response = yield* http.head(`${config.cacheUrl.replace(/\/$/, "")}/${hash}.narinfo`)
-      return response.status === 200
+      return local.exitCode === 0 || (yield* cache.has(out))
     }).pipe(Effect.timeout("20 seconds"), Effect.orElseSucceed(() => false))
+
+  /**
+   * Publishes a build output for the other hosts, in the background. Sharing is a convenience: a cache that can't
+   * take the output slows no run down and fails none. Promotes to other hosts publish their release themselves.
+   */
+  const share = (run: Rows.RunRow, step: string, out: string) =>
+    Effect.gen(function*() {
+      if (yield* cache.has(out)) return
+      yield* cache.publish(out)
+    }).pipe(
+      Effect.catch((e) => Effect.logWarning(`${run.project} #${run.number} ${step}: publishing ${out} to the binary cache failed`, e)),
+      Effect.forkDetach,
+      Effect.asVoid,
+    )
 
   const readSecrets = (project: string, names: ReadonlyArray<string>) =>
     Object.fromEntries(names.flatMap((name) => {

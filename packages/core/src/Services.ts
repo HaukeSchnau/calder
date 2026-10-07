@@ -37,11 +37,14 @@ export class Gitea extends Context.Service<Gitea, {
   ) => Gitea.use((gitea) => gitea.dispatch(workflow, options))
 }
 
-export class Attic extends Context.Service<Attic, {
-  /** Waits until the binary cache serves the path. Hosts upload what they build. */
-  readonly push: (path: StorePath) => Effect.Effect<void>
-}>()("@kiln/core/Attic") {
-  static push = (path: StorePath) => Attic.use((attic) => attic.push(path))
+export class Cache extends Context.Service<Cache, {
+  /**
+   * Readies a release for the hosts it goes to. When one of them isn't the controller's host, the fleet's
+   * binary cache gets the release's closure and keeps it as the project's release.
+   */
+  readonly publish: (path: StorePath) => Effect.Effect<void>
+}>()("@kiln/core/Cache") {
+  static publish = (path: StorePath) => Cache.use((cache) => cache.publish(path))
 }
 
 export class PullRequest extends Context.Service<PullRequest, {
@@ -91,7 +94,7 @@ export class Fleet extends Context.Service<Fleet, {
 }
 
 /** What trusted rules (push, schedule, manual) provide. */
-export type Base = CurrentRun | Git | Gitea | Attic | HttpClient.HttpClient
+export type Base = CurrentRun | Git | Gitea | Cache | HttpClient.HttpClient
 
 /** What pull-request rules provide. */
 export type PrBase = CurrentRun | PullRequest | HttpClient.HttpClient

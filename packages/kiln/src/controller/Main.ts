@@ -2,6 +2,7 @@ import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 import * as Agents from "./Agents.ts"
+import * as Cache from "./Cache.ts"
 import * as Catchup from "./Catchup.ts"
 import * as Config from "./Config.ts"
 import * as Db from "./Db.ts"
@@ -30,7 +31,7 @@ export const layer = (configPath: string) => {
     Layer.provideMerge(platform),
   )
   const projects = Projects.layer.pipe(Layer.provideMerge(base))
-  const fleet = Layer.mergeAll(Fleet.layer, Leases.layer, Mirror.layer).pipe(Layer.provideMerge(projects))
+  const fleet = Layer.mergeAll(Cache.layer, Fleet.layer, Leases.layer, Mirror.layer).pipe(Layer.provideMerge(projects))
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const runs = Workflow.layer.pipe(Layer.provideMerge(core))
   const merging = Merges.layer.pipe(Layer.provideMerge(runs))

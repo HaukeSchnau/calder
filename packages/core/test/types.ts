@@ -1,7 +1,7 @@
 // Checked by tsc, not run. Each @ts-expect-error is an error the API must produce.
 import { Effect, Schema } from "effect"
 import type { HttpClient } from "effect/http"
-import { Action, type Attic, Busy, type Fleet, Kiln, On, PullRequest, Step, Task, cmd, type CurrentRun } from "../src/index.ts"
+import { Action, Busy, type Cache, type Fleet, Kiln, On, PullRequest, Step, Task, cmd, type CurrentRun } from "../src/index.ts"
 import type { TaskFailed, TimedOut } from "../src/Kiln.ts"
 import type { Blocked, Died, Failed, Passed } from "../src/Step.ts"
 import { DevController, DevControllerLive, gate, Live, preview, project, promote, promoteRelease, qa, release, Skipped } from "./fixtures.ts"
@@ -11,7 +11,7 @@ type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y 
 
 export type _project = Expect<Equal<typeof project, Kiln.Project>>
 export type _promoteA = Expect<Equal<Step.Success<typeof promote>, Live | Skipped>>
-export type _promoteR = Expect<Equal<Step.Services<typeof promote>, CurrentRun | Attic>>
+export type _promoteR = Expect<Equal<Step.Services<typeof promote>, CurrentRun | Cache>>
 export type _qaE = Expect<Equal<Step.Error<typeof qa>, TaskFailed | TimedOut>>
 export type _previewR = Expect<Equal<Step.Services<typeof preview>, DevController>>
 
@@ -44,7 +44,7 @@ Action.make("promote", { after: [qa], grants: { deploy: true } }, function*() {
 const ungranted = Action.make("ungranted", { needs: { release } }, function*({ release }) {
   return yield* promoteRelease(release)
 })
-export type _ungranted = Expect<Equal<Step.Services<typeof ungranted>, CurrentRun | Fleet | Attic>>
+export type _ungranted = Expect<Equal<Step.Services<typeof ungranted>, CurrentRun | Fleet | Cache>>
 // @ts-expect-error Fleet is not part of Base
 Kiln.project({ rules: [On.push("main", [ungranted])] })
 

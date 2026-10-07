@@ -724,7 +724,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
     const lines: Array<Line> = [
       cmd,
       [0.01, "debug", "kiln", `evaluating ${s.plan.detail} at ${sha}`],
-      [0.04, "info", "stderr", `copying ${12 + (fnv(p) % 300)} paths from https://attic.schnau.dev/fleet`],
+      [0.04, "info", "stderr", `copying ${12 + (fnv(p) % 300)} paths from http://srv-1:5080`],
       [0.12, "info", "stderr", `building '${drv}' on srv-2`],
     ]
     if (s.plan.name === "flake check") {
@@ -838,7 +838,7 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
     const span = ph.activate - ph.from
     const at = (f: number) => ph.from + span * f
     lines.push([at(0.01), "info", "kiln", `POST ${ph.host}:18100/preflight/${run.project} 200`])
-    lines.push([at(0.04), "info", "kiln", `attic: narinfo for ${storePathOf(run).slice(11, 19)} present`])
+    lines.push([at(0.04), "info", "kiln", `cache: narinfo for ${storePathOf(run).slice(11, 19)} present`])
     lines.push([at(0.06), "info", "kiln", `head check: main still at ${sha}`])
     lines.push([at(0.08), "info", "kiln", `POST ${ph.host}:18100/deploy/${run.project} 202 (fence ${1100 + run.number})`])
     const polls = Math.max(1, Math.floor((span * duration) / 15))

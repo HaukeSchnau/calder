@@ -28,12 +28,18 @@ export const ConfigSchema = Schema.Struct({
   system: Schema.String,
   gitea: Schema.Struct({ url: Schema.String, tokenFile: Schema.String, webhookSecretFile: Schema.String }),
   promotion: Schema.Struct({ tokenFile: Schema.String }),
-  cacheUrl: Schema.String,
-  /**
-   * Pushes a release's closure to the binary cache right away instead of waiting for the host's upload
-   * queue: argv before the store path, run with `XDG_CONFIG_HOME` set to `configHome`.
-   */
-  cachePush: Schema.NullOr(Schema.Struct({ command: Schema.Array(Schema.String), configHome: Schema.String })),
+  /** The fleet's binary cache, which the hosts substitute from. */
+  cache: Schema.Struct({
+    /** Its substituter URL. A narinfo there means the path was built before. */
+    url: Schema.String,
+    /**
+     * argv that copies store paths, appended, into the cache. `--pin <name>` before the path also keeps it as
+     * that name's release. Null when this controller only reads the cache.
+     */
+    publish: Schema.NullOr(Schema.Array(Schema.String)),
+  }),
+  /** This controller's host, as the fleet's promotion endpoints name it. */
+  host: Schema.String,
   telemetry: Schema.Struct({
     otlp: Schema.NullOr(Schema.String),
     victoriaLogs: Schema.NullOr(Schema.String),

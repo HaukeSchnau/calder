@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Schema } from "effect"
-import { Action, Attic, CurrentRun, Files, Fleet, Flake, Kiln, Nix, On, PullRequest, Report, Step, Task, cmd } from "../src/index.ts"
+import { Action, Cache, CurrentRun, Files, Fleet, Flake, Kiln, Nix, On, PullRequest, Report, Step, Task, cmd } from "../src/index.ts"
 
 export const flake = Flake.make({
   packages: ["projectRelease"],
@@ -14,7 +14,7 @@ export const promoteRelease = Effect.fn("promote")(function*(release: string) {
   const run = yield* CurrentRun
   const lease = yield* Fleet.deploying(run.project, { queue: "latest-wins" })
   if (lease._tag === "Replaced") return new Skipped({ reason: "Superseded" })
-  yield* Attic.push(release as never)
+  yield* Cache.publish(release as never)
   return new Live({ revision: `${run.revision}:${release}` })
 }, Effect.scoped)
 

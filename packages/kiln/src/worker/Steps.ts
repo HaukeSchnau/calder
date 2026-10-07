@@ -1,4 +1,4 @@
-import { Attic, Busy, Cmd, CurrentRun, Flake, Fleet, Git, Gitea, Kiln, PullRequest, Rejected, Report, Secret, type Step } from "@kiln/core"
+import { Busy, Cache, Cmd, CurrentRun, Flake, Fleet, Git, Gitea, Kiln, PullRequest, Rejected, Report, Secret, type Step } from "@kiln/core"
 import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
@@ -404,7 +404,7 @@ const services = (job: StepJob, project: Kiln.Project, grants: Step.Grants) =>
           dispatch: (workflow, options) =>
             rpc(client.giteaDispatch({ ...auth, workflow, ref: options?.ref ?? null, inputs: { ...options?.inputs } })),
         }),
-        Context.add(Attic, { push: (path) => rpc(client.atticPush({ ...auth, path })) }),
+        Context.add(Cache, { publish: (path) => rpc(client.cachePublish({ ...auth, path })) }),
       )
     }
     if (run.event._tag === "PullRequest") {

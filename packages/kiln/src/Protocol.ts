@@ -197,7 +197,7 @@ export class WorkerRpcs extends RpcGroup.make(
     },
     error: Unauthorized,
   }),
-  Rpc.make("atticPush", { payload: { ...auth, path: Schema.String }, error: Unauthorized }),
+  Rpc.make("cachePublish", { payload: { ...auth, path: Schema.String }, error: Unauthorized }),
   Rpc.make("pullRequestComment", { payload: { ...auth, markdown: Schema.String }, error: Unauthorized }),
   Rpc.make("fleetAcquire", {
     payload: { ...auth, project: Schema.String },

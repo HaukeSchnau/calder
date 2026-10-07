@@ -1,13 +1,12 @@
 import { BunSocketServer } from "@effect/platform-bun"
 import type { Domain } from "@kiln/api"
-import { Deferred, Effect, Layer, References, Schedule } from "effect"
-import { HttpClient } from "effect/http"
+import { Deferred, Effect, Layer, References } from "effect"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { SqlClient } from "effect/sql"
 import { chmodSync, chownSync, existsSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
-import * as Exec from "../Exec.ts"
 import { FleetRejected, Unauthorized, WorkerRpcs } from "../Protocol.ts"
+import * as Cache from "./Cache.ts"
 import { Config } from "./Config.ts"
 import * as Fleet from "./Fleet.ts"
 import { Gitea } from "./Gitea.ts"
@@ -23,11 +22,10 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const leases = yield* Leases
   const fleet = yield* Fleet.Fleet
   const live = yield* Live
-  const spawner = yield* Exec.SpawnerTag
   const gitea = yield* Gitea
   const sql = yield* SqlClient.SqlClient
-  const http = yield* HttpClient.HttpClient
   const projects = yield* Projects
+  const cache = yield* Cache.Cache
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
@@ -90,30 +88,18 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const project = projects.get(run.project)!
         yield* gitea.dispatch(project.repo, workflow, ref ?? run.branch ?? project.defaultBranch, inputs)
       }),
-    atticPush: ({ job, token, path }) =>
+    cachePublish: ({ job, token, path }) =>
       Effect.gen(function*() {
-        yield* trusted(job, token)
-        const hash = /^\/nix\/store\/([a-z0-9]{32})-/.exec(path)?.[1]
-        if (hash === undefined) return yield* Effect.die(new Error(`not a store path: ${path}`))
-        const url = `${config.cacheUrl.replace(/\/$/, "")}/${hash}.narinfo`
-        const cached = http.head(url).pipe(
-          Effect.flatMap((r) => (r.status === 200 ? Effect.void : Effect.fail(new Error(`${url} answered ${r.status}`)))),
-        )
-        const missing = yield* cached.pipe(Effect.as(false), Effect.orElseSucceed(() => true))
-        if (missing && config.cachePush !== null) {
-          yield* Exec.run([...config.cachePush.command, path], {
-            env: { ...process.env, XDG_CONFIG_HOME: config.cachePush.configHome, HOME: config.stateDir },
-          }).pipe(
-            Effect.provideService(Exec.SpawnerTag, spawner),
-            Effect.timeout("30 minutes"),
-            Effect.catch((e) => Effect.logWarning(`pushing ${path} to the cache failed; waiting for the upload queue`, e)),
-          )
-        }
-        yield* cached.pipe(
-          Effect.retry({ schedule: Schedule.spaced("10 seconds").pipe(Schedule.upTo({ duration: "10 minutes" })) }),
-          Effect.mapError(() => new Error(`${path} is not in the binary cache after 10 minutes; is the host's upload queue draining?`)),
+        const active = yield* trusted(job, token)
+        if (Cache.hashOf(path) === undefined) return yield* Effect.die(new Error(`not a store path: ${path}`))
+        // A host other than this one substitutes the release; this one has it already.
+        const lease = active.lease
+        if (lease === undefined || !Cache.leavesHost(lease.targets, config.host)) return
+        yield* cache.publish(path, { pin: lease.project }).pipe(
+          Effect.mapError((e) => new Error(`publishing ${path} to the binary cache failed: ${e.message}`)),
           Effect.orDie,
         )
+        if (!(yield* cache.has(path))) return yield* Effect.die(new Error(`${path} is not in the binary cache after publishing`))
       }),
     pullRequestComment: ({ job, token, markdown }) =>
       Effect.gen(function*() {

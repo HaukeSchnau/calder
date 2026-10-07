@@ -12,7 +12,7 @@ export * as Report from "./Report.ts"
 export * as Secret from "./Secret.ts"
 export * as Setup from "./Setup.ts"
 export {
-  Attic,
+  Cache,
   type Base,
   Busy,
   CurrentRun,

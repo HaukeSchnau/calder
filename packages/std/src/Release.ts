@@ -1,4 +1,4 @@
-import { Attic, CurrentRun, Fleet, Git, Kiln, type StorePath } from "@kiln/core"
+import { Cache, CurrentRun, Fleet, Git, Kiln, type StorePath } from "@kiln/core"
 import { Effect, Schedule, Schema, type Duration } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/http"
 
@@ -44,7 +44,7 @@ export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function*(url:
 
 /**
  * Promotes a release to the project's hosts. Takes the project's deploy lease (latest wins, so an
- * older run gives way to a newer one), preflights every host, waits for the binary cache, checks before
+ * older run gives way to a newer one), preflights every host, puts the release in the binary cache for hosts other than the controller's, checks before
  * each host that the branch still points at this revision, and deploys with the lease's fencing token.
  */
 export const promote = Effect.fn("Release.promote")(
@@ -58,7 +58,7 @@ export const promote = Effect.fn("Release.promote")(
 
     const descriptor = yield* run.descriptor
     yield* Effect.forEach(lease.targets, (target) => target.preflight(descriptor), { concurrency: "unbounded", discard: true })
-    yield* Attic.push(release)
+    yield* Cache.publish(release)
 
     for (const target of lease.targets) {
       const head = yield* Git.head(branch)
