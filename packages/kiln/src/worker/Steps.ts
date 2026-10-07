@@ -152,7 +152,8 @@ type SetupDef = Extract<Step.Any["def"], { readonly _tag: "Setup" }>
 
 const inShell = (job: StepJob, workspace: string, shell: Flake.FlakeRef | undefined, argv: ReadonlyArray<string>) => {
   if (shell === undefined) return argv
-  const flake = job.run.flake === "" ? `git+file://${workspace}?rev=${job.run.revision}` : job.run.flake
+  // An agent's workspace is a shallow checkout, which Nix only takes when told so.
+  const flake = job.run.flake === "" ? `git+file://${workspace}?rev=${job.run.revision}&shallow=1` : job.run.flake
   return ["nix", "develop", `${flake}#${Flake.attrPath(shell, job.run.system)}`, "--command", ...argv]
 }
 
