@@ -521,7 +521,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         })
         return { ...done, startedAt }
       }))
-      const work = reattached ?? options.slots.with({ project: run.project, expected: options.expected, run: run.created_at }, running)
+      const event = JSON.parse(run.event) as Domain.Event
+      const background = event._tag === "Check" && event.background === true
+      const work = reattached ?? options.slots.with({ project: run.project, expected: options.expected, run: run.created_at, background }, running)
       if (options.action) return yield* work
       const none = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(

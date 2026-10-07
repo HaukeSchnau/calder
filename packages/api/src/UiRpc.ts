@@ -71,9 +71,13 @@ export class UiRpcs extends RpcGroup.make(
     success: Run,
     error: Schema.Union([NotFound, Refused]),
   }),
-  /** Runs a working copy that `kiln check` pushed as `ref` (under `kiln/check/`) the way a pull request would. */
+  /**
+   * Runs a working copy that `kiln check` pushed as `ref` (under `kiln/check/`) the way a pull request
+   * would. A newer check of the same ref replaces an older one; a background check only takes slots
+   * nothing else wants.
+   */
   Rpc.make("check", {
-    payload: { repo: Schema.String, ref: Schema.String, sha: Schema.String },
+    payload: { repo: Schema.String, ref: Schema.String, sha: Schema.String, background: Schema.optional(Schema.Boolean) },
     success: Run,
     error: Schema.Union([NotFound, Refused]),
   }),

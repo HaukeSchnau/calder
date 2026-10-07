@@ -7,6 +7,8 @@ export interface Claim {
   readonly expected: number
   /** When the step's run was created: within a project, older runs go first. */
   readonly run: number
+  /** Work nobody waits for, such as checks of agents' snapshots: it gets a slot only while no other step wants one and another stays free. */
+  readonly background?: boolean
 }
 
 interface Waiter extends Claim {
@@ -38,10 +40,13 @@ export const make = (options: { readonly capacity: number; readonly perProject?:
 
   const inRunOrder = (a: Waiter, b: Waiter) => a.run - b.run || a.expected - b.expected || a.seq - b.seq
 
+  /** Whether a waiter may have a slot now: background work leaves one free and yields to the rest. */
+  const eligible = (w: Claim) => !w.background || (running < options.capacity - 1 && !waiters.some((o) => !o.background))
+
   const grant = () => {
-    while (running < options.capacity && waiters.length > 0) {
+    while (running < options.capacity && waiters.some(eligible)) {
       const fronts = new Map<string, Waiter>()
-      for (const waiter of waiters) {
+      for (const waiter of waiters.filter(eligible)) {
         const front = fronts.get(waiter.project)
         if (front === undefined || inRunOrder(waiter, front) < 0) fronts.set(waiter.project, waiter)
       }
@@ -65,7 +70,7 @@ export const make = (options: { readonly capacity: number; readonly perProject?:
 
   const acquire = (claim: Claim) =>
     Effect.suspend(() => {
-      if (running < options.capacity && fits(claim.project) && waiters.length === 0) {
+      if (running < options.capacity && fits(claim.project) && waiters.length === 0 && eligible(claim)) {
         take(claim.project)
         return Effect.void
       }

@@ -98,6 +98,22 @@ describe("Slots", () => {
       yield* Deferred.succeed(hold, undefined)
     }))
 
+  it.effect("gives background work only slots nothing else wants, keeping one free", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 3 })
+      const { order, hold, job } = yield* harness(slots)
+      for (const n of [1, 2, 3]) yield* job(`check-${n}`, { project: "t3code", expected: 0, run: 0, background: true })
+      yield* Effect.yieldNow
+      // The third would take the last free slot.
+      expect(order).toEqual(["check-1", "check-2"])
+      yield* job("push", { project: "hopwatch", expected: minutes(1), run: 1 })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["check-1", "check-2", "push"])
+      yield* Deferred.succeed(hold, undefined)
+      yield* Effect.yieldNow
+      expect(order).toEqual(["check-1", "check-2", "push", "check-3"])
+    }))
+
   it.effect("gives up the place in the queue when interrupted while waiting", () =>
     Effect.gen(function*() {
       const slots = Slots.make({ capacity: 1 })

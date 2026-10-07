@@ -10,6 +10,7 @@ import * as Check from "./Check.ts"
 import * as Controller from "./controller/Main.ts"
 import * as Gen from "./Gen.ts"
 import * as Remote from "./Remote.ts"
+import * as Watch from "./Watch.ts"
 import * as Load from "./worker/Load.ts"
 import * as Worker from "./worker/Main.ts"
 
@@ -133,20 +134,33 @@ const trigger = Command.make("trigger", {
  * `kiln check`: runs the working copy the way a pull request would, before anything is pushed for
  * review. Later runs of the same inputs reuse its results.
  */
-const check = Command.make("check", { dir: Argument.String("dir").pipe(Argument.withDefault(".")), url }, ({ dir, url }) =>
+const check = Command.make("check", {
+  dir: Argument.String("dir").pipe(Argument.withDefault(".")),
+  key: Flag.String("key").pipe(Flag.optional),
+  background: Flag.Boolean("background"),
+  url,
+}, ({ dir, key, background, url }) =>
   Effect.gen(function*() {
-    const copy = yield* Check.workingCopy(resolve(dir))
     const client = yield* Remote.client
-    const projects = (yield* client.overview()).projects
-    const target = Check.target(copy.remotes, projects.map((p) => p.repo))
-    if (target === undefined) return yield* Effect.fail(new Error("no git remote points at a repository the controller knows"))
-    const ref = `kiln/check/${copy.sha.slice(0, 12)}`
-    yield* Check.push(copy, target.remote, ref)
-    const status = yield* Effect.gen(function*() {
-      const run = yield* client.check({ repo: target.repo, ref, sha: copy.sha })
-      return yield* follow(client, run)
-    }).pipe(Effect.ensuring(Check.drop(copy, target.remote, ref)))
+    const submitted = yield* Check.submit(client, resolve(dir), {
+      ...Option.match(key, { onNone: () => ({}), onSome: (k) => ({ key: k }) }),
+      background,
+    })
+    // A background check runs on its own; its ref stays until the next check under the same key.
+    if (background) return yield* Console.log(`${submitted.run.id} checks ${submitted.copy.sha.slice(0, 12)} in the background`)
+    const status = yield* follow(client, submitted.run).pipe(Effect.ensuring(Check.drop(submitted.copy, submitted.remote, submitted.ref)))
     if (status !== "passed") return yield* Effect.fail(new Error(`the check ${status}`))
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
+/** `kiln watch <root>...`: background checks of the jj workspaces under the roots as their snapshots settle. */
+const watch = Command.make("watch", {
+  roots: Argument.String("root").pipe(Argument.variadic()),
+  settle: Flag.Int("settle").pipe(Flag.withDefault(120)),
+  url,
+}, ({ roots, settle, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    yield* Watch.watch(client, roots.map((r) => resolve(r)), { every: 30_000, settle: settle * 1000 })
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
 const rerun = Command.make("rerun", { run: Argument.String("run"), url }, ({ run, url }) =>
@@ -171,6 +185,6 @@ const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ r
     yield* Console.log(`cancelled ${run}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
-const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, trigger, rerun, cancel, merge]))
+const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, watch, trigger, rerun, cancel, merge]))
 
 Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)

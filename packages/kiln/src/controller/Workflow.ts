@@ -105,9 +105,9 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
         pr !== null
           ? sql<{ id: string }>`select id from runs where project = ${input.project} and pr = ${pr} and id != ${id}
               and status in ('queued', 'planning', 'running')`
-          : event._tag === "Push"
+          : event._tag === "Push" || event._tag === "Check"
           ? sql<{ id: string }>`select id from runs where project = ${input.project} and branch = ${branch} and pr is null
-              and event like '{"_tag":"Push"%' and id != ${id} and status in ('queued', 'planning', 'running')`
+              and event like ${`{"_tag":"${event._tag}"%`} and id != ${id} and status in ('queued', 'planning', 'running')`
           : Effect.succeed([]),
       )
       yield* Effect.forEach(older, (r) => core.supersede(r.id, `superseded by #${number}`), { discard: true })
