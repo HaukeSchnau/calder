@@ -116,7 +116,7 @@ const value = (json: string | null): Domain.Value | null => {
 }
 
 /** Run ids are `<project>-<number>`. */
-const runNumber = (id: string) => Number(id.slice(id.lastIndexOf("-") + 1))
+export const runNumber = (id: string) => Number(id.slice(id.lastIndexOf("-") + 1))
 
 export const step = (row: StepRow, expectedMs: number | null = null): Domain.StepRun => {
   const s = spec(row)

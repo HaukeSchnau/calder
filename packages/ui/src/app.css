@@ -432,6 +432,12 @@ mark { background: color-mix(in oklab, var(--heat) 32%, transparent); color: inh
 .isec h3 { font-size: 12px; font-weight: 600; margin-bottom: 8px; }
 .isec > p.dim { font-size: 12.5px; }
 .isec .kv + .kv { margin-top: 3px; }
+.retried { margin-top: 9px; font-size: 12.5px; }
+.retried code { overflow-wrap: anywhere; }
+.retried p { margin-top: 3px; }
+.retried details { margin-top: 4px; }
+.retried summary { cursor: pointer; color: var(--ink-3); }
+.retried ul { margin: 4px 0 0 16px; }
 .kv { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 3px 12px; font-size: 12.5px; align-items: start; line-height: 20px; }
 .kv dt { color: var(--ink-3); }
 .kv dd { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; min-height: 20px; overflow-wrap: anywhere; }

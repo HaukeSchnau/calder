@@ -176,6 +176,12 @@ const migrations = {
       primary key (project, pr)
     )`
   }),
+  "0010_file_jobs": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // The job a file first ran in, so a file that passed only on retry can name the files it ran with.
+    yield* sql`alter table file_results add column job integer`
+    yield* sql`create index file_results_job on file_results (run_id, step, job)`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

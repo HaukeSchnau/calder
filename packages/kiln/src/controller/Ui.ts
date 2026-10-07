@@ -89,6 +89,32 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     })
 
 
+  /** This run's files that passed only on retry, with the files they shared a job with here and in other runs. */
+  const retriedFiles = (run: Rows.RunRow) =>
+    Effect.gen(function*() {
+      const files = yield* sql<{ step: string; file: string; job: number | null }>`select step, file, job from file_results
+        where run_id = ${run.id} and status = 'flaky'`
+      return yield* Effect.forEach(files, (f) =>
+        Effect.gen(function*() {
+          const companionsOf = (runId: string, job: number | null) =>
+            job === null ? Effect.succeed([]) : sql<{ file: string }>`select file from file_results
+              where run_id = ${runId} and step = ${f.step} and job = ${job} and file != ${f.file}`.pipe(Effect.map((rows) => rows.map((r) => r.file)))
+          const companions = yield* companionsOf(run.id, f.job)
+          const others = yield* sql<{ run_id: string; job: number | null }>`select run_id, job from file_results
+            where project = ${run.project} and step = ${f.step} and file = ${f.file} and status = 'flaky' and run_id != ${run.id}
+            order by created_at desc limit 10`
+          const before = yield* Effect.forEach(others.filter((o) => o.job !== null), (o) => companionsOf(o.run_id, o.job))
+          return {
+            step: f.step,
+            file: f.file,
+            job: f.job,
+            companions,
+            others: others.map((o) => ({ id: o.run_id, number: Rows.runNumber(o.run_id) })),
+            suspects: f.job === null || before.length === 0 ? null : before.reduce((left, c) => left.filter((x) => c.includes(x)), companions),
+          } satisfies Domain.RetriedFile
+        }))
+    })
+
   const detail = (id: string) =>
     Effect.gen(function*() {
       const row = yield* db(Rows.loadRun(id))
@@ -112,6 +138,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         run: run!,
         steps,
         failingTests: failing.map((t) => Rows.testResult(t, flaky.has(`${t.suite}\u0000${t.name}`))),
+        retried: yield* db(retriedFiles(row)),
         siblings: yield* db(Rows.runsWithCounts(siblings)),
       } satisfies Domain.RunDetail
     })

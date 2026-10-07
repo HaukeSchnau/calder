@@ -5,10 +5,10 @@
 import type { Domain } from "@kiln/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { isActive, overviewAtom, runAtom } from "./data.ts"
 import { useRunCommands } from "./commands.ts"
-import { ago, bytes, clockS, count, dur, eventLine, refOf, runDuration, shortKey, shortSha, spanDur, stepDuration, titleOf, totalSteps } from "./format.ts"
+import { ago, bytes, clockS, count, dur, eventLine, plural, refOf, runDuration, shortKey, shortSha, spanDur, stepDuration, titleOf, totalSteps } from "./format.ts"
 import { Graph, GraphList, Legend, Meta } from "./graph.tsx"
 import { layout, shapeKey } from "./layout.ts"
 import { statusClass } from "./overview.tsx"
@@ -355,13 +355,14 @@ function Inspector({ detail, step, onSelect, onTab }: {
         <h3>Resources</h3>
         {step.cpuSeconds !== null || step.memoryPeakBytes !== null || step.files !== null ? (
           <Kv rows={[
-            step.files !== null && ["files", <span className="tnum">{step.files.ran === 0 ? `all ${step.files.total} reused` : `${step.files.ran} of ${step.files.total} ran`}{step.files.flaky ? <>, <span className="bad">{step.files.flaky} flaky</span></> : null}</span>],
+            step.files !== null && ["files", <span className="tnum">{step.files.ran === 0 ? `all ${step.files.total} reused` : `${step.files.ran} of ${step.files.total} ran`}{step.files.flaky ? <>, <span className="bad">{step.files.flaky} passed on retry</span></> : null}</span>],
             step.cpuSeconds !== null && ["cpu", <span className="tnum">{step.cpuSeconds.toFixed(1)} s</span>],
             step.memoryPeakBytes !== null && ["memory", <span className="tnum">{bytes(step.memoryPeakBytes)} peak</span>],
             step.tests !== null && ["tests", <span>{step.tests.passed} passed{step.tests.failed ? <>, <span className="bad">{step.tests.failed} failed</span></> : null}{step.tests.skipped ? `, ${step.tests.skipped} skipped` : ""}</span>],
           ]} />
         ) : <p className="dim">{step.status === "running" ? "Live in the metrics tab." : step.status === "reused" ? "Nothing ran." : "No process yet."}</p>}
       </section>
+      <Retried files={detail.retried.filter((f) => f.step === step.name)} />
       <p className="iacts">
         <button type="button" className="btn" onClick={() => onTab("logs")}>Logs <Kbd>1</Kbd></button>
         <button type="button" className="btn" onClick={() => onTab("trace")}>Span <Kbd>2</Kbd></button>
@@ -369,6 +370,39 @@ function Inspector({ detail, step, onSelect, onTab }: {
       </p>
       <p className="ikeys dim"><Kbd>[</Kbd><Kbd>]</Kbd> previous, next step <Kbd>x</Kbd> failure</p>
     </>
+  )
+}
+
+/** Files that failed in their job and passed when they ran again with only the files that failed. */
+function Retried({ files }: { readonly files: ReadonlyArray<Domain.RetriedFile> }) {
+  if (files.length === 0) return null
+  return (
+    <section className="isec">
+      <h3>Passed on retry</h3>
+      <p className="dim">These files failed in their job and passed when they ran again with only the files that failed. Either a test is flaky, or another file of the job left state behind that the test depends on.</p>
+      {files.map((f) => (
+        <div key={f.file} className="retried">
+          <code className="wrap">{f.file}</code>
+          <p>
+            {f.job === null ? "It ran before Kiln recorded jobs." : `It failed in job ${f.job}, with ${plural(f.companions.length, "other file")}.`}
+            {f.others.length > 0
+              ? <> It also passed only on retry in {f.others.map((o, i) => <Fragment key={o.id}>{i > 0 ? ", " : null}<a className="lnk" href={href({ page: "run", id: o.id, step: f.step })}>#{o.number}</a></Fragment>)}.</>
+              : " No other run needed a retry for it."}
+          </p>
+          {f.suspects === null ? null : f.suspects.length > 0 ? (
+            <p>
+              Every time, its job also ran {f.suspects.map((s, i) => <Fragment key={s}>{i > 0 ? ", " : null}<code>{s}</code></Fragment>)}. To find a file that leaves state behind, run each of them before this one in a single worker.
+            </p>
+          ) : <p className="dim">No other file shared its job every time, which points to a flaky test rather than test order.</p>}
+          {f.companions.length > 0 ? (
+            <details>
+              <summary>Files of job {f.job}</summary>
+              <ul>{f.companions.map((c) => <li key={c}><code>{c}</code></li>)}</ul>
+            </details>
+          ) : null}
+        </div>
+      ))}
+    </section>
   )
 }
 

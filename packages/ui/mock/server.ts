@@ -66,7 +66,16 @@ function detail(world: World, run: SimRun, now: number, seq: number): Domain.Run
     .filter((r) => (pr !== null && r.event._tag === "PullRequest" && r.event.number === pr) || (run.commit.changeId !== null && r.commit.changeId === run.commit.changeId))
     .reverse()
     .map((r) => toRun(r, now))
-  return { seq, run: toRun(run, now), steps: run.steps.map((s) => toStep(world, run, s, now)), failingTests, siblings }
+  const steps = run.steps.map((s) => toStep(world, run, s, now))
+  const retried = steps.filter((s) => s.name === "test server" && s.status === "passed").map((s): Domain.RetriedFile => ({
+    step: s.name,
+    file: "src/orchestration/ReplayFixtures.part3.test.ts",
+    job: 2,
+    companions: ["src/skills/SkillPacks.test.ts", "src/provider/Codex.test.ts", ...Array.from({ length: 35 }, (_, i) => `src/area${i % 7}/Module${i}.test.ts`)],
+    others: siblings.slice(0, 1).map((r) => ({ id: r.id, number: r.number })),
+    suspects: siblings.length > 0 ? ["src/skills/SkillPacks.test.ts", "src/provider/Codex.test.ts"] : null,
+  }))
+  return { seq, run: toRun(run, now), steps, failingTests, retried, siblings }
 }
 
 const entries = (lines: ReadonlyArray<Domain.LogLine>, from: number): Array<Domain.LogEntry> => lines.map((l, i) => ({ ...l, index: from + i }))

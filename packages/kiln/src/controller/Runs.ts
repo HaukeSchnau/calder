@@ -836,6 +836,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         Each.outcomes(done.files, done.tests, done.r.result._tag === "Passed")
 
       const first = yield* Effect.forEach(bins.map((b, i) => [b, i] as const), ([b, i]) => job(b.files, i + 1, count, b.ms), { concurrency: "unbounded" })
+      const jobOf = new Map(first.flatMap((d, i) => d.files.map((f) => [f, i + 1] as const)))
       // Jobs that finished keep their results even when the run was cancelled or replaced meanwhile.
       const results = new Map(first.filter((d) => !stopped(d.r)).flatMap((d) => [...outcomes(d)]))
       const failing = [...results].filter(([, o]) => o.status === "failed").map(([file]) => file)
@@ -853,9 +854,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const now = Date.now()
       const known = [...results].filter(([, o]) => o.status !== "unknown")
       yield* db(sql.withTransaction(Effect.forEach(known, ([file, o]) =>
-        sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at)
+        sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at, job)
           values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
-            ${flaky.has(file) ? "flaky" : o.status}, ${o.ms}, ${now})`, { discard: true })))
+            ${flaky.has(file) ? "flaky" : o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true })))
       if (interrupted || (retry !== undefined && stopped(retry.r))) return yield* settle(run, row, { status: "cancelled" })
 
       const jobs = retry === undefined ? first : [...first, retry]

@@ -152,6 +152,23 @@ export const TestResult = Schema.Struct({
 })
 export type TestResult = typeof TestResult.Type
 
+/**
+ * A file of an `each` task that failed in its job and passed when it ran again with only the files that
+ * failed: flaky, or another file of its job left state behind that it depends on.
+ */
+export const RetriedFile = Schema.Struct({
+  step: Schema.String,
+  file: Schema.String,
+  /** The job it failed in, null for results from before Kiln recorded jobs, and the other files of that job. */
+  job: Schema.NullOr(Schema.Number),
+  companions: Schema.Array(Schema.String),
+  /** Other runs in which it passed only on retry, newest first. */
+  others: Schema.Array(Schema.Struct({ id: Schema.String, number: Schema.Number })),
+  /** The files that shared its job every time; null until it passed only on retry in another run too. */
+  suspects: Schema.NullOr(Schema.Array(Schema.String)),
+})
+export type RetriedFile = typeof RetriedFile.Type
+
 export const RunDetail = Schema.Struct({
   /** The last change included; apply only changes with a higher seq. */
   seq: Schema.Number,
@@ -159,6 +176,7 @@ export const RunDetail = Schema.Struct({
   steps: Schema.Array(StepRun),
   /** Failing tests of this run, with flakiness from history. */
   failingTests: Schema.Array(TestResult),
+  retried: Schema.Array(RetriedFile),
   /** Other runs of the same change or pull request, newest first. */
   siblings: Schema.Array(Run),
 })
