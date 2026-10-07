@@ -18,6 +18,13 @@ const OpenPull = Schema.Struct({
   head: Schema.Struct({ ref: Schema.String, sha: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
   base: Schema.Struct({ ref: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
 })
+const PullState = Schema.Struct({
+  state: Schema.String,
+  merged: Schema.Boolean,
+  head: Schema.Struct({ sha: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
+  base: Schema.Struct({ ref: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
+})
+const ErrorBody = Schema.Struct({ message: Schema.optional(Schema.String) })
 const Repo = Schema.Struct({
   full_name: Schema.String,
   default_branch: Schema.String,
@@ -44,6 +51,17 @@ export class Gitea extends Context.Service<Gitea, {
   /** The owner's repositories the bot can see, without archived or empty ones. */
   readonly repos: (owner: string) => Effect.Effect<ReadonlyArray<{ readonly repo: string; readonly defaultBranch: string }>>
   readonly hasFile: (repo: string, ref: string, path: string) => Effect.Effect<boolean>
+  readonly pull: (repo: string, number: number) => Effect.Effect<{
+    readonly open: boolean
+    readonly merged: boolean
+    readonly sha: string
+    readonly base: string
+    readonly fork: boolean
+  }>
+  /** Merges the base branch into the pull request's branch; fails with Gitea's message, such as a conflict. */
+  readonly updatePull: (repo: string, number: number) => Effect.Effect<void, string>
+  /** Merges the pull request with a merge commit; fails with Gitea's message, such as a missing required check. */
+  readonly mergePull: (repo: string, number: number) => Effect.Effect<void, string>
   readonly openPulls: (repo: string) => Effect.Effect<ReadonlyArray<{
     readonly number: number
     readonly base: string
@@ -57,14 +75,27 @@ export class Gitea extends Context.Service<Gitea, {
 export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
   const config = yield* Config
   const base = `${config.gitea.url.replace(/\/$/, "")}/api/v1`
-  const client = (yield* HttpClient.HttpClient).pipe(
+  const raw = (yield* HttpClient.HttpClient).pipe(
     HttpClient.mapRequest(HttpClientRequest.setHeader("Authorization", `token ${config.giteaToken}`)),
-    HttpClient.filterStatusOk,
   )
+  const client = raw.pipe(HttpClient.filterStatusOk)
   const get = <A>(path: string, schema: Schema.Decoder<A>) =>
     client.get(`${base}${path}`).pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)))
   const send = (method: "post" | "patch", path: string, body: unknown) =>
     client.execute(HttpClientRequest[method](`${base}${path}`).pipe(HttpClientRequest.bodyJsonUnsafe(body)))
+  /** A request whose refusal matters: fails with Gitea's message instead of dying. */
+  const attempt = (path: string, body: unknown) =>
+    raw.execute(HttpClientRequest.post(`${base}${path}`).pipe(HttpClientRequest.bodyJsonUnsafe(body))).pipe(
+      Effect.orDie,
+      Effect.flatMap((response) =>
+        response.status >= 200 && response.status < 300
+          ? Effect.void
+          : HttpClientResponse.schemaBodyJson(ErrorBody)(response).pipe(
+            Effect.orElseSucceed(() => ({ message: undefined })),
+            Effect.flatMap((body) => Effect.fail(body.message ?? `Gitea answered ${response.status}`)),
+          )
+      ),
+    )
 
   return {
     status: (repo, sha, s) =>
@@ -120,6 +151,19 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
         ),
         Effect.orDie,
       ),
+    pull: (repo, number) =>
+      get(`/repos/${repo}/pulls/${number}`, PullState).pipe(
+        Effect.map((p) => ({
+          open: p.state === "open",
+          merged: p.merged,
+          sha: p.head.sha,
+          base: p.base.ref,
+          fork: p.head.repo?.full_name !== p.base.repo?.full_name,
+        })),
+        Effect.orDie,
+      ),
+    updatePull: (repo, number) => attempt(`/repos/${repo}/pulls/${number}/update?style=merge`, {}),
+    mergePull: (repo, number) => attempt(`/repos/${repo}/pulls/${number}/merge`, { Do: "merge" }),
     hasFile: (repo, ref, path) =>
       client.get(`${base}/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`).pipe(
         Effect.as(true),

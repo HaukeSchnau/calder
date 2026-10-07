@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/rpc"
-import { Change, DeploymentRecord, LogEntry, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
+import { Change, DeploymentRecord, LogEntry, MergeRequest, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
 
 export class NotFound extends Schema.TaggedError<NotFound>("@kiln/api/NotFound")("NotFound", {
   what: Schema.String,
@@ -78,6 +78,9 @@ export class UiRpcs extends RpcGroup.make(
     error: Schema.Union([NotFound, Refused]),
   }),
   Rpc.make("cancel", { payload: { runId: Schema.String }, error: Schema.Union([NotFound, Refused]) }),
+  /** Merges a pull request once it is green, bringing it up to date with its base first when it falls behind. */
+  Rpc.make("merge", { payload: { project: Schema.String, pr: Schema.Number }, success: MergeRequest, error: Refused }),
+  Rpc.make("merges", { payload: { project: Schema.String }, success: Schema.Array(MergeRequest) }),
   /** Runs the same revision and event again. */
   Rpc.make("rerun", { payload: { runId: Schema.String }, success: Run, error: Schema.Union([NotFound, Refused]) }),
 ) {}

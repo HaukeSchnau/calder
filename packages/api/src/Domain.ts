@@ -47,6 +47,16 @@ export const Commit = Schema.Struct({
 })
 export type Commit = typeof Commit.Type
 
+/** A pull request Kiln merges once it is green and up to date with its base. */
+export const MergeRequest = Schema.Struct({
+  project: Schema.String,
+  pr: Schema.Number,
+  status: Schema.Literals(["waiting", "updating", "merged", "failed", "closed"]),
+  message: Schema.NullOr(Schema.String),
+  requestedAt: Schema.Number,
+})
+export type MergeRequest = typeof MergeRequest.Type
+
 export const Run = Schema.Struct({
   id: Schema.String,
   project: Schema.String,

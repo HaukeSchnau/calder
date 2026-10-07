@@ -163,6 +163,19 @@ const migrations = {
     yield* sql`alter table steps add column files_ran integer`
     yield* sql`alter table steps add column files_flaky integer`
   }),
+  "0009_merges": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Pull requests Kiln merges once they are green and up to date with their base.
+    yield* sql`create table merges (
+      project text not null,
+      pr integer not null,
+      base text not null,
+      status text not null,
+      message text,
+      requested_at integer not null,
+      primary key (project, pr)
+    )`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

@@ -8,6 +8,7 @@ import { Gitea } from "./Gitea.ts"
 import { Jobs } from "./Jobs.ts"
 import { Leases } from "./Leases.ts"
 import { Live } from "./Live.ts"
+import { Merges } from "./Merges.ts"
 import * as Rows from "./Rows.ts"
 import * as Telemetry from "./Telemetry.ts"
 import * as Estimates from "./Estimates.ts"
@@ -25,6 +26,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const fleet = yield* Fleet.Fleet
   const gitea = yield* Gitea
   const runs = yield* Runs
+  const merges = yield* Merges
   const enrolled = yield* Projects
   const telemetry = yield* Telemetry.Telemetry
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
@@ -275,6 +277,8 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         const event: Domain.Event = { _tag: "Check", ref, base: p.defaultBranch }
         return yield* runs.create({ project: p.name, event, sha }).pipe(Effect.mapError((e) => new Refused({ reason: e.message })))
       }),
+    merge: ({ project, pr }) => merges.request(project, pr).pipe(Effect.mapError((e) => new Refused({ reason: e.reason }))),
+    merges: ({ project }) => merges.list(project),
     cancel: ({ runId }) =>
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))

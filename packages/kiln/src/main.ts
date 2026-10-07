@@ -156,6 +156,14 @@ const rerun = Command.make("rerun", { run: Argument.String("run"), url }, ({ run
     yield* Console.log(`${created.id}: ${created.commit.sha.slice(0, 12)} ${created.commit.title}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
+/** `kiln merge <project> <pr>`: Kiln merges the pull request once it is green and up to date with its base. */
+const merge = Command.make("merge", { project: Argument.String("project"), pr: Argument.Int("pr"), url }, ({ project, pr, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const request = yield* client.merge({ project, pr })
+    yield* Console.log(`${project} #${request.pr}: ${request.status}; Kiln merges it once it is green and up to date`)
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
 const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ run, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
@@ -163,6 +171,6 @@ const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ r
     yield* Console.log(`cancelled ${run}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
-const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, trigger, rerun, cancel]))
+const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, trigger, rerun, cancel, merge]))
 
 Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)

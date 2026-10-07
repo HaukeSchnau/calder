@@ -12,6 +12,7 @@ import * as Http from "./Http.ts"
 import * as Jobs from "./Jobs.ts"
 import * as Leases from "./Leases.ts"
 import * as Live from "./Live.ts"
+import * as Merges from "./Merges.ts"
 import * as Mirror from "./Mirror.ts"
 import * as Projects from "./Projects.ts"
 import * as Runs from "./Runs.ts"
@@ -32,5 +33,6 @@ export const layer = (configPath: string) => {
   const fleet = Layer.mergeAll(Fleet.layer, Leases.layer, Mirror.layer).pipe(Layer.provideMerge(projects))
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const runs = Workflow.layer.pipe(Layer.provideMerge(core))
-  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer).pipe(Layer.provide(runs))
+  const merging = Merges.layer.pipe(Layer.provideMerge(runs))
+  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer).pipe(Layer.provide(merging))
 }

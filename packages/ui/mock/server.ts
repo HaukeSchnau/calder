@@ -225,6 +225,8 @@ const Handlers = UiRpcs.toLayer(Effect.gen(function*() {
         ? Effect.sync(() => { const now = Date.now(); return toRun(world.trigger(project, now, inputs), now) })
         : Effect.fail(new NotFound({ what: `project ${project}` })),
     check: () => Effect.fail(new Refused({ reason: "the mock has no working copies to check" })),
+    merge: () => Effect.fail(new Refused({ reason: "the mock has no pull requests to merge" })),
+    merges: () => Effect.succeed([]),
     cancel: ({ runId }) =>
       findRun(runId).pipe(Effect.flatMap((run) => {
         const now = Date.now()
