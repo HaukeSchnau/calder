@@ -7,6 +7,7 @@ import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { sha256, taskKey } from "../Keys.ts"
 import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
+import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 import * as Each from "./Each.ts"
 import * as Estimates from "./Estimates.ts"
@@ -45,6 +46,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const config = yield* Config
   const sql = yield* SqlClient.SqlClient
   const jobs = yield* Jobs
+  const agents = yield* Agents
   const mirror = yield* Mirror
   const gitea = yield* Gitea
   const live = yield* Live
@@ -384,12 +386,20 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     }
   }
 
-  /** Where a step of `platform` runs: here, or on an agent, whose workers fetch what local ones read from disk. */
+  /**
+   * Where a step runs: here, or on an agent, whose workers fetch what local ones read from disk. A step
+   * of another platform needs an agent of it. Trusted runs also hand this platform's steps to a
+   * connected agent of it with a free slot: such an agent is there to take load off this host.
+   */
   const place = (run: Rows.RunRow, info: RunInfo, platform: string | null) => {
-    const remote = platform !== null && platform !== config.system
-    if (remote && run.trust !== "trusted") return null
-    const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, kilnDir: "", system: platform } : info
-    return { remote, where }
+    const foreign = platform !== null && platform !== config.system
+    if (foreign && run.trust !== "trusted") return null
+    const offload = !foreign && run.trust === "trusted" &&
+      agents.usage().some((a) => a.connected && a.platform === config.system && a.running < a.slots)
+    const remote = foreign || offload
+    const system = platform ?? config.system
+    const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, kilnDir: "", system } : info
+    return { remote, where, platform: remote ? system : platform }
   }
   const agentsRefuse = (platform: string | null): Settled => ({
     status: "died",
@@ -441,6 +451,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly shard: number | null
       readonly workspace: boolean
       readonly platform?: string | null
+      /** Runs on an agent, of `platform` or of this host's. */
+      readonly remote?: boolean
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
     },
@@ -483,8 +495,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return { ...done, startedAt: adopted.startedAt }
       })
       const running = Effect.scoped(Effect.gen(function*() {
-        const remote = options.platform != null && options.platform !== config.system
-        const ws = options.workspace ? (yield* workspace(poolOf(run), run.project, remote)).path : null
+        const ws = options.workspace ? (yield* workspace(poolOf(run), run.project, options.remote === true)).path : null
         startedAt = Date.now()
         yield* started
         const done = yield* jobs.run(job(ws), {
@@ -492,6 +503,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           onEvent,
           uninterruptible: options.action,
           platform: options.platform ?? null,
+          agent: options.remote === true,
           adoptable: !options.action,
         })
         return { ...done, startedAt }
@@ -571,7 +583,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         const placed = place(run, info, platform)
         if (placed === null) return yield* settle(run, row, agentsRefuse(platform))
         const { executed, reused } = yield* once(
-          `${poolOf(run)}/${run.project}/${platform ?? config.system}/${deps}`,
+          `${placed.remote ? "agent" : "local"}/${poolOf(run)}/${run.project}/${placed.platform ?? config.system}/${deps}`,
           execute(run, row, (ws) => stepJob({ run: placed.where, workspace: ws, deps }), {
             slots: placed.remote ? slots.agents : slots.tasks,
             // Every task of the run waits for it.
@@ -579,7 +591,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             action: false,
             shard: null,
             workspace: true,
-            platform,
+            platform: placed.platform,
+            remote: placed.remote,
           }, collect),
         )
         if ("cancelled" in executed) return yield* settle(run, row, { status: "cancelled" })
@@ -652,7 +665,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
               action: false,
               shard: sharded ? index : null,
               workspace: true,
-              platform: task.platform,
+              platform: placed.platform,
+              remote,
               withdraw,
             },
             collect,
@@ -772,7 +786,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             run,
             row,
             (ws) => context.stepJob({ run: placed.where, workspace: ws, secrets, shard: { index, count: total }, deps: task.deps, files }),
-            { slots: placed.remote ? slots.agents : slots.tasks, expected: ms, action: false, shard: index, workspace: true, platform: task.platform },
+            {
+              slots: placed.remote ? slots.agents : slots.tasks,
+              expected: ms,
+              action: false,
+              shard: index,
+              workspace: true,
+              platform: placed.platform,
+              remote: placed.remote,
+            },
             mine,
           )
           context.collect.tests.push(...mine.tests)

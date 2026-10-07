@@ -58,6 +58,8 @@ export class Jobs extends Context.Service<Jobs, {
     readonly uninterruptible?: boolean
     /** Another platform than the controller's runs on an agent of that platform. */
     readonly platform?: string | null
+    /** Runs on an agent even of the controller's platform. */
+    readonly agent?: boolean
     /** A local step that may outlive a restart of the controller, which adopts it instead of stopping it. */
     readonly adoptable?: boolean
   }) => Effect.Effect<{ readonly result: JobResult; readonly usage: Usage; readonly id: string }>
@@ -244,7 +246,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const token = randomBytes(32).toString("hex")
       const result = yield* Deferred.make<JobResult>()
       const platform = options.platform ?? config.system
-      const remote = platform !== config.system
+      const remote = options.agent === true || platform !== config.system
       const job: ActiveJob = { id, tokenHash: sha256(token), spec, pool: options.pool, remote, onEvent: options.onEvent, result, samples: [], lease: undefined }
       const tokenFile = join(jobsDir, `${id}.token`)
       const persisted = options.adoptable === true && !remote && config.jobs.mode === "systemd" && spec._tag === "Step"
