@@ -139,7 +139,7 @@ const trigger = Command.make("trigger", {
 const check = Command.make("check", {
   dir: Argument.String("dir").pipe(Argument.withDefault(".")),
   key: Flag.String("key").pipe(Flag.optional),
-  background: Flag.Boolean("background"),
+  background: Flag.Boolean("background").pipe(Flag.withDefault(false)),
   url,
 }, ({ dir, key, background, url }) =>
   Effect.gen(function*() {
