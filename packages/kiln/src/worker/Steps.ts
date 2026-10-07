@@ -9,7 +9,7 @@ import * as Exec from "../Exec.ts"
 import { link, sdkPath } from "../Gen.ts"
 import type { Job as JobSpec, JobResult, Outcome, RunInfo } from "../Protocol.ts"
 import * as Values from "../Values.ts"
-import { gitEnv, Job, reconnecting } from "./Client.ts"
+import { fetching, gitEnv, Job, reconnecting } from "./Client.ts"
 import * as NixLog from "./NixLog.ts"
 import * as Repo from "./Repo.ts"
 import { paths } from "./Resolve.ts"
@@ -129,7 +129,7 @@ const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
     // Tasks that need history deepen the checkout from `origin` (local workers only; the controller's
     // URL needs the job's token).
     yield* git(["remote", "add", "origin", job.run.mirror]).pipe(Effect.catch(() => git(["remote", "set-url", "origin", job.run.mirror])))
-    yield* git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision])
+    yield* fetching(git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision]))
     yield* git(["-c", "advice.detachedHead=false", "checkout", "-q", "-f", "--detach", job.run.revision])
     yield* git(["clean", "-q", "-ffdx", ...keep.flatMap((p) => ["-e", p])])
     // What `kiln gen` sets up locally, so the repository's own tools (type-aware lint) resolve ci.ts too.

@@ -19,6 +19,10 @@ export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>) =>
     schedule: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("5 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
   }))
 
+/** Retries a fetch from the controller, which crosses the internet for agents, where streams sometimes reset. */
+export const fetching = <A, E, R>(fetch: Effect.Effect<A, E, R>) =>
+  fetch.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("2 seconds") }))
+
 /** For workers an agent started on another host: the controller's URL and the agent's workspace directory. */
 export interface Remote {
   readonly url: string

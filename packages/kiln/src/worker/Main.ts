@@ -41,7 +41,7 @@ const kilnDir = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
     mkdirSync(scratch, { recursive: true })
     const git = (args: ReadonlyArray<string>) => Exec.run(["git", "--git-dir", join(scratch, "git"), ...args], { env: Client.gitEnv(job) })
     yield* git(["init", "-q", "--bare"])
-    yield* git(["fetch", "-q", "--no-tags", "--depth=1", spec.run.mirror, spec.run.revision])
+    yield* Client.fetching(git(["fetch", "-q", "--no-tags", "--depth=1", spec.run.mirror, spec.run.revision]))
     yield* git(["archive", `--output=${join(scratch, "kiln.tar")}`, spec.run.revision, ".kiln"])
     yield* Exec.run(["tar", "-x", "-C", scratch, "-f", join(scratch, "kiln.tar")])
     rmSync(join(scratch, "git"), { recursive: true, force: true })
