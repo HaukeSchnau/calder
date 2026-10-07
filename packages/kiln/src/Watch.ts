@@ -1,5 +1,5 @@
 import { Console, Effect, Schedule } from "effect"
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import * as Check from "./Check.ts"
 import * as Exec from "./Exec.ts"
@@ -26,27 +26,37 @@ const snapshot = (dir: string) =>
   }).pipe(Effect.orElseSucceed(() => null))
 
 /**
+ * jj rewrites this file whenever the workspace's working copy moves to a new operation, so while it
+ * stays the same the snapshot does too, and reading it is far cheaper than running jj.
+ */
+const stamp = (dir: string) => {
+  try {
+    return readFileSync(join(dir, ".jj", "working_copy", "checkout"), "latin1")
+  } catch {
+    return null
+  }
+}
+
+/**
  * `kiln watch`: checks the jj workspaces under `roots` in the background once a snapshot has stayed
  * the same for `settle`, one check per workspace (a newer one replaces it). Snapshots that existed when
  * the watcher started aren't checked.
  */
 export const watch = (client: Check.Client, roots: ReadonlyArray<string>, options: { readonly every: number; readonly settle: number }) =>
   Effect.gen(function*() {
-    const seen = new Map<string, { readonly sha: string; readonly since: number; checked: boolean }>()
+    const seen = new Map<string, { stamp: string | null; readonly sha: string | null; readonly since: number; checked: boolean }>()
     let first = true
     const tick = Effect.gen(function*() {
       for (const dir of workspaces(roots)) {
-        const sha = yield* snapshot(dir)
-        if (sha === null) {
-          seen.delete(dir)
-          continue
-        }
         const known = seen.get(dir)
+        const current = stamp(dir)
+        const sha = current !== null && known?.stamp === current ? known.sha : yield* snapshot(dir)
         if (known === undefined || known.sha !== sha) {
-          seen.set(dir, { sha, since: Date.now(), checked: first })
+          seen.set(dir, { stamp: current, sha, since: Date.now(), checked: first })
           continue
         }
-        if (known.checked || Date.now() - known.since < options.settle) continue
+        known.stamp = current
+        if (sha === null || known.checked || Date.now() - known.since < options.settle) continue
         known.checked = true
         yield* Check.submit(client, dir, { key: basename(dir), background: true, snapshot: false }).pipe(
           Effect.tap(({ run }) => Console.log(`${basename(dir)}: ${run.project} #${run.number} checks ${sha.slice(0, 12)}`)),
