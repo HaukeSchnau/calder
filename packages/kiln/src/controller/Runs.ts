@@ -404,11 +404,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   /**
    * Where a job runs: here, or on an agent, whose workers fetch what local ones read from disk. A job
    * of another platform needs an agent of it. Other jobs go to a connected agent of this platform with
-   * a free slot, which is there to take load off this host, unless they come from a fork.
+   * a free slot, which is there to take load off this host, unless they come from a fork or `here`.
    */
-  const place = (run: Rows.RunRow, info: RunInfo, platform: string | null) => {
+  const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false) => {
     const foreign = platform !== null && platform !== config.system
-    const offload = !foreign && run.fork === 0 &&
+    const offload = !foreign && !here && run.fork === 0 &&
       agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
     const remote = foreign || offload
     const system = platform ?? config.system
@@ -419,7 +419,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   /**
    * Runs a job where `place` puts it. A job an agent lost, or that no agent took after all, runs once
-   * more where `place` puts it then.
+   * more: here, unless its platform needs an agent.
    */
   const placed = <R extends { readonly result: JobResult }, E, Q>(
     run: Rows.RunRow,
@@ -433,7 +433,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const first = yield* attempt(place(run, info, platform))
       if (first.result._tag !== "Lost") return first
       yield* logTo(run, row.name, row.span_id, shard)({ _tag: "Log", stream: "kiln", text: `${first.result.message}, so it runs again`, timestamp: Date.now() })
-      return yield* attempt(place(run, info, platform))
+      return yield* attempt(place(run, info, platform, true))
     })
   const agentsRefuse = (platform: string | null): Settled => ({
     status: "died",
