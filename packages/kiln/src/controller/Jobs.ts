@@ -60,6 +60,8 @@ export class Jobs extends Context.Service<Jobs, {
     readonly platform?: string | null
     /** Runs on an agent even of the controller's platform. */
     readonly agent?: boolean
+    /** Taken only by an agent with a free slot right now; otherwise the job comes back `Lost`. */
+    readonly offload?: boolean
     /** A local step that may outlive a restart of the controller, which adopts it instead of stopping it. */
     readonly adoptable?: boolean
   }) => Effect.Effect<{ readonly result: JobResult; readonly usage: Usage; readonly id: string }>
@@ -312,12 +314,16 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         const stale = agents.usage().filter((a) => a.connected && !a.current && a.platform === platform)
         const why = stale.map((a) => `; ${a.name} runs another Kiln build (${a.build}) and needs a deploy`).join("")
         yield* options.onEvent({ _tag: "Log", stream: "kiln", text: `waiting for a ${platform} agent${why}`, timestamp: Date.now() })
-        const exited = yield* agents.run({ id, token }, platform).pipe(
+        const exited = yield* agents.run({ id, token }, platform, { wait: options.offload !== true }).pipe(
           Effect.flatMap((code) =>
             Effect.sleep("1 second").pipe(
               Effect.andThen(Deferred.succeed(result, {
-                _tag: "Died",
-                message: code === -1 ? "the agent lost the worker" : `the worker exited with ${code} without a result`,
+                _tag: "Lost",
+                message: code === -1
+                  ? "the agent lost the worker"
+                  : code === -2
+                  ? "no agent had a free slot"
+                  : `the worker exited with ${code} on the agent without a result`,
               })),
             )
           ),

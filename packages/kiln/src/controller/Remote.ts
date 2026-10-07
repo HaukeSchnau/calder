@@ -16,6 +16,7 @@ export const agentHandlers = AgentRpcs.toLayer(Effect.gen(function*() {
   return {
     work: ({ token, name, ...agent }) => agents.connect({ token, name }, agent),
     exited: ({ token, name, job, code }) => agents.exited({ token, name }, job, code),
+    offer: ({ token, name, slots }) => agents.offer({ token, name }, slots),
   }
 }))
 

@@ -7,7 +7,7 @@ import { Config } from "./Config.ts"
 interface Connection {
   readonly name: string
   readonly platform: string
-  readonly slots: number
+  slots: number
   readonly build: string
   readonly orders: Queue.Queue<AgentOrder, Cause.Done>
 }
@@ -42,8 +42,11 @@ const reconnectGrace = "5 minutes"
  * agent of its platform has a free slot; its worker then talks to the controller like a local one.
  */
 export class Agents extends Context.Service<Agents, {
-  /** Starts the job's worker on an agent and waits for it to exit; returns the exit code, -1 if it was lost. */
-  readonly run: (job: { readonly id: string; readonly token: string }, platform: string) => Effect.Effect<number>
+  /**
+   * Starts the job's worker on an agent and waits for it to exit; returns the exit code, -1 if it was
+   * lost. Without `wait`, a job no agent can take right now returns -2 at once.
+   */
+  readonly run: (job: { readonly id: string; readonly token: string }, platform: string, options?: { readonly wait?: boolean }) => Effect.Effect<number>
   readonly stop: (job: string) => Effect.Effect<void>
   readonly connect: (auth: { readonly token: string; readonly name: string }, agent: {
     readonly platform: string
@@ -52,6 +55,7 @@ export class Agents extends Context.Service<Agents, {
     readonly build: string
   }) => Stream.Stream<AgentOrder, Unauthorized>
   readonly exited: (auth: { readonly token: string; readonly name: string }, job: string, code: number) => Effect.Effect<void, Unauthorized>
+  readonly offer: (auth: { readonly token: string; readonly name: string }, slots: number) => Effect.Effect<void, Unauthorized>
   readonly usage: () => ReadonlyArray<AgentUsage>
 }>()("kiln/controller/Agents") {}
 
@@ -63,7 +67,7 @@ export const make = (secret: string | null, build: string = Build.id): Agents["S
   // Bumped on every connect, so a grace timer knows whether its agent came back.
   const generations = new Map<string, number>()
   // Every agent seen since start, so a missing one stays visible.
-  const seen = new Map<string, { readonly platform: string; readonly slots: number; readonly build: string }>()
+  const seen = new Map<string, { readonly platform: string; slots: number; readonly build: string }>()
 
   const check = (auth: { readonly token: string; readonly name: string }) =>
     secret !== null && auth.token === secret ? Effect.void : Effect.fail(new Unauthorized({ reason: "wrong agent token" }))
@@ -94,11 +98,15 @@ export const make = (secret: string | null, build: string = Build.id): Agents["S
     })
 
   return {
-    run: (job, platform) =>
+    run: (job, platform, options) =>
       Effect.gen(function*() {
         const waiter: Waiter = { job, platform, placed: Deferred.makeUnsafe<Placed>() }
         waiters.push(waiter)
         yield* assign
+        if (options?.wait === false && waiters.includes(waiter)) {
+          waiters.splice(waiters.indexOf(waiter), 1)
+          return -2
+        }
         const p = yield* Deferred.await(waiter.placed).pipe(
           Effect.onInterrupt(() => Effect.sync(() => waiters.includes(waiter) && waiters.splice(waiters.indexOf(waiter), 1))),
         )
@@ -149,6 +157,16 @@ export const make = (secret: string | null, build: string = Build.id): Agents["S
         )
       })),
     exited: (auth, job, code) => check(auth).pipe(Effect.andThen(finish(job, code))),
+    offer: (auth, slots) =>
+      check(auth).pipe(Effect.andThen(Effect.gen(function*() {
+        const connection = connections.get(auth.name)
+        const known = seen.get(auth.name)
+        if (connection === undefined || known === undefined || connection.slots === slots) return
+        connection.slots = slots
+        known.slots = slots
+        yield* Effect.logInfo(`agent ${auth.name} offers ${slots} slots`)
+        yield* assign
+      }))),
     usage: () =>
       [...seen].map(([name, a]) => ({ name, ...a, running: runningOn(name), connected: connections.has(name), current: a.build === build })),
   }

@@ -36,6 +36,7 @@ const agent = Command.make("agent", {
   tokenFile: Flag.String("token-file"),
   name: Flag.String("name"),
   slots: Flag.Int("slots").pipe(Flag.withDefault(1)),
+  slotsFile: Flag.String("slots-file").pipe(Flag.optional),
   workspaces: Flag.String("workspaces"),
   admission: Flag.String("admission").pipe(Flag.optional),
 }, (flags) =>
@@ -43,6 +44,7 @@ const agent = Command.make("agent", {
     ...flags,
     platform: system,
     kiln: [process.argv[0]!, process.argv[1]!],
+    slotsFile: Option.getOrNull(flags.slotsFile),
     admission: Option.getOrNull(flags.admission),
   }))
 

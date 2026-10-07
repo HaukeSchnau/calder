@@ -164,6 +164,8 @@ export const JobResult = Schema.Union([
     key: Schema.NullOr(Schema.String),
   }),
   Schema.TaggedStruct("Died", { message: Schema.String }),
+  /** The controller's own: an agent lost the job or none took it, so it may run again elsewhere. */
+  Schema.TaggedStruct("Lost", { message: Schema.String }),
 ])
 export type JobResult = typeof JobResult.Type
 
@@ -243,4 +245,6 @@ export class AgentRpcs extends RpcGroup.make(
     stream: true,
   }),
   Rpc.make("exited", { payload: { ...agentAuth, job: Schema.String, code: Schema.Number }, error: Unauthorized }),
+  /** How many jobs the agent takes from now on; workers already running go on. */
+  Rpc.make("offer", { payload: { ...agentAuth, slots: Schema.Number }, error: Unauthorized }),
 ) {}

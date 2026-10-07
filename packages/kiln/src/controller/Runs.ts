@@ -391,27 +391,50 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       case "Failed":
         return { status: "failed", error: { tag: result.tag, message: result.message, json: result.error }, key: result.key, usage, ...extra }
       case "Died":
+      case "Lost":
         return { status: "died", error: { tag: "Died", message: result.message, json: null }, usage, ...extra }
       default:
         return { status: "died", error: { tag: "Died", message: `unexpected ${result._tag}`, json: null }, usage, ...extra }
     }
   }
 
+  /** A step of another platform runs on an agent of it, and only trusted runs may use those. */
+  const refuses = (run: Rows.RunRow, platform: string | null) => platform !== null && platform !== config.system && run.trust !== "trusted"
+
   /**
-   * Where a step runs: here, or on an agent, whose workers fetch what local ones read from disk. A step
-   * of another platform needs an agent of it. Trusted runs also hand this platform's steps to a
-   * connected agent of it with a free slot: such an agent is there to take load off this host.
+   * Where a job runs: here, or on an agent, whose workers fetch what local ones read from disk. A job
+   * of another platform needs an agent of it. Other jobs go to a connected agent of this platform with
+   * a free slot, which is there to take load off this host, unless they come from a fork.
    */
   const place = (run: Rows.RunRow, info: RunInfo, platform: string | null) => {
     const foreign = platform !== null && platform !== config.system
-    if (foreign && run.trust !== "trusted") return null
-    const offload = !foreign && run.trust === "trusted" &&
+    const offload = !foreign && run.fork === 0 &&
       agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
     const remote = foreign || offload
     const system = platform ?? config.system
     const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, kilnDir: "", system } : info
-    return { remote, where, platform: remote ? system : platform }
+    return { remote, offload, where, platform: remote ? system : platform }
   }
+  type Placement = ReturnType<typeof place>
+
+  /**
+   * Runs a job where `place` puts it. A job an agent lost, or that no agent took after all, runs once
+   * more where `place` puts it then.
+   */
+  const placed = <R extends { readonly result: JobResult }, E, Q>(
+    run: Rows.RunRow,
+    row: Rows.StepRow,
+    info: RunInfo,
+    platform: string | null,
+    shard: number | null,
+    attempt: (placement: Placement) => Effect.Effect<R, E, Q>,
+  ) =>
+    Effect.gen(function*() {
+      const first = yield* attempt(place(run, info, platform))
+      if (first.result._tag !== "Lost") return first
+      yield* logTo(run, row.name, row.span_id, shard)({ _tag: "Log", stream: "kiln", text: `${first.result.message}, so it runs again`, timestamp: Date.now() })
+      return yield* attempt(place(run, info, platform))
+    })
   const agentsRefuse = (platform: string | null): Settled => ({
     status: "died",
     error: { tag: "Died", message: `${platform} steps run on agents, which only take trusted runs`, json: null },
@@ -466,6 +489,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly platform?: string | null
       /** Runs on an agent, of `platform` or of this host's. */
       readonly remote?: boolean
+      /** Runs on an agent of this host's platform only if one has a free slot when the job starts. */
+      readonly offload?: boolean
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
     },
@@ -517,6 +542,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           uninterruptible: options.action,
           platform: options.platform ?? null,
           agent: options.remote === true,
+          offload: options.offload === true,
           adoptable: !options.action,
         })
         return { ...done, startedAt }
@@ -598,21 +624,23 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       if (spec.setup !== null) {
         const { deps, platform } = spec.setup
-        const placed = place(run, info, platform)
-        if (placed === null) return yield* settle(run, row, agentsRefuse(platform))
-        const { executed, reused } = yield* once(
-          `${placed.remote ? "agent" : "local"}/${poolOf(run)}/${run.project}/${placed.platform ?? config.system}/${deps}`,
-          execute(run, row, (ws) => stepJob({ run: placed.where, workspace: ws, deps }), {
-            slots: placed.remote ? slots.agents : slots.tasks,
-            // Every task of the run waits for it.
-            expected: 0,
-            action: false,
-            shard: null,
-            workspace: true,
-            platform: placed.platform,
-            remote: placed.remote,
-          }, collect),
-        )
+        if (refuses(run, platform)) return yield* settle(run, row, agentsRefuse(platform))
+        const executed = yield* placed(run, row, info, platform, null, (p) =>
+          once(
+            `${p.remote ? "agent" : "local"}/${poolOf(run)}/${run.project}/${p.platform ?? config.system}/${deps}`,
+            execute(run, row, (ws) => stepJob({ run: p.where, workspace: ws, deps }), {
+              slots: p.remote ? slots.agents : slots.tasks,
+              // Every task of the run waits for it.
+              expected: 0,
+              action: false,
+              shard: null,
+              workspace: true,
+              platform: p.platform,
+              remote: p.remote,
+              offload: p.offload,
+            }, collect),
+          ).pipe(Effect.map(({ executed, reused }) => ({ ...executed, reused }))))
+        const { reused } = executed
         if (stopped(executed)) return yield* settle(run, row, { status: "cancelled" })
         const settled = fromResult(executed.result, executed.usage, { attempts: collect.attempts })
         const fresh = executed.result._tag === "Passed" && (executed.result.value as { readonly fresh?: boolean } | null)?.fresh === true
@@ -657,9 +685,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
-      const placed = place(run, info, task.platform)
-      if (placed === null) return yield* settle(run, row, agentsRefuse(task.platform))
-      const { remote, where } = placed
+      if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
       const sharded = count > 1
       // Shards that passed with the same key before don't run again.
       const shardHits = reusable && sharded ? yield* Effect.forEach(shardKeys, lookup) : shardKeys.map(() => undefined)
@@ -674,22 +700,24 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const pending = shardHits.flatMap((hit, i) => (hit === undefined ? [i + 1] : []))
       const shards = yield* Effect.forEach(pending, (index) =>
         Effect.gen(function*() {
-          const r = yield* flying([count === 1 ? key : shardKeys[index - 1]!], execute(
-            run,
-            row,
-            (ws) => stepJob({ run: where, workspace: ws, secrets, shard: sharded ? { index, count } : null, deps: task.deps }),
-            {
-              slots: remote ? slots.agents : slots.tasks,
-              expected: perShard,
-              action: false,
-              shard: sharded ? index : null,
-              workspace: true,
-              platform: placed.platform,
-              remote,
-              withdraw,
-            },
-            collect,
-          ))
+          const r = yield* flying([count === 1 ? key : shardKeys[index - 1]!], placed(run, row, info, task.platform, sharded ? index : null, (p) =>
+            execute(
+              run,
+              row,
+              (ws) => stepJob({ run: p.where, workspace: ws, secrets, shard: sharded ? { index, count } : null, deps: task.deps }),
+              {
+                slots: p.remote ? slots.agents : slots.tasks,
+                expected: perShard,
+                action: false,
+                shard: sharded ? index : null,
+                workspace: true,
+                platform: p.platform,
+                remote: p.remote,
+                offload: p.offload,
+                withdraw,
+              },
+              collect,
+            )))
           if (!sharded || stopped(r)) return r
           const passed = r.result._tag === "Passed"
           const now = Date.now()
@@ -798,8 +826,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return yield* settle(run, row, { status: "reused", value: null, key, reusedFrom: from, files: { total: each.length, ran: 0, flaky: 0 } })
       }
 
-      const placed = place(run, context.info, task.platform)
-      if (placed === null) return yield* settle(run, row, agentsRefuse(task.platform))
+      if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
       const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
 
       const history = yield* db(sql<{ file: string; duration_ms: number }>`select file, duration_ms from (
@@ -813,21 +840,23 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const job = (files: ReadonlyArray<string>, index: number, total: number, ms: number) =>
         Effect.gen(function*() {
           const mine = { tests: [] as Array<TestRow>, attempts: 0 }
-          const r = yield* flying(files.map((f) => keys.get(f)!), execute(
-            run,
-            row,
-            (ws) => context.stepJob({ run: placed.where, workspace: ws, secrets, shard: { index, count: total }, deps: task.deps, files }),
-            {
-              slots: placed.remote ? slots.agents : slots.tasks,
-              expected: ms,
-              action: false,
-              shard: index,
-              workspace: true,
-              platform: placed.platform,
-              remote: placed.remote,
-            },
-            mine,
-          ))
+          const r = yield* flying(files.map((f) => keys.get(f)!), placed(run, row, context.info, task.platform, index, (p) =>
+            execute(
+              run,
+              row,
+              (ws) => context.stepJob({ run: p.where, workspace: ws, secrets, shard: { index, count: total }, deps: task.deps, files }),
+              {
+                slots: p.remote ? slots.agents : slots.tasks,
+                expected: ms,
+                action: false,
+                shard: index,
+                workspace: true,
+                platform: p.platform,
+                remote: p.remote,
+                offload: p.offload,
+              },
+              mine,
+            )))
           context.collect.tests.push(...mine.tests)
           context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
           return { r, tests: mine.tests, files }

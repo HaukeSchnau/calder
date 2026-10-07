@@ -74,6 +74,25 @@ describe("Agents", () => {
       expect(yield* Fiber.join(job)).toBe(0)
     }))
 
+  it.effect("an agent takes jobs as it offers slots", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", "b1")
+      const m1 = yield* connect(agents)
+      yield* agents.offer(auth, 0)
+      const offloaded = yield* agents.run({ id: "a", token: "ta" }, "aarch64-darwin", { wait: false })
+      expect(offloaded).toBe(-2)
+
+      const waiting = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-darwin"))
+      yield* ticks
+      expect(m1.orders).toEqual([])
+      yield* agents.offer(auth, 2)
+      yield* ticks
+      expect(m1.orders).toEqual([{ _tag: "Start", job: "b", token: "tb" }])
+      expect(agents.usage()[0]).toMatchObject({ slots: 2, running: 1 })
+      yield* agents.exited(auth, "b", 0)
+      expect(yield* Fiber.join(waiting)).toBe(0)
+    }))
+
   it.effect("agents need the secret", () =>
     Effect.gen(function*() {
       const refused = yield* Agents.make("secret").connect({ token: "wrong", name: "m1" }, { platform: "aarch64-darwin", slots: 1, running: [], build: "b1" }).pipe(

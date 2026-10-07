@@ -13,6 +13,11 @@ export interface Options {
   readonly name: string
   readonly platform: string
   readonly slots: number
+  /**
+   * A file with the number of jobs to take right now, which the host rewrites as its own load changes.
+   * It replaces `slots`; a file that can't be read offers none.
+   */
+  readonly slotsFile: string | null
   /** Where workers keep their task slots and extracted `.kiln/` directories. */
   readonly workspaces: string
   /** argv that starts this kiln, before `worker <job>`. */
@@ -35,6 +40,17 @@ export const run = (options: Options) =>
     const client = yield* RpcClient.make(AgentRpcs)
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const running = new Map<string, Fiber.Fiber<void>>()
+
+    const offered = () => {
+      if (options.slotsFile === null) return options.slots
+      try {
+        const slots = Number.parseInt(readFileSync(options.slotsFile, "utf8"), 10)
+        return Number.isInteger(slots) && slots > 0 ? slots : 0
+      } catch {
+        return 0
+      }
+    }
+    let offering = offered()
 
     /** Holds an admission slot for the scope. */
     const admitted = (command: string) =>
@@ -83,12 +99,22 @@ export const run = (options: Options) =>
         }
       })
 
+    if (options.slotsFile !== null) {
+      yield* Effect.gen(function*() {
+        const slots = offered()
+        if (slots === offering) return
+        yield* client.offer({ ...auth, slots })
+        offering = slots
+      }).pipe(Effect.ignore, Effect.repeat(Schedule.spaced("10 seconds")), Effect.forkScoped)
+    }
+
     yield* Effect.logInfo(`agent ${options.name} serving ${options.platform} jobs from ${options.url}`)
-    yield* Effect.suspend(() =>
-      client.work({ ...auth, platform: options.platform, slots: options.slots, running: [...running.keys()], build: Build.id }).pipe(
+    yield* Effect.suspend(() => {
+      offering = offered()
+      return client.work({ ...auth, platform: options.platform, slots: offering, running: [...running.keys()], build: Build.id }).pipe(
         Stream.runForEach(obey),
       )
-    ).pipe(
+    }).pipe(
       Effect.catchCause((cause) => Effect.logWarning("lost the controller", cause)),
       Effect.andThen(Effect.sleep("5 seconds")),
       Effect.forever,
