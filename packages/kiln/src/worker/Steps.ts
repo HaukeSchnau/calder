@@ -126,10 +126,16 @@ const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
     const git = (args: ReadonlyArray<string>) => Exec.run(["git", "-C", src, ...args], { env: { ...process.env, ...gitEnv(self) } })
     if (!existsSync(join(src, ".git"))) yield* git(["init", "-q"])
     const started = Date.now()
-    // Tasks that need history deepen the checkout from `origin` (local workers only; the controller's
-    // URL needs the job's token).
     yield* git(["remote", "add", "origin", job.run.mirror]).pipe(Effect.catch(() => git(["remote", "set-url", "origin", job.run.mirror])))
-    yield* fetching(git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision]))
+    if (self.remote === null) {
+      // A local worker reads the mirror's objects in place, history included. A shallow fetch from it
+      // packed the whole tree again every time: half a minute and 100 MB per t3code checkout. The
+      // mirror never collects garbage, so what a slot read stays readable.
+      writeFileSync(join(src, ".git", "objects", "info", "alternates"), `${join(job.run.mirror, "objects")}\n`)
+      rmSync(join(src, ".git", "shallow"), { force: true })
+    } else {
+      yield* fetching(git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision]))
+    }
     yield* git(["-c", "advice.detachedHead=false", "checkout", "-q", "-f", "--detach", job.run.revision])
     yield* git(["clean", "-q", "-ffdx", ...keep.flatMap((p) => ["-e", p])])
     // What `kiln gen` sets up locally, so the repository's own tools (type-aware lint) resolve ci.ts too.
