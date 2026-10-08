@@ -95,6 +95,8 @@ const plan = Command.make("plan", {
 
 const url = Flag.String("url").pipe(Flag.withDefault(process.env.KILN_URL ?? "https://kiln.schnau.dev"))
 
+const stepLine = (step: Domain.StepRun) => `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}`
+
 /** Prints a run's steps as they change until it ends; returns its final status. */
 const follow = (client: Effect.Success<typeof Remote.client>, run: Domain.Run) =>
   Effect.gen(function*() {
@@ -104,7 +106,7 @@ const follow = (client: Effect.Success<typeof Remote.client>, run: Domain.Run) =
       Stream.filter((c) => (c._tag === "StepChanged" ? c.step.runId === run.id : c._tag === "RunChanged" && c.run.id === run.id)),
       Stream.tap((c) =>
         c._tag === "StepChanged"
-          ? Console.log(`  ${c.step.status.padEnd(9)} ${c.step.name}${c.step.error ? `: ${c.step.error.message.split("\n")[0]}` : ""}`)
+          ? Console.log(stepLine(c.step))
           : Console.log(`${c._tag === "RunChanged" ? c.run.status : ""}${c._tag === "RunChanged" && c.run.error ? `: ${c.run.error}` : ""}`)
       ),
       Stream.tap((c) => Effect.sync(() => {
@@ -180,6 +182,38 @@ const merge = Command.make("merge", { project: Argument.String("project"), pr: A
     yield* Console.log(`${project} #${request.pr}: ${request.status}; Kiln merges it once it is green and up to date`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
+/** `kiln status <run>`: the run and each step's status, with why it failed. */
+const status = Command.make("status", { run: Argument.String("run"), url }, ({ run, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const detail = yield* client.run({ id: run })
+    const r = detail.run
+    yield* Console.log(`${r.project} #${r.number} ${r.status}${r.error ? `: ${r.error}` : ""}  ${r.commit.sha.slice(0, 12)} ${r.commit.title}`)
+    for (const step of detail.steps) if (step.kind !== "output") yield* Console.log(stepLine(step))
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
+/** `kiln logs <run> [step]`: the output of a step, or of every step with its name in front. */
+const logs = Command.make("logs", {
+  run: Argument.String("run"),
+  step: Argument.String("step").pipe(Argument.optional),
+  follow: Flag.Boolean("follow").pipe(Flag.withAlias("f"), Flag.withDefault(false)),
+  limit: Flag.Int("limit").pipe(Flag.optional),
+  url,
+}, ({ run, step, follow, limit, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const one = Option.getOrUndefined(step)
+    yield* client.logs({
+      runId: run,
+      follow,
+      ...(one === undefined ? {} : { step: one }),
+      ...Option.match(limit, { onNone: () => ({}), onSome: (n) => ({ limit: n }) }),
+    }).pipe(Stream.runForEach((line) => {
+      const where = [one === undefined ? line.step : null, line.shard === null ? null : `#${line.shard}`].filter((x) => x !== null).join(" ")
+      return Console.log(`${where === "" ? "" : `${where} | `}${line.stream === "kiln" ? "[kiln] " : ""}${line.text}`)
+    }))
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
+
 const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ run, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
@@ -187,6 +221,6 @@ const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ r
     yield* Console.log(`cancelled ${run}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
-const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, watch, trigger, rerun, cancel, merge]))
+const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, watch, trigger, status, logs, rerun, cancel, merge]))
 
 Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)
