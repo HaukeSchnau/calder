@@ -63,6 +63,8 @@ kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.jso
 kiln plan [dir] --event push:main    # what a push, pr:<n>, check, schedule:<cron> or manual run would run
 kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
+kiln status <run>                    # a run's steps, with why those that failed did
+kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front
 kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12
 kiln controller --config <file>      # the service
 kiln worker <job>                    # started by the controller in a systemd unit, or by an agent
