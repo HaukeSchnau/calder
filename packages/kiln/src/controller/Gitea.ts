@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Schedule, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Config } from "./Config.ts"
 
@@ -104,7 +104,16 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
         state: s.state,
         description: s.description.slice(0, 140),
         target_url: s.targetUrl,
-      }).pipe(Effect.asVoid, Effect.retry({ times: 2 }), Effect.catch((e) => Effect.logWarning(`status for ${repo}@${sha} failed`, e))),
+      }).pipe(
+        Effect.asVoid,
+        // A deploy of srv-2 restarts the proxy in front of Gitea for a minute or so, and a status lost
+        // then stays pending in Gitea for good. Later statuses of the step wait, so they keep their order.
+        Effect.retry({
+          while: (e) => e.reason._tag !== "StatusCodeError" || e.reason.response.status >= 500,
+          schedule: Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
+        }),
+        Effect.catch((e) => Effect.logWarning(`status for ${repo}@${sha} failed`, e)),
+      ),
     requiredChecks: (repo, branch) =>
       get(`/repos/${repo}/branch_protections`, Schema.Array(Protection)).pipe(
         Effect.map((rules) =>
