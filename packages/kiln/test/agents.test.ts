@@ -93,6 +93,22 @@ describe("Agents", () => {
       expect(yield* Fiber.join(waiting)).toBe(0)
     }))
 
+  it.effect("a job starts once an agent takes it, and an offloaded job no agent takes never does", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", "b1")
+      const started: Array<string> = []
+      const onPlaced = (job: string) => Effect.sync(() => void started.push(job))
+      expect(yield* agents.run({ id: "a", token: "ta" }, "aarch64-darwin", { wait: false, onPlaced: onPlaced("a") })).toBe(-2)
+
+      const waiting = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-darwin", { onPlaced: onPlaced("b") }))
+      yield* ticks
+      expect(started).toEqual([])
+      yield* connect(agents)
+      expect(started).toEqual(["b"])
+      yield* agents.exited(auth, "b", 0)
+      expect(yield* Fiber.join(waiting)).toBe(0)
+    }))
+
   it.effect("agents need the secret", () =>
     Effect.gen(function*() {
       const refused = yield* Agents.make("secret").connect({ token: "wrong", name: "m1" }, { platform: "aarch64-darwin", slots: 1, running: [], build: "b1" }).pipe(
