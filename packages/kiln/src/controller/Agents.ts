@@ -44,9 +44,14 @@ const reconnectGrace = "5 minutes"
 export class Agents extends Context.Service<Agents, {
   /**
    * Starts the job's worker on an agent and waits for it to exit; returns the exit code, -1 if it was
-   * lost. Without `wait`, a job no agent can take right now returns -2 at once.
+   * lost. Without `wait`, a job no agent can take right now returns -2 at once. `onPlaced` runs once an
+   * agent took the job.
    */
-  readonly run: (job: { readonly id: string; readonly token: string }, platform: string, options?: { readonly wait?: boolean }) => Effect.Effect<number>
+  readonly run: (
+    job: { readonly id: string; readonly token: string },
+    platform: string,
+    options?: { readonly wait?: boolean; readonly onPlaced?: Effect.Effect<void> },
+  ) => Effect.Effect<number>
   readonly stop: (job: string) => Effect.Effect<void>
   readonly connect: (auth: { readonly token: string; readonly name: string }, agent: {
     readonly platform: string
@@ -110,6 +115,7 @@ export const make = (secret: string | null, build: string = Build.id): Agents["S
         const p = yield* Deferred.await(waiter.placed).pipe(
           Effect.onInterrupt(() => Effect.sync(() => waiters.includes(waiter) && waiters.splice(waiters.indexOf(waiter), 1))),
         )
+        if (options?.onPlaced !== undefined) yield* options.onPlaced
         return yield* Deferred.await(p.exited)
       }),
     stop: (job) =>

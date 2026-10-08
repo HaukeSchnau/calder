@@ -53,7 +53,8 @@ export class Jobs extends Context.Service<Jobs, {
   readonly run: (spec: Job, options: {
     readonly pool: Pool
     readonly onEvent: (event: JobEvent) => Effect.Effect<void>
-    readonly onStart?: (job: ActiveJob) => Effect.Effect<void>
+    /** Runs as the worker starts: here at once, on an agent once one takes the job. */
+    readonly onStart?: Effect.Effect<void>
     /** Actions finish what they started: cancelling waits for them instead of stopping them. */
     readonly uninterruptible?: boolean
     /** Another platform than the controller's runs on an agent of that platform. */
@@ -263,8 +264,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
           yield* db(sql`insert into jobs (id, token_hash, pool, spec, created_at)
             values (${id}, ${job.tokenHash}, ${options.pool}, ${JSON.stringify({ ...spec, secrets: {} })}, ${Date.now()})`)
         }
-        if (options.onStart) yield* options.onStart(job)
       })
+      const onStart = options.onStart ?? Effect.void
 
       const cleanup = Effect.gen(function*() {
         if (stopping && persisted) return
@@ -277,6 +278,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const systemd = Effect.gen(function*() {
         // Without --no-block this returns once systemd has executed the worker (Type=exec), so the unit
         // is active when the watch below first looks.
+        yield* onStart
         const started = yield* exec(["systemctl", "start", unit(options.pool, id)])
         if (started.exitCode !== 0) {
           return { _tag: "Died", message: `could not start the worker: ${started.stderr.trim()}` } satisfies JobResult
@@ -288,6 +290,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
 
       const processMode = Effect.gen(function*() {
         const [command, ...args] = config.workerCommand
+        yield* onStart
         const handle = yield* spawner.spawn(ChildProcess.make(command!, [...args, "worker", id], {
           env: { KILN_SOCKET: join(config.runtimeDir, "worker.sock"), KILN_TOKEN_FILE: tokenFile },
           extendEnv: true,
@@ -311,10 +314,13 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
 
       const agentMode = Effect.gen(function*() {
-        const stale = agents.usage().filter((a) => a.connected && !a.current && a.platform === platform)
-        const why = stale.map((a) => `; ${a.name} runs another Kiln build (${a.build}) and needs a deploy`).join("")
-        yield* options.onEvent({ _tag: "Log", stream: "kiln", text: `waiting for a ${platform} agent${why}`, timestamp: Date.now() })
-        const exited = yield* agents.run({ id, token }, platform, { wait: options.offload !== true }).pipe(
+        // An offloaded job never waits: no agent takes it, and it runs here.
+        if (options.offload !== true) {
+          const stale = agents.usage().filter((a) => a.connected && !a.current && a.platform === platform)
+          const why = stale.map((a) => `; ${a.name} runs another Kiln build (${a.build}) and needs a deploy`).join("")
+          yield* options.onEvent({ _tag: "Log", stream: "kiln", text: `waiting for a ${platform} agent${why}`, timestamp: Date.now() })
+        }
+        const exited = yield* agents.run({ id, token }, platform, { wait: options.offload !== true, onPlaced: onStart }).pipe(
           Effect.flatMap((code) =>
             Effect.sleep("1 second").pipe(
               Effect.andThen(Deferred.succeed(result, {

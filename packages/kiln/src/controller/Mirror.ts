@@ -90,6 +90,8 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
         "+refs/heads/*:refs/heads/*",
         "+refs/pull/*/head:refs/pull/*/head",
       ], auth)
+      // Nix reads the flake's HEAD even for a pinned rev, and warns when it names no branch.
+      yield* git(project, ["symbolic-ref", "HEAD", `refs/heads/${projects.get(project)!.defaultBranch}`])
     })).pipe(Effect.withSpan("mirror.fetch", { attributes: { project } }))
 
   const commit = (project: string, sha: string) =>
