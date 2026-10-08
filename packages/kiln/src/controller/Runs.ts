@@ -323,6 +323,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const row = (yield* db(Rows.loadStep(run.id, stale.name))) ?? stale
       const now = Date.now()
       const failed = s.status === "failed" || s.status === "died"
+      // A timeout or a worker that died leaves no trace in the output itself.
+      if (failed && s.error) yield* logTo(run, row.name, row.span_id, null)({ _tag: "Log", stream: "kiln", text: s.error.message, timestamp: now })
       const excerpt = failed ? live.excerpt(run.id, row.name) : null
       const tests = s.tests ?? []
       const counted = tests.length > 0
@@ -361,6 +363,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (row.kind !== "output") {
         const [state, description] = describe(s, row)
         yield* status(run, `kiln/${row.name}`, state, description)
+      }
+      // Gitea's combined state fails with the first failed step; the run's own status says it goes on.
+      if (failed) {
+        const steps = (yield* db(Rows.loadSteps(run.id))).filter((x) => x.kind !== "output")
+        const left = steps.filter((x) => !Rows.terminal(x.status)).length
+        const failing = steps.filter((x) => x.status === "failed" || x.status === "died").map((x) => x.name)
+        if (left > 0) yield* status(run, "kiln", "pending", `${left} steps left; failed: ${failing.join(", ")}`)
       }
       if (row.started_at !== null || s.status === "reused") {
         yield* telemetry.exportSpan({
@@ -418,21 +427,35 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   type Placement = ReturnType<typeof place>
 
   /**
-   * Runs a job where `place` puts it. A job an agent lost, or that no agent took after all, runs once
-   * more: here, unless its platform needs an agent.
+   * Runs a job where `place` puts it. A job runs once more, here unless its platform needs an agent,
+   * when an agent lost it or none took it, when its worker died on an agent (which can't always reach
+   * this host), and for setups, when it failed on an agent it was only offloaded to.
    */
-  const placed = <R extends { readonly result: JobResult }, E, Q>(
+  const placed = <R extends { readonly result: JobResult; readonly startedAt: number | null }, E, Q>(
     run: Rows.RunRow,
     row: Rows.StepRow,
     info: RunInfo,
     platform: string | null,
     shard: number | null,
     attempt: (placement: Placement) => Effect.Effect<R, E, Q>,
+    options: { readonly setup?: boolean } = {},
   ) =>
     Effect.gen(function*() {
-      const first = yield* attempt(place(run, info, platform))
-      if (first.result._tag !== "Lost") return first
-      yield* logTo(run, row.name, row.span_id, shard)({ _tag: "Log", stream: "kiln", text: `${first.result.message}, so it runs again`, timestamp: Date.now() })
+      const placement = place(run, info, platform)
+      const first = yield* attempt(placement)
+      const { result } = first
+      const why = stopped(first)
+        ? null
+        : result._tag === "Lost"
+        ? result.message
+        : (placement.remote && result._tag === "Died") || (options.setup === true && placement.offload && result._tag === "Failed")
+        ? `on the agent: ${result.message.split("\n")[0]}`
+        : null
+      if (why === null) return first
+      // An offloaded job no agent took never started; it simply runs here.
+      if (first.startedAt !== null) {
+        yield* logTo(run, row.name, row.span_id, shard)({ _tag: "Log", stream: "kiln", text: `${why}, so it runs again`, timestamp: Date.now() })
+      }
       return yield* attempt(place(run, info, platform, true))
     })
   const agentsRefuse = (platform: string | null): Settled => ({
@@ -442,7 +465,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   type Executed = Effect.Success<ReturnType<typeof execute>>
   /** A job that never ran to a result: its run was cancelled, or replaced before the job started. */
-  const stopped = (r: Executed) => "cancelled" in r || "withdrawn" in r
+  const stopped = (r: object) => "cancelled" in r || "withdrawn" in r
   const preparing = new Map<string, Deferred.Deferred<Option.Option<Executed>>>()
   /**
    * Runs a setup once for concurrent runs that need the same prepared workspace: the others wait and
@@ -534,11 +557,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       })
       const running = Effect.scoped(Effect.gen(function*() {
         const ws = options.workspace ? (yield* workspace(poolOf(run), run.project, options.remote === true)).path : null
-        startedAt = Date.now()
-        yield* started
         const done = yield* jobs.run(job(ws), {
           pool: poolOf(run),
           onEvent,
+          // A job that waits for an agent, or that none takes, stays queued.
+          onStart: Effect.suspend(() => {
+            startedAt = Date.now()
+            return started
+          }),
           uninterruptible: options.action,
           platform: options.platform ?? null,
           agent: options.remote === true,
@@ -641,7 +667,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
               remote: p.remote,
               offload: p.offload,
             }, collect),
-          ).pipe(Effect.map(({ executed, reused }) => ({ ...executed, reused }))))
+          ).pipe(Effect.map(({ executed, reused }) => ({ ...executed, reused }))), { setup: true })
         const { reused } = executed
         if (stopped(executed)) return yield* settle(run, row, { status: "cancelled" })
         const settled = fromResult(executed.result, executed.usage, { attempts: collect.attempts })
