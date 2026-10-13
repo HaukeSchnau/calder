@@ -1,24 +1,24 @@
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs"
+import { lstatSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { shortLink } from "../src/worker/Steps.ts"
+import { freshTmp } from "../src/worker/Steps.ts"
 
-describe("shortLink", () => {
+describe("freshTmp", () => {
   const root = mkdtempSync(join(tmpdir(), "kiln-tmp-"))
-  const deep = join(root, "workspaces/pr/a-project-with-a-long-name/slot-12/cache/tmp")
-  mkdirSync(deep, { recursive: true })
+  const slot = "/var/lib/kiln/workspaces/trusted/a-project-with-a-long-name/slot-12"
 
-  it("gives a deep temporary directory a short path that leaves room for a socket", () => {
-    const short = shortLink(deep, root)
-    expect(short.length).toBeLessThan(root.length + 20)
-    expect(realpathSync(short)).toBe(realpathSync(deep))
+  it("gives a slot a real directory at a short path, so sockets fit and paths resolve to themselves", () => {
+    const tmp = freshTmp(slot, root)
+    expect(tmp.length).toBeLessThan(realpathSync(root).length + 20)
+    expect(lstatSync(tmp).isDirectory()).toBe(true)
+    expect(realpathSync(tmp)).toBe(tmp)
+    expect(lstatSync(tmp).mode & 0o777).toBe(0o700)
   })
 
-  it("is stable per directory, and different directories get different links", () => {
-    const other = join(root, "workspaces/pr/other/slot-1/cache/tmp")
-    mkdirSync(other, { recursive: true })
-    expect(shortLink(deep, root)).toBe(shortLink(deep, root))
-    expect(shortLink(other, root)).not.toBe(shortLink(deep, root))
+  it("empties it for each task and keeps slots apart", () => {
+    writeFileSync(join(freshTmp(slot, root), "left-over"), "")
+    expect(readdirSync(freshTmp(slot, root))).toEqual([])
+    expect(freshTmp(`${slot}0`, root)).not.toBe(freshTmp(slot, root))
   })
 })
