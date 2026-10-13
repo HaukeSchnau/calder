@@ -136,7 +136,9 @@ const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
       writeFileSync(join(src, ".git", "objects", "info", "alternates"), `${join(job.run.mirror, "objects")}\n`)
       rmSync(join(src, ".git", "shallow"), { force: true })
     } else {
-      yield* fetching(git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision]))
+      // Over a slow link the fetch is most of a checkout, and the slot often has the revision already.
+      const has = yield* git(["cat-file", "-e", `${job.run.revision}^{commit}`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
+      if (!has) yield* fetching(git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision]))
     }
     yield* git(["-c", "advice.detachedHead=false", "checkout", "-q", "-f", "--detach", job.run.revision])
     yield* git(["clean", "-q", "-ffdx", ...keep.flatMap((p) => ["-e", p])])
@@ -252,11 +254,13 @@ const ownCgroup = () => {
 
 /**
  * Go programs such as tsgo collect garbage only when their heap doubles, unaware of the cgroup, and
- * stall at memory.high. Two thirds of the limit leave the rest of the task room.
+ * stall at memory.high. A soft limit just below it makes them collect first. Much lower starves them:
+ * t3code's server typecheck keeps 3.7 GB live, and at two thirds of 4.5 GB it spent 1128 CPU-seconds
+ * collecting garbage for a check that takes 187.
  */
 export const goMemLimit = (cgroup = ownCgroup()): Record<string, string> => {
   const limit = cgroup === null ? null : limitIn(join(cgroup, "memory.high")) ?? limitIn(join(cgroup, "memory.max"))
-  return limit === null ? {} : { GOMEMLIMIT: `${Math.floor((limit * 2) / 3 / 2 ** 20)}MiB` }
+  return limit === null ? {} : { GOMEMLIMIT: `${Math.floor((limit * 0.9) / 2 ** 20)}MiB` }
 }
 
 export const task = (job: StepJob, step: Step.Any, values: Record<string, unknown>) =>

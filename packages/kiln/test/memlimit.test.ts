@@ -11,9 +11,9 @@ const cgroup = (files: Record<string, string>) => {
 }
 
 describe("goMemLimit", () => {
-  it("leaves Go a third below the worker's memory.high, or its memory.max without one", () => {
-    expect(goMemLimit(cgroup({ "memory.high": String(4.5 * 2 ** 30), "memory.max": String(6 * 2 ** 30) }))).toEqual({ GOMEMLIMIT: "3072MiB" })
-    expect(goMemLimit(cgroup({ "memory.high": "max", "memory.max": String(6 * 2 ** 30) }))).toEqual({ GOMEMLIMIT: "4096MiB" })
+  it("puts Go's soft limit just below the worker's memory.high, or its memory.max without one", () => {
+    expect(goMemLimit(cgroup({ "memory.high": String(4.5 * 2 ** 30), "memory.max": String(6 * 2 ** 30) }))).toEqual({ GOMEMLIMIT: "4147MiB" })
+    expect(goMemLimit(cgroup({ "memory.high": "max", "memory.max": String(6 * 2 ** 30) }))).toEqual({ GOMEMLIMIT: "5529MiB" })
   })
 
   it("sets nothing without a limit", () => {
