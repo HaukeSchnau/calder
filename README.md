@@ -144,7 +144,9 @@ Finished runs keep their steps, shards and test results for `retention.days` in 
 default). After that those go, and so do results Kiln won't reuse. A result stays while it is the newest for its
 key or a run inside the window reused it, and its run keeps a row without its plan. The newest run of each branch
 and pull request keeps its row too, so the catch-up after a restart doesn't start it again. Each project's newest
-planned run stays whole. Extracted `.kiln/` directories go after a day without use.
+planned run stays whole. Extracted `.kiln/` directories go after a day without use. Task outputs have GC roots in
+`gcroots/` under the controller's state directory while a step of a run inside the window or a passed result names
+them, so Nix's garbage collector leaves them alone; reuse skips a result whose outputs left the store anyway.
 
 ## Layout
 
