@@ -3,7 +3,7 @@ import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted } from 
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join } from "node:path"
 import * as Exec from "../Exec.ts"
@@ -179,9 +179,7 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
     if (slot.restored) yield* log("kiln", `cloned a prepared workspace in ${Date.now() - opened} ms`)
     const workspace = slot.src
     yield* checkout(job, workspace, setup === undefined ? preserved(workspace) : setup.keep)
-    const tmp = join(slot.cache, "tmp")
-    mkdirSync(tmp, { recursive: true })
-    const shortTmp = shortLink(tmp)
+    const tmp = freshTmp(slot.root)
     const prelude = [
       "set -euo pipefail",
       `if [ -n "\${KILN_PATH:-}" ]; then export PATH="$KILN_PATH:$PATH"; fi`,
@@ -190,7 +188,7 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
     const extraEnv: Record<string, string> = {
       ...setup?.env,
       KILN_PATH: (setup?.path ?? []).map((dir) => join(workspace, dir)).join(":"),
-      TMPDIR: shortTmp,
+      TMPDIR: tmp,
       CI_CACHE_ROOT: slot.cache,
       CI_WORKSPACE_SLOT: job.workspace.split("/").at(-1) ?? "",
     }
@@ -210,20 +208,21 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
       yield* log("kiln", `set up in ${Math.round((Date.now() - started) / 1000)} s; other slots clone this one`)
     }
     if (slot.fresh && job.deps !== null) yield* remember(slot, job.deps)
-    // The snapshot leaves temporary files out, which removes TMPDIR.
-    mkdirSync(tmp, { recursive: true })
     return { _tag: "Ready", slot, workspace, prelude, extraEnv, fresh: slot.fresh && command !== null } as const
   })
 
 /**
- * A short path to a workspace's temporary directory. Unix socket paths may be at most 104 to 108
- * bytes, and the workspace's own path, plus the `nix-shell.XXXXXX` a dev shell nests in TMPDIR,
- * left too little for a socket: Chromium couldn't create its singleton socket. Files still land in
- * the workspace. `/tmp` rather than `tmpdir()`, whose macOS default is itself about 50 bytes.
+ * A slot's TMPDIR, emptied for each task: a real directory at a short path. Unix socket paths may be
+ * at most 104 to 108 bytes (99 for dbus-daemon), and a workspace's own path, plus the
+ * `nix-shell.XXXXXX` a dev shell nests in TMPDIR, left too little: Chromium couldn't create its
+ * singleton socket. Not a link into the workspace, since tests that compare a temporary path with its
+ * resolved form then fail. Under the real path of `/tmp`, because `tmpdir()` defaults to about 50
+ * bytes on macOS, where `/tmp` itself is a link.
  */
-export const shortLink = (dir: string, root = "/tmp") => {
-  const path = join(root, `kiln-${createHash("sha256").update(dir).digest("hex").slice(0, 12)}`)
-  link(path, dir)
+export const freshTmp = (slot: string, root = "/tmp") => {
+  const path = join(realpathSync(root), `kiln-${createHash("sha256").update(slot).digest("hex").slice(0, 12)}`)
+  rmSync(path, { recursive: true, force: true })
+  mkdirSync(path, { mode: 0o700 })
   return path
 }
 
