@@ -68,9 +68,10 @@ run in parallel and report as one step.
 ```
 kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.json, links .kiln/node_modules,
                                      # and the standard .kiln/ci.ts if there is none
-kiln plan [dir] --event push:main    # what a push, pr:<n>, check, schedule:<cron> or manual run would run
+kiln plan [dir] --event push:main    # what a push, pr:<n>, check, schedule:<cron> or manual:<json> run would run
 kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
+  [--inputs '{"release":"ios"}']     # instead a manual run of the On.manual rules these inputs match
 kiln status <run>                    # a run's steps, with why those that failed did
 kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front
 kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12
