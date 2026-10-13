@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Schedule, Schema } from "effect"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { HttpClient, type HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Config } from "./Config.ts"
 
 export type StatusState = "pending" | "success" | "error" | "failure"
@@ -31,6 +31,15 @@ const Repo = Schema.Struct({
   archived: Schema.Boolean,
   empty: Schema.Boolean,
 })
+
+/**
+ * A deploy of srv-2 restarts the proxy in front of Gitea for a minute or so. Requests that can repeat
+ * retry through that and through Gitea's own 5xx answers.
+ */
+const transient = {
+  while: (e: HttpClientError.HttpClientError) => e.reason._tag !== "StatusCodeError" || e.reason.response.status >= 500,
+  schedule: Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
+}
 
 const matches = (pattern: string, branch: string) =>
   pattern === branch || new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(branch)
@@ -80,7 +89,7 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
   )
   const client = raw.pipe(HttpClient.filterStatusOk)
   const get = <A>(path: string, schema: Schema.Decoder<A>) =>
-    client.get(`${base}${path}`).pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)))
+    client.get(`${base}${path}`).pipe(Effect.retry(transient), Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)))
   const send = (method: "post" | "patch", path: string, body: unknown) =>
     client.execute(HttpClientRequest[method](`${base}${path}`).pipe(HttpClientRequest.bodyJsonUnsafe(body)))
   /** A request whose refusal matters: fails with Gitea's message instead of dying. */
@@ -106,12 +115,8 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
         target_url: s.targetUrl,
       }).pipe(
         Effect.asVoid,
-        // A deploy of srv-2 restarts the proxy in front of Gitea for a minute or so, and a status lost
-        // then stays pending in Gitea for good. Later statuses of the step wait, so they keep their order.
-        Effect.retry({
-          while: (e) => e.reason._tag !== "StatusCodeError" || e.reason.response.status >= 500,
-          schedule: Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
-        }),
+        // A lost status stays pending in Gitea for good. Later statuses of the step wait, so they keep their order.
+        Effect.retry(transient),
         Effect.catch((e) => Effect.logWarning(`status for ${repo}@${sha} failed`, e)),
       ),
     requiredChecks: (repo, branch) =>
