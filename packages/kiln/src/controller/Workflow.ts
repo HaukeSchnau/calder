@@ -43,7 +43,8 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
   /**
-   * Drives a run: its plan, each step once its dependencies settled, then the outcome. Every stage reads
+   * Drives a run: its plan, each step once its dependencies settled (a task asks for its setups itself
+   * once it knows it runs), then the outcome. Every stage reads
    * and writes the journal and skips what already finished, so driving a run again after a restart
    * continues where it stopped.
    */
@@ -56,10 +57,13 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
         return
       }
       const done = new Map(plan.steps.map((s) => [s.name, Deferred.makeUnsafe<void>()]))
+      const kinds = new Map(plan.steps.map((s) => [s.name, s.kind]))
       yield* Effect.forEach(plan.steps, (step) =>
         Effect.gen(function*() {
           if (!(step.build !== null && (yield* core.built(runId, step.name)))) {
-            yield* Effect.forEach([...step.needs, ...step.exits, ...step.after], (dep) => Deferred.await(done.get(dep)!), { discard: true })
+            const setups = Rows.setupsOf(step, (name) => kinds.get(name))
+            const deps = [...step.needs, ...step.exits, ...step.after].filter((dep) => !setups.includes(dep))
+            yield* Effect.forEach(deps, (dep) => Deferred.await(done.get(dep)!), { discard: true })
           }
           yield* core.step(runId, step.name)
           yield* Deferred.succeed(done.get(step.name)!, undefined)

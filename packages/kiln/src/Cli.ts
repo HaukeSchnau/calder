@@ -61,6 +61,8 @@ export const table = (rows: ReadonlyArray<ReadonlyArray<string>>) => {
 
 export const stepLine = (step: Domain.StepRun) =>
   `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}${
+    Domain.unneeded(step) ? " (not needed: no task that starts from it ran)" : ""
+  }${
     step.contradicts === null
       ? ""
       : ` (${step.status === "passed" ? "failed" : "passed"} with the same key in ${step.contradicts.id}: the key misses an input, or the step is flaky)`

@@ -105,7 +105,8 @@ const plan = Command.make("plan", {
       ]
       yield* Console.log(`  ${step.kind.padEnd(6)} ${step.name}${step.target ? "" : " (pulled in)"}${deps.length > 0 ? `  ← ${deps.join(", ")}` : ""}`)
     }
-  })).pipe(Command.withDescription("Show the steps an event would run, without running them"))
+    yield* Check.checkFiles(dir, project)
+  })).pipe(Command.withDescription("Show the steps an event would run, without running them; fails when a path or pattern matches no file"))
 
 /** `kiln trigger`: a branch head like a push, or with `--inputs` a manual run of the rules taking them. */
 const trigger = Command.make("trigger", {

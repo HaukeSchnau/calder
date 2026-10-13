@@ -340,7 +340,7 @@ function Inspector({ detail, step, onSelect, onTab }: {
               {step.status === "passed" ? "failed" : "passed"} in <a className="lnk" href={href({ page: "run", id: step.contradicts.id, step: step.name })}>#{step.contradicts.number}</a>: the key misses an input, or the step is flaky
             </span>
           )],
-          step.status === "reused" && ["from", step.reusedFrom ? <a className="lnk" href={href({ page: "run", id: step.reusedFrom.id, step: step.name })}>#{step.reusedFrom.number}</a> : <span className="dim">already built, nothing ran</span>],
+          step.status === "reused" && !Domain.unneeded(step) && ["from", step.reusedFrom ? <a className="lnk" href={href({ page: "run", id: step.reusedFrom.id, step: step.name })}>#{step.reusedFrom.number}</a> : <span className="dim">already built, nothing ran</span>],
           step.startedAt !== null && ["started", <span className="tnum">{clockS(step.startedAt)}</span>],
           d !== null && step.status !== "running" && ["took", <span className="tnum">{dur(d)}</span>],
           queue !== null && ["queue", <span className="tnum">{spanDur(queue)}</span>],

@@ -1,9 +1,12 @@
+import type { Kiln } from "@kiln/core"
 import { Effect } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Exec from "./Exec.ts"
 import type * as Remote from "./Remote.ts"
+import * as Repo from "./worker/Repo.ts"
+import * as Resolve from "./worker/Resolve.ts"
 
 export type Client = Effect.Success<typeof Remote.client>
 
@@ -36,9 +39,13 @@ export const target = (remotes: ReadonlyArray<string>, repos: ReadonlyArray<stri
 export const workingCopy = (dir: string, options: { readonly snapshot?: boolean } = {}) =>
   Effect.gen(function*() {
     const flags = options.snapshot === false ? ["--ignore-working-copy"] : []
-    const jj = yield* Exec.exec(["jj", ...flags, "--repository", dir, "git", "root"])
-    if (jj.exitCode === 0) {
-      const gitDir = jj.stdout.trim()
+    // A host without jj still has git checkouts.
+    const jjGitDir = yield* Exec.exec(["jj", ...flags, "--repository", dir, "git", "root"]).pipe(
+      Effect.map((jj) => (jj.exitCode === 0 ? jj.stdout.trim() : null)),
+      Effect.orElseSucceed(() => null),
+    )
+    if (jjGitDir !== null) {
+      const gitDir = jjGitDir
       const sha = (yield* Exec.run(["jj", ...flags, "--repository", dir, "log", "-r", "@", "--no-graph", "-T", "commit_id"])).trim()
       const remotes = urls(yield* Exec.run(["jj", ...flags, "--repository", dir, "git", "remote", "list"]))
       return { gitDir, sha, remotes } satisfies WorkingCopy
@@ -56,6 +63,16 @@ export const workingCopy = (dir: string, options: { readonly snapshot?: boolean 
     }).pipe(Effect.ensuring(Effect.sync(() => rmSync(scratch, { recursive: true, force: true }))))
     const remotes = urls(yield* Exec.run(["git", "-C", top, "remote", "-v"]))
     return { gitDir, sha, remotes } satisfies WorkingCopy
+  })
+
+/**
+ * Fails like the controller's plan when a path or pattern of `project` matches no file of `dir`'s
+ * working copy, the commit `kiln check` would push.
+ */
+export const checkFiles = (dir: string, project: Kiln.Project) =>
+  Effect.gen(function*() {
+    const copy = yield* workingCopy(dir)
+    yield* Resolve.checkFiles(project, yield* Repo.make(copy.gitDir, copy.sha))
   })
 
 /** Pushes the commit as `ref` with the user's own git credentials, replacing what the ref held. */
