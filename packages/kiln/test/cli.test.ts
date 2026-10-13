@@ -42,6 +42,13 @@ describe("kiln plan --event", () => {
     }))
 })
 
+describe("kiln with an unknown subcommand", () => {
+  it("names the closest subcommand first", () => {
+    expect(Cli.closest("stauts", ["trigger", "runs", "status", "logs"])[0]).toBe("status")
+    expect(Cli.closest("run", ["trigger", "rerun", "runs"])[0]).toBe("runs")
+  })
+})
+
 describe("following a run", () => {
   it.effect("ends with the reason when the run ended before the change feed started", () =>
     Effect.gen(function*() {

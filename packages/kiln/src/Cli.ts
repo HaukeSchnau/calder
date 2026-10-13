@@ -31,6 +31,22 @@ export const parseEvent = (text: string): Effect.Effect<Event.Event, Error> => {
     : Effect.succeed(event)
 }
 
+const distance = (a: string, b: string) => {
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) {
+      row.push(Math.min(previous[j]! + 1, row[j - 1]! + 1, previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)))
+    }
+    previous = row
+  }
+  return previous[b.length]!
+}
+
+/** `names` ordered by how close they are to what was typed, closest first. */
+export const closest = (typed: string, names: ReadonlyArray<string>) =>
+  names.map((name) => ({ name, d: distance(typed, name) })).sort((x, y) => x.d - y.d).map((x) => x.name)
+
 export const stepLine = (step: Domain.StepRun) => `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}`
 
 /** Prints a run's status and steps as they change until it ends; returns the run as it ended. */

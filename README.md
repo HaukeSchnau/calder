@@ -115,6 +115,8 @@ kiln agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--
                                      # runs the controller's jobs for this host's platform
 ```
 
+`kiln <command> --help` describes each argument and flag.
+
 An agent gets jobs only while it has the controller's compatibility version (`compatibility` in
 `packages/kiln/src/Protocol.ts`), so deploying the controller stalls agents only when that version
 changed. The UI lists each agent's version and Kiln build and marks an agent of another version as
