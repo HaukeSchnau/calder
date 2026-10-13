@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import type { Domain } from "@kiln/api"
+import { type Domain, NotFound, Refused } from "@kiln/api"
 import { Event, Kiln } from "@kiln/core"
 import { Console, Effect, Layer, Option, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
@@ -223,4 +223,11 @@ const cancel = Command.make("cancel", { run: Argument.String("run"), url }, ({ r
 
 const kiln = Command.make("kiln").pipe(Command.withSubcommands([controller, worker, agent, gen, plan, check, watch, trigger, status, logs, rerun, cancel, merge]))
 
-Command.run(kiln, { version: "0.1.0" }).pipe(Effect.provide(BunServices.layer), BunRuntime.runMain)
+// What the controller refuses, runs it doesn't know and failed checks are for people to read: one line, exit code 1.
+const told = (e: unknown): e is NotFound | Refused | Error => e instanceof NotFound || e instanceof Refused || e instanceof Error
+
+Command.run(kiln, { version: "0.1.0" }).pipe(
+  Effect.catchIf(told, (e) => Console.error(`kiln: ${e.message}`).pipe(Effect.andThen(Effect.sync(() => (process.exitCode = 1))))),
+  Effect.provide(BunServices.layer),
+  BunRuntime.runMain,
+)

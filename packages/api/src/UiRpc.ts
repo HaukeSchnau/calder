@@ -4,11 +4,19 @@ import { Change, DeploymentRecord, LogEntry, MergeRequest, Metrics, Overview, Ru
 
 export class NotFound extends Schema.TaggedError<NotFound>("@kiln/api/NotFound")("NotFound", {
   what: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `Kiln has no record of ${this.what}`
+  }
+}
 
 export class Refused extends Schema.TaggedError<Refused>("@kiln/api/Refused")("Refused", {
   reason: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return this.reason
+  }
+}
 
 /** What the web UI asks the controller. Served over a WebSocket at `/rpc`. */
 export class UiRpcs extends RpcGroup.make(
