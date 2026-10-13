@@ -267,6 +267,12 @@ export const prune = (days: number, now = Date.now()) =>
 export const layer = Layer.unwrap(Effect.gen(function*() {
   const config = yield* Config
   const client = SqliteClient.layer({ filename: join(config.stateDir, "kiln.db") })
+  // The client runs in WAL mode, where a power loss can drop the last commits but never corrupts the
+  // database. The default (full) syncs every commit, and each sync blocks the event loop.
+  const synchronous = Layer.effectDiscard(Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`pragma synchronous = normal`
+  }))
   const migrate = SqliteMigrator.layer({ loader: SqliteMigrator.fromRecord(migrations), table: "kiln_migrations" })
   const retention = Layer.effectDiscard(
     prune(config.retention.days).pipe(
@@ -279,5 +285,5 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
       Effect.forkScoped,
     ),
   )
-  return Layer.provideMerge(retention, Layer.provideMerge(migrate, client))
+  return retention.pipe(Layer.provideMerge(migrate), Layer.provideMerge(synchronous), Layer.provideMerge(client))
 }))
