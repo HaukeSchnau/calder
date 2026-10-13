@@ -120,8 +120,8 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
   })
 
 /**
- * A key for every file of a task's `each`: the task's own key base, the file, everything it imports
- * and its package's data files.
+ * A key for every file of a task's `each`: the task's own key base (with its setup's key), the file,
+ * everything it imports and its package's data files.
  */
 const eachKeys = (repo: Repo, each: Files.Files, keyBase: string) =>
   Effect.gen(function*() {
@@ -305,11 +305,13 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
             const toolchain = shell === null ? null : evaluated.get(shell)?.drv ?? null
             const count = def.shards?.count ?? 1
             const command = typeof def.run === "function" ? def.run({ index: 1, count, files: [] }) : def.run
+            const setup = def.setup === undefined ? null : setupKeys.get(def.setup.name)!
             const keyBase = sha256({
               kind: "task",
               inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
               split: split.map((path) => [path, splitIds.get(path) ?? null]),
               toolchain,
+              setup,
               command: describeCmd(def.run, count),
               env: Object.entries(def.env).sort(),
               secrets: Object.keys(def.secrets).sort(),
@@ -328,9 +330,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
                 interpolates: command.steps.map((s) => s.name),
                 shards: def.shards?.count ?? null,
                 each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
-                deps: def.setup === undefined
-                  ? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain })
-                  : setupKeys.get(def.setup.name)!,
+                deps: setup ?? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
                 outputs: Object.keys(def.outputs),
                 secrets: Object.values(def.secrets).map((s) => s.name),
                 platform: def.platform ?? null,

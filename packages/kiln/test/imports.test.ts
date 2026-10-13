@@ -3,24 +3,13 @@ import { Effect } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import * as Imports from "../src/worker/Imports.ts"
 import type { Repo } from "../src/worker/Repo.ts"
-
-/** A revision held in memory: paths and their contents. */
-const repo = (tree: Record<string, string>): Repo => {
-  const entries = Object.keys(tree).map((path, i) => ({ path, oid: `oid-${i}` }))
-  return {
-    files: Effect.succeed(Object.keys(tree)),
-    entries: Effect.succeed(entries),
-    show: (path: string) => Effect.succeed(tree[path]),
-    objectIds: (paths: ReadonlyArray<string>) => Effect.succeed(new Map(paths.map((p) => [p, `tree-${p}`]))),
-    read: (paths: ReadonlyArray<string>) => Effect.succeed(new Map(paths.flatMap((p) => (tree[p] === undefined ? [] : [[p, tree[p]!] as const])))),
-  } as unknown as Repo
-}
+import { memoryRepo } from "./memoryRepo.ts"
 
 // The repository is in memory; nothing here runs git.
 const noProcesses = ChildProcessSpawner.make(() => Effect.die(new Error("no processes in this test")))
 const graphOf = (r: Repo) => Imports.make(r, ["packages/contracts", "apps/server", "apps/web"]).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses))
 
-const fixture = repo({
+const fixture = memoryRepo({
   "package.json": JSON.stringify({ name: "root" }),
   "packages/contracts/package.json": JSON.stringify({ name: "@t3/contracts", exports: { ".": { types: "./src/index.ts", import: "./src/index.ts" }, "./*": "./src/*.ts" } }),
   "packages/contracts/src/index.ts": `export * from "./schema.js"`,

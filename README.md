@@ -40,7 +40,8 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
   setup keeps. A task is reused
   when its key matches: git tree ids of its inputs (`inputs: Files.workspace(...)`, the whole
-  repository by default), the dev shell, the command and the values it interpolates. Pull requests
+  repository by default), its setup's key, the dev shell, the command and the values it interpolates.
+  A task with a setup needn't list manifests or lockfiles, since the setup's key covers them. Pull requests
   reuse everything; pushes rerun tasks unless they build `outputs`. A task with another `platform`
   than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only).
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
