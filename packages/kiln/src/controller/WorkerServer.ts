@@ -127,9 +127,9 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         )
         if (grant._tag === "Replaced") return grant
         const app = yield* appOf(run.id, project)
-        const targets = yield* fleet.targets(projects.get(project)!, app)
+        const { targets, unreachable } = yield* fleet.deployTargets(projects.get(project)!, app)
         active.lease = { project, app, targets }
-        return { _tag: "Held" as const, fence: grant.fence, targets: targets.map(Fleet.hostOf) }
+        return { _tag: "Held" as const, fence: grant.fence, targets: targets.map(Fleet.hostOf), unreachable: unreachable.map(Fleet.hostOf) }
       }),
     fleetRelease: ({ job, token }) =>
       Effect.gen(function*() {

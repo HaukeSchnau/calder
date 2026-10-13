@@ -478,6 +478,7 @@ const services = (job: StepJob, project: Kiln.Project, step: string, grants: Ste
             lease._tag === "Replaced" ? lease : {
               _tag: "Held" as const,
               fence: lease.fence,
+              unreachable: lease.unreachable,
               targets: lease.targets.map((target) => ({
                 host: target,
                 preflight: (descriptor: unknown) =>

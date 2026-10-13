@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Schedule, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { FleetBusy, FleetRejected } from "../Protocol.ts"
 import { Config } from "./Config.ts"
@@ -29,14 +29,22 @@ export class Fleet extends Context.Service<Fleet, {
   readonly status: (target: string, project: string) => Effect.Effect<Status | null>
   /**
    * The promotion endpoints that run `app`, in the fleet's deploy order: the project's configured targets,
-   * or every endpoint whose `/health` lists the app.
+   * or every endpoint whose `/health` lists the app. Endpoints that never answered are left out.
    */
   readonly targets: (project: Project, app: string) => Effect.Effect<ReadonlyArray<string>>
+  /**
+   * `targets` for a deploy, which asks endpoints that never answered again for a minute. Those that still
+   * don't are `unreachable`: they might run the app, so the deploy must not go on without them.
+   */
+  readonly deployTargets: (project: Project, app: string) => Effect.Effect<{
+    readonly targets: ReadonlyArray<string>
+    readonly unreachable: ReadonlyArray<string>
+  }>
 }>()("kiln/controller/Fleet") {}
 
 /**
  * The apps each endpoint's `/health` lists, kept for a minute. An endpoint that doesn't answer counts
- * with its last answer, or with none, and is asked again on the next lookup.
+ * with its last answer, or as unknown (null) if it never answered, and is asked again on the next lookup.
  */
 export const remembered = <E>(health: (endpoint: string) => Effect.Effect<ReadonlyArray<string>, E>) => {
   const answers = new Map<string, { readonly at: number; readonly apps: ReadonlyArray<string> }>()
@@ -46,7 +54,7 @@ export const remembered = <E>(health: (endpoint: string) => Effect.Effect<Readon
       if (hit !== undefined && Date.now() - hit.at < 60_000) return Effect.succeed(hit.apps)
       return health(endpoint).pipe(
         Effect.tap((apps) => Effect.sync(() => answers.set(endpoint, { at: Date.now(), apps }))),
-        Effect.orElseSucceed(() => hit?.apps ?? []),
+        Effect.orElseSucceed(() => hit?.apps ?? null),
       )
     })
 }
@@ -70,6 +78,23 @@ export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
       Effect.map((h) => h.apps),
     )
   )
+  const patiently = (endpoint: string) =>
+    appsOf(endpoint).pipe(
+      Effect.flatMap((apps) => (apps === null ? Effect.fail(endpoint) : Effect.succeed(apps))),
+      Effect.retry({ schedule: Schedule.spaced("5 seconds").pipe(Schedule.upTo({ duration: "1 minute" })) }),
+      Effect.orElseSucceed(() => null),
+    )
+  const sort = (project: Project, app: string, lookup: (endpoint: string) => Effect.Effect<ReadonlyArray<string> | null>) =>
+    Effect.gen(function*() {
+      if (project.targets !== null) return { targets: project.targets, unreachable: [] }
+      const found = yield* Effect.forEach(config.fleet, (endpoint) => Effect.map(lookup(endpoint), (apps) => ({ endpoint, apps })), {
+        concurrency: "unbounded",
+      })
+      return {
+        targets: found.filter((f) => f.apps?.includes(app) === true).map((f) => f.endpoint),
+        unreachable: found.filter((f) => f.apps === null).map((f) => f.endpoint),
+      }
+    })
 
   const reason = (text: string) => {
     try {
@@ -102,10 +127,8 @@ export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
           return Effect.fail(new FleetRejected({ target: hostOf(target), status: r.status, reason: reason(r.text) }))
         }),
       )),
-    targets: (project, app) =>
-      project.targets !== null
-        ? Effect.succeed(project.targets)
-        : Effect.filter(config.fleet, (endpoint) => Effect.map(appsOf(endpoint), (list) => list.includes(app)), { concurrency: "unbounded" }),
+    targets: (project, app) => Effect.map(sort(project, app, appsOf), (found) => found.targets),
+    deployTargets: (project, app) => sort(project, app, patiently),
     status: (target, project) =>
       client.get(`${target}/status/${project}`).pipe(
         Effect.flatMap(HttpClientResponse.schemaBodyJson(Status)),
