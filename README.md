@@ -55,9 +55,12 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`kiln/<step>`).
 
-`ci.ts` runs on the worker's Bun, and `.kiln/tsconfig.json` gives it Bun's types, so an action can use `fetch`,
-`node:crypto` or `Bun.file` and still type-check. `.kiln/node_modules` links through the profile that put Kiln on
-PATH (`/run/current-system/sw/lib/kiln/...`), so it follows upgrades; `kiln plan` repairs an older link.
+`ci.ts` runs on the worker's Bun. `.kiln/tsconfig.json` extends `@kiln/tsconfig` from the SDK, which gives it Bun's
+types, so an action can use `fetch`, `node:crypto` or `Bun.file` and still type-check. `.kiln/node_modules` links
+through the profile that put Kiln on PATH (`/run/current-system/sw/lib/kiln/...`), so it follows upgrades; `kiln plan`
+repairs an older link. The compiler options come through that link too, so a new Kiln changes them in every project
+without another `kiln gen`. A `.kiln/tsconfig.json` that lists the options itself is from an older `kiln gen`; run it
+once more.
 
 `kiln gen` writes `.kiln/flake.ts` and `.kiln/tsconfig.json` in its own style; if the repository runs a
 formatter over everything, format `.kiln/` with it. Task workspaces get the same `.kiln/node_modules` link
@@ -94,7 +97,7 @@ kiln agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/kiln` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
-| `sdk` | What `.kiln/node_modules` links to, so ci.ts and the worker share one copy of Effect |
+| `sdk` | What `.kiln/node_modules` links to, so ci.ts and the worker share one copy of Effect, and the tsconfig `.kiln/tsconfig.json` extends |
 
 ```
 pnpm install
