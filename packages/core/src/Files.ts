@@ -60,10 +60,13 @@ export const globToRegExp = (pattern: string): RegExp => {
   if (re === undefined) {
     const source = pattern
       .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-      .replace(/\*\*\/?/g, "\u0000")
+      // `**/` is any number of directories; any other `**`, such as `src/**`, is everything below.
+      .replace(/\*\*\//g, "\u0000")
+      .replace(/\*\*/g, "\u0001")
       .replace(/\*/g, "[^/]*")
       .replace(/\?/g, "[^/]")
       .replace(/\u0000/g, "(?:.*/)?")
+      .replace(/\u0001/g, ".*")
     re = new RegExp(`^${source}$`)
     globCache.set(pattern, re)
   }
