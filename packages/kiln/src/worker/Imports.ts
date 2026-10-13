@@ -298,7 +298,7 @@ export const make = (repo: Repo, workspace: ReadonlyArray<string>) =>
     const data = (dir: string) => {
       let out = dataOf.get(dir)
       if (out === undefined) {
-        out = dir === "." ? [] : [...files].filter((p) => p.startsWith(`${dir}/`) && !code.test(p) && !docs.test(p) && packageOf(p) === dir).sort()
+        out = [...files].filter((p) => (dir === "." || p.startsWith(`${dir}/`)) && !code.test(p) && !docs.test(p) && packageOf(p) === dir).sort()
         dataOf.set(dir, out)
       }
       return out

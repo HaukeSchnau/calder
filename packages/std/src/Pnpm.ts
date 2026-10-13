@@ -17,14 +17,9 @@ export interface InstallOptions {
 export const install = (options: InstallOptions = {}) =>
   Setup.make("install", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
-    inputs: Files.glob(
-      "**/package.json",
-      "pnpm-lock.yaml",
-      "pnpm-workspace.yaml",
-      ".npmrc",
-      ".pnpmfile.cjs",
-      "pnpmfile.cjs",
-      "patches/**/*.patch",
+    inputs: Files.union(
+      Files.glob("**/package.json", "pnpm-lock.yaml"),
+      Files.optional(Files.glob("pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs", "pnpmfile.cjs", "patches/**/*.patch")),
     ),
     run: cmd`pnpm install --frozen-lockfile ${[...(options.args ?? [])]}`,
     keep: ["node_modules", ".pnpm-store", "*.tsbuildinfo", ...(options.keep ?? [])],

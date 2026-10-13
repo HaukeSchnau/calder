@@ -15,7 +15,8 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
   readonly run: Cmd<R> | ((shard: Shard) => Cmd<R>)
   /**
    * What the task reads. Defaults to the whole repository; with `each`, what every file's key shares,
-   * by default the root manifest and lockfiles (add configs and setup files the files run with).
+   * by default the root manifest and lockfiles (add configs and setup files the files run with). The
+   * setup's key is part of the task's, so a task with a setup needn't list what the setup reads.
    */
   readonly inputs?: Files.Files
   /**
@@ -38,11 +39,13 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
-const dependencyFiles = Files.glob("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", ".npmrc")
+const dependencyFiles = Files.optional(
+  Files.glob("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", ".npmrc"),
+)
 
 /**
  * A command in a pinned toolchain, run in a persistent workspace of the repository. It is keyed by the
- * git tree ids of its inputs, the toolchain, the command and the values it interpolates.
+ * git tree ids of its inputs, its setup's key, the toolchain, the command and the values it interpolates.
  */
 export const make = <R = never, const O extends { readonly [name: string]: string } = {}>(
   name: string,
