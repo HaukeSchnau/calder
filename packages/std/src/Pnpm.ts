@@ -7,7 +7,10 @@ export interface InstallOptions {
   readonly shell?: Flake.FlakeRef<"devShells">
   /** Arguments after `pnpm install --frozen-lockfile`, such as `--trust-lockfile`. */
   readonly args?: ReadonlyArray<string>
-  /** More of what tasks build that later tasks reuse, as gitignore patterns (`dist`, `.expo`). */
+  /**
+   * More caches that tools check against the sources themselves (`.vite`), as gitignore patterns.
+   * Not build output such as `dist`: see `Setup.Options.keep`.
+   */
   readonly keep?: ReadonlyArray<string>
 }
 

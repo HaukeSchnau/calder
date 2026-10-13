@@ -7,7 +7,10 @@ export interface InstallOptions {
   readonly shell?: Flake.FlakeRef<"devShells">
   /** Arguments after `bun install --frozen-lockfile`. */
   readonly args?: ReadonlyArray<string>
-  /** More of what tasks build that later tasks reuse, as gitignore patterns (`dist`). */
+  /**
+   * More caches that tools check against the sources themselves (`.vite`), as gitignore patterns.
+   * Not build output such as `dist`: see `Setup.Options.keep`.
+   */
   readonly keep?: ReadonlyArray<string>
 }
 

@@ -35,7 +35,10 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
   prepared before settles at once. `keep` names what survives a task's `git clean`, `path` what goes
-  in front of PATH. `Pnpm.install` and `Bun.install` name their step `install`; a second install, say
+  in front of PATH. Kept files carry over to tasks of other revisions without entering their keys, so
+  keep only caches that tools check against the sources themselves (`node_modules`, `*.tsbuildinfo`,
+  `.vite`). Build output such as `dist` doesn't belong in `keep`, because a task would read what another
+  revision built. `Pnpm.install` and `Bun.install` name their step `install`; a second install, say
   with another shell, needs its own `name`.
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its

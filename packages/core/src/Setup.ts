@@ -15,7 +15,12 @@ export interface Options {
   /** The files that decide whether a prepared workspace is still current: manifests, lockfiles, patches. */
   readonly inputs: Files.Files
   readonly run: Cmd<never>
-  /** What the setup creates that a task's `git clean` keeps, as gitignore patterns (`node_modules`). */
+  /**
+   * What the setup creates that a task's `git clean` keeps, as gitignore patterns (`node_modules`).
+   * Kept files carry over to tasks of other revisions without entering their keys, so keep only caches
+   * that tools check against the sources themselves (`node_modules`, `*.tsbuildinfo`, `.vite`). Build
+   * output such as `dist` doesn't belong here: a task would read what another revision built.
+   */
   readonly keep?: ReadonlyArray<string>
   /** Directories of the checkout put in front of the tasks' PATH, such as `node_modules/.bin`. */
   readonly path?: ReadonlyArray<string>
