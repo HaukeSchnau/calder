@@ -46,7 +46,14 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
     config.ui === null ? Layer.empty : HttpStaticServer.layer({ root: config.ui, spa: true }),
   )
   return HttpRouter.serve(routes, { disableLogger: true }).pipe(
-    // Agents upload task outputs such as packaged desktop apps, far past Bun's 128 MiB default.
-    Layer.provide(BunHttpServer.layer({ port: config.listen.port, hostname: config.listen.host, maxRequestBodySize: 8 * 1024 ** 3 })),
+    // Agents upload task outputs such as packaged desktop apps, far past Bun's 128 MiB default. Bun also
+    // closes a response that stalls for 10 s, which cut git fetches and downloads to agents on slow links
+    // and quiet log follows; the proxy in front keeps its own timeouts.
+    Layer.provide(BunHttpServer.layer({
+      port: config.listen.port,
+      hostname: config.listen.host,
+      maxRequestBodySize: 8 * 1024 ** 3,
+      idleTimeout: 0,
+    })),
   )
 }))
