@@ -5,10 +5,10 @@ import { flake } from "./flake.ts"
 const shell = flake.devShells.default
 const install = Pnpm.install({ shell })
 
-export const check = Task.make("check", { shell, setup: install, run: cmd`pnpm run check` })
+const check = Task.make("check", { shell, setup: install, run: cmd`pnpm run check` })
 
 /** A test file runs again only when it or something it imports changed. */
-export const test = Task.make("test", {
+const test = Task.make("test", {
   shell,
   setup: install,
   each: Files.imports("packages/*/test/**/*.test.ts"),
