@@ -95,6 +95,8 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
       }
       case "Union":
         return (yield* Effect.forEach(files.members, (m) => paths(repo, m))).flat()
+      case "Optional":
+        return yield* paths(repo, files.files)
       case "Workspace": {
         if (files.dirs.includes(".")) return ["."]
         const all = yield* manifests(repo)
@@ -116,6 +118,63 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
         }
         return [...rootFiles, ...[...seen].sort()]
       }
+    }
+  })
+
+/** The paths and patterns of `files` that match nothing at the revision, except `optional` ones. */
+const unmatched = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
+  Effect.gen(function*() {
+    switch (files._tag) {
+      case "All":
+      case "Optional":
+        return []
+      case "Of":
+      case "Workspace": {
+        const all = yield* repo.files
+        return (files._tag === "Of" ? files.paths : files.dirs).filter((path) =>
+          path !== "." && !all.some((f) => f === path || f.startsWith(`${path}/`))
+        )
+      }
+      case "Glob":
+      case "Imports": {
+        const all = yield* repo.files
+        return files.patterns.filter((pattern) => {
+          const re = Files.globToRegExp(pattern)
+          return !all.some((f) => re.test(f))
+        })
+      }
+      case "Union":
+        return (yield* Effect.forEach(files.members, (m) => unmatched(repo, m))).flat()
+    }
+  })
+
+/**
+ * Fails the plan when a path or pattern the project wrote matches no file: its key would never change.
+ * Every task's and setup's files count, also those of steps this event doesn't run.
+ */
+const checkFiles = (project: Kiln.Project, repo: Repo) =>
+  Effect.gen(function*() {
+    const universe = yield* Kiln.universe(project)
+    const written = [
+      ...(project.shared === undefined ? [] : [["the project's shared files", project.shared] as const]),
+      ...[...universe.values()].flatMap((step) => {
+        const def = step.def
+        if (def._tag === "Setup") return [[`${step.name}'s inputs`, def.inputs] as const]
+        if (def._tag !== "Task") return []
+        return [
+          [`${step.name}'s inputs`, def.inputs] as const,
+          ...(def.each === undefined ? [] : [[`${step.name}'s each`, def.each] as const]),
+          ...(def.shards?.split === undefined ? [] : [[`${step.name}'s shards.split`, def.shards.split] as const]),
+        ]
+      }),
+    ]
+    const missing = (yield* Effect.forEach(written, ([where, files]) =>
+      Effect.map(unmatched(repo, files), (patterns) => patterns.map((pattern) => `${JSON.stringify(pattern)} (${where})`))
+    )).flat()
+    if (missing.length > 0) {
+      return yield* new Kiln.PlanError({
+        message: `No file matches ${missing.join(", ")}. Fix the path or pattern, or wrap files that may be missing in Files.optional(...).`,
+      })
     }
   })
 
@@ -216,6 +275,7 @@ const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv:
 /** Turns a plan into the wire format, resolving tree ids, dev shells and task keys at the revision. */
 export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, repo: Repo) =>
   Effect.gen(function*() {
+    yield* checkFiles(project, repo)
     const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared)
     const builds = plan.steps.flatMap((p) => (p.step.def._tag === "Build" ? [Flake.attrPath(p.step.def.ref, run.system)] : []))
     const shells = [...new Set(plan.steps.flatMap((p) => {

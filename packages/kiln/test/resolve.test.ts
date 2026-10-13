@@ -79,4 +79,12 @@ describe("resolve", () => {
       expect(error._tag).toBe("PlanError")
       expect(error.message).toContain("devShells.x86_64-linux.ci")
     }))
+
+  it.effect("a path or pattern that matches no file fails the plan, unless it is optional", () =>
+    Effect.gen(function*() {
+      const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` })
+      const error = yield* plan(app, [build(Files.union(Files.glob("src/**"), Files.of("static"), Files.imports("src/**/*.tsx")))]).pipe(Effect.flip)
+      expect(error.message).toContain(`No file matches "static" (build's inputs), "src/**/*.tsx" (build's inputs).`)
+      yield* plan(app, [build(Files.union(Files.glob("src/**"), Files.optional(Files.of("static"))))])
+    }))
 })

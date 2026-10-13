@@ -39,7 +39,9 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
-const dependencyFiles = Files.glob("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", ".npmrc")
+const dependencyFiles = Files.optional(
+  Files.glob("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", ".npmrc"),
+)
 
 /**
  * A command in a pinned toolchain, run in a persistent workspace of the repository. It is keyed by the

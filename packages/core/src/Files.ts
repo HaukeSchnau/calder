@@ -1,6 +1,7 @@
 /**
  * What a task reads. Keys are made of git tree ids of these paths at the revision, so a task is
- * reused only when its inputs are byte-identical.
+ * reused only when its inputs are byte-identical. Every path and pattern must match a file at the
+ * revision, or planning fails, unless it is `optional`.
  */
 export type Files =
   | { readonly _tag: "All" }
@@ -14,6 +15,7 @@ export type Files =
     readonly types: boolean
   }
   | { readonly _tag: "Union"; readonly members: ReadonlyArray<Files> }
+  | { readonly _tag: "Optional"; readonly files: Files }
 
 /** The whole repository. */
 export const all = (): Files => ({ _tag: "All" })
@@ -50,6 +52,9 @@ export const imports = (
 })
 
 export const union = (...members: ReadonlyArray<Files>): Files => ({ _tag: "Union", members })
+
+/** Files that may be missing at a revision, such as optional configuration. */
+export const optional = (files: Files): Files => ({ _tag: "Optional", files })
 
 const normalize = (path: string) => path.replace(/^\.\//, "").replace(/\/+$/, "") || "."
 
