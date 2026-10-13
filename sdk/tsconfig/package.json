@@ -1,0 +1,6 @@
+{
+  "name": "@kiln/tsconfig",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The compiler options `.kiln/tsconfig.json` extends, so changes reach every project without `kiln gen`."
+}

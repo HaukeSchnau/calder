@@ -35,7 +35,11 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
   prepared before settles at once. `keep` names what survives a task's `git clean`, `path` what goes
-  in front of PATH.
+  in front of PATH. Kept files carry over to tasks of other revisions without entering their keys, so
+  keep only caches that tools check against the sources themselves (`node_modules`, `*.tsbuildinfo`,
+  `.vite`). Build output such as `dist` doesn't belong in `keep`, because a task would read what another
+  revision built. `Pnpm.install` and `Bun.install` name their step `install`; a second install, say
+  with another shell, needs its own `name`.
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
   setup keeps. A task is reused
@@ -54,9 +58,12 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`kiln/<step>`).
 
-`ci.ts` runs on the worker's Bun, and `.kiln/tsconfig.json` gives it Bun's types, so an action can use `fetch`,
-`node:crypto` or `Bun.file` and still type-check. `.kiln/node_modules` links through the profile that put Kiln on
-PATH (`/run/current-system/sw/lib/kiln/...`), so it follows upgrades; `kiln plan` repairs an older link.
+`ci.ts` runs on the worker's Bun. `.kiln/tsconfig.json` extends `@kiln/tsconfig` from the SDK, which gives it Bun's
+types, so an action can use `fetch`, `node:crypto` or `Bun.file` and still type-check. `.kiln/node_modules` links
+through the profile that put Kiln on PATH (`/run/current-system/sw/lib/kiln/...`), so it follows upgrades; `kiln plan`
+repairs an older link. The compiler options come through that link too, so a new Kiln changes them in every project
+without another `kiln gen`. A `.kiln/tsconfig.json` that lists the options itself is from an older `kiln gen`; run it
+once more.
 
 `kiln gen` writes `.kiln/flake.ts` and `.kiln/tsconfig.json` in its own style; if the repository runs a
 formatter over everything, format `.kiln/` with it. Task workspaces get the same `.kiln/node_modules` link
@@ -65,6 +72,26 @@ as `kiln gen` creates, so the repository's type-aware lint can check `ci.ts` in 
 `Step.exit(step)` hands an action a step's outcome instead of blocking on its failure. `Step.retry`
 and `Step.timeout` take Effect's options and apply in pipe order. Task shards (`shards: { count }`)
 run in parallel and report as one step.
+
+`Vitest.files` from `@kiln/std` is a task that runs a package's vitest file by file. Its `each` follows
+the test files' imports, so a file runs again only when it, what it imports or `inputs` changed. Vitest
+runs in `dir`, with that package's `node_modules/.bin` first on PATH, gets the files relative to `dir`,
+and writes its JSON report to where the task reads it.
+
+```ts
+const testServer = Vitest.files({
+  name: "test-server",
+  shell,
+  setup: install,
+  dir: "apps/server",
+  tests: ["src/**/*.test.ts"],
+  inputs: Files.of("package.json", "pnpm-lock.yaml", "apps/server/vitest.config.ts"),
+  shards: 4,
+  args: ["--maxWorkers", "3"],
+})
+```
+
+`vitest: ["vp", "test"]` runs it through Vite+, and `before` is a command that runs in `dir` first.
 
 ## Commands
 
@@ -95,11 +122,11 @@ doesn't know, such as jobs from before its restart, before it gives that agent n
 | Path | What |
 | --- | --- |
 | `packages/core` | `@kiln/core`: the API and the plan engine (`Kiln.plan` is pure and testable) |
-| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness) |
+| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/kiln` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
-| `sdk` | What `.kiln/node_modules` links to, so ci.ts and the worker share one copy of Effect |
+| `sdk` | What `.kiln/node_modules` links to, so ci.ts and the worker share one copy of Effect, and the tsconfig `.kiln/tsconfig.json` extends |
 
 ```
 pnpm install

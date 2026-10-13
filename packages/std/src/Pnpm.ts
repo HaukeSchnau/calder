@@ -1,11 +1,16 @@
 import { cmd, Files, type Flake, Setup } from "@kiln/core"
 
 export interface InstallOptions {
+  /** The step's name, `install` by default. Name a second install that needs another shell or `keep`. */
+  readonly name?: string
   /** The dev shell with node and pnpm. */
   readonly shell?: Flake.FlakeRef<"devShells">
   /** Arguments after `pnpm install --frozen-lockfile`, such as `--trust-lockfile`. */
   readonly args?: ReadonlyArray<string>
-  /** More of what tasks build that later tasks reuse, as gitignore patterns (`dist`, `.expo`). */
+  /**
+   * More caches that tools check against the sources themselves (`.vite`), as gitignore patterns.
+   * Not build output such as `dist`: see `Setup.Options.keep`.
+   */
   readonly keep?: ReadonlyArray<string>
 }
 
@@ -15,7 +20,7 @@ export interface InstallOptions {
  * it) and TypeScript build info stay across tasks, and `node_modules/.bin` is on PATH.
  */
 export const install = (options: InstallOptions = {}) =>
-  Setup.make("install", {
+  Setup.make(options.name ?? "install", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     inputs: Files.union(
       Files.glob("**/package.json", "pnpm-lock.yaml"),

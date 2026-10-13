@@ -6,24 +6,11 @@ import * as Exec from "./Exec.ts"
 /** Kiln's SDK next to this file: in a checkout `<repo>/sdk/node_modules`, in the Nix package the same layout. */
 export const sdkPath = resolve(import.meta.dirname, "../../../sdk/node_modules")
 
-const tsconfig = {
-  compilerOptions: {
-    target: "ES2024",
-    module: "preserve",
-    moduleResolution: "bundler",
-    lib: ["ES2024"],
-    // ci.ts runs on the worker's Bun, so actions can use fetch, node:crypto and Bun.file.
-    types: ["bun"],
-    strict: true,
-    exactOptionalPropertyTypes: true,
-    noUncheckedIndexedAccess: true,
-    allowImportingTsExtensions: true,
-    verbatimModuleSyntax: true,
-    noEmit: true,
-    skipLibCheck: true,
-  },
-  include: ["*.ts"],
-}
+/**
+ * `.kiln/tsconfig.json`. The compiler options come from the SDK through `.kiln/node_modules`, so a
+ * change to them reaches every project with the next Kiln instead of the next `kiln gen`.
+ */
+export const tsconfig = { extends: "@kiln/tsconfig", include: ["*.ts"] }
 
 const names = (dir: string, output: string, system: string) =>
   Exec.run(["nix", "eval", "--json", `${dir}#${output}.${system}`, "--apply", "builtins.attrNames"], { cwd: dir }).pipe(
