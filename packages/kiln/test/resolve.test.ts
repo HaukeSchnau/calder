@@ -1,4 +1,4 @@
-import { cmd, Event, Files, Kiln, On, Report, type Step, Task } from "@kiln/core"
+import { cmd, Event, Files, Kiln, On, Report, Secret, type Step, Task } from "@kiln/core"
 import { describe, expect, it } from "@effect/vitest"
 import { Pnpm } from "@kiln/std"
 import { Effect, PlatformError } from "effect"
@@ -58,5 +58,13 @@ describe("resolve", () => {
         expect(changed.keyBase).not.toBe(before.keyBase)
         expect(changed.each![0]!.key).not.toBe(before.each![0]!.key)
       }
+    }))
+
+  it.effect("a task's key covers the names of its secrets", () =>
+    Effect.gen(function*() {
+      const publish = (secret: string) => Task.make("publish", { secrets: { TOKEN: Secret.file(secret) }, run: cmd`publish` })
+      const staging = task(yield* plan(app, [publish("staging-token")]), "publish")
+      const production = task(yield* plan(app, [publish("production-token")]), "publish")
+      expect(production.keyBase).not.toBe(staging.keyBase)
     }))
 })

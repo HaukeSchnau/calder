@@ -314,7 +314,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
               setup,
               command: describeCmd(def.run, count),
               env: Object.entries(def.env).sort(),
-              secrets: Object.keys(def.secrets).sort(),
+              secrets: Object.entries(def.secrets).map(([env, ref]) => [env, ref.name]).sort(),
               report: def.report ?? null,
               outputs: Object.entries(def.outputs).sort(),
               shards: def.shards?.count ?? null,
