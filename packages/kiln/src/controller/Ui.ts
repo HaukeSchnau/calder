@@ -32,6 +32,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const merges = yield* Merges
   const enrolled = yield* Projects
   const telemetry = yield* Telemetry.Telemetry
+  const estimates = yield* Estimates.Estimates
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
@@ -130,8 +131,8 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       if (row === undefined) return yield* unknownRun(id)
       const seq = live.seq()
       const [run] = yield* db(Rows.runsWithCounts([row]))
-      const estimates = yield* db(Estimates.forProject(row.project))
-      const steps = (yield* db(Rows.loadSteps(id))).map((s) => Rows.step(s, estimates.get(s.name) ?? null))
+      const expected = yield* estimates.steps(row.project)
+      const steps = (yield* db(Rows.loadSteps(id))).map((s) => Rows.step(s, expected.get(s.name) ?? null))
       const failing = yield* db(sql<Rows.TestRow>`select * from tests where run_id = ${id} and status in ('failed', 'timeout')
         and superseded = 0 limit 200`)
       const flaky = yield* flakyKeys(row.project, failing)

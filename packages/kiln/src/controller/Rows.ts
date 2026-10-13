@@ -1,9 +1,19 @@
 import type { Domain } from "@kiln/api"
-import { Effect } from "effect"
+import { Array as Arr, Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import { Kiln } from "@kiln/core"
 import type { PlannedStep, PlanSpec } from "../Protocol.ts"
 import * as Values from "../Values.ts"
+
+/**
+ * bun:sqlite blocks the event loop while a statement runs, and a worker drops its connection after five
+ * seconds without a ping. Large writes go in pieces with this pause between them, so pings get through.
+ */
+export const pause = Effect.sleep("50 millis")
+
+/** Writes `rows` a thousand at a time, pausing in between. */
+export const inChunks = <A, E, R>(rows: ReadonlyArray<A>, write: (chunk: ReadonlyArray<A>) => Effect.Effect<unknown, E, R>) =>
+  Effect.forEach(Arr.chunksOf(rows, 1000), (chunk, i) => Effect.andThen(i === 0 ? Effect.void : pause, write(chunk)), { discard: true })
 
 export interface RunRow {
   readonly id: string
