@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { type Domain, NotFound, Refused } from "@kiln/api"
+import { NotFound, Refused } from "@kiln/api"
 import { Event, Kiln } from "@kiln/core"
 import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
@@ -85,29 +85,6 @@ const plan = Command.make("plan", {
 
 const url = Flag.String("url").pipe(Flag.withDefault(process.env.KILN_URL ?? "https://kiln.schnau.dev"))
 
-const stepLine = (step: Domain.StepRun) => `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}`
-
-/** Prints a run's steps as they change until it ends; returns its final status. */
-const follow = (client: Effect.Success<typeof Remote.client>, run: Domain.Run) =>
-  Effect.gen(function*() {
-    yield* Console.log(`${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`)
-    let status: string = run.status
-    yield* client.changes().pipe(
-      Stream.filter((c) => (c._tag === "StepChanged" ? c.step.runId === run.id : c._tag === "RunChanged" && c.run.id === run.id)),
-      Stream.tap((c) =>
-        c._tag === "StepChanged"
-          ? Console.log(stepLine(c.step))
-          : Console.log(`${c._tag === "RunChanged" ? c.run.status : ""}${c._tag === "RunChanged" && c.run.error ? `: ${c.run.error}` : ""}`)
-      ),
-      Stream.tap((c) => Effect.sync(() => {
-        if (c._tag === "RunChanged") status = c.run.status
-      })),
-      Stream.takeUntil((c) => c._tag === "RunChanged" && ["passed", "failed", "cancelled", "errored"].includes(c.run.status)),
-      Stream.runDrain,
-    )
-    return status
-  })
-
 /** `kiln trigger`: a branch head like a push, or with `--inputs` a manual run of the rules taking them. */
 const trigger = Command.make("trigger", {
   project: Argument.String("project"),
@@ -124,8 +101,8 @@ const trigger = Command.make("trigger", {
       ...Option.match(schedule, { onNone: () => ({}), onSome: (cron) => ({ schedule: cron }) }),
       ...Option.match(inputs, { onNone: () => ({}), onSome: (i) => ({ inputs: i }) }),
     })
-    const status = yield* follow(client, run)
-    if (status !== "passed") return yield* Effect.fail(new Error(`${run.id} ${status}`))
+    const ended = yield* Cli.follow(client, run)
+    if (ended.status !== "passed") return yield* Effect.fail(new Error(`${ended.id} ${ended.status}`))
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
 /**
@@ -146,8 +123,8 @@ const check = Command.make("check", {
     })
     // A background check runs on its own; its ref stays until the next check under the same key.
     if (background) return yield* Console.log(`${submitted.run.id} checks ${submitted.copy.sha.slice(0, 12)} in the background`)
-    const status = yield* follow(client, submitted.run).pipe(Effect.ensuring(Check.drop(submitted.copy, submitted.remote, submitted.ref)))
-    if (status !== "passed") return yield* Effect.fail(new Error(`the check ${status}`))
+    const ended = yield* Cli.follow(client, submitted.run).pipe(Effect.ensuring(Check.drop(submitted.copy, submitted.remote, submitted.ref)))
+    if (ended.status !== "passed") return yield* Effect.fail(new Error(`the check ${ended.status}`))
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
 /** `kiln watch <root>...`: background checks of the jj workspaces under the roots as their snapshots settle. */
@@ -183,7 +160,7 @@ const status = Command.make("status", { run: Argument.String("run"), url }, ({ r
     const detail = yield* client.run({ id: run })
     const r = detail.run
     yield* Console.log(`${r.project} #${r.number} ${r.status}${r.error ? `: ${r.error}` : ""}  ${r.commit.sha.slice(0, 12)} ${r.commit.title}`)
-    for (const step of detail.steps) if (step.kind !== "output") yield* Console.log(stepLine(step))
+    for (const step of detail.steps) if (step.kind !== "output") yield* Console.log(Cli.stepLine(step))
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
 /** `kiln logs <run> [step]`: the output of a step, or of every step with its name in front. */

@@ -1,5 +1,6 @@
+import { Domain } from "@kiln/api"
 import { Event } from "@kiln/core"
-import { Effect, Option, Schema } from "effect"
+import { Console, Effect, Option, Schema, Stream } from "effect"
 
 /** Manual inputs as a JSON object, such as `{"release":"testflight"}`. */
 const manualInputs = Schema.decodeUnknownOption(Schema.fromJsonString(Event.Manual.fields.inputs))
@@ -29,3 +30,35 @@ export const parseEvent = (text: string): Effect.Effect<Event.Event, Error> => {
     ? Effect.fail(new Error(`--event ${text} is not an event; use push[:<branch>], pr[:<number>], check[:<ref>], schedule:<cron> or manual[:<json object>]`))
     : Effect.succeed(event)
 }
+
+export const stepLine = (step: Domain.StepRun) => `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}`
+
+/** Prints a run's status and steps as they change until it ends; returns the run as it ended. */
+export const follow = <E>(
+  client: {
+    readonly changes: () => Stream.Stream<Domain.Change, E>
+    readonly run: (input: { readonly id: string }) => Effect.Effect<Domain.RunDetail, E>
+  },
+  run: Domain.Run,
+) =>
+  Effect.gen(function*() {
+    let last = run
+    const report = (r: Domain.Run) =>
+      Effect.sync(() => (last = r)).pipe(Effect.andThen(Console.log(`${r.status}${r.error ? `: ${r.error}` : ""}`)))
+    yield* Console.log(`${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`)
+    yield* report(run)
+    // The run may end before the change feed starts, so its current state joins the feed.
+    const current = Stream.fromEffect(client.run({ id: run.id })).pipe(
+      Stream.map((detail): Domain.Change => ({ _tag: "RunChanged", seq: detail.seq, run: detail.run })),
+    )
+    yield* client.changes().pipe(
+      Stream.merge(current),
+      Stream.filter((c) => (c._tag === "StepChanged" ? c.step.runId === run.id : c._tag === "RunChanged" && c.run.id === run.id)),
+      Stream.tap((c) =>
+        c._tag === "StepChanged" ? Console.log(stepLine(c.step)) : c._tag === "RunChanged" && c.run.status !== last.status ? report(c.run) : Effect.void
+      ),
+      Stream.takeUntil((c) => c._tag === "RunChanged" && Domain.ended.has(c.run.status)),
+      Stream.runDrain,
+    )
+    return last
+  })
