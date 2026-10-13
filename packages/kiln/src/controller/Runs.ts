@@ -1,4 +1,5 @@
 import type { Domain } from "@kiln/api"
+import { Event } from "@kiln/core"
 import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { readFileSync } from "node:fs"
@@ -245,8 +246,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           for (const cron of spec.schedules) yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`
         })))
       }
-      // A push to a branch no rule names, for example: nothing to run, nothing to report.
+      // A push to a branch no rule names, for example: nothing to run, keep or report on the commit. Whoever
+      // follows the run, such as `kiln trigger`, still sees it end and why.
       if (spec.steps.length === 0) {
+        const reason = `no rule of ${run.project} runs anything for ${Event.describe(event)}`
+        yield* db(sql`update runs set status = 'cancelled', error = ${reason}, finished_at = ${Date.now()} where id = ${runId}`)
+        yield* publishRun(runId)
         yield* db(sql`delete from runs where id = ${runId}`)
         yield* Effect.logInfo(`${runId} matches no rule, dropped`)
         return null
