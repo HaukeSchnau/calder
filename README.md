@@ -84,7 +84,8 @@ kiln agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--
 An agent gets jobs only while it has the controller's compatibility version (`compatibility` in
 `packages/kiln/src/Protocol.ts`), so deploying the controller stalls agents only when that version
 changed. The UI lists each agent's version and Kiln build and marks an agent of another version as
-incompatible.
+incompatible. A reconnecting agent reports the workers it still runs, and the controller stops those it
+doesn't know, such as jobs from before its restart, before it gives that agent new jobs.
 
 ## Layout
 

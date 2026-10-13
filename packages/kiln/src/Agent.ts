@@ -1,5 +1,5 @@
 import { BunSocket } from "@effect/platform-bun"
-import { Deferred, Effect, Fiber, Layer, Schedule, Stream } from "effect"
+import { Deferred, Effect, Layer, Schedule, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { readFileSync } from "node:fs"
@@ -39,7 +39,8 @@ export const run = (options: Options) =>
     const auth = { token, name: options.name }
     const client = yield* RpcClient.make(AgentRpcs)
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const running = new Map<string, Fiber.Fiber<void>>()
+    // Workers whose process still runs, with what stops each one.
+    const running = new Map<string, Deferred.Deferred<void>>()
 
     const offered = () => {
       if (options.slotsFile === null) return options.slots
@@ -65,7 +66,10 @@ export const run = (options: Options) =>
         if (ready._tag === "None" || ready.value !== "ready") return yield* Effect.die(new Error("the host refused admission"))
       })
 
-    const worker = (job: string, jobToken: string) =>
+    const exited = (job: string, code: number) =>
+      client.exited({ ...auth, job, code }).pipe(Effect.retry(Schedule.spaced("5 seconds")), Effect.ignore)
+
+    const worker = (job: string, jobToken: string, stop: Deferred.Deferred<void>) =>
       Effect.scoped(Effect.gen(function*() {
         if (options.admission !== null) yield* admitted(options.admission)
         const [command, ...args] = options.kiln
@@ -81,21 +85,23 @@ export const run = (options: Options) =>
         return yield* handle.exitCode
       })).pipe(
         Effect.catchCause((cause) => Effect.logError(`worker ${job} failed to start`, cause).pipe(Effect.as(-1))),
-        Effect.onInterrupt(() => Effect.logInfo(`stopped worker ${job}`)),
-        Effect.flatMap((code) =>
-          client.exited({ ...auth, job, code }).pipe(Effect.retry(Schedule.spaced("5 seconds")), Effect.ignore)
-        ),
+        Effect.raceFirst(Deferred.await(stop).pipe(Effect.andThen(Effect.logInfo(`stopped worker ${job}`)), Effect.as(-1))),
         Effect.ensuring(Effect.sync(() => running.delete(job))),
+        Effect.flatMap((code) => exited(job, code)),
       )
 
     const obey = (order: AgentOrder) =>
       Effect.gen(function*() {
         if (order._tag === "Start") {
           yield* Effect.logInfo(`starting worker ${order.job}`)
-          running.set(order.job, yield* Effect.forkDetach(worker(order.job, order.token)))
+          const stop = Deferred.makeUnsafe<void>()
+          running.set(order.job, stop)
+          yield* Effect.forkDetach(worker(order.job, order.token, stop))
         } else {
-          const fiber = running.get(order.job)
-          if (fiber !== undefined) yield* Fiber.interrupt(fiber)
+          const stop = running.get(order.job)
+          // The controller holds a slot until it hears the worker is gone, which it may have missed.
+          if (stop === undefined) yield* Effect.forkDetach(exited(order.job, -1))
+          else yield* Deferred.succeed(stop, undefined)
         }
       })
 

@@ -8,10 +8,13 @@ const auth = { token: "secret", name: "m1" }
 /** Lets forked fibers and streams catch up. */
 const ticks = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }))
 
-const connect = (agents: Agents.Agents["Service"], running: ReadonlyArray<string> = [], compatibility = 1, name = "m1") =>
+const connect = (
+  agents: Agents.Agents["Service"],
+  { running = [], compatibility = 1, name = "m1", slots = 1 }: { running?: ReadonlyArray<string>; compatibility?: number; name?: string; slots?: number } = {},
+) =>
   Effect.gen(function*() {
     const orders: Array<AgentOrder> = []
-    const fiber = yield* agents.connect({ ...auth, name }, { platform: "aarch64-darwin", slots: 1, running, build: "b1", compatibility }).pipe(
+    const fiber = yield* agents.connect({ ...auth, name }, { platform: "aarch64-darwin", slots, running, build: "b1", compatibility }).pipe(
       Stream.runForEach((order) => Effect.sync(() => orders.push(order))),
       Effect.forkChild,
     )
@@ -49,10 +52,10 @@ describe("Agents", () => {
       yield* ticks
       yield* Fiber.interrupt(before.fiber)
 
-      yield* connect(agents, ["a"])
+      yield* connect(agents, { running: ["a"] })
       expect(agents.usage()).toEqual([{ name: "m1", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true }])
 
-      const again = yield* connect(agents, [])
+      const again = yield* connect(agents)
       expect(yield* Fiber.join(kept)).toBe(-1)
       expect(agents.usage()[0]?.running).toBe(0)
       yield* Fiber.interrupt(again.fiber)
@@ -64,14 +67,49 @@ describe("Agents", () => {
     Effect.gen(function*() {
       const agents = Agents.make("secret", 2)
       const job = yield* Effect.forkChild(agents.run({ id: "a", token: "ta" }, "aarch64-darwin"))
-      const stale = yield* connect(agents, [], 1)
+      const stale = yield* connect(agents, { compatibility: 1 })
       expect(stale.orders).toEqual([])
       expect(agents.usage()[0]).toMatchObject({ connected: true, compatibility: 1, current: false })
 
-      const current = yield* connect(agents, [], 2, "m2")
+      const current = yield* connect(agents, { compatibility: 2, name: "m2" })
       expect(current.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
       yield* agents.exited({ ...auth, name: "m2" }, "a", 0)
       expect(yield* Fiber.join(job)).toBe(0)
+    }))
+
+  it.effect("an agent's workers the controller doesn't know, as after a restart, are stopped before it gets new jobs", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", 1)
+      const job = yield* Effect.forkChild(agents.run({ id: "new", token: "tn" }, "aarch64-darwin"))
+      yield* ticks
+      const m1 = yield* connect(agents, { running: ["old"], slots: 2 })
+      expect(m1.orders).toEqual([{ _tag: "Stop", job: "old" }])
+      expect(agents.usage()[0]?.running).toBe(1)
+
+      yield* agents.exited(auth, "old", 143)
+      yield* ticks
+      expect(m1.orders.at(-1)).toEqual({ _tag: "Start", job: "new", token: "tn" })
+      yield* agents.exited(auth, "new", 0)
+      expect(yield* Fiber.join(job)).toBe(0)
+    }))
+
+  it.effect("a stopped worker keeps new jobs off its agent until it is gone, across a reconnect", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", 1)
+      const before = yield* connect(agents, { slots: 2 })
+      yield* Effect.forkChild(agents.run({ id: "a", token: "ta" }, "aarch64-darwin"))
+      yield* ticks
+      yield* Fiber.interrupt(before.fiber)
+      yield* agents.stop("a")
+      const waiting = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-darwin"))
+
+      const after = yield* connect(agents, { running: ["a"], slots: 2 })
+      expect(after.orders).toEqual([{ _tag: "Stop", job: "a" }])
+      yield* agents.exited(auth, "a", 143)
+      yield* ticks
+      expect(after.orders.at(-1)).toEqual({ _tag: "Start", job: "b", token: "tb" })
+      yield* agents.exited(auth, "b", 0)
+      expect(yield* Fiber.join(waiting)).toBe(0)
     }))
 
   it.effect("an agent takes jobs as it offers slots", () =>
