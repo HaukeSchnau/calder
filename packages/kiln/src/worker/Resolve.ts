@@ -1,5 +1,5 @@
 import { Cmd, Files, Flake, Kiln, type Step } from "@kiln/core"
-import { Effect } from "effect"
+import { Effect, Schedule } from "effect"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import type { PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
@@ -166,8 +166,8 @@ export interface Derivation {
 
 /**
  * Evaluates every attribute's derivation in one evaluator, so nixpkgs is instantiated once per plan.
- * Attributes that throw come back as null; if the whole evaluation fails (a missing attribute isn't
- * catchable), every attribute does, and builds evaluate on their own as before.
+ * Attributes that throw come back as null. A missing attribute isn't catchable and fails the whole
+ * evaluation.
  */
 export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>) =>
   Effect.gen(function*() {
@@ -179,7 +179,6 @@ export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>) =>
       in { ${body} }`
     const out = yield* Exec.run(["nix", "eval", "--json", "--expr", expr]).pipe(
       Effect.map((json) => JSON.parse(json) as Record<string, Derivation | null>),
-      Effect.orElseSucceed(() => ({}) as Record<string, Derivation | null>),
     )
     return new Map(attrs.map((attr, i) => [attr, out[`a${i}`] ?? null]))
   })
@@ -218,15 +217,27 @@ const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv:
 export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, repo: Repo) =>
   Effect.gen(function*() {
     const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared)
-    const attrs = new Set(
-      plan.steps.flatMap((p) => {
-        const def = p.step.def
-        if (def._tag === "Build") return [Flake.attrPath(def.ref, run.system)]
-        if ((def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined) return [Flake.attrPath(def.shell, run.system)]
-        return []
-      }),
+    const builds = plan.steps.flatMap((p) => (p.step.def._tag === "Build" ? [Flake.attrPath(p.step.def.ref, run.system)] : []))
+    const shells = [...new Set(plan.steps.flatMap((p) => {
+      const def = p.step.def
+      return (def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined ? [Flake.attrPath(def.shell, run.system)] : []
+    }))]
+    // When the batch fails, builds evaluate on their own when they run, but keys need the dev shells now.
+    const evaluated = yield* derivations(run, [...new Set([...builds, ...shells])]).pipe(
+      Effect.catch(() => derivations(run, shells).pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("2 seconds") }))),
+      Effect.mapError((e) =>
+        new Kiln.PlanError({
+          message: `Nix could not evaluate the dev shells ${shells.join(", ")}, which task keys include: ${
+            e._tag === "CommandFailed" ? e.stderr.trim().split("\n").slice(-10).join("\n") : e.message
+          }`,
+        })
+      ),
     )
-    const evaluated = yield* derivations(run, [...attrs])
+    const broken = shells.filter((shell) => !evaluated.get(shell))
+    if (broken.length > 0) {
+      return yield* new Kiln.PlanError({ message: `The dev shell ${broken.join(", ")} did not evaluate, and task keys include it` })
+    }
+    const toolchainOf = (shell: string | null) => (shell === null ? null : evaluated.get(shell)!.drv)
     const dependencies = (yield* repo.entries).filter((e) => dependencyFiles.some((re) => re.test(e.path)))
     const uses = yield* buildEdges(plan.steps.flatMap((p) => {
       const def = p.step.def
@@ -245,7 +256,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
         return [p.name, sha256({
           kind: "setup",
           inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
-          toolchain: shell === null ? null : evaluated.get(shell)?.drv ?? null,
+          toolchain: toolchainOf(shell),
           command: Cmd.show(def.run),
           keep: def.keep,
           path: def.path,
@@ -302,7 +313,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
             const split = def.shards?.split === undefined ? [] : yield* paths(repo, def.shards.split)
             const splitIds = split.length === 0 ? new Map<string, string>() : yield* repo.objectIds(split)
             const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system)
-            const toolchain = shell === null ? null : evaluated.get(shell)?.drv ?? null
+            const toolchain = toolchainOf(shell)
             const count = def.shards?.count ?? 1
             const command = typeof def.run === "function" ? def.run({ index: 1, count, files: [] }) : def.run
             const setup = def.setup === undefined ? null : setupKeys.get(def.setup.name)!

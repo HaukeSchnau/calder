@@ -1,8 +1,9 @@
-import { cmd, Event, Files, Kiln, On, Report, Secret, type Step, Task } from "@kiln/core"
+import { cmd, Event, Files, Flake, Kiln, On, Report, Secret, type Step, Task } from "@kiln/core"
 import { describe, expect, it } from "@effect/vitest"
 import { Pnpm } from "@kiln/std"
-import { Effect, PlatformError } from "effect"
+import { Effect, Fiber, PlatformError } from "effect"
 import { ChildProcessSpawner } from "effect/process"
+import { TestClock } from "effect/testing"
 import type { PlanSpec, RunInfo } from "../src/Protocol.ts"
 import { resolve } from "../src/worker/Resolve.ts"
 import { memoryRepo } from "./memoryRepo.ts"
@@ -66,5 +67,16 @@ describe("resolve", () => {
       const staging = task(yield* plan(app, [publish("staging-token")]), "publish")
       const production = task(yield* plan(app, [publish("production-token")]), "publish")
       expect(production.keyBase).not.toBe(staging.keyBase)
+    }))
+
+  it.effect("a dev shell that doesn't evaluate fails the plan, after retries", () =>
+    Effect.gen(function*() {
+      const flake = Flake.make({ devShells: ["ci"] })
+      const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` })
+      const planning = yield* plan(app, [qa]).pipe(Effect.flip, Effect.forkChild)
+      yield* TestClock.adjust("1 minute")
+      const error = yield* Fiber.join(planning)
+      expect(error._tag).toBe("PlanError")
+      expect(error.message).toContain("devShells.x86_64-linux.ci")
     }))
 })
