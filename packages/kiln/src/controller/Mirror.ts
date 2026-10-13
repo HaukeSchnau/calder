@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema, Semaphore } from "effect"
-import { chmodSync, existsSync, mkdirSync, readdirSync } from "node:fs"
-import { join } from "node:path"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs"
+import { dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link } from "../Gen.ts"
 import { Config } from "./Config.ts"
@@ -41,6 +41,30 @@ const groupReadable = (dir: string) => {
     else chmodSync(path, 0o640)
   }
 }
+
+const extracted = (root: string) => existsSync(join(root, ".kiln", "ci.ts"))
+
+/**
+ * Makes `root` hold a revision's `.kiln/`: `fill` writes it into a scratch directory next to `root`,
+ * which then takes its place in one rename, so a reader sees all of it or nothing. When two fill the
+ * same root at once, the first to finish wins.
+ */
+export const extract = <E, R>(root: string, fill: (scratch: string) => Effect.Effect<void, E, R>) =>
+  Effect.gen(function*() {
+    if (extracted(root)) return
+    mkdirSync(dirname(root), { recursive: true })
+    const scratch = mkdtempSync(`${root}.`)
+    yield* Effect.ensuring(
+      Effect.gen(function*() {
+        yield* fill(scratch)
+        if (extracted(root)) return
+        // Whatever is there without ci.ts is a leftover; rename can't replace a directory that isn't empty.
+        rmSync(root, { recursive: true, force: true })
+        renameSync(scratch, root)
+      }),
+      Effect.sync(() => rmSync(scratch, { recursive: true, force: true })),
+    )
+  })
 
 export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
   const config = yield* Config
@@ -120,20 +144,18 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
     kilnDir: (project, sha) =>
       Effect.gen(function*() {
         const root = join(config.stateDir, "revs", project, sha)
+        if (!extracted(root)) {
+          const has = yield* git(project, ["cat-file", "-e", `${sha}:.kiln/ci.ts`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
+          if (!has) return yield* new NoPipeline({ revision: sha })
+          yield* extract(root, (scratch) =>
+            Exec.run(["bash", "-c", `git --git-dir "$1" archive "$2" .kiln | tar -x -C "$3"`, "kiln", path(project), sha, scratch]).pipe(
+              Effect.provideService(Exec.SpawnerTag, spawner),
+              Effect.andThen(Effect.sync(() => groupReadable(scratch))),
+            ))
+        }
         const dir = join(root, ".kiln")
         // A revision extracted before a deploy still links the SDK of the Kiln that planned it then.
-        if (existsSync(join(dir, "ci.ts"))) {
-          link(join(dir, "node_modules"), config.sdk)
-          return dir
-        }
-        const has = yield* git(project, ["cat-file", "-e", `${sha}:.kiln/ci.ts`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
-        if (!has) return yield* new NoPipeline({ revision: sha })
-        mkdirSync(root, { recursive: true })
-        yield* Exec.run(["bash", "-c", `git --git-dir "$1" archive "$2" .kiln | tar -x -C "$3"`, "kiln", path(project), sha, root]).pipe(
-          Effect.provideService(Exec.SpawnerTag, spawner),
-        )
         link(join(dir, "node_modules"), config.sdk)
-        groupReadable(root)
         return dir
       }),
     flake: (project, sha) => `git+file://${path(project)}?rev=${sha}`,
