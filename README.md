@@ -100,7 +100,8 @@ const testServer = Vitest.files({
 ```
 kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.json, links .kiln/node_modules,
                                      # and the standard .kiln/ci.ts if there is none
-kiln plan [dir] --event push:main    # what a push, pr:<n>, check, schedule:<cron> or manual:<json> run would run
+kiln plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref], schedule:<cron> or
+                                     # manual[:<json object>] would run
 kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
   [--inputs '{"release":"ios"}']     # instead a manual run of the On.manual rules these inputs match

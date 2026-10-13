@@ -8,6 +8,7 @@ import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import * as Agent from "./Agent.ts"
 import * as Check from "./Check.ts"
+import * as Cli from "./Cli.ts"
 import * as Controller from "./controller/Main.ts"
 import * as Gen from "./Gen.ts"
 import * as Remote from "./Remote.ts"
@@ -58,39 +59,19 @@ const gen = Command.make("gen", { dir: Argument.String("dir").pipe(Argument.with
     if (outputs.created) yield* Console.log("wrote .kiln/ci.ts with the standard pipeline")
   }))
 
-/** Manual inputs as a JSON object, such as `{"release":"testflight"}`. */
-const manualInputs = Schema.decodeUnknownSync(Schema.fromJsonString(Event.Manual.fields.inputs))
-
-const parseEvent = (text: string): Event.Event => {
-  const colon = text.indexOf(":")
-  const kind = colon < 0 ? text : text.slice(0, colon)
-  const arg = colon < 0 ? undefined : text.slice(colon + 1)
-  switch (kind) {
-    case "push":
-      return Event.push(arg ?? "main")
-    case "pr":
-      return Event.pullRequest({ number: Number(arg ?? 1) })
-    case "schedule":
-      return Event.schedule(arg ?? "")
-    case "check":
-      return Event.check({ ref: arg ?? "kiln/check/local" })
-    default:
-      return Event.manual(arg === undefined ? {} : manualInputs(arg))
-  }
-}
-
 const plan = Command.make("plan", {
   dir: Argument.String("dir").pipe(Argument.withDefault(".")),
   event: Flag.String("event").pipe(Flag.withDefault("push:main")),
   required: Flag.String("required").pipe(Flag.optional),
 }, ({ dir, event, required }) =>
   Effect.gen(function*() {
+    const parsed = yield* Cli.parseEvent(event)
     const kilnDir = resolve(dir, ".kiln")
     // A link from an older `kiln gen` may point at a Kiln that is gone; planning repairs it.
     if (existsSync(kilnDir)) Gen.linkCheckout(kilnDir)
     const project = yield* Load.project(kilnDir)
     const requiredChecks = Option.match(required, { onNone: () => [], onSome: (r) => r.split(",") })
-    const planned = yield* Kiln.plan(project, parseEvent(event), { requiredChecks })
+    const planned = yield* Kiln.plan(project, parsed, { requiredChecks })
     yield* Console.log(`${Event.describe(planned.event)}: ${planned.trust}, reuse ${planned.reuse}`)
     for (const step of planned.steps) {
       const deps = [
@@ -132,7 +113,7 @@ const trigger = Command.make("trigger", {
   project: Argument.String("project"),
   branch: Flag.String("branch").pipe(Flag.optional),
   schedule: Flag.String("schedule").pipe(Flag.optional),
-  inputs: Flag.String("inputs").pipe(Flag.optional),
+  inputs: Flag.String("inputs").pipe(Flag.withSchema(Schema.fromJsonString(Event.Manual.fields.inputs)), Flag.optional),
   url,
 }, ({ project, branch, schedule, inputs, url }) =>
   Effect.gen(function*() {
@@ -141,7 +122,7 @@ const trigger = Command.make("trigger", {
       project,
       ...Option.match(branch, { onNone: () => ({}), onSome: (b) => ({ branch: b }) }),
       ...Option.match(schedule, { onNone: () => ({}), onSome: (cron) => ({ schedule: cron }) }),
-      ...Option.match(inputs, { onNone: () => ({}), onSome: (json) => ({ inputs: manualInputs(json) }) }),
+      ...Option.match(inputs, { onNone: () => ({}), onSome: (i) => ({ inputs: i }) }),
     })
     yield* follow(client, run)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
