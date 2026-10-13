@@ -105,7 +105,8 @@ kiln check [dir]                     # runs the working copy (jj or git) like a 
 kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
   [--inputs '{"release":"ios"}']     # instead a manual run of the On.manual rules these inputs match
 kiln status <run>                    # a run's steps, with why those that failed did
-kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front
+kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
+                                     # until the step ends, or the run without a step
 kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12
 kiln controller --config <file>      # the service
 kiln worker <job>                    # started by the controller in a systemd unit, or by an agent

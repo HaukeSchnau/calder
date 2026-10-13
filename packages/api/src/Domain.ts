@@ -6,6 +6,9 @@ export type Trust = typeof Trust.Type
 export const RunStatus = Schema.Literals(["queued", "planning", "running", "passed", "failed", "cancelled", "errored"])
 export type RunStatus = typeof RunStatus.Type
 
+/** A run with one of these statuses has ended. */
+export const ended: ReadonlySet<RunStatus> = new Set(["passed", "failed", "cancelled", "errored"])
+
 export const StepStatus = Schema.Literals([
   /** Waiting for the steps it depends on. */
   "pending",
