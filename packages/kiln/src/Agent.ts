@@ -4,7 +4,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { readFileSync } from "node:fs"
 import * as Build from "./Build.ts"
-import { type AgentOrder, AgentRpcs } from "./Protocol.ts"
+import { type AgentOrder, AgentRpcs, compatibility } from "./Protocol.ts"
 
 export interface Options {
   /** The controller's URL. */
@@ -111,7 +111,7 @@ export const run = (options: Options) =>
     yield* Effect.logInfo(`agent ${options.name} serving ${options.platform} jobs from ${options.url}`)
     yield* Effect.suspend(() => {
       offering = offered()
-      return client.work({ ...auth, platform: options.platform, slots: offering, running: [...running.keys()], build: Build.id }).pipe(
+      return client.work({ ...auth, platform: options.platform, slots: offering, running: [...running.keys()], build: Build.id, compatibility }).pipe(
         Stream.runForEach(obey),
       )
     }).pipe(
