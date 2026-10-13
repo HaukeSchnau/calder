@@ -16,6 +16,9 @@ import { type Project, Projects } from "./Projects.ts"
 import { Runs } from "./Workflow.ts"
 
 
+/** Run ids are the project and the run's number, such as `ebb-3`. */
+const unknownRun = (id: string) => new NotFound({ what: /-\d+$/.test(id) ? `run ${id}` : `run ${id} (run ids look like ${id}-12)` })
+
 export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const config = yield* Config
   const sql = yield* SqlClient.SqlClient
@@ -118,7 +121,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const detail = (id: string) =>
     Effect.gen(function*() {
       const row = yield* db(Rows.loadRun(id))
-      if (row === undefined) return yield* new NotFound({ what: `run ${id}` })
+      if (row === undefined) return yield* unknownRun(id)
       const seq = live.seq()
       const [run] = yield* db(Rows.runsWithCounts([row]))
       const estimates = yield* db(Estimates.forProject(row.project))
@@ -226,7 +229,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     logs: ({ runId, step, follow, limit, before }) =>
       Stream.unwrap(Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
-        if (row === undefined) return Stream.fail(new NotFound({ what: `run ${runId}` }))
+        if (row === undefined) return Stream.fail(unknownRun(runId))
         const recent = live.lines(runId, step)
         const all = recent.length > 0 ? recent : yield* telemetry.logs({ run: runId, ...(step === undefined ? {} : { step }) })
         const end = Math.min(before ?? all.length, all.length)
@@ -244,7 +247,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     trace: ({ runId }) =>
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
-        if (row === undefined) return yield* new NotFound({ what: `run ${runId}` })
+        if (row === undefined) return yield* unknownRun(runId)
         const spans = yield* telemetry.trace(row.trace_id)
         return spans.length > 0 ? spans : yield* journalSpans(runId)
       }),
@@ -309,7 +312,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     cancel: ({ runId }) =>
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
-        if (row === undefined) return yield* new NotFound({ what: `run ${runId}` })
+        if (row === undefined) return yield* unknownRun(runId)
         if (!["queued", "planning", "running"].includes(row.status)) return yield* new Refused({ reason: `run is ${row.status}` })
         yield* runs.cancel(runId, "cancelled from the UI")
       }),
