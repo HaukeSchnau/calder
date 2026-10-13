@@ -100,18 +100,24 @@ const testServer = Vitest.files({
 ```
 kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.json, links .kiln/node_modules,
                                      # and the standard .kiln/ci.ts if there is none
-kiln plan [dir] --event push:main    # what a push, pr:<n>, check, schedule:<cron> or manual:<json> run would run
+kiln plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref], schedule:<cron> or
+                                     # manual[:<json object>] would run
 kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
-kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
-  [--inputs '{"release":"ios"}']     # instead a manual run of the On.manual rules these inputs match
+kiln trigger <project> [--branch b]  # runs a branch head on the controller, follows it, and exits 1 unless
+  [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
+kiln runs [project] [--limit n]      # recent runs with their status, event, commit and age
+kiln projects                        # the projects and the latest run of each default branch
 kiln status <run>                    # a run's steps, with why those that failed did
-kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front
+kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
+                                     # until the step ends, or the run without a step
 kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12
 kiln controller --config <file>      # the service
 kiln worker <job>                    # started by the controller in a systemd unit, or by an agent
 kiln agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
                                      # runs the controller's jobs for this host's platform
 ```
+
+`kiln <command> --help` describes each argument and flag.
 
 An agent gets jobs only while it has the controller's compatibility version (`compatibility` in
 `packages/kiln/src/Protocol.ts`), so deploying the controller stalls agents only when that version

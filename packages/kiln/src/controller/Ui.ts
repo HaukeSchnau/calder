@@ -235,7 +235,8 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         const end = Math.min(before ?? all.length, all.length)
         const start = Math.max(0, end - (limit ?? 5000))
         const page = all.slice(start, end).map((line, i): Domain.LogEntry => ({ ...line, index: start + i }))
-        const tail = follow === true && before === undefined && live.running(runId, step)
+        const following = step === undefined ? !Domain.ended.has(row.status) : live.running(runId, step)
+        const tail = follow === true && before === undefined && following
           ? live.follow(runId, step).pipe(Stream.mapAccum(() => all.length, (index, line) => [index + 1, [{ ...line, index }]] as const))
           : Stream.empty
         return Stream.concat(Stream.fromIterable(page), tail)
