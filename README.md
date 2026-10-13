@@ -103,8 +103,8 @@ kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.jso
 kiln plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref], schedule:<cron> or
                                      # manual[:<json object>] would run
 kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
-kiln trigger <project> [--branch b]  # runs a branch head on the controller and follows it
-  [--inputs '{"release":"ios"}']     # instead a manual run of the On.manual rules these inputs match
+kiln trigger <project> [--branch b]  # runs a branch head on the controller, follows it, and exits 1 unless
+  [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
 kiln status <run>                    # a run's steps, with why those that failed did
 kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
                                      # until the step ends, or the run without a step

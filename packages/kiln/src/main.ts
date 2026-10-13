@@ -124,7 +124,8 @@ const trigger = Command.make("trigger", {
       ...Option.match(schedule, { onNone: () => ({}), onSome: (cron) => ({ schedule: cron }) }),
       ...Option.match(inputs, { onNone: () => ({}), onSome: (i) => ({ inputs: i }) }),
     })
-    yield* follow(client, run)
+    const status = yield* follow(client, run)
+    if (status !== "passed") return yield* Effect.fail(new Error(`${run.id} ${status}`))
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))
 
 /**
