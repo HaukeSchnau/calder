@@ -40,6 +40,8 @@ export const PlannedStep = Schema.Struct({
     outputs: Schema.Array(Schema.String),
     secrets: Schema.Array(Schema.String),
     platform: Schema.NullOr(Schema.String),
+    /** False when the task must run on the controller's host; plans from before it was added lack it. */
+    offload: Schema.optional(Schema.Boolean),
   })),
   action: Schema.NullOr(Schema.Struct({ deploy: Schema.Boolean, secrets: Schema.Array(Schema.String) })),
   output: Schema.NullOr(Schema.Struct({ task: Schema.String, output: Schema.String })),

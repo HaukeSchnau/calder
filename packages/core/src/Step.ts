@@ -125,6 +125,7 @@ export type Def =
     readonly env: { readonly [env: string]: string }
     readonly platform: Platform | undefined
     readonly reuse: "never" | undefined
+    readonly offload: false | undefined
   }
   | {
     readonly _tag: "Action"

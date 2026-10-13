@@ -69,6 +69,15 @@ describe("resolve", () => {
       expect(production.keyBase).not.toBe(staging.keyBase)
     }))
 
+  it.effect("a task that needs the controller's host is planned not to be offloaded, without changing its key", () =>
+    Effect.gen(function*() {
+      const publish = (offload: false | undefined) => Task.make("publish", { run: cmd`publish`, ...(offload === undefined ? {} : { offload }) })
+      const anywhere = task(yield* plan(app, [publish(undefined)]), "publish")
+      const here = task(yield* plan(app, [publish(false)]), "publish")
+      expect([anywhere.offload, here.offload]).toEqual([true, false])
+      expect(here.keyBase).toBe(anywhere.keyBase)
+    }))
+
   it.effect("a dev shell that doesn't evaluate fails the plan, after retries", () =>
     Effect.gen(function*() {
       const flake = Flake.make({ devShells: ["ci"] })

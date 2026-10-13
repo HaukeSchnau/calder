@@ -60,10 +60,11 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   The paths a task names in `outputs` go to the Nix store, also when the task fails, and the UI and
   `kiln status` link to them; a failed task's outputs are never reused. A task with another `platform`
   than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only). An agent of
-  the controller's platform with a free slot also takes trusted tasks off the controller. Pull-request
+  the controller's platform with a free slot also takes trusted tasks off the controller, unless the
+  task says `offload: false` because it needs the controller's host. Pull-request
   tasks always run on the controller, because agents run every worker as one user without a sandbox.
-  Tasks get `GOMEMLIMIT` at two thirds of their worker's memory limit, so Go tools such as tsgo
-  collect garbage before the limit throttles them; a task's own `env` overrides it.
+  Tasks get `GOMEMLIMIT` at 90% of their worker's memory limit, so Go tools such as tsgo collect
+  garbage before the limit throttles them; a task's own `env` overrides it.
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
   `name`; a step that names a secret the project doesn't configure dies saying so.

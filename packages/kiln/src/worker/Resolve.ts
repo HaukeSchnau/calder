@@ -398,6 +398,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
                 outputs: Object.keys(def.outputs),
                 secrets: Object.values(def.secrets).map((s) => s.name),
                 platform: def.platform ?? null,
+                offload: def.offload !== false,
               },
             }
           }

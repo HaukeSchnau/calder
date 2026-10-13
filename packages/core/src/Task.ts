@@ -41,6 +41,12 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
    * the machine rather than the code. The rule's `reuse` still applies to its other steps.
    */
   readonly reuse?: "never"
+  /**
+   * `false`: the task runs on the controller's host, never on an agent that only takes load off it,
+   * such as a task that writes to a directory only that host has. Tasks of another `platform` still
+   * run on their platform's agents.
+   */
+  readonly offload?: false
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
@@ -72,4 +78,5 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     env: options.env ?? {},
     platform: options.platform,
     reuse: options.reuse,
+    offload: options.offload,
   }) as Step<void, TaskFailed, R, O>

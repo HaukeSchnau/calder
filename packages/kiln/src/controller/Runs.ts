@@ -519,10 +519,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     platform: string | null,
     shard: number | null,
     attempt: (placement: Placement) => Effect.Effect<R, E, Q>,
-    options: { readonly setup?: boolean } = {},
+    options: { readonly setup?: boolean; readonly here?: boolean } = {},
   ) =>
     Effect.gen(function*() {
-      const placement = place(run, info, platform)
+      const placement = place(run, info, platform, options.here)
       const first = yield* attempt(placement)
       const { result } = first
       const why = stopped(first)
@@ -882,7 +882,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 withdraw,
               },
               collect,
-            )))
+            ), { here: task.offload === false }))
           if (!sharded || stopped(r)) return r
           const passed = r.result._tag === "Passed"
           const now = Date.now()
@@ -1029,7 +1029,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 offload: p.offload,
               },
               mine,
-            )))
+            ), { here: task.offload === false }))
           context.collect.tests.push(...mine.tests)
           context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
           return { r, tests: mine.tests, files }
