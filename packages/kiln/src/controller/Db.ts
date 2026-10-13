@@ -4,7 +4,7 @@ import { SqlClient } from "effect/sql"
 import { join } from "node:path"
 import { Config } from "./Config.ts"
 
-const migrations = {
+export const migrations = {
   "0001_init": Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     yield* sql`create table runs (

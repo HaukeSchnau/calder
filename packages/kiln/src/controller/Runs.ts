@@ -135,14 +135,16 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const [run] = yield* db(Rows.runsWithCounts([row]))
       yield* live.publish({ _tag: "RunChanged", run: run! })
     })
+  const estimates = Estimates.make()
   const publishStep = (runId: string, name: string) =>
     Effect.gen(function*() {
       const row = yield* db(Rows.loadStep(runId, name))
       const run = yield* db(Rows.loadRun(runId))
       if (row === undefined || run === undefined) return
-      const estimates = yield* db(Estimates.forProject(run.project))
+      yield* db(estimates.settled(run.project, row))
+      const estimate = (yield* db(estimates.forProject(run.project))).get(name) ?? null
       const failingTests = row.status === "failed" ? yield* db(Rows.failingTests(runId, name)) : []
-      yield* live.publish({ _tag: "StepChanged", step: Rows.step(row, estimates.get(name) ?? null), failingTests })
+      yield* live.publish({ _tag: "StepChanged", step: Rows.step(row, estimate), failingTests })
     })
 
   const status = (run: Rows.RunRow, context: string, state: StatusState, description: string) =>
@@ -652,7 +654,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* publishStep(runId, name)
 
       const inputs = Object.fromEntries([...spec.needs, ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
-      const expected = Estimates.of(yield* db(Estimates.forProject(run.project)), name)
+      const expected = Estimates.of(yield* db(estimates.forProject(run.project)), name)
       const plan = JSON.parse(run.plan ?? "{}") as PlanSpec
       const kilnDir = yield* mirror.kilnDir(run.project, run.sha).pipe(Effect.orDie)
       const info = runInfo(run, kilnDir)
