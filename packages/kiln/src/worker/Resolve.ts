@@ -1,23 +1,16 @@
 import { Cmd, Files, Flake, Kiln, type Step } from "@kiln/core"
-import { Effect } from "effect"
+import { Effect, Schedule } from "effect"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import type { PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import * as Imports from "./Imports.ts"
 import type { Repo } from "./Repo.ts"
 
-/** Root files every workspace package reads: manifests, lockfiles and the fleet's `.ci/` contract. */
-const rootFiles = [
-  "package.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "bun.lock",
-  "bun.lockb",
-  "package-lock.json",
-  "yarn.lock",
-  ".npmrc",
-  ".ci",
-]
+/**
+ * What every workspace package reads at the root: the files there except docs (manifests, lockfiles,
+ * shared configs such as `tsconfig.base.json`) and the fleet's `.ci/` contract.
+ */
+const rootFiles = (repo: Repo) => Effect.map(repo.files, (all) => [...all.filter((f) => !f.includes("/") && !/\.mdx?$/i.test(f)), ".ci"])
 
 interface Manifest {
   readonly dir: string
@@ -95,6 +88,8 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
       }
       case "Union":
         return (yield* Effect.forEach(files.members, (m) => paths(repo, m))).flat()
+      case "Optional":
+        return yield* paths(repo, files.files)
       case "Workspace": {
         if (files.dirs.includes(".")) return ["."]
         const all = yield* manifests(repo)
@@ -114,14 +109,71 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
           if (m !== undefined) visit(m)
           else seen.add(dir)
         }
-        return [...rootFiles, ...[...seen].sort()]
+        return [...(yield* rootFiles(repo)), ...[...seen].sort()]
       }
     }
   })
 
+/** The paths and patterns of `files` that match nothing at the revision, except `optional` ones. */
+const unmatched = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
+  Effect.gen(function*() {
+    switch (files._tag) {
+      case "All":
+      case "Optional":
+        return []
+      case "Of":
+      case "Workspace": {
+        const all = yield* repo.files
+        return (files._tag === "Of" ? files.paths : files.dirs).filter((path) =>
+          path !== "." && !all.some((f) => f === path || f.startsWith(`${path}/`))
+        )
+      }
+      case "Glob":
+      case "Imports": {
+        const all = yield* repo.files
+        return files.patterns.filter((pattern) => {
+          const re = Files.globToRegExp(pattern)
+          return !all.some((f) => re.test(f))
+        })
+      }
+      case "Union":
+        return (yield* Effect.forEach(files.members, (m) => unmatched(repo, m))).flat()
+    }
+  })
+
 /**
- * A key for every file of a task's `each`: the task's own key base, the file, everything it imports
- * and its package's data files.
+ * Fails the plan when a path or pattern the project wrote matches no file: its key would never change.
+ * Every task's and setup's files count, also those of steps this event doesn't run.
+ */
+const checkFiles = (project: Kiln.Project, repo: Repo) =>
+  Effect.gen(function*() {
+    const universe = yield* Kiln.universe(project)
+    const written = [
+      ...(project.shared === undefined ? [] : [["the project's shared files", project.shared] as const]),
+      ...[...universe.values()].flatMap((step) => {
+        const def = step.def
+        if (def._tag === "Setup") return [[`${step.name}'s inputs`, def.inputs] as const]
+        if (def._tag !== "Task") return []
+        return [
+          [`${step.name}'s inputs`, def.inputs] as const,
+          ...(def.each === undefined ? [] : [[`${step.name}'s each`, def.each] as const]),
+          ...(def.shards?.split === undefined ? [] : [[`${step.name}'s shards.split`, def.shards.split] as const]),
+        ]
+      }),
+    ]
+    const missing = (yield* Effect.forEach(written, ([where, files]) =>
+      Effect.map(unmatched(repo, files), (patterns) => patterns.map((pattern) => `${JSON.stringify(pattern)} (${where})`))
+    )).flat()
+    if (missing.length > 0) {
+      return yield* new Kiln.PlanError({
+        message: `No file matches ${missing.join(", ")}. Fix the path or pattern, or wrap files that may be missing in Files.optional(...).`,
+      })
+    }
+  })
+
+/**
+ * A key for every file of a task's `each`: the task's own key base (with its setup's key), the file,
+ * everything it imports and its package's data files.
  */
 const eachKeys = (repo: Repo, each: Files.Files, keyBase: string) =>
   Effect.gen(function*() {
@@ -166,8 +218,8 @@ export interface Derivation {
 
 /**
  * Evaluates every attribute's derivation in one evaluator, so nixpkgs is instantiated once per plan.
- * Attributes that throw come back as null; if the whole evaluation fails (a missing attribute isn't
- * catchable), every attribute does, and builds evaluate on their own as before.
+ * Attributes that throw come back as null. A missing attribute isn't catchable and fails the whole
+ * evaluation.
  */
 export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>) =>
   Effect.gen(function*() {
@@ -179,7 +231,6 @@ export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>) =>
       in { ${body} }`
     const out = yield* Exec.run(["nix", "eval", "--json", "--expr", expr]).pipe(
       Effect.map((json) => JSON.parse(json) as Record<string, Derivation | null>),
-      Effect.orElseSucceed(() => ({}) as Record<string, Derivation | null>),
     )
     return new Map(attrs.map((attr, i) => [attr, out[`a${i}`] ?? null]))
   })
@@ -217,16 +268,29 @@ const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv:
 /** Turns a plan into the wire format, resolving tree ids, dev shells and task keys at the revision. */
 export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, repo: Repo) =>
   Effect.gen(function*() {
+    yield* checkFiles(project, repo)
     const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared)
-    const attrs = new Set(
-      plan.steps.flatMap((p) => {
-        const def = p.step.def
-        if (def._tag === "Build") return [Flake.attrPath(def.ref, run.system)]
-        if ((def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined) return [Flake.attrPath(def.shell, run.system)]
-        return []
-      }),
+    const builds = plan.steps.flatMap((p) => (p.step.def._tag === "Build" ? [Flake.attrPath(p.step.def.ref, run.system)] : []))
+    const shells = [...new Set(plan.steps.flatMap((p) => {
+      const def = p.step.def
+      return (def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined ? [Flake.attrPath(def.shell, run.system)] : []
+    }))]
+    // When the batch fails, builds evaluate on their own when they run, but keys need the dev shells now.
+    const evaluated = yield* derivations(run, [...new Set([...builds, ...shells])]).pipe(
+      Effect.catch(() => derivations(run, shells).pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("2 seconds") }))),
+      Effect.mapError((e) =>
+        new Kiln.PlanError({
+          message: `Nix could not evaluate the dev shells ${shells.join(", ")}, which task keys include: ${
+            e._tag === "CommandFailed" ? e.stderr.trim().split("\n").slice(-10).join("\n") : e.message
+          }`,
+        })
+      ),
     )
-    const evaluated = yield* derivations(run, [...attrs])
+    const broken = shells.filter((shell) => !evaluated.get(shell))
+    if (broken.length > 0) {
+      return yield* new Kiln.PlanError({ message: `The dev shell ${broken.join(", ")} did not evaluate, and task keys include it` })
+    }
+    const toolchainOf = (shell: string | null) => (shell === null ? null : evaluated.get(shell)!.drv)
     const dependencies = (yield* repo.entries).filter((e) => dependencyFiles.some((re) => re.test(e.path)))
     const uses = yield* buildEdges(plan.steps.flatMap((p) => {
       const def = p.step.def
@@ -245,7 +309,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
         return [p.name, sha256({
           kind: "setup",
           inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
-          toolchain: shell === null ? null : evaluated.get(shell)?.drv ?? null,
+          toolchain: toolchainOf(shell),
           command: Cmd.show(def.run),
           keep: def.keep,
           path: def.path,
@@ -302,17 +366,19 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
             const split = def.shards?.split === undefined ? [] : yield* paths(repo, def.shards.split)
             const splitIds = split.length === 0 ? new Map<string, string>() : yield* repo.objectIds(split)
             const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system)
-            const toolchain = shell === null ? null : evaluated.get(shell)?.drv ?? null
+            const toolchain = toolchainOf(shell)
             const count = def.shards?.count ?? 1
             const command = typeof def.run === "function" ? def.run({ index: 1, count, files: [] }) : def.run
+            const setup = def.setup === undefined ? null : setupKeys.get(def.setup.name)!
             const keyBase = sha256({
               kind: "task",
               inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
               split: split.map((path) => [path, splitIds.get(path) ?? null]),
               toolchain,
+              setup,
               command: describeCmd(def.run, count),
               env: Object.entries(def.env).sort(),
-              secrets: Object.keys(def.secrets).sort(),
+              secrets: Object.entries(def.secrets).map(([env, ref]) => [env, ref.name]).sort(),
               report: def.report ?? null,
               outputs: Object.entries(def.outputs).sort(),
               shards: def.shards?.count ?? null,
@@ -328,9 +394,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
                 interpolates: command.steps.map((s) => s.name),
                 shards: def.shards?.count ?? null,
                 each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
-                deps: def.setup === undefined
-                  ? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain })
-                  : setupKeys.get(def.setup.name)!,
+                deps: setup ?? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
                 outputs: Object.keys(def.outputs),
                 secrets: Object.values(def.secrets).map((s) => s.name),
                 platform: def.platform ?? null,

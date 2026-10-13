@@ -17,7 +17,10 @@ export interface InstallOptions {
 export const install = (options: InstallOptions = {}) =>
   Setup.make("install", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
-    inputs: Files.glob("**/package.json", "bun.lock", "bun.lockb", "bunfig.toml", ".npmrc", "patches/**/*.patch"),
+    inputs: Files.union(
+      Files.glob("**/package.json"),
+      Files.optional(Files.glob("bun.lock", "bun.lockb", "bunfig.toml", ".npmrc", "patches/**/*.patch")),
+    ),
     run: cmd`bun install --frozen-lockfile ${[...(options.args ?? [])]}`,
     keep: ["node_modules", "*.tsbuildinfo", ...(options.keep ?? [])],
     path: ["node_modules/.bin"],
