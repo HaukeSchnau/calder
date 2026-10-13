@@ -4,6 +4,7 @@ import { SqlClient } from "effect/sql"
 import { join } from "node:path"
 import { Config } from "./Config.ts"
 import * as Outputs from "./Outputs.ts"
+import * as Rows from "./Rows.ts"
 
 export const migrations = {
   "0001_init": Effect.gen(function*() {
@@ -223,14 +224,11 @@ export const prune = (days: number, now = Date.now()) =>
           select id, row_number() over (partition by project order by created_at desc) as n from runs where plan is not null
         ) where n = 1)
       order by finished_at`
-    // bun:sqlite blocks the event loop while a query runs, and a worker drops its connection after five
-    // seconds without a ping; pauses between small deletes let pings through.
-    const pause = Effect.sleep("50 millis")
     const counts = { deleted: 0, trimmed: 0 }
     for (const run of old) {
       // A run can have tens of thousands of test results, too many for one statement.
       while ((yield* sql`delete from tests where rowid in (select rowid from tests where run_id = ${run.id} limit 1000) returning 1`).length > 0) {
-        yield* pause
+        yield* Rows.pause
       }
       const outcome = yield* sql.withTransaction(Effect.gen(function*() {
         const recent = sql`(runs.finished_at is null or runs.finished_at >= ${cutoff})`
@@ -261,7 +259,7 @@ export const prune = (days: number, now = Date.now()) =>
         return "deleted"
       }))
       if (outcome !== "kept") counts[outcome]++
-      yield* pause
+      yield* Rows.pause
     }
     return counts
   })

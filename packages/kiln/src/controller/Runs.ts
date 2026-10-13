@@ -387,10 +387,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         contradicts = ${contradicts?.run_id ?? null}
         where run_id = ${run.id} and name = ${row.name}`)
       if (counts !== null) {
-        yield* db(sql.withTransaction(Effect.forEach(tests, (t) =>
-          sql`insert into tests (run_id, project, step, suite, name, file, status, duration_ms, message, created_at, superseded)
-            values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now},
-              ${t.superseded ? 1 : 0})`, { discard: true })))
+        yield* db(Rows.inChunks(tests, (chunk) =>
+          sql.withTransaction(Effect.forEach(chunk, (t) =>
+            sql`insert into tests (run_id, project, step, suite, name, file, status, duration_ms, message, created_at, superseded)
+              values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now},
+                ${t.superseded ? 1 : 0})`, { discard: true }))))
       }
       if (outcome !== null) {
         yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
@@ -967,10 +968,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       const now = Date.now()
       const known = [...results].filter(([, o]) => o.status !== "unknown")
-      yield* db(sql.withTransaction(Effect.forEach(known, ([file, o]) =>
-        sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at, job)
-          values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
-            ${o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true })))
+      yield* db(Rows.inChunks(known, (chunk) =>
+        sql.withTransaction(Effect.forEach(chunk, ([file, o]) =>
+          sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at, job)
+            values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
+              ${o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true }))))
       if (interrupted || (retry !== undefined && stopped(retry.r))) return yield* settle(run, row, { status: "cancelled" })
 
       const jobs = retry === undefined ? first : [...first, retry]
