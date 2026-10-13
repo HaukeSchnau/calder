@@ -2,6 +2,7 @@ import { Busy, Cache, Cmd, CurrentRun, Flake, Fleet, Git, Gitea, Kiln, PullReque
 import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join } from "node:path"
@@ -179,6 +180,7 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
     yield* checkout(job, workspace, setup === undefined ? preserved(workspace) : setup.keep)
     const tmp = join(slot.cache, "tmp")
     mkdirSync(tmp, { recursive: true })
+    const shortTmp = shortLink(tmp)
     const prelude = [
       "set -euo pipefail",
       `if [ -n "\${KILN_PATH:-}" ]; then export PATH="$KILN_PATH:$PATH"; fi`,
@@ -187,7 +189,7 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
     const extraEnv: Record<string, string> = {
       ...setup?.env,
       KILN_PATH: (setup?.path ?? []).map((dir) => join(workspace, dir)).join(":"),
-      TMPDIR: tmp,
+      TMPDIR: shortTmp,
       CI_CACHE_ROOT: slot.cache,
       CI_WORKSPACE_SLOT: job.workspace.split("/").at(-1) ?? "",
     }
@@ -211,6 +213,18 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
     mkdirSync(tmp, { recursive: true })
     return { _tag: "Ready", slot, workspace, prelude, extraEnv, fresh: slot.fresh && command !== null } as const
   })
+
+/**
+ * A short path to a workspace's temporary directory. Unix socket paths may be at most 104 to 108
+ * bytes, and the workspace's own path, plus the `nix-shell.XXXXXX` a dev shell nests in TMPDIR,
+ * left too little for a socket: Chromium couldn't create its singleton socket. Files still land in
+ * the workspace. `/tmp` rather than `tmpdir()`, whose macOS default is itself about 50 bytes.
+ */
+export const shortLink = (dir: string, root = "/tmp") => {
+  const path = join(root, `kiln-${createHash("sha256").update(dir).digest("hex").slice(0, 12)}`)
+  link(path, dir)
+  return path
+}
 
 /** A setup step: prepares its key's workspace unless a prepared copy exists. Its value says which. */
 export const setup = (job: StepJob, step: Step.Any) =>
