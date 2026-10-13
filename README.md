@@ -29,7 +29,7 @@ once every check passed. `afterDeploy` adds steps that run after the release is 
 that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `Project.ts`).
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.
-- **setup** (`Setup.make`, or `Pnpm.install` from `@kiln/std`): prepares a workspace once per key,
+- **setup** (`Setup.make`, or `Pnpm.install` and `Bun.install` from `@kiln/std`): prepares a workspace once per key,
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
   prepared before settles at once. `keep` names what survives a task's `git clean`, `path` what goes
@@ -41,7 +41,9 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   repository by default), the dev shell, the command and the values it interpolates. Pull requests
   reuse everything; pushes rerun tasks unless they build `outputs`. A task with another `platform`
   than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only).
-  Pull-request tasks reach the network only through the controller's egress allowlist.
+  Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
+  { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
+  `name`; a step that names a secret the project doesn't configure dies saying so.
 - **action** (`Action.make`): Effect code with side effects. `needs` are the steps whose values the
   body reads, `after` the steps that must pass first, `grants` what it may do (`deploy`, `secrets`).
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
