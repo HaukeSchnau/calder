@@ -2,10 +2,11 @@
   "name": "@kiln/sdk",
   "version": "0.1.0",
   "private": true,
-  "description": "The node_modules that `.kiln/node_modules` links to: what ci.ts may import.",
+  "description": "The node_modules that `.kiln/node_modules` links to: what ci.ts may import, and the types of the Bun it runs on.",
   "dependencies": {
     "@kiln/core": "workspace:*",
     "@kiln/std": "workspace:*",
-    "effect": "4.0.0"
+    "effect": "4.0.0",
+    "@types/bun": "1.4.2"
   }
 }

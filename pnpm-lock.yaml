@@ -114,6 +114,9 @@ importers:
       '@kiln/std':
         specifier: workspace:*
         version: link:../packages/std
+      '@types/bun':
+        specifier: 1.4.2
+        version: 1.4.2
       effect:
         specifier: 4.0.0
         version: 4.0.0
