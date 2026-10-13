@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, Fiber, Layer, Option, Schedule } from "effect"
+import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, Schedule, Scope } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"
 import { randomBytes } from "node:crypto"
@@ -29,6 +29,8 @@ export interface ActiveJob {
   readonly onEvent: (event: JobEvent) => Effect.Effect<void>
   readonly result: Deferred.Deferred<JobResult>
   readonly samples: Array<Sample>
+  /** Closes when the job ends, however it ends, which releases what the job holds, such as its deploy lease. */
+  readonly scope: Scope.Closeable
   /** Set by the RPC server while the job holds a deploy lease: the project, its app and its endpoints. */
   lease: { readonly project: string; readonly app: string; readonly targets: ReadonlyArray<string> } | undefined
 }
@@ -196,6 +198,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
   const settledOf = new Map<string, Deferred.Deferred<void>>()
   const forget = (id: string) =>
     Effect.gen(function*() {
+      const job = jobs.get(id)
+      if (job !== undefined) yield* Scope.close(job.scope, Exit.void)
       jobs.delete(id)
       adoptable.delete(id)
       sinks.delete(id)
@@ -225,6 +229,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         onEvent: (event) => sink.target?.(event) ?? Effect.sync(() => sink.buffer.push(event)),
         result: Deferred.makeUnsafe<JobResult>(),
         samples: [],
+        scope: yield* Scope.make(),
         lease: undefined,
       })
     }
@@ -256,7 +261,18 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         const refused: JobResult = { _tag: "Died", message: "agents only take jobs of trusted runs" }
         return { result: refused, usage: { cpuSeconds: null, memoryPeakBytes: null }, id }
       }
-      const job: ActiveJob = { id, tokenHash: sha256(token), spec, pool: options.pool, remote, onEvent: options.onEvent, result, samples: [], lease: undefined }
+      const job: ActiveJob = {
+        id,
+        tokenHash: sha256(token),
+        spec,
+        pool: options.pool,
+        remote,
+        onEvent: options.onEvent,
+        result,
+        samples: [],
+        scope: yield* Scope.make(),
+        lease: undefined,
+      }
       const tokenFile = join(jobsDir, `${id}.token`)
       const persisted = options.adoptable === true && !remote && config.jobs.mode === "systemd" && spec._tag === "Step"
 
@@ -274,6 +290,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const onStart = options.onStart ?? Effect.void
 
       const cleanup = Effect.gen(function*() {
+        yield* Scope.close(job.scope, Exit.void)
         if (stopping && persisted) return
         jobs.delete(id)
         if (existsSync(tokenFile)) rmSync(tokenFile)

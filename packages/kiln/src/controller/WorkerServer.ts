@@ -1,6 +1,6 @@
 import { BunSocketServer } from "@effect/platform-bun"
 import type { Domain } from "@kiln/api"
-import { Deferred, Effect, Layer, References } from "effect"
+import { Deferred, Effect, Layer, References, Scope } from "effect"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { SqlClient } from "effect/sql"
 import { chmodSync, chownSync, existsSync, readFileSync, rmSync } from "node:fs"
@@ -72,8 +72,6 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
     finish: ({ job, token, result }) =>
       Effect.gen(function*() {
         const active = yield* jobs.authorize(job, token)
-        if (active.lease !== undefined) yield* leases.release(active.lease.project, active.id)
-        active.lease = undefined
         yield* Deferred.succeed(active.result, result)
       }),
     gitHead: ({ job, token, branch }) =>
@@ -121,7 +119,12 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const active = yield* deployer(job, token)
         const run = runOf(active)
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
-        const grant = yield* leases.acquire(project, { job: active.id, run: run.number })
+        const grant = yield* Effect.uninterruptibleMask((restore) =>
+          restore(leases.acquire(project, { job: active.id, run: run.number })).pipe(
+            // Released when the job ends, however it ends, and at once if it already has.
+            Effect.tap((grant) => grant._tag === "Held" ? Scope.addFinalizer(active.scope, leases.release(project, active.id)) : Effect.void),
+          )
+        )
         if (grant._tag === "Replaced") return grant
         const app = yield* appOf(run.id, project)
         const targets = yield* fleet.targets(projects.get(project)!, app)
