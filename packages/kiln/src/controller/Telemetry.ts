@@ -1,6 +1,6 @@
 import type { Domain } from "@kiln/api"
-import { Context, Effect, Exit, Layer } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/http"
+import { Cause, Context, Effect, Exit, Layer, Schedule } from "effect"
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
 import { randomBytes } from "node:crypto"
 import { Config } from "./Config.ts"
 
@@ -48,6 +48,19 @@ const attrs = (record: Record<string, string>) => Object.entries(record).map(([k
 const nanos = (ms: number) => `${BigInt(Math.round(ms)) * 1_000_000n}`
 const severity = { debug: 5, info: 9, warn: 13, error: 17 } as const
 
+/**
+ * Retries an export for up to ten minutes, so a collector restart loses nothing; the UI holds a step's
+ * output for fifteen minutes before it reads it back from VictoriaLogs.
+ */
+const retrying = Schedule.min([Schedule.exponential("2 seconds"), Schedule.spaced("1 minute")]).pipe(Schedule.upTo({ duration: "10 minutes" }))
+
+/** The collector answered that it won't take the batch, which no retry changes. */
+const refused = (e: HttpClientError.HttpClientError | Cause.TimeoutError) => {
+  if (e._tag !== "HttpClientError" || e.reason._tag !== "StatusCodeError") return false
+  const { status } = e.reason.response
+  return status >= 400 && status < 500 && status !== 429
+}
+
 export const layer = Layer.effect(Telemetry)(Effect.gen(function*() {
   const config = yield* Config
   const client = yield* HttpClient.HttpClient
@@ -55,16 +68,19 @@ export const layer = Layer.effect(Telemetry)(Effect.gen(function*() {
   let spans: Array<SpanData> = []
   let logs: Array<LogRecord> = []
 
-  const post = (path: string, body: unknown) =>
+  const collector = client.pipe(HttpClient.filterStatusOk)
+  /** Sends a batch, retrying on `schedule` unless the collector refused it, and says what it drops. */
+  const post = (path: string, body: unknown, what: string, schedule: Schedule.Schedule<unknown, unknown>) =>
     config.telemetry.otlp === null
       ? Effect.void
-      : client.execute(HttpClientRequest.post(`${config.telemetry.otlp}${path}`).pipe(HttpClientRequest.bodyJsonUnsafe(body))).pipe(
+      : collector.execute(HttpClientRequest.post(`${config.telemetry.otlp}${path}`).pipe(HttpClientRequest.bodyJsonUnsafe(body))).pipe(
         Effect.timeout("10 seconds"),
+        Effect.retry({ schedule, while: (e) => !refused(e) }),
         Effect.asVoid,
-        Effect.catch((e) => Effect.logDebug("otlp export failed", e)),
+        Effect.catch((e) => Effect.logWarning(`dropped ${what}: the OTLP export failed`, e)),
       )
 
-  const flush = Effect.suspend(() => {
+  const flush = (schedule: Schedule.Schedule<unknown, unknown>) => Effect.suspend(() => {
     const s = spans
     const l = logs
     spans = []
@@ -88,7 +104,7 @@ export const layer = Layer.effect(Telemetry)(Effect.gen(function*() {
             })),
           }],
         }],
-      }),
+      }, `${s.length} spans`, schedule),
       l.length === 0 ? Effect.void : post("/v1/logs", {
         resourceLogs: [{
           resource,
@@ -105,11 +121,12 @@ export const layer = Layer.effect(Telemetry)(Effect.gen(function*() {
             })),
           }],
         }],
-      }),
+      }, `${l.length} log records`, schedule),
     ], { concurrency: 2, discard: true })
   })
-  yield* flush.pipe(Effect.delay("2 seconds"), Effect.forever, Effect.forkScoped)
-  yield* Effect.addFinalizer(() => flush)
+  // Batches wait while one is retried, so they arrive in order.
+  yield* flush(retrying).pipe(Effect.delay("2 seconds"), Effect.forever, Effect.forkScoped)
+  yield* Effect.addFinalizer(() => flush(Schedule.recurs(0)))
 
   const exportSpan = (span: SpanData) => Effect.sync(() => void spans.push(span))
 
