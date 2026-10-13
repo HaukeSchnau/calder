@@ -63,6 +63,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const projects = yield* Projects
   const spawner = yield* Exec.SpawnerTag
   const cache = yield* Cache
+  const estimates = yield* Estimates.Estimates
   const slots = {
     plans: Slots.make({ capacity: config.jobs.slots.plans }),
     builds: Slots.make({ capacity: config.jobs.slots.builds }),
@@ -136,14 +137,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const [run] = yield* db(Rows.runsWithCounts([row]))
       yield* live.publish({ _tag: "RunChanged", run: run! })
     })
-  const estimates = Estimates.make()
   const publishStep = (runId: string, name: string) =>
     Effect.gen(function*() {
       const row = yield* db(Rows.loadStep(runId, name))
       const run = yield* db(Rows.loadRun(runId))
       if (row === undefined || run === undefined) return
-      yield* db(estimates.settled(run.project, row))
-      const estimate = (yield* db(estimates.forProject(run.project))).get(name) ?? null
+      yield* estimates.stepSettled(run.project, row)
+      const estimate = (yield* estimates.steps(run.project)).get(name) ?? null
       const failingTests = row.status === "failed" ? yield* db(Rows.failingTests(runId, name)) : []
       yield* live.publish({ _tag: "StepChanged", step: Rows.step(row, estimate), failingTests })
     })
@@ -664,7 +664,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* publishStep(runId, name)
 
       const inputs = Object.fromEntries([...spec.needs, ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
-      const expected = Estimates.of(yield* db(estimates.forProject(run.project)), name)
+      const expected = Estimates.of(yield* estimates.steps(run.project), name)
       const plan = JSON.parse(run.plan ?? "{}") as PlanSpec
       const kilnDir = yield* mirror.kilnDir(run.project, run.sha).pipe(Effect.orDie)
       const info = runInfo(run, kilnDir)
@@ -777,7 +777,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* db(sql`insert or replace into shards (run_id, step, shard, key, status, reused_from)
           values (${runId}, ${name}, ${i + 1}, ${shardKeys[i]!}, 'reused', ${hit.run_id})`)
       }
-      const perShard = sharded ? (yield* db(Estimates.shardsForProject(run.project))).get(name) ?? expected : expected
+      const perShard = sharded ? (yield* estimates.shards(run.project)).get(name) ?? expected : expected
       const withdraw = Deferred.makeUnsafe<void>()
       let failed = false
       const pending = shardHits.flatMap((hit, i) => (hit === undefined ? [i + 1] : []))
@@ -807,6 +807,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           yield* db(sql`insert or replace into shards (run_id, step, shard, key, status, started_at, finished_at, cpu_seconds, memory_peak)
             values (${runId}, ${name}, ${index}, ${shardKeys[index - 1]!}, ${passed ? "passed" : "failed"}, ${r.startedAt}, ${now},
               ${r.usage.cpuSeconds}, ${r.usage.memoryPeakBytes})`)
+          if (r.startedAt !== null) yield* estimates.shardSettled(run.project, { run: runId, step: name, index, startedAt: r.startedAt, finishedAt: now })
           if (r.result._tag === "Passed") {
             yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at)
               values (${shardKeys[index - 1]!}, ${runId}, ${name}, ${run.trust}, ${JSON.stringify(r.result.value ?? null)},
@@ -1084,5 +1085,5 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     })
 
   return { plan, step, built, finish, cancel, supersede }
-}))
+})).pipe(Layer.provideMerge(Estimates.layer))
 
