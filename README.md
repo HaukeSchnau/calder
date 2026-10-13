@@ -50,7 +50,8 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   or pattern in a step's files that matches no file fails the plan, since that part of the key would
   never change. Wrap files that may be missing in `Files.optional(...)`. Pull requests and pushes
   reuse everything by default. Schedules and manual runs (`reuse: "builds"`) run tasks without
-  `outputs` again, files of tasks with `each` included. A task with another `platform`
+  `outputs` again, files of tasks with `each` included. A task with `reuse: "never"` runs every time,
+  for checks of the machine rather than the code. A task with another `platform`
   than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only). An agent of
   the controller's platform with a free slot also takes trusted tasks off the controller. Pull-request
   tasks always run on the controller, because agents run every worker as one user without a sandbox.

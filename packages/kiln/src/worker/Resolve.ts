@@ -329,7 +329,7 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
           after: p.after,
           required: p.required,
           target: p.target,
-          neverReuse: p.neverReuse,
+          neverReuse: p.neverReuse || (def._tag === "Task" && def.reuse === "never"),
           build: null,
           setup: null,
           task: null,

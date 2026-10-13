@@ -124,6 +124,7 @@ export type Def =
     readonly secrets: { readonly [env: string]: SecretRef }
     readonly env: { readonly [env: string]: string }
     readonly platform: Platform | undefined
+    readonly reuse: "never" | undefined
   }
   | {
     readonly _tag: "Action"
