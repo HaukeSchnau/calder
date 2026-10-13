@@ -34,7 +34,10 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
 - **setup** (`Setup.make`, or `Pnpm.install` and `Bun.install` from `@kiln/std`): prepares a workspace once per key,
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
-  prepared before settles at once. A setup that fails leaves no key on its workspace, so the next task
+  prepared before settles at once. A setup runs only once one of those tasks runs. When all of them
+  reuse their results, it doesn't run and counts as reused: the UI, `kiln status` and its commit status
+  say it wasn't needed. A task that can't reuse anything (`reuse: "never"`, a schedule without reuse)
+  starts its setup at once. A setup that fails leaves no key on its workspace, so the next task
   sets it up again. `keep` names what survives a task's `git clean`, `path` what goes in front of PATH.
   Kept files carry over to tasks of other revisions without entering their keys, so
   keep only caches that tools check against the sources themselves (`node_modules`, `*.tsbuildinfo`,

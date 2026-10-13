@@ -85,6 +85,27 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const cancelSignal = signal(cancels)
   const supersedes = new Map<string, Deferred.Deferred<string>>()
   const supersedeSignal = signal(supersedes)
+  /** One latch per run and step, dropped when the run finishes. */
+  const latches = () => {
+    const runs = new Map<string, Map<string, Deferred.Deferred<void>>>()
+    return {
+      get: (runId: string, name: string) => {
+        const steps = runs.get(runId) ?? new Map<string, Deferred.Deferred<void>>()
+        runs.set(runId, steps)
+        let latch = steps.get(name)
+        if (latch === undefined) {
+          latch = Deferred.makeUnsafe<void>()
+          steps.set(name, latch)
+        }
+        return latch
+      },
+      drop: (runId: string) => runs.delete(runId),
+    }
+  }
+  /** Opens when `step` of the step returned. */
+  const stepped = latches()
+  /** Opens when a task that starts from the setup runs. */
+  const wanted = latches()
 
   const { flying, landing, has: inFlight } = InFlight.make()
   const workspaces = new Map<string, Set<number>>()
@@ -320,6 +341,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     readonly tests?: ReadonlyArray<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>
     readonly attempts?: number
     readonly files?: { readonly total: number; readonly ran: number; readonly flaky: number }
+    /** A setup no task asked for. */
+    readonly unneeded?: boolean
   }
 
   const describe = (s: Settled, row: Rows.StepRow): [StatusState, string] => {
@@ -328,7 +351,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       case "passed":
         return ["success", `passed${took}`]
       case "reused":
-        return ["success", row.kind === "build" ? "already built" : row.kind === "setup" ? "already set up" : "reused an identical result"]
+        return [
+          "success",
+          row.kind === "build" ? "already built"
+          : row.kind !== "setup" ? "reused an identical result"
+          : s.unneeded === true ? "not needed: no task that starts from it ran"
+          : "already set up",
+        ]
       case "failed":
         return ["failure", s.error?.message.split("\n")[0] ?? "failed"]
       case "died":
@@ -643,6 +672,50 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, withdrawn))
     })
 
+  /**
+   * Whether the run needs the setup. Tasks that start from it ask once they know they run, so the setup
+   * waits for the first of them, or until all of them settled without asking. It runs at once when one
+   * of them runs whatever earlier results exist, or when another kind of step waits for it.
+   */
+  const asked = (run: Rows.RunRow, setup: string, steps: ReadonlyArray<Rows.StepRow>) => {
+    const reuse = (JSON.parse(run.plan ?? "{}") as PlanSpec).reuse
+    const kinds = new Map(steps.map((s) => [s.name, s.kind]))
+    const dependents = steps.map(Rows.spec).filter((s) => [...s.needs, ...s.exits, ...s.after].includes(setup))
+    const starters = dependents.filter((s) => Rows.setupsOf(s, (name) => kinds.get(name)).includes(setup))
+    const eager = starters.length < dependents.length ||
+      starters.some((s) => !Rows.reusable(s, reuse) || (s.task?.each?.some((e) => e.always) ?? false))
+    if (eager) return Effect.succeed(true)
+    return Effect.raceFirst(
+      Deferred.await(wanted.get(run.id, setup)).pipe(Effect.as(true)),
+      Effect.forEach(starters, (s) => Deferred.await(stepped.get(run.id, s.name)), { discard: true }).pipe(Effect.as(false)),
+    )
+  }
+
+  /**
+   * Asks for the setups a task starts from once it knows it runs, and waits for them. Returns how the
+   * task settles instead of running, when the run was cancelled meanwhile or a setup didn't pass.
+   */
+  const ready = (run: Rows.RunRow, row: Rows.StepRow, setups: ReadonlyArray<string>) =>
+    Effect.gen(function*() {
+      if (setups.length === 0) return null
+      yield* Effect.forEach(setups, (s) => Deferred.succeed(wanted.get(run.id, s), undefined), { discard: true })
+      // A task whose setup still runs isn't waiting for a slot yet, so its queue time starts after.
+      const waits = (yield* db(Rows.loadSteps(run.id))).some((s) => setups.includes(s.name) && !Rows.terminal(s.status))
+      if (waits) {
+        yield* db(sql`update steps set status = 'pending' where run_id = ${run.id} and name = ${row.name}`)
+        yield* publishStep(run.id, row.name)
+      }
+      yield* Effect.forEach(setups, (s) => Deferred.await(stepped.get(run.id, s)), { discard: true })
+      if (waits) {
+        yield* db(sql`update steps set status = 'queued', queued_at = ${Date.now()} where run_id = ${run.id} and name = ${row.name}`)
+        yield* publishStep(run.id, row.name)
+      }
+      const cancelled = (yield* db(Rows.loadRun(run.id)))?.status === "cancelled"
+      const failed = (yield* db(Rows.loadSteps(run.id))).some((s) => setups.includes(s.name) && !Rows.succeeded(s.status))
+      const instead: Settled | null = cancelled ? { status: "cancelled" } : failed ? { status: "blocked" } : null
+      return instead
+    })
+
   const step = (runId: string, name: string) =>
     Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
@@ -658,13 +731,18 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
       const all = yield* db(Rows.loadSteps(runId))
       const byName = new Map(all.map((s) => [s.name, s]))
-      if ([...spec.needs, ...spec.after].some((n) => !Rows.succeeded(byName.get(n)?.status ?? "blocked"))) {
+      const setups = Rows.setupsOf(spec, (n) => byName.get(n)?.kind)
+      if ([...spec.needs, ...spec.after].some((n) => !setups.includes(n) && !Rows.succeeded(byName.get(n)?.status ?? "blocked"))) {
         return yield* settle(run, row, { status: "blocked" })
+      }
+      if (spec.setup !== null && !(yield* asked(run, name, all))) {
+        const cancelled = (yield* db(Rows.loadRun(runId)))?.status === "cancelled"
+        return yield* settle(run, row, cancelled ? { status: "cancelled" } : { status: "reused", key: spec.setup.deps, unneeded: true })
       }
       yield* db(sql`update steps set status = 'queued', queued_at = ${Date.now()} where run_id = ${runId} and name = ${name}`)
       yield* publishStep(runId, name)
 
-      const inputs = Object.fromEntries([...spec.needs, ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
+      const inputs = Object.fromEntries([...spec.needs.filter((n) => !setups.includes(n)), ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
       const expected = Estimates.of(yield* estimates.steps(run.project), name)
       const plan = JSON.parse(run.plan ?? "{}") as PlanSpec
       const kilnDir = yield* mirror.kilnDir(run.project, run.sha).pipe(Effect.orDie)
@@ -736,7 +814,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       const task = spec.task!
       const values = Object.fromEntries(task.interpolates.map((n) => [n, JSON.parse(byName.get(n)?.value ?? "null")]))
-      if (task.each !== null) return yield* eachTask(run, row, task, task.each, values, { plan, info, stepJob, collect })
+      const prepared = ready(run, row, setups)
+      if (task.each !== null) return yield* eachTask(run, row, task, task.each, values, { plan, info, stepJob, collect, prepared })
       const count = task.shards ?? 1
       const shardKeys = count === 1 ? [taskKey(task.keyBase, values, null)] : Array.from({ length: count }, (_, i) => taskKey(task.keyBase, values, { index: i + 1, count }))
       const key = count === 1 ? shardKeys[0]! : sha256(shardKeys)
@@ -782,6 +861,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const withdraw = Deferred.makeUnsafe<void>()
       let failed = false
       const pending = shardHits.flatMap((hit, i) => (hit === undefined ? [i + 1] : []))
+      const instead = pending.length === 0 ? null : yield* prepared
+      if (instead !== null) return yield* settle(run, row, instead)
       const shards = yield* Effect.forEach(pending, (index) =>
         Effect.gen(function*() {
           const r = yield* flying([count === 1 ? key : shardKeys[index - 1]!], placed(run, row, info, task.platform, sharded ? index : null, (p) =>
@@ -856,6 +937,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           return yield* settle(run, row, { status: "died", error: { tag: "Died", message: `Kiln failed to run the step: ${String(cause)}`, json: null } })
         })
       ),
+      Effect.tap(() => Deferred.succeed(stepped.get(runId, name), undefined)),
     )
 
   type TaskSpec = NonNullable<PlannedStep["task"]>
@@ -878,6 +960,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly info: RunInfo
       readonly stepJob: (extra: Partial<Extract<Job, { _tag: "Step" }>>) => Job
       readonly collect: { tests: Array<TestRow>; attempts: number }
+      /** Waits for the task's setups; how the task settles instead, if it can't run. */
+      readonly prepared: Effect.Effect<Settled | null>
     },
   ) =>
     Effect.gen(function*() {
@@ -914,6 +998,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
+      const instead = yield* context.prepared
+      if (instead !== null) return yield* settle(run, row, instead)
       const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
 
       const history = yield* db(sql<{ file: string; duration_ms: number }>`select file, duration_ms from (
@@ -1058,6 +1144,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       })
       cancels.delete(runId)
       supersedes.delete(runId)
+      stepped.drop(runId)
+      wanted.drop(runId)
       yield* publishRun(runId)
     }).pipe(Effect.catchCause((cause) => Effect.logError("finish failed", cause)))
 

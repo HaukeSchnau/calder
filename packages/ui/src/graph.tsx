@@ -1,4 +1,4 @@
-import type { Domain } from "@kiln/api"
+import { Domain } from "@kiln/api"
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useAtomValue } from "@effect/atom-react"
 import { agentWaitsAtom } from "./data.ts"
@@ -49,6 +49,7 @@ export function Meta({ step, steps, short = false }: { readonly step: Domain.Ste
     case "passed":
       return <span>{dur(d ?? 0)}</span>
     case "reused":
+      if (Domain.unneeded(step)) return <span className="dim">{short ? "not needed" : "not needed: no task that starts from it ran"}</span>
       if (step.kind === "setup") return <span className="dim">{short ? "ready" : "already set up"}</span>
       if (step.reusedFrom === null) return <span className="dim">{short ? "built" : "already built"}</span>
       return <span className="dim">{short ? "reused" : `reused from #${step.reusedFrom.number}`}</span>

@@ -31,7 +31,7 @@ export interface Options {
 /**
  * Prepares a workspace once per key, which comes from the inputs, the toolchain and the command. Tasks
  * that name it wait for it, start from a copy of the prepared workspace and include its key in theirs,
- * and a run whose key was prepared before skips it.
+ * and a run whose key was prepared before skips it. It runs only once one of those tasks runs.
  */
 export const make = (name: string, options: Options): Setup =>
   makeStep("setup", name, {

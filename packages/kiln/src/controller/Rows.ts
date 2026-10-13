@@ -90,6 +90,15 @@ export const spec = (row: StepRow): PlannedStep => {
 }
 
 /**
+ * The setups a task starts from. A task asks for them only once it knows it runs, so the workflow
+ * doesn't wait for them before the task's step starts.
+ */
+export const setupsOf = (
+  step: { readonly kind: Domain.StepKind; readonly needs: ReadonlyArray<string> },
+  kindOf: (name: string) => Domain.StepKind | undefined,
+) => (step.kind === "task" ? step.needs.filter((name) => kindOf(name) === "setup") : [])
+
+/**
  * Whether a task, or a file of a task with `each`, may take an earlier result with its key.
  * `reuse: "builds"` runs tasks without outputs again.
  */

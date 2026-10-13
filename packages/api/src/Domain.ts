@@ -149,6 +149,13 @@ export const StepRun = Schema.Struct({
 })
 export type StepRun = typeof StepRun.Type
 
+/**
+ * A setup that never ran because no task of its run that starts from it ran. It counts as reused and
+ * never queued, which a setup that was asked for always did.
+ */
+export const unneeded = (step: Pick<StepRun, "kind" | "status" | "queuedAt">) =>
+  step.kind === "setup" && step.status === "reused" && step.queuedAt === null
+
 /** Where the controller serves a step's output: a file as it is, a directory as a list of links. */
 export const outputPath = (runId: string, step: string, output: string) =>
   `/outputs/${[runId, step, output].map(encodeURIComponent).join("/")}`
