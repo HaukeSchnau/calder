@@ -573,6 +573,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     key: s.key,
     // A reused build is one whose output already existed; reused tasks point at the run that ran them.
     reusedFrom: st.status === "reused" && s.plan.kind !== "build" && s.reusedFrom !== null ? { id: s.reusedFrom, number: world.run(s.reusedFrom)?.number ?? 0 } : null,
+    contradicts: null,
     needs: s.plan.needs ?? [],
     exits: s.plan.exits ?? [],
     after: s.plan.after ?? [],

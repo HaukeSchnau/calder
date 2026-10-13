@@ -56,6 +56,7 @@ export interface StepRow {
   readonly tests_failed: number | null
   readonly tests_skipped: number | null
   readonly tests_flaky: number | null
+  readonly contradicts: string | null
   /** Absent in rows read before migration 0008. */
   readonly files_total?: number | null
   readonly files_ran?: number | null
@@ -138,6 +139,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     status: row.status,
     key: row.key,
     reusedFrom: row.reused_from === null ? null : { id: row.reused_from, number: runNumber(row.reused_from) },
+    contradicts: row.contradicts === null ? null : { id: row.contradicts, number: runNumber(row.contradicts) },
     needs: s.needs,
     exits: s.exits,
     after: s.after,

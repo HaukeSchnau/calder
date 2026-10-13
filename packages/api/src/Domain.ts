@@ -111,6 +111,11 @@ export const StepRun = Schema.Struct({
   key: Schema.NullOr(Schema.String),
   /** The run whose result was reused; null for a build whose output already existed. */
   reusedFrom: Schema.NullOr(Schema.Struct({ id: Schema.String, number: Schema.Number })),
+  /**
+   * For a task that ran: the latest earlier run in which its key had the other outcome. Either the key
+   * misses an input, or the task is flaky.
+   */
+  contradicts: Schema.NullOr(Schema.Struct({ id: Schema.String, number: Schema.Number })),
   needs: Schema.Array(Schema.String),
   exits: Schema.Array(Schema.String),
   after: Schema.Array(Schema.String),

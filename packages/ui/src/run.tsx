@@ -278,6 +278,11 @@ function FailureBlock({ detail, step, onSelect, onTab }: {
         {shown.error.excerpt ? <pre className="excerpt">{shown.error.excerpt}</pre> : null}
       </div>
       {shown.attempts > 1 ? <p className="fl-act dim">{shown.attempts} attempts</p> : null}
+      {shown.contradicts !== null ? (
+        <p className="fl-act heat">
+          <span>It passed with the same key in <a className="lnk" href={href({ page: "run", id: shown.contradicts.id, step: shown.name })}>#{shown.contradicts.number}</a>: the key misses an input, or the step is flaky.</span>
+        </p>
+      ) : null}
     </section>
   )
 }
@@ -330,6 +335,11 @@ function Inspector({ detail, step, onSelect, onTab }: {
         <Kv rows={[
           ["status", <Meta step={step} steps={detail.steps} />],
           ["key", step.key ? <><Swatch k={step.key} solid={hasBits(step.status)} /><code data-tip={step.key} data-key={step.key}>{shortKey(step.key)}</code></> : <span className="dim">not known yet</span>],
+          step.contradicts !== null && ["same key", (
+            <span className="heat">
+              {step.status === "passed" ? "failed" : "passed"} in <a className="lnk" href={href({ page: "run", id: step.contradicts.id, step: step.name })}>#{step.contradicts.number}</a>: the key misses an input, or the step is flaky
+            </span>
+          )],
           step.status === "reused" && ["from", step.reusedFrom ? <a className="lnk" href={href({ page: "run", id: step.reusedFrom.id, step: step.name })}>#{step.reusedFrom.number}</a> : <span className="dim">already built, nothing ran</span>],
           step.startedAt !== null && ["started", <span className="tnum">{clockS(step.startedAt)}</span>],
           d !== null && step.status !== "running" && ["took", <span className="tnum">{dur(d)}</span>],

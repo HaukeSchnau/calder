@@ -348,6 +348,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const excerpt = failed ? live.excerpt(run.id, row.name) : null
       const tests = Tests.outcomes(s.tests ?? [])
       const counts = tests.length > 0 ? Tests.count(tests) : null
+      const outcome = row.kind === "task" && (s.status === "passed" || s.status === "failed") && s.key ? { key: s.key, status: s.status } : null
+      // A task that never reuses depends on more than its key, so another outcome for its key says nothing.
+      const [contradicts] = outcome === null || Rows.spec(row).neverReuse ? [] : yield* db(sql<{ run_id: string }>`select run_id from results
+        where key = ${outcome.key} and status != ${outcome.status} and run_id != ${run.id} order by created_at desc limit 1`)
       yield* db(sql`update steps set
         status = ${s.status},
         finished_at = ${now},
@@ -368,7 +372,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         tests_flaky = ${counts?.flaky ?? null},
         files_total = ${s.files?.total ?? null},
         files_ran = ${s.files?.ran ?? null},
-        files_flaky = ${s.files?.flaky ?? null}
+        files_flaky = ${s.files?.flaky ?? null},
+        contradicts = ${contradicts?.run_id ?? null}
         where run_id = ${run.id} and name = ${row.name}`)
       if (counts !== null) {
         yield* db(sql.withTransaction(Effect.forEach(tests, (t) =>
@@ -376,9 +381,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now},
               ${t.superseded ? 1 : 0})`, { discard: true })))
       }
-      if (s.status === "passed" && s.key !== undefined && s.key !== null && row.kind === "task") {
-        yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at)
-          values (${s.key}, ${run.id}, ${row.name}, ${run.trust}, ${JSON.stringify(s.value ?? null)}, ${JSON.stringify(s.outputs ?? {})}, ${now})`)
+      if (outcome !== null) {
+        yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
+          values (${outcome.key}, ${run.id}, ${row.name}, ${run.trust}, ${JSON.stringify(s.value ?? null)}, ${JSON.stringify(s.outputs ?? {})}, ${now},
+            ${outcome.status})`)
       }
       live.finish(run.id, row.name)
       yield* publishStep(run.id, row.name)
@@ -723,7 +729,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const lookup = (k: string) =>
         db(sql<{ run_id: string; value: string | null; outputs: string | null }>`select results.run_id, results.value,
             results.outputs from results join runs on runs.id = results.run_id
-          where results.key = ${k} and (results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))
+          where results.key = ${k} and results.status = 'passed'
+            and (results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))
           order by results.created_at desc limit 1`).pipe(Effect.map((rows) => rows[0]))
       const reused = (hit: { run_id: string; value: string | null; outputs: string | null }): Settled => ({
         status: "reused",
