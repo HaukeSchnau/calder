@@ -21,6 +21,12 @@ export class NotReady extends Kiln.Failure<NotReady>("@kiln/std/Release")("NotRe
   }
 }
 
+export class NoHosts extends Kiln.Failure<NoHosts>("@kiln/std/Release")("NoHosts", { project: Schema.String }) {
+  override get message() {
+    return `no host runs ${this.project}: no promotion endpoint's /health lists its app, or none answered`
+  }
+}
+
 const every = (interval: Duration.Input, deadline: Duration.Input) =>
   Schedule.spaced(interval).pipe(Schedule.upTo({ duration: deadline }))
 
@@ -44,8 +50,9 @@ export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function*(url:
 
 /**
  * Promotes a release to the project's hosts. Takes the project's deploy lease (latest wins, so an
- * older run gives way to a newer one), preflights every host, puts the release in the binary cache for hosts other than the controller's, checks before
- * each host that the branch still points at this revision, and deploys with the lease's fencing token.
+ * older run gives way to a newer one), fails when no host runs the app, preflights every host, puts the
+ * release in the binary cache for hosts other than the controller's, checks before each host that the
+ * branch still points at this revision, and deploys with the lease's fencing token.
  */
 export const promote = Effect.fn("Release.promote")(
   function*(release: StorePath, options: { readonly readiness?: string } = {}) {
@@ -55,6 +62,7 @@ export const promote = Effect.fn("Release.promote")(
 
     const lease = yield* Fleet.deploying(run.project, { queue: "latest-wins" })
     if (lease._tag === "Replaced") return new Skipped({ reason: "Superseded" })
+    if (lease.targets.length === 0) return yield* new NoHosts({ project: run.project })
 
     const descriptor = yield* run.descriptor
     yield* Effect.forEach(lease.targets, (target) => target.preflight(descriptor), { concurrency: "unbounded", discard: true })

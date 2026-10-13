@@ -1,4 +1,5 @@
 import type { Domain } from "@kiln/api"
+import { Event } from "@kiln/core"
 import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { readFileSync } from "node:fs"
@@ -183,6 +184,27 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   // ------------------------------------------------------------------------------------------- plan
 
+  /** Ends a run that could not be planned, unless a cancel came in first. */
+  const unplanned = (run: Rows.RunRow, message: string) =>
+    Effect.gen(function*() {
+      const ended = yield* db(sql`update runs set status = 'errored', error = ${message}, finished_at = ${Date.now()}
+        where id = ${run.id} and status in ('queued', 'planning') returning id`)
+      if (ended.length === 0) return null
+      yield* status(run, "kiln", "error", message.split("\n")[0]!)
+      yield* telemetry.exportSpan({
+        traceId: run.trace_id,
+        spanId: run.span_id,
+        parentId: null,
+        name: `${run.project} #${run.number}`,
+        start: run.created_at,
+        end: Date.now(),
+        error: true,
+        attributes: { "kiln.project": run.project, "kiln.run": run.id, "kiln.error": message },
+      })
+      yield* publishRun(run.id)
+      return null
+    })
+
   const plan = (runId: string) =>
     Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
@@ -192,30 +214,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* db(sql`update runs set status = 'planning', started_at = ${now} where id = ${runId}`)
       yield* publishRun(runId)
 
-      const fail = (message: string) =>
-        Effect.gen(function*() {
-          yield* db(sql`update runs set status = 'errored', error = ${message}, finished_at = ${Date.now()} where id = ${runId}`)
-          yield* status(run, "kiln", "error", message.split("\n")[0]!)
-          yield* telemetry.exportSpan({
-            traceId: run.trace_id,
-            spanId: run.span_id,
-            parentId: null,
-            name: `${run.project} #${run.number}`,
-            start: run.created_at,
-            end: Date.now(),
-            error: true,
-            attributes: { "kiln.project": run.project, "kiln.run": run.id, "kiln.error": message },
-          })
-          yield* publishRun(runId)
-          return null
-        })
-
       const kilnDir = yield* mirror.fetch(run.project).pipe(
         Effect.andThen(mirror.kilnDir(run.project, run.sha)),
         Effect.map((dir) => ({ dir, error: null })),
         Effect.catch((e) => Effect.succeed({ dir: null, error: e._tag === "NoPipeline" ? "no .kiln/ci.ts at this revision" : e.message })),
       )
-      if (kilnDir.dir === null) return yield* fail(kilnDir.error ?? "could not read the revision")
+      if (kilnDir.dir === null) return yield* unplanned(run, kilnDir.error ?? "could not read the revision")
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
       const job: Job = { _tag: "Plan", run: runInfo(run, kilnDir.dir), requiredChecks: required }
@@ -230,7 +234,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (Option.isNone(planned)) return null
       const { result } = planned.value
       if (result._tag !== "Planned") {
-        return yield* fail(result._tag === "PlanFailed" ? result.message : result._tag === "Died" ? result.message : "planning failed")
+        return yield* unplanned(run, result._tag === "PlanFailed" ? result.message : result._tag === "Died" ? result.message : "planning failed")
       }
 
       const spec = result.plan
@@ -242,8 +246,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           for (const cron of spec.schedules) yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`
         })))
       }
-      // A push to a branch no rule names, for example: nothing to run, nothing to report.
+      // A push to a branch no rule names, for example: nothing to run, keep or report on the commit. Whoever
+      // follows the run, such as `kiln trigger`, still sees it end and why.
       if (spec.steps.length === 0) {
+        const reason = `no rule of ${run.project} runs anything for ${Event.describe(event)}`
+        yield* db(sql`update runs set status = 'cancelled', error = ${reason}, finished_at = ${Date.now()} where id = ${runId}`)
+        yield* publishRun(runId)
         yield* db(sql`delete from runs where id = ${runId}`)
         yield* Effect.logInfo(`${runId} matches no rule, dropped`)
         return null
@@ -268,7 +276,18 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       })
       yield* publishRun(runId)
       return spec
-    }).pipe(Effect.catchCause((cause) => Effect.logError("plan failed", cause).pipe(Effect.as(null))))
+    }).pipe(
+      // Gitea failing past its retries, for example: the run still ends, and the merge queue stops waiting for it.
+      Effect.catchDefect((defect) =>
+        Effect.gen(function*() {
+          yield* Effect.logError(`planning ${runId} failed`, defect)
+          const run = yield* db(Rows.loadRun(runId))
+          if (run === undefined) return null
+          return yield* unplanned(run, `Kiln could not plan the run: ${defect instanceof Error ? defect.message : String(defect)}`)
+        })
+      ),
+      Effect.catchCause((cause) => Effect.logError("plan failed", cause).pipe(Effect.as(null))),
+    )
 
   // ------------------------------------------------------------------------------------------- step
 
@@ -407,17 +426,21 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     }
   }
 
-  /** A step of another platform runs on an agent of it, and only trusted runs may use those. */
+  /**
+   * A step of another platform runs on an agent of it, and only trusted runs may use those: an agent
+   * runs every worker as one user, without the pull-request sandbox's egress allowlist, private network
+   * and private /tmp.
+   */
   const refuses = (run: Rows.RunRow, platform: string | null) => platform !== null && platform !== config.system && run.trust !== "trusted"
 
   /**
    * Where a job runs: here, or on an agent, whose workers fetch what local ones read from disk. A job
-   * of another platform needs an agent of it. Other jobs go to a connected agent of this platform with
-   * a free slot, which is there to take load off this host, unless they come from a fork or `here`.
+   * of another platform needs an agent of it. Other jobs of trusted runs go to a connected agent of this
+   * platform with a free slot, which is there to take load off this host, unless they are to run `here`.
    */
   const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false) => {
     const foreign = platform !== null && platform !== config.system
-    const offload = !foreign && !here && run.fork === 0 &&
+    const offload = !foreign && !here && run.trust === "trusted" &&
       agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
     const remote = foreign || offload
     const system = platform ?? config.system

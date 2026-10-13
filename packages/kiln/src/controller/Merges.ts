@@ -18,8 +18,9 @@ export interface MergeRequest {
 /**
  * Pull requests to merge once they are green. One per base branch at a time: a pull request behind its
  * base gets the base merged in, which starts a run that only repeats what the update can affect; one
- * whose run on its current head passed is merged. A failed run, a conflict or a refused merge ends the
- * request with a comment on the pull request.
+ * whose run on its current head passed is merged, pinned to that head. A failed run, a conflict or a
+ * refused merge ends the request with a comment on the pull request. Any other error, such as a branch
+ * or repository that is gone, ends only that request, and the queue goes on.
  */
 export class MergeRefused extends Schema.TaggedError<MergeRefused>("kiln/MergeRefused")("MergeRefused", { reason: Schema.String }) {}
 
@@ -55,8 +56,10 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
+  /** A request that already ended keeps its outcome. */
   const settle = (row: Row, status: MergeStatus, message: string | null) =>
-    db(sql`update merges set status = ${status}, message = ${message} where project = ${row.project} and pr = ${row.pr}`)
+    db(sql`update merges set status = ${status}, message = ${message}
+      where project = ${row.project} and pr = ${row.pr} and status in ('waiting', 'updating')`)
 
   const contains = (project: string, ancestor: string, head: string) =>
     Exec.exec(["git", "--git-dir", mirror.path(project), "merge-base", "--is-ancestor", ancestor, head]).pipe(
@@ -99,7 +102,7 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
         return holds
       }
       if (run.status !== "passed") return yield* fail(`its run ${run.id} ${run.status}`)
-      const merged = yield* gitea.mergePull(repo, row.pr).pipe(Effect.as(null), Effect.catch((message) => Effect.succeed(message)))
+      const merged = yield* gitea.mergePull(repo, row.pr, pull.sha).pipe(Effect.as(null), Effect.catch((message) => Effect.succeed(message)))
       if (merged !== null) return yield* fail(`Gitea refused the merge: ${merged}`)
       yield* settle(row, "merged", null)
       return null
@@ -111,7 +114,15 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
     const held = new Set<string>()
     for (const row of pending) {
       if (held.has(`${row.project}/${row.base}`)) continue
-      const holds = yield* advance(row)
+      const holds = yield* advance(row).pipe(
+        Effect.catchDefect((defect) =>
+          Effect.gen(function*() {
+            yield* Effect.logWarning(`merging ${row.project}#${row.pr} failed`, defect)
+            yield* settle(row, "failed", defect instanceof Error ? defect.message : String(defect))
+            return null
+          })
+        ),
+      )
       if (holds !== null) held.add(holds)
     }
   }).pipe(Effect.catchCause((cause) => Effect.logError("merge queue tick failed", cause)))
