@@ -297,6 +297,8 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     const once = Effect.gen(function*() {
       attempt += 1
       if (attempt > 1) yield* emit({ _tag: "Attempt", attempt, reason: "retry" })
+      // An attempt that writes no report must not report the previous attempt's tests again.
+      if (def.report !== undefined) rmSync(join(workspace, def.report.path), { force: true })
       yield* log("kiln", `$ ${argv.join(" ")}`)
       const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) => log(stream, line))
       let failures: ReadonlyArray<Kiln.TestFailure> = []

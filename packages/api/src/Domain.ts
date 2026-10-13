@@ -157,8 +157,8 @@ export const TestResult = Schema.Struct({
 export type TestResult = typeof TestResult.Type
 
 /**
- * A file of an `each` task that failed in its job and passed when it ran again with only the files that
- * failed: flaky, or another file of its job left state behind that it depends on.
+ * A file of an `each` task that failed in its job and passed when it ran again, with only the files that
+ * failed or in a `Step.retry` of its job: flaky, or another file of its job left state behind that it depends on.
  */
 export const RetriedFile = Schema.Struct({
   step: Schema.String,

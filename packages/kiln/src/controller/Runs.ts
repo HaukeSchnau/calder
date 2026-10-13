@@ -923,23 +923,22 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       // Jobs that finished keep their results even when the run was cancelled or replaced meanwhile.
       const results = new Map(first.filter((d) => !stopped(d.r)).flatMap((d) => [...outcomes(d)]))
       const failing = [...results].filter(([, o]) => o.status === "failed").map(([file]) => file)
-      const flaky = new Set<string>()
       let retry: (typeof first)[number] | undefined
       const interrupted = first.some((d) => stopped(d.r))
       if (!interrupted && failing.length > 0 && failing.length <= 10) {
         retry = yield* job(failing, count + 1, count, failing.reduce((sum, f) => sum + duration(f), 0))
         for (const [file, o] of stopped(retry.r) ? [] : outcomes(retry)) {
-          if (o.status === "passed") flaky.add(file)
-          results.set(file, o.status === "passed" ? { ...o, status: "passed" } : results.get(file)!)
+          if (o.status === "passed" || o.status === "flaky") results.set(file, { ...o, status: "flaky" })
         }
       }
+      const flaky = [...results].filter(([, o]) => o.status === "flaky").map(([file]) => file)
 
       const now = Date.now()
       const known = [...results].filter(([, o]) => o.status !== "unknown")
       yield* db(sql.withTransaction(Effect.forEach(known, ([file, o]) =>
         sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at, job)
           values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
-            ${flaky.has(file) ? "flaky" : o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true })))
+            ${o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true })))
       if (interrupted || (retry !== undefined && stopped(retry.r))) return yield* settle(run, row, { status: "cancelled" })
 
       const jobs = retry === undefined ? first : [...first, retry]
@@ -947,14 +946,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         cpuSeconds: jobs.reduce((sum, d) => sum + (d.r.usage.cpuSeconds ?? 0), 0),
         memoryPeakBytes: Math.max(0, ...jobs.map((d) => d.r.usage.memoryPeakBytes ?? 0)),
       }
-      const extra = { attempts: context.collect.attempts, tests: context.collect.tests, files: { total: each.length, ran: misses.length, flaky: flaky.size } }
-      const bad = [...results].filter(([, o]) => o.status !== "passed").map(([file]) => file)
+      const extra = { attempts: context.collect.attempts, tests: context.collect.tests, files: { total: each.length, ran: misses.length, flaky: flaky.length } }
+      const bad = [...results].filter(([, o]) => o.status === "failed" || o.status === "unknown").map(([file]) => file)
       if (bad.length > 0) {
         const failed = jobs.find((d) => d.r.result._tag !== "Passed" && d.files.some((f) => bad.includes(f)))
         const result: JobResult = failed?.r.result ?? { _tag: "Died", message: `no result for ${bad.join(", ")}` }
         return yield* settle(run, row, { ...fromResult(result, usage, extra), key })
       }
-      if (flaky.size > 0) yield* Effect.logInfo(`${run.id} ${row.name}: ${[...flaky].join(", ")} passed on retry`)
+      if (flaky.length > 0) yield* Effect.logInfo(`${run.id} ${row.name}: ${flaky.join(", ")} passed on retry`)
       return yield* settle(run, row, { status: "passed", value: null, key, usage, ...extra })
     })
 

@@ -75,8 +75,9 @@ formatter over everything, format `.kiln/` with it. Task workspaces get the same
 as `kiln gen` creates, so the repository's type-aware lint can check `ci.ts` in CI too.
 
 `Step.exit(step)` hands an action a step's outcome instead of blocking on its failure. `Step.retry`
-and `Step.timeout` take Effect's options and apply in pipe order. Task shards (`shards: { count }`)
-run in parallel and report as one step.
+and `Step.timeout` take Effect's options and apply in pipe order. A step counts each test of its
+report once, with its last outcome, so a test that failed on one attempt and passed on a retry counts
+as flaky rather than failed. Task shards (`shards: { count }`) run in parallel and report as one step.
 
 `Vitest.files` from `@kiln/std` is a task that runs a package's vitest file by file. Its `each` follows
 the test files' imports, so a file runs again only when it, what it imports or `inputs` changed. Vitest

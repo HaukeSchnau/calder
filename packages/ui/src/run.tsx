@@ -373,13 +373,13 @@ function Inspector({ detail, step, onSelect, onTab }: {
   )
 }
 
-/** Files that failed in their job and passed when they ran again with only the files that failed. */
+/** Files that failed in their job and passed when they ran again. */
 function Retried({ files }: { readonly files: ReadonlyArray<Domain.RetriedFile> }) {
   if (files.length === 0) return null
   return (
     <section className="isec">
       <h3>Passed on retry</h3>
-      <p className="dim">These files failed in their job and passed when they ran again with only the files that failed. Either a test is flaky, or another file of the job left state behind that the test depends on.</p>
+      <p className="dim">These files failed in their job and passed when they ran again. Either a test is flaky, or another file of the job left state behind that the test depends on.</p>
       {files.map((f) => (
         <div key={f.file} className="retried">
           <code className="wrap">{f.file}</code>
