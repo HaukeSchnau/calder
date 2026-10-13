@@ -5,7 +5,7 @@
  * for their platform, and those call the same RPCs over a WebSocket.
  */
 import { Domain } from "@kiln/api"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/rpc"
 
 export const Reuse = Schema.Literals(["all", "builds", "none"])
@@ -218,6 +218,16 @@ export class WorkerRpcs extends RpcGroup.make(
   }),
 ) {}
 
+/**
+ * An agent takes the controller's jobs only while both have this version; their Kiln builds may differ.
+ * Bump it when an agent of the previous version would get a job wrong: when the messages here or the
+ * `/git`, `/store` and `/outputs` routes change, or when a worker would run the same job differently,
+ * so that a result it passes no longer means what the controller files under the job's key. The
+ * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
+ * newer SDK, need no bump: failed steps are not reused.
+ */
+export const compatibility = 1
+
 /** What the controller tells an agent: start a worker for a job, or stop one. */
 export const AgentOrder = Schema.Union([
   Schema.TaggedStruct("Start", { job: Schema.String, token: Schema.String }),
@@ -230,7 +240,8 @@ const agentAuth = { token: Schema.String, name: Schema.String }
 export class AgentRpcs extends RpcGroup.make(
   /**
    * The agent's orders while it is connected. `running` lists the jobs whose workers it still runs, so
-   * a reconnect doesn't lose them. `build` is the agent's Kiln build (`Build.id`).
+   * a reconnect doesn't lose them. `build` is the agent's Kiln build (`Build.id`), shown to people;
+   * `compatibility` decides whether it gets jobs.
    */
   Rpc.make("work", {
     payload: {
@@ -239,6 +250,8 @@ export class AgentRpcs extends RpcGroup.make(
       slots: Schema.Number,
       running: Schema.Array(Schema.String),
       build: Schema.String,
+      // Agents built before compatibility versions send none.
+      compatibility: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
     },
     success: AgentOrder,
     error: Unauthorized,
