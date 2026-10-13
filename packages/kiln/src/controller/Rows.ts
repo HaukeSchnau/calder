@@ -2,7 +2,7 @@ import type { Domain } from "@kiln/api"
 import { Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import { Kiln } from "@kiln/core"
-import type { PlannedStep } from "../Protocol.ts"
+import type { PlannedStep, PlanSpec } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 
 export interface RunRow {
@@ -77,6 +77,16 @@ export const spec = (row: StepRow): PlannedStep => {
   }
   return { ...planned, setup: planned.setup ?? null, task: planned.task === null ? null : { ...planned.task, each: planned.task.each ?? null } }
 }
+
+/**
+ * Whether a task, or a file of a task with `each`, may take an earlier result with its key.
+ * `reuse: "builds"` runs tasks without outputs again.
+ */
+export const reusable = (
+  step: { readonly neverReuse: boolean; readonly task: { readonly outputs: ReadonlyArray<string> } | null },
+  reuse: PlanSpec["reuse"],
+) =>
+  !step.neverReuse && (reuse === "all" || (reuse === "builds" && (step.task?.outputs.length ?? 0) > 0))
 
 export const run = (row: RunRow, counts: Record<string, number> = {}): Domain.Run => ({
   id: row.id,

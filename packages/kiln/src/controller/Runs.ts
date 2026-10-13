@@ -716,7 +716,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const key = count === 1 ? shardKeys[0]! : sha256(shardKeys)
       yield* db(sql`update steps set key = ${key} where run_id = ${runId} and name = ${name}`)
 
-      const reusable = !spec.neverReuse && (plan.reuse === "all" || (plan.reuse === "builds" && task.outputs.length > 0))
+      const reusable = Rows.reusable(spec, plan.reuse)
       // Pull-request runs take any result. Trusted runs take trusted ones, and with reuse "all" also
       // those of same-repo pull requests, which the same people push.
       const prResults = run.trust === "pr" || plan.reuse === "all"
@@ -830,9 +830,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   type TestRow = Extract<JobEvent, { _tag: "Tests" }>["results"][number]
 
   /**
-   * A task with `each`: files whose key passed before don't run, except `always` files. The rest run in
-   * up to `shards` jobs split by their recorded durations; files that fail run once more, and a pass
-   * then counts as flaky. A nightly run without reuse checks that the keys still cover what files read.
+   * A task with `each`: where the run may reuse the task, files whose key passed before don't run,
+   * except `always` files. The rest run in up to `shards` jobs split by their recorded durations; files
+   * that fail run once more, and a pass then counts as flaky. A nightly run without reuse checks that
+   * the keys still cover what files read.
    */
   const eachTask = (
     run: Rows.RunRow,
@@ -851,7 +852,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const keys = new Map(each.map((e) => [e.file, task.interpolates.length === 0 ? e.key : taskKey(e.key, values, null)]))
       const key = sha256([...keys.values()])
       yield* db(sql`update steps set key = ${key} where run_id = ${run.id} and name = ${row.name}`)
-      const reusable = !Rows.spec(row).neverReuse && context.plan.reuse !== "none"
+      const reusable = Rows.reusable(Rows.spec(row), context.plan.reuse)
       const prResults = run.trust === "pr" || context.plan.reuse === "all"
 
       const passed = new Map<string, string>()
