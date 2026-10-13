@@ -12,8 +12,8 @@ export interface FilesOptions {
   /** Globs of the test files, relative to `dir`. */
   readonly tests: ReadonlyArray<string>
   /**
-   * What every test file runs with besides its imports: vitest configs and setup files. By default
-   * the root manifest and lockfiles, as for a task's `each`; list those too when you add to them.
+   * What every test file runs with besides its imports: vitest configs and setup files. The setup's
+   * key already covers manifests and lockfiles; without a setup, the default is the root ones.
    */
   readonly inputs?: Files.Files
   /** The import aliases of the vitest config, so that following a test file's imports finds them. */

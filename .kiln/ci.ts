@@ -1,5 +1,5 @@
-import { Files, Report, Task, cmd } from "@kiln/core"
-import { Pnpm, Project } from "@kiln/std"
+import { Files, Task, cmd } from "@kiln/core"
+import { Pnpm, Project, Vitest } from "@kiln/std"
 import { flake } from "./flake.ts"
 
 const shell = flake.devShells.default
@@ -7,15 +7,13 @@ const install = Pnpm.install({ shell })
 
 const check = Task.make("check", { shell, setup: install, run: cmd`pnpm run check` })
 
-/** A test file runs again only when it or something it imports changed. */
-const test = Task.make("test", {
+/** A test file runs again only when it, something it imports or the vitest config changed. */
+const test = Vitest.files({
   shell,
   setup: install,
-  each: Files.imports("packages/*/test/**/*.test.ts"),
-  inputs: Files.of("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "vitest.config.ts"),
-  shards: { count: 2 },
-  run: ({ files }) => cmd`pnpm exec vitest run --reporter=default --reporter=junit --outputFile.junit=reports/junit.xml ${files}`,
-  report: Report.junit("reports/junit.xml"),
+  tests: ["packages/*/test/**/*.test.ts"],
+  inputs: Files.of("vitest.config.ts"),
+  shards: 2,
 })
 
 export default Project.standard({ flake, checks: [check, test] })
