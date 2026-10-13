@@ -62,6 +62,10 @@ export const ConfigSchema = Schema.Struct({
   /** Agents on other hosts authenticate with the secret in this file. Without it none may connect. */
   agents: Schema.NullOr(Schema.Struct({ tokenFile: Schema.String })),
   projects: Schema.Record(Schema.String, ProjectConfig),
+  retention: Schema.Struct({
+    /** Days a finished run keeps its steps, tests and results (see `Db.prune`). */
+    days: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(30))),
+  }).pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 })
 export type ConfigShape = typeof ConfigSchema.Type
 

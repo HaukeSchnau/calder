@@ -23,6 +23,7 @@ export const config = (overrides: Partial<Config["Service"]> = {}) =>
     egress: null,
     agents: null,
     projects: {},
+    retention: { days: 30 },
     giteaToken: "",
     webhookSecret: "",
     promotionToken: "",

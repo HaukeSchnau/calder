@@ -47,16 +47,15 @@ export const layer = Layer.effect(SqlClient.SqlClient)(Effect.gen(function*() {
   return client
 })).pipe(Layer.provide(Reactivity.layer))
 
-/** A run `<project>-<number>` with what a run needs; `at` is its creation time. */
-export const insertRun = (id: string, options: { readonly at: number; readonly status?: string; readonly sha?: string; readonly fork?: boolean }) =>
+/** A finished run `<project>-<number>` of a push to main, created and finished `at`. */
+export const insertRun = (id: string, options: { readonly at: number; readonly event?: string }) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     const project = id.slice(0, id.lastIndexOf("-"))
     yield* sql`insert into runs (id, project, number, event, sha, commit_title, author, commit_time, trust, status, created_at,
-        trace_id, span_id, fork, plan)
-      values (${id}, ${project}, ${Number(id.slice(id.lastIndexOf("-") + 1))}, '{"_tag":"Push","branch":"main"}',
-        ${options.sha ?? id}, 'title', 'hauke', ${options.at}, 'trusted', ${options.status ?? "passed"}, ${options.at},
-        't', 's', ${options.fork === true ? 1 : 0}, '{}')`
+        finished_at, trace_id, span_id, plan)
+      values (${id}, ${project}, ${Number(id.slice(id.lastIndexOf("-") + 1))}, ${options.event ?? '{"_tag":"Push","branch":"main"}'},
+        ${id}, 'title', 'hauke', ${options.at}, 'trusted', 'passed', ${options.at}, ${options.at}, 't', 's', '{}')`
   })
 
 export const insertStep = (runId: string, name: string, options: {
