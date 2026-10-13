@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Schedule, Schema, Semaphore } from "effect"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs"
+import { SqlClient } from "effect/sql"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
@@ -71,6 +72,7 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
   const config = yield* Config
   const spawner = yield* Exec.SpawnerTag
   const projects = yield* Projects
+  const sql = yield* SqlClient.SqlClient
   const locks = new Map<string, Semaphore.Semaphore>()
   const lock = (project: string) => {
     let s = locks.get(project)
@@ -138,7 +140,10 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
 
   const entries = (dir: string) => (existsSync(dir) ? readdirSync(dir) : [])
   const remove = (dir: string) => Effect.promise(() => rm(dir, { recursive: true, force: true }))
-  /** Removes the mirror and revisions of a repository that is no longer a project. */
+  /**
+   * Removes the mirror and revisions of a repository that is no longer a project, and revisions no
+   * run used for a day; extracting one again is cheap.
+   */
   const sweep = Effect.gen(function*() {
     const mirrors = join(config.stateDir, "mirrors")
     const revs = join(config.stateDir, "revs")
@@ -149,6 +154,18 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
         yield* remove(join(revs, name))
         yield* Effect.logInfo(`removed the mirror of ${name}, which is no longer a project`)
       })), { discard: true })
+    const active = new Set((yield* sql<{ project: string; sha: string }>`select project, sha from runs
+      where status in ('queued', 'planning', 'running')`).map((run) => `${run.project}/${run.sha}`))
+    // Synchronous from here: a run that started meanwhile has touched its revision when it took it.
+    const now = Date.now()
+    for (const project of entries(revs)) {
+      for (const entry of entries(join(revs, project))) {
+        const dir = join(revs, project, entry)
+        // Scratch directories start with their revision too.
+        if (active.has(`${project}/${entry.split(".")[0]}`) || now - statSync(dir).mtimeMs < 86_400_000) continue
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
   })
   yield* sweep.pipe(
     Effect.catchCause((cause) => Effect.logWarning("sweeping mirrors failed", cause)),
@@ -174,6 +191,8 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
               Effect.andThen(Effect.sync(() => groupReadable(scratch))),
             ))
         }
+        const now = new Date()
+        utimesSync(root, now, now)
         const dir = join(root, ".kiln")
         // A revision extracted before a deploy still links the SDK of the Kiln that planned it then.
         link(join(dir, "node_modules"), config.sdk)

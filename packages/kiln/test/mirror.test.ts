@@ -1,13 +1,18 @@
 import { describe, expect, it } from "@effect/vitest"
+import { vi } from "vitest"
 import { Effect, Layer } from "effect"
 import { ChildProcessSpawner } from "effect/process"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
+import { SqlClient } from "effect/sql"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Exec from "../src/Exec.ts"
 import * as Mirror from "../src/controller/Mirror.ts"
 import { Projects } from "../src/controller/Projects.ts"
 import { config } from "./config.ts"
+import { insertRun, layer as sqlite } from "./sqlite.ts"
+
+vi.mock("@effect/sql-sqlite-bun", () => ({}))
 
 const { extract } = Mirror
 
@@ -53,23 +58,45 @@ describe("extract", () => {
     }))
 })
 
+/** Lets the mirror sweep once at start, with `kept` as the only project. */
+const sweptOnce = (state: string) =>
+  Effect.gen(function*() {
+    const projects = Layer.succeed(Projects)({
+      get: (name) => (name === "kept" ? { name, repo: "schnau/kept", defaultBranch: "main", targets: null, secrets: {} } : undefined),
+      all: () => [],
+      byRepo: () => Effect.die("unused"),
+    })
+    const spawner = Layer.succeed(Exec.SpawnerTag)(ChildProcessSpawner.make(() => Effect.die("unused")))
+    yield* Effect.andThen(Mirror.Mirror, Effect.sleep("200 millis")).pipe(
+      Effect.provide(Mirror.layer.pipe(Layer.provide([config({ stateDir: state }), projects, spawner]))),
+    )
+  })
+
+const directories = (state: string, dirs: ReadonlyArray<string>) => {
+  for (const dir of dirs) mkdirSync(join(state, dir), { recursive: true })
+}
+
 describe("Mirror", () => {
   it.live("removes the mirror and revisions of a repository that is no longer a project", () =>
     Effect.gen(function*() {
       const state = mkdtempSync(join(tmpdir(), "kiln-state-"))
-      for (const dir of ["mirrors/kept.git", "mirrors/gone.git", "revs/kept/sha", "revs/gone/sha"]) {
-        mkdirSync(join(state, dir), { recursive: true })
-      }
-      const projects = Layer.succeed(Projects)({
-        get: (name) => (name === "kept" ? { name, repo: "schnau/kept", defaultBranch: "main", targets: null, secrets: {} } : undefined),
-        all: () => [],
-        byRepo: () => Effect.die("unused"),
-      })
-      const spawner = Layer.succeed(Exec.SpawnerTag)(ChildProcessSpawner.make(() => Effect.die("unused")))
-      yield* Effect.andThen(Mirror.Mirror, Effect.sleep("200 millis")).pipe(
-        Effect.provide(Mirror.layer.pipe(Layer.provide([config({ stateDir: state }), projects, spawner]))),
-      )
+      directories(state, ["mirrors/kept.git", "mirrors/gone.git", "revs/kept/sha", "revs/gone/sha"])
+      yield* sweptOnce(state)
       expect(readdirSync(join(state, "mirrors"))).toEqual(["kept.git"])
       expect(readdirSync(join(state, "revs"))).toEqual(["kept"])
-    }))
+    }).pipe(Effect.provide(sqlite)))
+
+  it.live("removes revisions no run used for a day, unless a run of them is still going", () =>
+    Effect.gen(function*() {
+      const state = mkdtempSync(join(tmpdir(), "kiln-state-"))
+      const revisions = ["idle", "idle.scratch", "running", "fresh"]
+      directories(state, revisions.map((sha) => `revs/kept/${sha}`))
+      const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000)
+      for (const sha of ["idle", "idle.scratch", "running"]) utimesSync(join(state, "revs/kept", sha), twoDaysAgo, twoDaysAgo)
+      const sql = yield* SqlClient.SqlClient
+      yield* insertRun("kept-1", { at: 0 })
+      yield* sql`update runs set sha = 'running', status = 'running', finished_at = null where id = 'kept-1'`
+      yield* sweptOnce(state)
+      expect(readdirSync(join(state, "revs/kept")).sort()).toEqual(["fresh", "running"])
+    }).pipe(Effect.provide(sqlite)))
 })
