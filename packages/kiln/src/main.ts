@@ -182,6 +182,46 @@ const watch = Command.make("watch", {
     Command.withDescription("Check jj workspaces in the background once their snapshots settle"),
   )
 
+/** `kiln runs [project]`: recent runs, newest first. */
+const runs = Command.make("runs", {
+  project: Argument.String("project").pipe(Argument.withDescription("Only this project's runs"), Argument.optional),
+  limit: Flag.Int("limit").pipe(Flag.withDescription("How many runs to list (default 20, at most 200)"), Flag.withDefault(20)),
+  url,
+}, ({ project, limit, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const listed = yield* client.runs({ limit, ...Option.match(project, { onNone: () => ({}), onSome: (p) => ({ project: p }) }) })
+    if (listed.runs.length === 0) {
+      return yield* Console.log(Option.match(project, { onNone: () => "no runs yet", onSome: (p) => `no runs of ${p}; kiln projects lists the projects` }))
+    }
+    const now = Date.now()
+    for (
+      const line of Cli.table(
+        listed.runs.map((r) => [r.id, r.status, Event.describe(r.event), r.commit.sha.slice(0, 12), Cli.ago(now - r.createdAt), r.title ?? r.commit.title]),
+      )
+    ) yield* Console.log(line)
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
+    Command.withDescription("List recent runs with their status, event, commit and age, newest first"),
+  )
+
+/** `kiln projects`: the projects and how their default branch fares. */
+const projects = Command.make("projects", { url }, ({ url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const overview = yield* client.overview()
+    const now = Date.now()
+    for (
+      const line of Cli.table(overview.projects.map((p) => [
+        p.name,
+        p.repo,
+        p.defaultBranch,
+        ...(p.main === null ? ["no runs yet"] : [p.main.status, p.main.id, Cli.ago(now - p.main.createdAt)]),
+      ]))
+    ) yield* Console.log(line)
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
+    Command.withDescription("List the projects with the latest run of each default branch"),
+  )
+
 const rerun = Command.make("rerun", { run: runId, url }, ({ run, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
@@ -248,7 +288,7 @@ const cancel = Command.make("cancel", { run: runId, url }, ({ run, url }) =>
     yield* Console.log(`cancelled ${run}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(Command.withDescription("Cancel a run that hasn't ended"))
 
-const subcommands = [controller, worker, agent, gen, plan, check, watch, trigger, status, logs, rerun, cancel, merge]
+const subcommands = [controller, worker, agent, gen, plan, check, watch, trigger, runs, projects, status, logs, rerun, cancel, merge]
 
 const kiln = Command.make("kiln").pipe(
   Command.withDescription("Kiln plans and runs the pipelines in .kiln/ci.ts, here or on its controller"),

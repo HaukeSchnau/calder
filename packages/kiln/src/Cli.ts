@@ -47,6 +47,18 @@ const distance = (a: string, b: string) => {
 export const closest = (typed: string, names: ReadonlyArray<string>) =>
   names.map((name) => ({ name, d: distance(typed, name) })).sort((x, y) => x.d - y.d).map((x) => x.name)
 
+export const ago = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000))
+  const span = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 48 * 3600 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`
+  return `${span} ago`
+}
+
+/** Rows as lines with their columns padded to line up. */
+export const table = (rows: ReadonlyArray<ReadonlyArray<string>>) => {
+  const widths = rows.reduce<Array<number>>((w, row) => row.map((cell, i) => Math.max(w[i] ?? 0, cell.length)), [])
+  return rows.map((row) => row.map((cell, i) => (i === row.length - 1 ? cell : cell.padEnd(widths[i]!))).join("  "))
+}
+
 export const stepLine = (step: Domain.StepRun) => `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}`
 
 /** Prints a run's status and steps as they change until it ends; returns the run as it ended. */

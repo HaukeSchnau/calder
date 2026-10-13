@@ -105,6 +105,8 @@ kiln plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref], 
 kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 kiln trigger <project> [--branch b]  # runs a branch head on the controller, follows it, and exits 1 unless
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
+kiln runs [project] [--limit n]      # recent runs with their status, event, commit and age
+kiln projects                        # the projects and the latest run of each default branch
 kiln status <run>                    # a run's steps, with why those that failed did
 kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
                                      # until the step ends, or the run without a step
