@@ -70,6 +70,26 @@ as `kiln gen` creates, so the repository's type-aware lint can check `ci.ts` in 
 and `Step.timeout` take Effect's options and apply in pipe order. Task shards (`shards: { count }`)
 run in parallel and report as one step.
 
+`Vitest.files` from `@kiln/std` is a task that runs a package's vitest file by file. Its `each` follows
+the test files' imports, so a file runs again only when it, what it imports or `inputs` changed. Vitest
+runs in `dir`, with that package's `node_modules/.bin` first on PATH, gets the files relative to `dir`,
+and writes its JSON report to where the task reads it.
+
+```ts
+const testServer = Vitest.files({
+  name: "test-server",
+  shell,
+  setup: install,
+  dir: "apps/server",
+  tests: ["src/**/*.test.ts"],
+  inputs: Files.of("package.json", "pnpm-lock.yaml", "apps/server/vitest.config.ts"),
+  shards: 4,
+  args: ["--maxWorkers", "3"],
+})
+```
+
+`vitest: ["vp", "test"]` runs it through Vite+, and `before` is a command that runs in `dir` first.
+
 ## Commands
 
 ```
@@ -93,7 +113,7 @@ kiln agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--
 | Path | What |
 | --- | --- |
 | `packages/core` | `@kiln/core`: the API and the plan engine (`Kiln.plan` is pure and testable) |
-| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness) |
+| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/kiln` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
