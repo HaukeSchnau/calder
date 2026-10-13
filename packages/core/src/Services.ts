@@ -81,7 +81,13 @@ export interface Target {
 }
 
 export type Lease =
-  | { readonly _tag: "Held"; readonly fence: number; readonly targets: ReadonlyArray<Target> }
+  | {
+    readonly _tag: "Held"
+    readonly fence: number
+    readonly targets: ReadonlyArray<Target>
+    /** Hosts whose `/health` couldn't be read, which might run the app; a deploy must not go on without them. */
+    readonly unreachable: ReadonlyArray<string>
+  }
   /** A newer run of the same project asked for the lease, so this one should stop. */
   | { readonly _tag: "Replaced" }
 

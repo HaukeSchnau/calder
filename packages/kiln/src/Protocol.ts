@@ -202,7 +202,7 @@ export class WorkerRpcs extends RpcGroup.make(
   Rpc.make("fleetAcquire", {
     payload: { ...auth, project: Schema.String },
     success: Schema.Union([
-      Schema.TaggedStruct("Held", { fence: Schema.Number, targets: Schema.Array(Schema.String) }),
+      Schema.TaggedStruct("Held", { fence: Schema.Number, targets: Schema.Array(Schema.String), unreachable: Schema.Array(Schema.String) }),
       Schema.TaggedStruct("Replaced", {}),
     ]),
     error: Unauthorized,
