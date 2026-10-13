@@ -665,7 +665,8 @@ function testCounts(run: SimRun, s: SimStep): Domain.StepRun["tests"] {
   const total = run.project === "hopwatch" && s.plan.name === "flake check" ? 96 : totals[s.plan.name]
   if (total === undefined) return null
   const failed = testResults(run, s).filter((t) => t.status === "failed" || t.status === "timeout").length
-  return { passed: total - failed - (s.plan.name === "test server" ? 2 : 0), failed, skipped: s.plan.name === "test server" ? 2 : 0 }
+  const server = s.plan.name === "test server"
+  return { passed: total - failed - (server ? 2 : 0), failed, skipped: server ? 2 : 0, flaky: server && s.outcome === "passed" ? 1 : 0 }
 }
 
 /* ------------------------------------------------------------------ */

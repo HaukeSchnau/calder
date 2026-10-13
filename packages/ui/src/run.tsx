@@ -358,7 +358,7 @@ function Inspector({ detail, step, onSelect, onTab }: {
             step.files !== null && ["files", <span className="tnum">{step.files.ran === 0 ? `all ${step.files.total} reused` : `${step.files.ran} of ${step.files.total} ran`}{step.files.flaky ? <>, <span className="bad">{step.files.flaky} passed on retry</span></> : null}</span>],
             step.cpuSeconds !== null && ["cpu", <span className="tnum">{step.cpuSeconds.toFixed(1)} s</span>],
             step.memoryPeakBytes !== null && ["memory", <span className="tnum">{bytes(step.memoryPeakBytes)} peak</span>],
-            step.tests !== null && ["tests", <span>{step.tests.passed} passed{step.tests.failed ? <>, <span className="bad">{step.tests.failed} failed</span></> : null}{step.tests.skipped ? `, ${step.tests.skipped} skipped` : ""}</span>],
+            step.tests !== null && ["tests", <span>{step.tests.passed} passed{step.tests.flaky ? <span className="heat"> ({step.tests.flaky} on retry)</span> : null}{step.tests.failed ? <>, <span className="bad">{step.tests.failed} failed</span></> : null}{step.tests.skipped ? `, ${step.tests.skipped} skipped` : ""}</span>],
           ]} />
         ) : <p className="dim">{step.status === "running" ? "Live in the metrics tab." : step.status === "reused" ? "Nothing ran." : "No process yet."}</p>}
       </section>

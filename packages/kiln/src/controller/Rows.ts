@@ -55,6 +55,7 @@ export interface StepRow {
   readonly tests_passed: number | null
   readonly tests_failed: number | null
   readonly tests_skipped: number | null
+  readonly tests_flaky: number | null
   /** Absent in rows read before migration 0008. */
   readonly files_total?: number | null
   readonly files_ran?: number | null
@@ -148,7 +149,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     spanId: row.span_id,
     tests: row.tests_passed === null
       ? null
-      : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0 },
+      : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0, flaky: row.tests_flaky ?? 0 },
     files: row.files_total == null ? null : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
   }
 }
@@ -219,7 +220,7 @@ export const failingTests = (runId: string, step: string) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     const rows = yield* sql<TestRow>`select * from tests where run_id = ${runId} and step = ${step}
-      and status in ('failed', 'timeout') limit 200`
+      and status in ('failed', 'timeout') and superseded = 0 limit 200`
     return rows.map((r) => testResult(r, false))
   }).pipe(Effect.orDie)
 

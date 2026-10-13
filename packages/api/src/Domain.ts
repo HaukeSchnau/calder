@@ -135,7 +135,8 @@ export const StepRun = Schema.Struct({
   cpuSeconds: Schema.NullOr(Schema.Number),
   memoryPeakBytes: Schema.NullOr(Schema.Number),
   spanId: Schema.NullOr(Schema.String),
-  tests: Schema.NullOr(Schema.Struct({ passed: Schema.Number, failed: Schema.Number, skipped: Schema.Number })),
+  /** Each test once, with its last outcome. `flaky` of the passed ones failed first and passed on a retry. */
+  tests: Schema.NullOr(Schema.Struct({ passed: Schema.Number, failed: Schema.Number, skipped: Schema.Number, flaky: Schema.Number })),
   /** For a task with `each`: its files, how many ran rather than being reused, and how many passed only on retry. */
   files: Schema.NullOr(Schema.Struct({ total: Schema.Number, ran: Schema.Number, flaky: Schema.Number })),
 })

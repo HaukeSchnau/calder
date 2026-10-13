@@ -126,7 +126,8 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       const [run] = yield* db(Rows.runsWithCounts([row]))
       const estimates = yield* db(Estimates.forProject(row.project))
       const steps = (yield* db(Rows.loadSteps(id))).map((s) => Rows.step(s, estimates.get(s.name) ?? null))
-      const failing = yield* db(sql<Rows.TestRow>`select * from tests where run_id = ${id} and status in ('failed', 'timeout') limit 200`)
+      const failing = yield* db(sql<Rows.TestRow>`select * from tests where run_id = ${id} and status in ('failed', 'timeout')
+        and superseded = 0 limit 200`)
       const flaky = yield* flakyKeys(row.project, failing)
       const siblings = yield* db(
         row.pr !== null
@@ -281,7 +282,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     testHistory: ({ project, suite, name }) =>
       Effect.gen(function*() {
         const rows = yield* db(sql<Rows.TestRow>`select * from tests where project = ${project} and suite = ${suite} and name = ${name}
-          order by created_at desc limit 30`)
+          and superseded = 0 order by created_at desc limit 30`)
         const flaky = (yield* flakyKeys(project, [{ suite, name }])).size > 0
         return rows.map((r) => Rows.testResult(r, flaky))
       }),

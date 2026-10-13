@@ -21,6 +21,7 @@ import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 import * as Slots from "./Slots.ts"
 import * as Telemetry from "./Telemetry.ts"
+import * as Tests from "./Tests.ts"
 
 const activeStatuses = ["queued", "planning", "running"] as const
 
@@ -345,8 +346,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       // A timeout or a worker that died leaves no trace in the output itself.
       if (failed && s.error) yield* logTo(run, row.name, row.span_id, null)({ _tag: "Log", stream: "kiln", text: s.error.message, timestamp: now })
       const excerpt = failed ? live.excerpt(run.id, row.name) : null
-      const tests = s.tests ?? []
-      const counted = tests.length > 0
+      const tests = Tests.outcomes(s.tests ?? [])
+      const counts = tests.length > 0 ? Tests.count(tests) : null
       yield* db(sql`update steps set
         status = ${s.status},
         finished_at = ${now},
@@ -361,17 +362,19 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         cpu_seconds = ${s.usage?.cpuSeconds ?? null},
         memory_peak = ${s.usage?.memoryPeakBytes ?? null},
         attempts = max(attempts, ${s.attempts ?? 0}),
-        tests_passed = ${counted ? tests.filter((t) => t.status === "passed").length : null},
-        tests_failed = ${counted ? tests.filter((t) => t.status === "failed" || t.status === "timeout").length : null},
-        tests_skipped = ${counted ? tests.filter((t) => t.status === "skipped").length : null},
+        tests_passed = ${counts?.passed ?? null},
+        tests_failed = ${counts?.failed ?? null},
+        tests_skipped = ${counts?.skipped ?? null},
+        tests_flaky = ${counts?.flaky ?? null},
         files_total = ${s.files?.total ?? null},
         files_ran = ${s.files?.ran ?? null},
         files_flaky = ${s.files?.flaky ?? null}
         where run_id = ${run.id} and name = ${row.name}`)
-      if (counted) {
+      if (counts !== null) {
         yield* db(sql.withTransaction(Effect.forEach(tests, (t) =>
-          sql`insert into tests (run_id, project, step, suite, name, file, status, duration_ms, message, created_at)
-            values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now})`, { discard: true })))
+          sql`insert into tests (run_id, project, step, suite, name, file, status, duration_ms, message, created_at, superseded)
+            values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now},
+              ${t.superseded ? 1 : 0})`, { discard: true })))
       }
       if (s.status === "passed" && s.key !== undefined && s.key !== null && row.kind === "task") {
         yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at)
