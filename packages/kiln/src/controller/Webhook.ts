@@ -44,7 +44,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
       return HttpServerResponse.text("bad signature", { status: 401 })
     }
     const event = request.headers["x-gitea-event"]
-    const payload = JSON.parse(body) as Payload
+    const payload = yield* Effect.try({ try: () => JSON.parse(body) as Payload, catch: () => "malformed JSON" })
     const enrolled = yield* projects.byRepo(payload.repository?.full_name ?? "", payload.repository?.default_branch)
     if (enrolled === undefined) return HttpServerResponse.text("not enrolled")
     const project = enrolled.name

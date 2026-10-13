@@ -2,7 +2,7 @@ import { Busy, Cache, Cmd, CurrentRun, Flake, Fleet, Git, Gitea, Kiln, PullReque
 import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join } from "node:path"
 import * as Exec from "../Exec.ts"
@@ -246,16 +246,8 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     const command = typeof def.run === "function" ? def.run({ index: shard.index, count: shard.count, files }) : def.run
     const argv = Cmd.render(command, values)
 
-    const secretsDir = Object.keys(def.secrets).length > 0 ? mkdtempSync(join(tmpdir(), "kiln-secrets-")) : undefined
-    const secretEnv: Record<string, string> = {}
-    for (const [name, ref] of Object.entries(def.secrets)) {
-      const value = job.secrets[ref.name]
-      if (value === undefined) return yield* Effect.die(new Error(`secret ${ref.name} was not granted`))
-      const path = join(secretsDir!, ref.name)
-      writeFileSync(path, value, { mode: 0o600 })
-      chmodSync(path, 0o600)
-      secretEnv[name] = path
-    }
+    const secrets = yield* secretFiles(job, step.name, Object.values(def.secrets).map((ref) => ref.name))
+    const secretEnv = Object.fromEntries(Object.entries(def.secrets).map(([env, ref]) => [env, secrets[ref.name]!.path]))
 
     const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-task", ...argv])
     const taskEnv = env(job.run, step.name, {
@@ -304,7 +296,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
         : yield* upload(self, storeName, join(workspace, path))
     }
     return toResult(exit, { outputs })
-  })
+  }).pipe(Effect.scoped)
 
 const storePath = /^\/nix\/store\/[a-z0-9]{32}-([^/]+)$/
 
@@ -379,7 +371,38 @@ const inputsOf = (needs: Step.Needs, job: StepJob) =>
     }),
   )
 
-const services = (job: StepJob, project: Kiln.Project, grants: Step.Grants) =>
+type SecretFile = { readonly value: string; readonly path: string }
+
+/**
+ * Writes the secrets a step was granted to files only the step can read, in a directory that goes
+ * away with the scope: agents' workers have no private /tmp.
+ */
+const secretFiles = (job: StepJob, step: string, names: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    const missing = names.filter((name) => job.secrets[name] === undefined)
+    if (missing.length > 0) {
+      const list = missing.map((name) => `"${name}"`).join(", ")
+      return yield* Effect.die(new Error(
+        `${step} needs the secret ${list}, but project ${job.run.project} has none by that name ` +
+          `(the NixOS module's vps.services.kiln.projects.${job.run.project}.secrets)`,
+      ))
+    }
+    const files: Record<string, SecretFile> = {}
+    if (names.length === 0) return files
+    const dir = yield* Effect.acquireRelease(
+      Effect.sync(() => mkdtempSync(join(tmpdir(), "kiln-secrets-"))),
+      (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+    )
+    for (const name of names) {
+      const value = job.secrets[name]!
+      const path = join(dir, name)
+      writeFileSync(path, value, { mode: 0o600 })
+      files[name] = { value, path }
+    }
+    return files
+  })
+
+const services = (job: StepJob, project: Kiln.Project, step: string, grants: Step.Grants) =>
   Effect.gen(function*() {
     const { client, id, token, log } = yield* Job
     const auth = { job: id, token }
@@ -462,12 +485,8 @@ const services = (job: StepJob, project: Kiln.Project, grants: Step.Grants) =>
       }))
     }
     if (run.trust === "trusted") {
-      for (const name of grants.secrets ?? []) {
-        const value = job.secrets[name]
-        if (value === undefined) continue
-        const dir = mkdtempSync(join(tmpdir(), "kiln-secret-"))
-        const path = join(dir, name)
-        writeFileSync(path, value, { mode: 0o600 })
+      const files = yield* secretFiles(job, step, grants.secrets ?? [])
+      for (const [name, { value, path }] of Object.entries(files)) {
         context = context.pipe(Context.add(Secret.tag(name), { value: Redacted.make(value), path }))
       }
     }
@@ -480,12 +499,12 @@ export const action = (job: StepJob, project: Kiln.Project, step: Step.Any) =>
   Effect.gen(function*() {
     const def = step.def
     if (def._tag !== "Action") return yield* Effect.die(new Error(`${step.name} is not an action`))
-    const layer = yield* services(job, project, def.grants)
+    const layer = yield* services(job, project, step.name, def.grants)
     const inputs = inputsOf(def.needs, job)
     const body = Effect.gen(() => def.body(inputs)) as Effect.Effect<unknown, unknown, never>
     const exit = yield* Effect.exit(Effect.scoped(withPolicies(body, step.policies)).pipe(Effect.provide(layer)))
     return toResult(exit)
-  })
+  }).pipe(Effect.scoped)
 
 /** Decoded values of a task's interpolated steps, for `cmd`. */
 export const values = (job: StepJob): Record<string, unknown> =>
