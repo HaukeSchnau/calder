@@ -1,6 +1,8 @@
 import { cmd, Files, type Flake, Setup } from "@kiln/core"
 
 export interface InstallOptions {
+  /** The step's name, `install` by default. Name a second install that needs another shell or `keep`. */
+  readonly name?: string
   /** The dev shell with bun. */
   readonly shell?: Flake.FlakeRef<"devShells">
   /** Arguments after `bun install --frozen-lockfile`. */
@@ -15,7 +17,7 @@ export interface InstallOptions {
  * across tasks, and `node_modules/.bin` is on PATH.
  */
 export const install = (options: InstallOptions = {}) =>
-  Setup.make("install", {
+  Setup.make(options.name ?? "install", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     inputs: Files.glob("**/package.json", "bun.lock", "bun.lockb", "bunfig.toml", ".npmrc", "patches/**/*.patch"),
     run: cmd`bun install --frozen-lockfile ${[...(options.args ?? [])]}`,

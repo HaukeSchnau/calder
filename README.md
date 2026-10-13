@@ -35,7 +35,8 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
   prepared before settles at once. `keep` names what survives a task's `git clean`, `path` what goes
-  in front of PATH.
+  in front of PATH. `Pnpm.install` and `Bun.install` name their step `install`; a second install, say
+  with another shell, needs its own `name`.
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
   setup keeps. A task is reused
