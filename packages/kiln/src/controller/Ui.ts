@@ -79,18 +79,24 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         } satisfies Domain.Deployment
       }), { concurrency: "unbounded" })))
 
+  /**
+   * The tests that both passed and failed in their last 20 records. The cross join makes SQLite look
+   * up each test by its index instead of scanning every test of the project.
+   */
   const flakyKeys = (project: string, tests: ReadonlyArray<{ readonly suite: string; readonly name: string }>) =>
-    Effect.gen(function*() {
-      const flaky = new Set<string>()
-      for (const t of tests) {
-        const history = yield* db(sql<{ status: string }>`select status from tests where project = ${project} and suite = ${t.suite}
-          and name = ${t.name} order by created_at desc limit 20`)
-        const statuses = new Set(history.map((h) => (h.status === "timeout" ? "failed" : h.status)))
-        if (statuses.has("passed") && statuses.has("failed")) flaky.add(`${t.suite}\u0000${t.name}`)
-      }
-      return flaky
-    })
-
+    db(sql<{ suite: string; name: string }>`with wanted as (
+        select distinct json_extract(value, '$[0]') as suite, json_extract(value, '$[1]') as name
+        from json_each(${JSON.stringify(tests.map((t) => [t.suite, t.name]))})
+      )
+      select suite, name from (
+        select tests.suite, tests.name, tests.status,
+          row_number() over (partition by tests.suite, tests.name order by tests.created_at desc) as n
+        from wanted cross join tests on tests.project = ${project} and tests.suite = wanted.suite and tests.name = wanted.name
+      )
+      where n <= 20 group by suite, name
+      having sum(status = 'passed') > 0 and sum(status in ('failed', 'timeout')) > 0`).pipe(
+      Effect.map((rows) => new Set(rows.map((r) => `${r.suite}\u0000${r.name}`))),
+    )
 
   /** This run's files that passed only on retry, with the files they shared a job with here and in other runs. */
   const retriedFiles = (run: Rows.RunRow) =>
