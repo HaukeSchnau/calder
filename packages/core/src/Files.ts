@@ -24,8 +24,9 @@ export const all = (): Files => ({ _tag: "All" })
 export const of = (...paths: ReadonlyArray<string>): Files => ({ _tag: "Of", paths: paths.map(normalize) })
 
 /**
- * Workspace packages (pnpm or npm workspaces) and every workspace package they depend on.
- * `"."` means the whole repository.
+ * Workspace packages (pnpm or npm workspaces), every workspace package they depend on, and the files
+ * at the repository's root except docs, such as manifests, lockfiles and `tsconfig.base.json`. `"."`
+ * means the whole repository.
  */
 export const workspace = (...dirs: ReadonlyArray<string>): Files => ({ _tag: "Workspace", dirs: dirs.map(normalize) })
 

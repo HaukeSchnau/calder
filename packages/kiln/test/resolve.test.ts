@@ -5,7 +5,7 @@ import { Effect, Fiber, PlatformError } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { TestClock } from "effect/testing"
 import type { PlanSpec, RunInfo } from "../src/Protocol.ts"
-import { resolve } from "../src/worker/Resolve.ts"
+import { paths, resolve } from "../src/worker/Resolve.ts"
 import { memoryRepo } from "./memoryRepo.ts"
 
 const run = {
@@ -86,5 +86,19 @@ describe("resolve", () => {
       const error = yield* plan(app, [build(Files.union(Files.glob("src/**"), Files.of("static"), Files.imports("src/**/*.tsx")))]).pipe(Effect.flip)
       expect(error.message).toContain(`No file matches "static" (build's inputs), "src/**/*.tsx" (build's inputs).`)
       yield* plan(app, [build(Files.union(Files.glob("src/**"), Files.optional(Files.of("static"))))])
+    }))
+
+  it.effect("a workspace package's files include the root configs it builds with", () =>
+    Effect.gen(function*() {
+      const repo = memoryRepo({
+        "package.json": JSON.stringify({ name: "monorepo", workspaces: ["packages/*"] }),
+        "tsconfig.base.json": "{}",
+        "README.md": "docs",
+        "packages/web/package.json": JSON.stringify({ name: "web", dependencies: { ui: "workspace:*" } }),
+        "packages/ui/package.json": JSON.stringify({ name: "ui" }),
+        "packages/api/package.json": JSON.stringify({ name: "api" }),
+      })
+      const files = yield* paths(repo, Files.workspace("packages/web")).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses))
+      expect(files).toEqual(["package.json", "tsconfig.base.json", ".ci", "packages/ui", "packages/web"])
     }))
 })

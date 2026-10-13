@@ -6,18 +6,11 @@ import type { PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import * as Imports from "./Imports.ts"
 import type { Repo } from "./Repo.ts"
 
-/** Root files every workspace package reads: manifests, lockfiles and the fleet's `.ci/` contract. */
-const rootFiles = [
-  "package.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "bun.lock",
-  "bun.lockb",
-  "package-lock.json",
-  "yarn.lock",
-  ".npmrc",
-  ".ci",
-]
+/**
+ * What every workspace package reads at the root: the files there except docs (manifests, lockfiles,
+ * shared configs such as `tsconfig.base.json`) and the fleet's `.ci/` contract.
+ */
+const rootFiles = (repo: Repo) => Effect.map(repo.files, (all) => [...all.filter((f) => !f.includes("/") && !/\.mdx?$/i.test(f)), ".ci"])
 
 interface Manifest {
   readonly dir: string
@@ -116,7 +109,7 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
           if (m !== undefined) visit(m)
           else seen.add(dir)
         }
-        return [...rootFiles, ...[...seen].sort()]
+        return [...(yield* rootFiles(repo)), ...[...seen].sort()]
       }
     }
   })
