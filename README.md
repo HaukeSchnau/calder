@@ -44,7 +44,10 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
   setup keeps. A task is reused
   when its key matches: git tree ids of its inputs (`inputs: Files.workspace(...)`, the whole
-  repository by default), the dev shell, the command and the values it interpolates. Pull requests
+  repository by default), its setup's key, the dev shell, the command and the values it interpolates.
+  A task with a setup needn't list manifests or lockfiles, since the setup's key covers them. A path
+  or pattern in a step's files that matches no file fails the plan, since that part of the key would
+  never change. Wrap files that may be missing in `Files.optional(...)`. Pull requests
   reuse everything; pushes rerun tasks unless they build `outputs`. A task with another `platform`
   than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only).
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
@@ -107,6 +110,12 @@ kiln worker <job>                    # started by the controller in a systemd un
 kiln agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
                                      # runs the controller's jobs for this host's platform
 ```
+
+An agent gets jobs only while it has the controller's compatibility version (`compatibility` in
+`packages/kiln/src/Protocol.ts`), so deploying the controller stalls agents only when that version
+changed. The UI lists each agent's version and Kiln build and marks an agent of another version as
+incompatible. A reconnecting agent reports the workers it still runs, and the controller stops those it
+doesn't know, such as jobs from before its restart, before it gives that agent new jobs.
 
 ## Layout
 

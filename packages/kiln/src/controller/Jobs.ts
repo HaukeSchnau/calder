@@ -7,7 +7,7 @@ import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import type { Job, JobEvent, JobResult } from "../Protocol.ts"
-import { Unauthorized } from "../Protocol.ts"
+import { compatibility, Unauthorized } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 
@@ -317,7 +317,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         // An offloaded job never waits: no agent takes it, and it runs here.
         if (options.offload !== true) {
           const stale = agents.usage().filter((a) => a.connected && !a.current && a.platform === platform)
-          const why = stale.map((a) => `; ${a.name} runs another Kiln build (${a.build}) and needs a deploy`).join("")
+          const why = stale.map((a) => `; ${a.name} has compatibility version ${a.compatibility}, not ${compatibility}, and gets no jobs`).join("")
           yield* options.onEvent({ _tag: "Log", stream: "kiln", text: `waiting for a ${platform} agent${why}`, timestamp: Date.now() })
         }
         const exited = yield* agents.run({ id, token }, platform, { wait: options.offload !== true, onPlaced: onStart }).pipe(

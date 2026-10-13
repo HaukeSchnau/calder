@@ -1,20 +1,25 @@
 import { type Cause, Context, Deferred, Effect, Layer, Queue, Stream } from "effect"
 import { readFileSync } from "node:fs"
-import * as Build from "../Build.ts"
-import { type AgentOrder, Unauthorized } from "../Protocol.ts"
+import { type AgentOrder, compatibility, Unauthorized } from "../Protocol.ts"
 import { Config } from "./Config.ts"
 
 interface Connection {
   readonly name: string
   readonly platform: string
   slots: number
-  readonly build: string
+  readonly compatibility: number
   readonly orders: Queue.Queue<AgentOrder, Cause.Done>
 }
 
 interface Placed {
   readonly agent: string
   readonly exited: Deferred.Deferred<number>
+  /**
+   * The controller wants the worker gone: it stopped the job, or never knew it (the worker ran across
+   * a restart). Its workspace may belong to another job already, so its agent gets no new jobs until
+   * it reports the worker gone.
+   */
+  stopping: boolean
 }
 
 interface Waiter {
@@ -30,7 +35,8 @@ export interface AgentUsage {
   readonly running: number
   readonly connected: boolean
   readonly build: string
-  /** Whether it runs the controller's Kiln build; only such agents get jobs. */
+  readonly compatibility: number
+  /** Whether it has the controller's compatibility version; only such agents get jobs. */
   readonly current: boolean
 }
 
@@ -58,35 +64,39 @@ export class Agents extends Context.Service<Agents, {
     readonly slots: number
     readonly running: ReadonlyArray<string>
     readonly build: string
+    readonly compatibility: number
   }) => Stream.Stream<AgentOrder, Unauthorized>
   readonly exited: (auth: { readonly token: string; readonly name: string }, job: string, code: number) => Effect.Effect<void, Unauthorized>
   readonly offer: (auth: { readonly token: string; readonly name: string }, slots: number) => Effect.Effect<void, Unauthorized>
   readonly usage: () => ReadonlyArray<AgentUsage>
 }>()("kiln/controller/Agents") {}
 
-/** Agents authenticate with `secret`; with none, no agent may connect. `build` is the controller's. */
-export const make = (secret: string | null, build: string = Build.id): Agents["Service"] => {
+/** Agents authenticate with `secret`; with none, no agent may connect. `version` is the controller's compatibility. */
+export const make = (secret: string | null, version: number = compatibility): Agents["Service"] => {
   const connections = new Map<string, Connection>()
   const placed = new Map<string, Placed>()
   const waiters: Array<Waiter> = []
   // Bumped on every connect, so a grace timer knows whether its agent came back.
   const generations = new Map<string, number>()
   // Every agent seen since start, so a missing one stays visible.
-  const seen = new Map<string, { readonly platform: string; slots: number; readonly build: string }>()
+  const seen = new Map<string, { readonly platform: string; slots: number; readonly build: string; readonly compatibility: number }>()
 
   const check = (auth: { readonly token: string; readonly name: string }) =>
     secret !== null && auth.token === secret ? Effect.void : Effect.fail(new Unauthorized({ reason: "wrong agent token" }))
 
-  const runningOn = (agent: string) => [...placed.values()].filter((p) => p.agent === agent).length
+  const on = (agent: string) => [...placed.values()].filter((p) => p.agent === agent)
+
+  const takes = (c: Connection, platform: string) => {
+    const jobs = on(c.name)
+    return c.platform === platform && c.compatibility === version && jobs.length < c.slots && !jobs.some((p) => p.stopping)
+  }
 
   const assign = Effect.gen(function*() {
     for (const waiter of [...waiters]) {
-      const agent = [...connections.values()].find((c) =>
-        c.platform === waiter.platform && c.build === build && runningOn(c.name) < c.slots
-      )
+      const agent = [...connections.values()].find((c) => takes(c, waiter.platform))
       if (agent === undefined) continue
       waiters.splice(waiters.indexOf(waiter), 1)
-      const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>() }
+      const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>(), stopping: false }
       placed.set(waiter.job.id, p)
       Queue.offerUnsafe(agent.orders, { _tag: "Start", job: waiter.job.id, token: waiter.job.token })
       yield* Deferred.succeed(waiter.placed, p)
@@ -121,7 +131,9 @@ export const make = (secret: string | null, build: string = Build.id): Agents["S
     stop: (job) =>
       Effect.sync(() => {
         const p = placed.get(job)
-        const agent = p === undefined ? undefined : connections.get(p.agent)
+        if (p === undefined) return
+        p.stopping = true
+        const agent = connections.get(p.agent)
         if (agent !== undefined) Queue.offerUnsafe(agent.orders, { _tag: "Stop", job })
       }),
     connect: (auth, agent) =>
@@ -133,16 +145,26 @@ export const make = (secret: string | null, build: string = Build.id): Agents["S
             if (previous !== undefined) Queue.endUnsafe(previous.orders)
             const generation = (generations.get(auth.name) ?? 0) + 1
             generations.set(auth.name, generation)
-            const connection: Connection = { name: auth.name, platform: agent.platform, slots: agent.slots, build: agent.build, orders }
+            const connection: Connection = { name: auth.name, platform: agent.platform, slots: agent.slots, compatibility: agent.compatibility, orders }
             connections.set(auth.name, connection)
-            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build })
-            // Workers that exited while the agent was away can't report it any more.
-            for (const [job, p] of placed) {
-              if (p.agent === auth.name && !agent.running.includes(job)) yield* finish(job, -1)
+            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility })
+            const unknown = agent.running.filter((job) => !placed.has(job))
+            for (const job of unknown) placed.set(job, { agent: auth.name, exited: Deferred.makeUnsafe<number>(), stopping: true })
+            for (const [job, p] of [...placed]) {
+              if (p.agent !== auth.name) continue
+              // Workers that exited while the agent was away can't report it any more.
+              if (!agent.running.includes(job)) yield* finish(job, -1)
+              else if (p.stopping) Queue.offerUnsafe(orders, { _tag: "Stop", job })
             }
             yield* Effect.logInfo(`agent ${auth.name} (${agent.platform}, ${agent.slots} slots) connected`)
-            if (agent.build !== build) {
-              yield* Effect.logWarning(`agent ${auth.name} runs Kiln build ${agent.build}, not ${build}: it gets no jobs until it is deployed`)
+            if (unknown.length > 0) {
+              yield* Effect.logWarning(`agent ${auth.name} runs ${unknown.length} workers of jobs this controller doesn't know: it stops them before it gets new jobs`)
+            }
+            if (agent.compatibility !== version) {
+              const behind = agent.compatibility < version ? "it is" : "the controller is"
+              yield* Effect.logWarning(
+                `agent ${auth.name} (Kiln build ${agent.build}) has compatibility version ${agent.compatibility}, not ${version}: it gets no jobs until ${behind} deployed`,
+              )
             }
             yield* assign
             yield* Effect.addFinalizer(() =>
@@ -174,7 +196,7 @@ export const make = (secret: string | null, build: string = Build.id): Agents["S
         yield* assign
       }))),
     usage: () =>
-      [...seen].map(([name, a]) => ({ name, ...a, running: runningOn(name), connected: connections.has(name), current: a.build === build })),
+      [...seen].map(([name, a]) => ({ name, ...a, running: on(name).length, connected: connections.has(name), current: a.compatibility === version })),
   }
 }
 

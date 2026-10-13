@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Effect, Pull, Stream } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
@@ -32,19 +32,35 @@ const worker = (request: HttpServerRequest.HttpServerRequest) =>
     return active._tag === "Some" && active.value.remote ? active.value : undefined
   })
 
-const concat = (chunks: ReadonlyArray<Uint8Array>) => {
-  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0))
-  let at = 0
-  for (const c of chunks) {
-    out.set(c, at)
-    at += c.length
-  }
-  return out
-}
+/**
+ * Splits a CGI program's output into its status, headers and body, reading only as far as the headers
+ * end; the body streams on from `stdout` within the scope. Undefined if the output ended first.
+ */
+export const cgi = <E>(stdout: Stream.Stream<Uint8Array, E>) =>
+  Effect.gen(function*() {
+    const pull = yield* Stream.toPull(stdout)
+    let head = Buffer.alloc(0)
+    let split = -1
+    while (split === -1) {
+      head = Buffer.concat([head, ...(yield* pull)])
+      split = head.indexOf("\r\n\r\n")
+    }
+    const headers: Record<string, string> = {}
+    let status = 200
+    for (const line of head.subarray(0, split).toString().split("\r\n")) {
+      const colon = line.indexOf(":")
+      const [name, value] = [line.slice(0, colon).trim(), line.slice(colon + 1).trim()]
+      if (name.toLowerCase() === "status") status = Number(value.split(" ")[0])
+      else headers[name] = value
+    }
+    const body = Stream.concat(Stream.succeed(head.subarray(split + 4)), Stream.fromPull(Effect.succeed(pull)))
+    return { status, headers, body }
+  }).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
 
 /**
  * Read-only git over HTTP for agents' workers: `git http-backend` on the job's own mirror, so they
- * check out without Gitea credentials.
+ * check out without Gitea credentials. The pack streams through; the request's scope keeps git
+ * running until the response is sent.
  */
 export const git = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function*() {
@@ -76,20 +92,11 @@ export const git = (request: HttpServerRequest.HttpServerRequest) =>
       extendEnv: true,
       stdin: request.method === "POST" ? Stream.orDie(request.stream) : "ignore",
     }))
-    const [chunks] = yield* Effect.all([Stream.runCollect(handle.stdout), Stream.runDrain(handle.stderr), handle.exitCode], { concurrency: "unbounded" })
-    const output = concat(chunks)
-    const split = Buffer.from(output).indexOf("\r\n\r\n")
-    if (split === -1) return HttpServerResponse.text("git http-backend failed", { status: 500 })
-    const headers: Record<string, string> = {}
-    let status = 200
-    for (const line of new TextDecoder().decode(output.subarray(0, split)).split("\r\n")) {
-      const colon = line.indexOf(":")
-      const [name, value] = [line.slice(0, colon).trim(), line.slice(colon + 1).trim()]
-      if (name.toLowerCase() === "status") status = Number(value.split(" ")[0])
-      else headers[name] = value
-    }
-    return HttpServerResponse.uint8Array(output.subarray(split + 4), { status, headers })
-  }).pipe(Effect.scoped, Effect.orDie)
+    yield* Effect.forkScoped(Stream.runDrain(handle.stderr))
+    const response = yield* cgi(handle.stdout)
+    if (response === undefined) return HttpServerResponse.text("git http-backend failed", { status: 500 })
+    return HttpServerResponse.stream(response.body, { status: response.status, headers: response.headers })
+  }).pipe(Effect.orDie)
 
 /**
  * A task output an agent's worker produced, as a tar of one entry. Adding it here gives the same

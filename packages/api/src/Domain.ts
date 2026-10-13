@@ -264,7 +264,8 @@ export const Overview = Schema.Struct({
     running: Schema.Number,
     connected: Schema.Boolean,
     build: Schema.String,
-    /** Runs the controller's Kiln build; other agents get no jobs. */
+    compatibility: Schema.Number,
+    /** Has the controller's compatibility version; other agents get no jobs. */
     current: Schema.Boolean,
   })),
 })
