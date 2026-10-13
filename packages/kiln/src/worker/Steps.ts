@@ -239,6 +239,26 @@ export const setup = (job: StepJob, step: Step.Any) =>
 const shardFiles = (files: ReadonlyArray<string>, index: number, count: number) =>
   [...files].sort().filter((_, i) => i % count === index - 1)
 
+const limitIn = (file: string) => {
+  const text = existsSync(file) ? readFileSync(file, "utf8").trim() : ""
+  return /^\d+$/.test(text) ? Number(text) : null
+}
+
+/** The worker's cgroup, which its systemd unit limits. Hosts without cgroup v2, such as macOS agents, have none. */
+const ownCgroup = () => {
+  const line = existsSync("/proc/self/cgroup") ? /^0::(\/.*)$/m.exec(readFileSync("/proc/self/cgroup", "utf8")) : null
+  return line === null ? null : join("/sys/fs/cgroup", line[1]!)
+}
+
+/**
+ * Go programs such as tsgo collect garbage only when their heap doubles, unaware of the cgroup, and
+ * stall at memory.high. Two thirds of the limit leave the rest of the task room.
+ */
+export const goMemLimit = (cgroup = ownCgroup()): Record<string, string> => {
+  const limit = cgroup === null ? null : limitIn(join(cgroup, "memory.high")) ?? limitIn(join(cgroup, "memory.max"))
+  return limit === null ? {} : { GOMEMLIMIT: `${Math.floor((limit * 2) / 3 / 2 ** 20)}MiB` }
+}
+
 export const task = (job: StepJob, step: Step.Any, values: Record<string, unknown>) =>
   Effect.gen(function*() {
     const def = step.def
@@ -265,6 +285,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
 
     const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-task", ...argv])
     const taskEnv = env(job.run, step.name, {
+      ...goMemLimit(),
       ...extraEnv,
       KILN_SHARD_INDEX: String(shard.index),
       KILN_SHARD_COUNT: String(shard.count),
