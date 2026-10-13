@@ -64,7 +64,10 @@ export const schedule = <const T extends ReadonlyArray<Step.Any>>(
   targets: T,
 ): Rule<"trusted", Step.Services<T[number]>> => make("trusted", { _tag: "Schedule", cron }, options.reuse ?? "builds", targets)
 
-/** Runs when started from the UI or `kiln run`, with typed inputs. */
+/**
+ * Runs when started with `kiln trigger --inputs` and the inputs match. A manual run starts every
+ * manual rule whose inputs match, so rules that take different inputs start separately.
+ */
 export const manual = <const I extends Schema.Struct.Fields, const T extends ReadonlyArray<Step.Any>>(
   options: { readonly inputs?: I; readonly reuse?: Reuse },
   targets: T,

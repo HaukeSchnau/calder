@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Exit } from "effect"
+import { Effect, Exit, Schema } from "effect"
 import { Action, Event, Files, Kiln, Nix, On, Setup, Step, Task, cmd } from "../src/index.ts"
 import { comment, flake, gate, preview, project, promote, qa, release, smoke } from "./fixtures.ts"
 
@@ -58,7 +58,23 @@ describe("Kiln.plan", () => {
       const manual = yield* Kiln.plan(project, Event.manual({ reason: "hotfix" }))
       expect(manual.runs(promote)).toBe(true)
       const bad = yield* Effect.exit(Kiln.plan(project, Event.manual({ reason: 1 })))
-      expect(Exit.isFailure(bad)).toBe(true)
+      expect(String(bad)).toContain("no manual rule takes")
+    }))
+
+  it.effect("a manual run starts only the manual rules its inputs match", () =>
+    Effect.gen(function*() {
+      const ios = Task.make("ios", { run: cmd`ios` })
+      const android = Task.make("android", { run: cmd`android` })
+      const any = Task.make("any", { run: cmd`any` })
+      const apps = Kiln.project({
+        rules: [
+          On.manual({ inputs: { release: Schema.Literal("ios") } }, [ios]),
+          On.manual({ inputs: { release: Schema.Literal("android") } }, [android]),
+          On.manual({}, [any]),
+        ],
+      })
+      expect(names(yield* Kiln.plan(apps, Event.manual({ release: "android" }))).sort()).toEqual(["android", "any"])
+      expect(names(yield* Kiln.plan(apps, Event.manual()))).toEqual(["any"])
     }))
 
   it.effect("rejects grants in pull-request rules even without types", () =>

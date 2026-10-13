@@ -2,7 +2,7 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { type Domain, NotFound, Refused } from "@kiln/api"
 import { Event, Kiln } from "@kiln/core"
-import { Console, Effect, Layer, Option, Stream } from "effect"
+import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
@@ -58,8 +58,13 @@ const gen = Command.make("gen", { dir: Argument.String("dir").pipe(Argument.with
     if (outputs.created) yield* Console.log("wrote .kiln/ci.ts with the standard pipeline")
   }))
 
+/** Manual inputs as a JSON object, such as `{"release":"testflight"}`. */
+const manualInputs = Schema.decodeUnknownSync(Schema.fromJsonString(Event.Manual.fields.inputs))
+
 const parseEvent = (text: string): Event.Event => {
-  const [kind, arg] = text.split(":", 2) as [string, string | undefined]
+  const colon = text.indexOf(":")
+  const kind = colon < 0 ? text : text.slice(0, colon)
+  const arg = colon < 0 ? undefined : text.slice(colon + 1)
   switch (kind) {
     case "push":
       return Event.push(arg ?? "main")
@@ -70,7 +75,7 @@ const parseEvent = (text: string): Event.Event => {
     case "check":
       return Event.check({ ref: arg ?? "kiln/check/local" })
     default:
-      return Event.manual(arg === undefined ? {} : JSON.parse(arg) as Record<string, unknown>)
+      return Event.manual(arg === undefined ? {} : manualInputs(arg))
   }
 }
 
@@ -122,18 +127,21 @@ const follow = (client: Effect.Success<typeof Remote.client>, run: Domain.Run) =
     return status
   })
 
+/** `kiln trigger`: a branch head like a push, or with `--inputs` a manual run of the rules taking them. */
 const trigger = Command.make("trigger", {
   project: Argument.String("project"),
   branch: Flag.String("branch").pipe(Flag.optional),
   schedule: Flag.String("schedule").pipe(Flag.optional),
+  inputs: Flag.String("inputs").pipe(Flag.optional),
   url,
-}, ({ project, branch, schedule, url }) =>
+}, ({ project, branch, schedule, inputs, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
     const run = yield* client.trigger({
       project,
       ...Option.match(branch, { onNone: () => ({}), onSome: (b) => ({ branch: b }) }),
       ...Option.match(schedule, { onNone: () => ({}), onSome: (cron) => ({ schedule: cron }) }),
+      ...Option.match(inputs, { onNone: () => ({}), onSome: (json) => ({ inputs: manualInputs(json) }) }),
     })
     yield* follow(client, run)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))))

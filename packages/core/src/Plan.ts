@@ -60,7 +60,7 @@ const matches = (rule: Rule<any, any>, event: Event): boolean => {
     case "Schedule":
       return t._tag === "Schedule" && t.cron === event.cron
     case "Manual":
-      return t._tag === "Manual"
+      return t._tag === "Manual" && Schema.is(Schema.Struct(t.inputs))(event.inputs)
   }
 }
 
@@ -115,13 +115,8 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       : rules.some((r) => r.reuse === "builds") ? "builds"
       : rules[0]?.reuse ?? (trust === "pr" ? "all" : "builds")
 
-    if (event._tag === "Manual") {
-      for (const rule of rules) {
-        if (rule.trigger._tag !== "Manual") continue
-        if (!Schema.is(Schema.Struct(rule.trigger.inputs))(event.inputs)) {
-          return yield* fail(`manual inputs ${JSON.stringify(event.inputs)} don't match the rule`)
-        }
-      }
+    if (event._tag === "Manual" && rules.length === 0) {
+      return yield* fail(`no manual rule takes the inputs ${JSON.stringify(event.inputs)}`)
     }
 
     const required = (options.requiredChecks ?? []).map((context) => {
