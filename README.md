@@ -134,6 +134,18 @@ changed. The UI lists each agent's version and Kiln build and marks an agent of 
 incompatible. A reconnecting agent reports the workers it still runs, and the controller stops those it
 doesn't know, such as jobs from before its restart, before it gives that agent new jobs.
 
+## Projects and history
+
+A repository of one of the controller's `owners` becomes a project once a push, a pull request or `kiln check`
+brings `.kiln/ci.ts`, or once its default branch carries it. At startup the controller forgets enrolled projects
+that never ran and whose default branch has no `ci.ts`, and then removes their mirrors.
+
+Finished runs keep their steps, shards and test results for `retention.days` in the controller's config (30 by
+default). After that those go, and so do results Kiln won't reuse. A result stays while it is the newest for its
+key or a run inside the window reused it, and its run keeps a row without its plan. The newest run of each branch
+and pull request keeps its row too, so the catch-up after a restart doesn't start it again. Each project's newest
+planned run stays whole. Extracted `.kiln/` directories go after a day without use.
+
 ## Layout
 
 | Path | What |

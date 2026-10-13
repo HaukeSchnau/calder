@@ -45,7 +45,11 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     }
     const event = request.headers["x-gitea-event"]
     const payload = yield* Effect.try({ try: () => JSON.parse(body) as Payload, catch: () => "malformed JSON" })
-    const enrolled = yield* projects.byRepo(payload.repository?.full_name ?? "", payload.repository?.default_branch)
+    const head = event === "push" ? payload.after : payload.pull_request?.head?.sha
+    const enrolled = yield* projects.byRepo(payload.repository?.full_name ?? "", {
+      sha: head === undefined || zero.test(head) ? undefined : head,
+      defaultBranch: payload.repository?.default_branch,
+    })
     if (enrolled === undefined) return HttpServerResponse.text("not enrolled")
     const project = enrolled.name
 

@@ -310,7 +310,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     check: ({ repo, ref, sha, background }) =>
       Effect.gen(function*() {
         if (!ref.startsWith("kiln/check/")) return yield* new Refused({ reason: "checks are pushed under kiln/check/" })
-        const p = yield* enrolled.byRepo(repo)
+        const p = yield* enrolled.byRepo(repo, { sha })
         if (p === undefined) return yield* new NotFound({ what: `a project for ${repo}` })
         const event: Domain.Event = { _tag: "Check", ref, base: p.defaultBranch, ...(background === true ? { background } : {}) }
         return yield* runs.create({ project: p.name, event, sha }).pipe(Effect.mapError((e) => new Refused({ reason: e.message })))

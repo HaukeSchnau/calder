@@ -1,6 +1,8 @@
-import { Context, Effect, Layer, Schema, Semaphore } from "effect"
-import { chmodSync, existsSync, mkdirSync, readdirSync } from "node:fs"
-import { join } from "node:path"
+import { Context, Effect, Layer, Schedule, Schema, Semaphore } from "effect"
+import { SqlClient } from "effect/sql"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs"
+import { rm } from "node:fs/promises"
+import { dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link } from "../Gen.ts"
 import { Config } from "./Config.ts"
@@ -42,10 +44,35 @@ const groupReadable = (dir: string) => {
   }
 }
 
+const extracted = (root: string) => existsSync(join(root, ".kiln", "ci.ts"))
+
+/**
+ * Makes `root` hold a revision's `.kiln/`: `fill` writes it into a scratch directory next to `root`,
+ * which then takes its place in one rename, so a reader sees all of it or nothing. When two fill the
+ * same root at once, the first to finish wins.
+ */
+export const extract = <E, R>(root: string, fill: (scratch: string) => Effect.Effect<void, E, R>) =>
+  Effect.gen(function*() {
+    if (extracted(root)) return
+    mkdirSync(dirname(root), { recursive: true })
+    const scratch = mkdtempSync(`${root}.`)
+    yield* Effect.ensuring(
+      Effect.gen(function*() {
+        yield* fill(scratch)
+        if (extracted(root)) return
+        // Whatever is there without ci.ts is a leftover; rename can't replace a directory that isn't empty.
+        rmSync(root, { recursive: true, force: true })
+        renameSync(scratch, root)
+      }),
+      Effect.sync(() => rmSync(scratch, { recursive: true, force: true })),
+    )
+  })
+
 export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
   const config = yield* Config
   const spawner = yield* Exec.SpawnerTag
   const projects = yield* Projects
+  const sql = yield* SqlClient.SqlClient
   const locks = new Map<string, Semaphore.Semaphore>()
   const lock = (project: string) => {
     let s = locks.get(project)
@@ -111,6 +138,41 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
       }
     })
 
+  const entries = (dir: string) => (existsSync(dir) ? readdirSync(dir) : [])
+  const remove = (dir: string) => Effect.promise(() => rm(dir, { recursive: true, force: true }))
+  /**
+   * Removes the mirror and revisions of a repository that is no longer a project, and revisions no
+   * run used for a day; extracting one again is cheap.
+   */
+  const sweep = Effect.gen(function*() {
+    const mirrors = join(config.stateDir, "mirrors")
+    const revs = join(config.stateDir, "revs")
+    const names = new Set([...entries(mirrors).map((entry) => entry.replace(/\.git$/, "")), ...entries(revs)])
+    yield* Effect.forEach([...names].filter((name) => projects.get(name) === undefined), (name) =>
+      lock(name).withPermits(1)(Effect.gen(function*() {
+        yield* remove(join(mirrors, `${name}.git`))
+        yield* remove(join(revs, name))
+        yield* Effect.logInfo(`removed the mirror of ${name}, which is no longer a project`)
+      })), { discard: true })
+    const active = new Set((yield* sql<{ project: string; sha: string }>`select project, sha from runs
+      where status in ('queued', 'planning', 'running')`).map((run) => `${run.project}/${run.sha}`))
+    // Synchronous from here: a run that started meanwhile has touched its revision when it took it.
+    const now = Date.now()
+    for (const project of entries(revs)) {
+      for (const entry of entries(join(revs, project))) {
+        const dir = join(revs, project, entry)
+        // Scratch directories start with their revision too.
+        if (active.has(`${project}/${entry.split(".")[0]}`) || now - statSync(dir).mtimeMs < 86_400_000) continue
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+  })
+  yield* sweep.pipe(
+    Effect.catchCause((cause) => Effect.logWarning("sweeping mirrors failed", cause)),
+    Effect.repeat(Schedule.spaced("10 minutes")),
+    Effect.forkScoped,
+  )
+
   return {
     path,
     fetch,
@@ -120,20 +182,20 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
     kilnDir: (project, sha) =>
       Effect.gen(function*() {
         const root = join(config.stateDir, "revs", project, sha)
+        if (!extracted(root)) {
+          const has = yield* git(project, ["cat-file", "-e", `${sha}:.kiln/ci.ts`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
+          if (!has) return yield* new NoPipeline({ revision: sha })
+          yield* extract(root, (scratch) =>
+            Exec.run(["bash", "-c", `git --git-dir "$1" archive "$2" .kiln | tar -x -C "$3"`, "kiln", path(project), sha, scratch]).pipe(
+              Effect.provideService(Exec.SpawnerTag, spawner),
+              Effect.andThen(Effect.sync(() => groupReadable(scratch))),
+            ))
+        }
+        const now = new Date()
+        utimesSync(root, now, now)
         const dir = join(root, ".kiln")
         // A revision extracted before a deploy still links the SDK of the Kiln that planned it then.
-        if (existsSync(join(dir, "ci.ts"))) {
-          link(join(dir, "node_modules"), config.sdk)
-          return dir
-        }
-        const has = yield* git(project, ["cat-file", "-e", `${sha}:.kiln/ci.ts`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
-        if (!has) return yield* new NoPipeline({ revision: sha })
-        mkdirSync(root, { recursive: true })
-        yield* Exec.run(["bash", "-c", `git --git-dir "$1" archive "$2" .kiln | tar -x -C "$3"`, "kiln", path(project), sha, root]).pipe(
-          Effect.provideService(Exec.SpawnerTag, spawner),
-        )
         link(join(dir, "node_modules"), config.sdk)
-        groupReadable(root)
         return dir
       }),
     flake: (project, sha) => `git+file://${path(project)}?rev=${sha}`,
