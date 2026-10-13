@@ -2,8 +2,10 @@ import { BunSocket } from "@effect/platform-bun"
 import { Deferred, Effect, Layer, Schedule, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { RpcClient, RpcSerialization } from "effect/rpc"
-import { readFileSync } from "node:fs"
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import * as Build from "./Build.ts"
+import * as Exec from "./Exec.ts"
 import { type AgentOrder, AgentRpcs, compatibility } from "./Protocol.ts"
 
 export interface Options {
@@ -29,9 +31,55 @@ export interface Options {
   readonly admission: string | null
 }
 
+/** Sends `signal` to a process group; false once the group is gone. */
+const signalGroup = (group: number, signal: NodeJS.Signals | 0) => {
+  try {
+    process.kill(-group, signal)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** A process's command line, or "" once it is gone. The Linux VM's agent has no `ps` on its PATH. */
+const commandLine = (pid: number) =>
+  process.platform === "linux"
+    ? Effect.sync(() => {
+      try {
+        return readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ")
+      } catch {
+        return ""
+      }
+    })
+    : Exec.exec(["ps", "-ww", "-o", "command=", "-p", String(pid)]).pipe(Effect.map((r) => r.stdout), Effect.orElseSucceed(() => ""))
+
+/**
+ * Stops the workers an earlier run of the agent left behind, which `dir` lists as a file per job with
+ * the worker's pid. Each worker leads its own process group, which launchd leaves running when the
+ * agent exits; nothing tracks them any more, and new jobs would get their slots and workspaces. A
+ * worker gets time to stop its task before its group is killed.
+ */
+export const stopLeftovers = (dir: string) =>
+  Effect.gen(function*() {
+    mkdirSync(dir, { recursive: true })
+    for (const job of readdirSync(dir)) {
+      const pid = Number(readFileSync(join(dir, job), "utf8"))
+      // A process that got the pid since is left alone.
+      if ((yield* commandLine(pid)).includes(`worker ${job}`)) {
+        yield* Effect.logInfo(`stopping worker ${job}, which an earlier run of this agent started`)
+        for (const [signal, ms] of [["SIGTERM", 20_000], ["SIGKILL", 5_000]] as const) {
+          signalGroup(pid, signal)
+          for (let waited = 0; waited < ms && signalGroup(pid, 0); waited += 250) yield* Effect.sleep("250 millis")
+        }
+      }
+      rmSync(join(dir, job), { force: true })
+    }
+  })
+
 /**
  * `kiln agent`: runs workers on this host for the controller's jobs of this platform. Workers outlive
- * a lost connection; the agent reconnects and tells the controller which ones still run.
+ * a lost connection; the agent reconnects and tells the controller which ones still run. Those an
+ * earlier run of the agent left behind it stops before it takes jobs.
  */
 export const run = (options: Options) =>
   Effect.gen(function*() {
@@ -41,6 +89,9 @@ export const run = (options: Options) =>
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     // Workers whose process still runs, with what stops each one.
     const running = new Map<string, Deferred.Deferred<void>>()
+    // Their pids, for the agent's next run if this one dies first.
+    const pids = join(options.workspaces, ".workers")
+    yield* stopLeftovers(pids)
 
     const offered = () => {
       if (options.slotsFile === null) return options.slots
@@ -73,6 +124,8 @@ export const run = (options: Options) =>
       Effect.scoped(Effect.gen(function*() {
         if (options.admission !== null) yield* admitted(options.admission)
         const [command, ...args] = options.kiln
+        // Added before the worker, so it runs after the worker's group is gone.
+        yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(join(pids, job), { force: true })))
         const handle = yield* spawner.spawn(ChildProcess.make(command!, [...args, "worker", job], {
           env: { KILN_URL: options.url, KILN_TOKEN: jobToken, KILN_WORKSPACES: options.workspaces },
           extendEnv: true,
@@ -82,6 +135,7 @@ export const run = (options: Options) =>
           detached: true,
           forceKillAfter: "10 seconds",
         }))
+        writeFileSync(join(pids, job), String(handle.pid))
         return yield* handle.exitCode
       })).pipe(
         Effect.catchCause((cause) => Effect.logError(`worker ${job} failed to start`, cause).pipe(Effect.as(-1))),

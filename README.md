@@ -132,7 +132,9 @@ An agent gets jobs only while it has the controller's compatibility version (`co
 `packages/kiln/src/Protocol.ts`), so deploying the controller stalls agents only when that version
 changed. The UI lists each agent's version and Kiln build and marks an agent of another version as
 incompatible. A reconnecting agent reports the workers it still runs, and the controller stops those it
-doesn't know, such as jobs from before its restart, before it gives that agent new jobs.
+doesn't know, such as jobs from before its restart, before it gives that agent new jobs. An agent that
+restarts stops the workers its earlier run left behind before it takes jobs, from the pids it keeps in
+`<workspaces>/.workers`.
 
 ## Projects and history
 
