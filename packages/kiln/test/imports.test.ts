@@ -7,7 +7,8 @@ import { memoryRepo } from "./memoryRepo.ts"
 
 // The repository is in memory; nothing here runs git.
 const noProcesses = ChildProcessSpawner.make(() => Effect.die(new Error("no processes in this test")))
-const graphOf = (r: Repo) => Imports.make(r, ["packages/contracts", "apps/server", "apps/web"]).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses))
+const graphOf = (r: Repo, workspace: ReadonlyArray<string> = ["packages/contracts", "apps/server", "apps/web"]) =>
+  Imports.make(r, workspace).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses))
 
 const fixture = memoryRepo({
   "package.json": JSON.stringify({ name: "root" }),
@@ -69,5 +70,17 @@ describe("Imports", () => {
       expect(graph.packageOf("apps/server/src/git.ts")).toBe("apps/server")
       expect(graph.data("apps/server")).toEqual(["apps/server/package.json", "apps/server/src/fixtures/repo/HEAD"])
       expect(graph.match(["apps/server/**/*.test.ts"])).toEqual(["apps/server/src/git.test.ts", "apps/server/src/plugin.test.ts", "apps/server/src/quoted.test.ts"])
+    }))
+
+  it.effect("a single-package repository's data files belong to its root package", () =>
+    Effect.gen(function*() {
+      const graph = yield* graphOf(memoryRepo({
+        "package.json": JSON.stringify({ name: "app" }),
+        "README.md": "docs",
+        "src/a.ts": "export const a = 1",
+        "src/a.test.ts": `import { a } from "./a"`,
+        "src/__snapshots__/a.test.ts.snap": "exports[`a`] = `1`",
+      }), [])
+      expect(graph.data(graph.packageOf("src/a.test.ts"))).toEqual(["package.json", "src/__snapshots__/a.test.ts.snap"])
     }))
 })
