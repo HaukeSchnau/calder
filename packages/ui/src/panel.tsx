@@ -527,7 +527,7 @@ function TestsTab({ detail, step, onSelect }: { readonly detail: Domain.RunDetai
     <>
       <div className="ptool">
         <span className="ptitle">{step.name}</span>
-        {t ? <span className="dim">{t.passed} passed, <span className={t.failed ? "bad" : ""}>{t.failed} failed</span>, {t.skipped} skipped</span> : <span className="dim">{step.status === "running" ? "running, results come when it finishes" : "no test report"}</span>}
+        {t ? <span className="dim">{t.passed} passed{t.flaky ? <span className="heat"> ({t.flaky} on retry)</span> : null}, <span className={t.failed ? "bad" : ""}>{t.failed} failed</span>, {t.skipped} skipped</span> : <span className="dim">{step.status === "running" ? "running, results come when it finishes" : "no test report"}</span>}
         <span className="grow" />
         {elsewhere.length ? <span className="dim">failing tests in {elsewhere.map((n, i) => <span key={n}>{i ? ", " : ""}<button type="button" className="lnk" onClick={() => onSelect(n)}>{n}</button></span>)}</span> : null}
       </div>

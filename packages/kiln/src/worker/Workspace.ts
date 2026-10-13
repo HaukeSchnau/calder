@@ -49,15 +49,18 @@ const used = (snapshot: string) => {
 
 /**
  * Opens a slot for a dependency key. A slot set up for another key is replaced by a writable snapshot of
- * one that was set up for this key, which takes a second instead of an install.
+ * one that was set up for this key, which takes a second instead of an install. Otherwise the setup
+ * installs over what the slot holds, so the slot loses its key until `remember` records the new one:
+ * a setup that fails or is cancelled halfway leaves a slot no key may use as it is.
  */
 export const open = (root: string, deps: string | null) =>
   Effect.gen(function*() {
     mkdirSync(dirname(root), { recursive: true })
+    const marker = join(root, "deps")
     const snapshots = deps !== null && isBtrfs(dirname(root))
     const snapshot = deps === null ? null : join(snapshotDir(root), deps)
     let restored = false
-    if (snapshots && snapshot !== null && read(join(root, "deps")) !== deps && existsSync(snapshot)) {
+    if (snapshots && snapshot !== null && read(marker) !== deps && existsSync(snapshot)) {
       if (existsSync(root)) yield* remove(root)
       yield* btrfs(["subvolume", "snapshot", snapshot, root])
       used(snapshot)
@@ -70,7 +73,9 @@ export const open = (root: string, deps: string | null) =>
     const cache = join(root, "cache")
     mkdirSync(src, { recursive: true })
     mkdirSync(cache, { recursive: true })
-    return { root, src, cache, fresh: deps !== null && read(join(root, "deps")) !== deps, restored, snapshots } satisfies Slot
+    const fresh = deps !== null && read(marker) !== deps
+    if (fresh) rmSync(marker, { force: true })
+    return { root, src, cache, fresh, restored, snapshots } satisfies Slot
   })
 
 /** After `.ci/setup` succeeded for a new key: remember it and keep a snapshot for other slots to clone. */

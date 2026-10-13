@@ -36,6 +36,11 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
   readonly secrets?: { readonly [env: string]: SecretRef }
   readonly env?: { readonly [env: string]: string }
   readonly platform?: Platform
+  /**
+   * `"never"`: the task runs every time, also where its rule reuses results, such as a task that checks
+   * the machine rather than the code. The rule's `reuse` still applies to its other steps.
+   */
+  readonly reuse?: "never"
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
@@ -66,4 +71,5 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     secrets: options.secrets ?? {},
     env: options.env ?? {},
     platform: options.platform,
+    reuse: options.reuse,
   }) as Step<void, TaskFailed, R, O>

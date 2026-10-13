@@ -162,6 +162,11 @@ export const JobResult = Schema.Union([
     tag: Schema.String,
     message: Schema.String,
     key: Schema.NullOr(Schema.String),
+    /**
+     * What a failed task wrote to its outputs. Optional because workers that ran on across the upgrade
+     * finish without it; required once every worker is newer than this field.
+     */
+    outputs: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   }),
   Schema.TaggedStruct("Died", { message: Schema.String }),
   /** The controller's own: an agent lost the job or none took it, so it may run again elsewhere. */

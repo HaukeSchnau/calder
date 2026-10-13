@@ -111,6 +111,11 @@ export const StepRun = Schema.Struct({
   key: Schema.NullOr(Schema.String),
   /** The run whose result was reused; null for a build whose output already existed. */
   reusedFrom: Schema.NullOr(Schema.Struct({ id: Schema.String, number: Schema.Number })),
+  /**
+   * For a task that ran: the latest earlier run in which its key had the other outcome. Either the key
+   * misses an input, or the task is flaky.
+   */
+  contradicts: Schema.NullOr(Schema.Struct({ id: Schema.String, number: Schema.Number })),
   needs: Schema.Array(Schema.String),
   exits: Schema.Array(Schema.String),
   after: Schema.Array(Schema.String),
@@ -135,11 +140,18 @@ export const StepRun = Schema.Struct({
   cpuSeconds: Schema.NullOr(Schema.Number),
   memoryPeakBytes: Schema.NullOr(Schema.Number),
   spanId: Schema.NullOr(Schema.String),
-  tests: Schema.NullOr(Schema.Struct({ passed: Schema.Number, failed: Schema.Number, skipped: Schema.Number })),
+  /** Each test once, with its last outcome. `flaky` of the passed ones failed first and passed on a retry. */
+  tests: Schema.NullOr(Schema.Struct({ passed: Schema.Number, failed: Schema.Number, skipped: Schema.Number, flaky: Schema.Number })),
   /** For a task with `each`: its files, how many ran rather than being reused, and how many passed only on retry. */
   files: Schema.NullOr(Schema.Struct({ total: Schema.Number, ran: Schema.Number, flaky: Schema.Number })),
+  /** A task's outputs, also those a failed task wrote, at the store path the controller serves at `outputPath`. */
+  outputs: Schema.Array(Schema.Struct({ name: Schema.String, path: Schema.String })),
 })
 export type StepRun = typeof StepRun.Type
+
+/** Where the controller serves a step's output: a file as it is, a directory as a list of links. */
+export const outputPath = (runId: string, step: string, output: string) =>
+  `/outputs/${[runId, step, output].map(encodeURIComponent).join("/")}`
 
 export const TestResult = Schema.Struct({
   runId: Schema.String,
@@ -156,8 +168,8 @@ export const TestResult = Schema.Struct({
 export type TestResult = typeof TestResult.Type
 
 /**
- * A file of an `each` task that failed in its job and passed when it ran again with only the files that
- * failed: flaky, or another file of its job left state behind that it depends on.
+ * A file of an `each` task that failed in its job and passed when it ran again, with only the files that
+ * failed or in a `Step.retry` of its job: flaky, or another file of its job left state behind that it depends on.
  */
 export const RetriedFile = Schema.Struct({
   step: Schema.String,

@@ -34,8 +34,9 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
 - **setup** (`Setup.make`, or `Pnpm.install` and `Bun.install` from `@kiln/std`): prepares a workspace once per key,
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
-  prepared before settles at once. `keep` names what survives a task's `git clean`, `path` what goes
-  in front of PATH. Kept files carry over to tasks of other revisions without entering their keys, so
+  prepared before settles at once. A setup that fails leaves no key on its workspace, so the next task
+  sets it up again. `keep` names what survives a task's `git clean`, `path` what goes in front of PATH.
+  Kept files carry over to tasks of other revisions without entering their keys, so
   keep only caches that tools check against the sources themselves (`node_modules`, `*.tsbuildinfo`,
   `.vite`). Build output such as `dist` doesn't belong in `keep`, because a task would read what another
   revision built. `Pnpm.install` and `Bun.install` name their step `install`; a second install, say
@@ -47,11 +48,18 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   repository by default), its setup's key, the dev shell, the command and the values it interpolates.
   A task with a setup needn't list manifests or lockfiles, since the setup's key covers them. A path
   or pattern in a step's files that matches no file fails the plan, since that part of the key would
-  never change. Wrap files that may be missing in `Files.optional(...)`. Pull requests
-  reuse everything; pushes rerun tasks unless they build `outputs`. A task with another `platform`
+  never change. Wrap files that may be missing in `Files.optional(...)`. Pull requests and pushes
+  reuse everything by default. Schedules and manual runs (`reuse: "builds"`) run tasks without
+  `outputs` again, files of tasks with `each` included. A task with `reuse: "never"` runs every time,
+  for checks of the machine rather than the code. When a task's outcome differs from an earlier one
+  with the same key, the UI and `kiln status` flag it: the key misses an input, or the task is flaky.
+  The paths a task names in `outputs` go to the Nix store, also when the task fails, and the UI and
+  `kiln status` link to them; a failed task's outputs are never reused. A task with another `platform`
   than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only). An agent of
   the controller's platform with a free slot also takes trusted tasks off the controller. Pull-request
   tasks always run on the controller, because agents run every worker as one user without a sandbox.
+  Tasks get `GOMEMLIMIT` at two thirds of their worker's memory limit, so Go tools such as tsgo
+  collect garbage before the limit throttles them; a task's own `env` overrides it.
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
   `name`; a step that names a secret the project doesn't configure dies saying so.
@@ -72,8 +80,9 @@ formatter over everything, format `.kiln/` with it. Task workspaces get the same
 as `kiln gen` creates, so the repository's type-aware lint can check `ci.ts` in CI too.
 
 `Step.exit(step)` hands an action a step's outcome instead of blocking on its failure. `Step.retry`
-and `Step.timeout` take Effect's options and apply in pipe order. Task shards (`shards: { count }`)
-run in parallel and report as one step.
+and `Step.timeout` take Effect's options and apply in pipe order. A step counts each test of its
+report once, with its last outcome, so a test that failed on one attempt and passed on a retry counts
+as flaky rather than failed. Task shards (`shards: { count }`) run in parallel and report as one step.
 
 `Vitest.files` from `@kiln/std` is a task that runs a package's vitest file by file. Its `each` follows
 the test files' imports, so a file runs again only when it, what it imports or `inputs` changed. Vitest
@@ -107,7 +116,7 @@ kiln trigger <project> [--branch b]  # runs a branch head on the controller, fol
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
 kiln runs [project] [--limit n]      # recent runs with their status, event, commit and age
 kiln projects                        # the projects and the latest run of each default branch
-kiln status <run>                    # a run's steps, with why those that failed did
+kiln status <run>                    # a run's steps, with why those that failed did and links to outputs
 kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
                                      # until the step ends, or the run without a step
 kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12

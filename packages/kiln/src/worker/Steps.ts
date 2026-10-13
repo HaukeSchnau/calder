@@ -49,6 +49,7 @@ const toResult = <A>(exit: Exit.Exit<A, unknown>, extra: { readonly outputs?: Re
       tag: failure.value._tag,
       message: failure.value.message,
       key: extra.key ?? null,
+      outputs: extra.outputs ?? {},
     }
   }
   return { _tag: "Died", message: Cause.pretty(exit.cause) }
@@ -239,6 +240,26 @@ export const setup = (job: StepJob, step: Step.Any) =>
 const shardFiles = (files: ReadonlyArray<string>, index: number, count: number) =>
   [...files].sort().filter((_, i) => i % count === index - 1)
 
+const limitIn = (file: string) => {
+  const text = existsSync(file) ? readFileSync(file, "utf8").trim() : ""
+  return /^\d+$/.test(text) ? Number(text) : null
+}
+
+/** The worker's cgroup, which its systemd unit limits. Hosts without cgroup v2, such as macOS agents, have none. */
+const ownCgroup = () => {
+  const line = existsSync("/proc/self/cgroup") ? /^0::(\/.*)$/m.exec(readFileSync("/proc/self/cgroup", "utf8")) : null
+  return line === null ? null : join("/sys/fs/cgroup", line[1]!)
+}
+
+/**
+ * Go programs such as tsgo collect garbage only when their heap doubles, unaware of the cgroup, and
+ * stall at memory.high. Two thirds of the limit leave the rest of the task room.
+ */
+export const goMemLimit = (cgroup = ownCgroup()): Record<string, string> => {
+  const limit = cgroup === null ? null : limitIn(join(cgroup, "memory.high")) ?? limitIn(join(cgroup, "memory.max"))
+  return limit === null ? {} : { GOMEMLIMIT: `${Math.floor((limit * 2) / 3 / 2 ** 20)}MiB` }
+}
+
 export const task = (job: StepJob, step: Step.Any, values: Record<string, unknown>) =>
   Effect.gen(function*() {
     const def = step.def
@@ -265,6 +286,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
 
     const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-task", ...argv])
     const taskEnv = env(job.run, step.name, {
+      ...goMemLimit(),
       ...extraEnv,
       KILN_SHARD_INDEX: String(shard.index),
       KILN_SHARD_COUNT: String(shard.count),
@@ -276,6 +298,8 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     const once = Effect.gen(function*() {
       attempt += 1
       if (attempt > 1) yield* emit({ _tag: "Attempt", attempt, reason: "retry" })
+      // An attempt that writes no report must not report the previous attempt's tests again.
+      if (def.report !== undefined) rmSync(join(workspace, def.report.path), { force: true })
       yield* log("kiln", `$ ${argv.join(" ")}`)
       const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) => log(stream, line))
       let failures: ReadonlyArray<Kiln.TestFailure> = []
@@ -300,14 +324,21 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       if (exitCode !== 0) return yield* new Kiln.TaskFailed({ exitCode, failures })
     })
     const exit = yield* Effect.exit(withPolicies(once, step.policies))
-    if (Exit.isFailure(exit)) return toResult(exit)
+    const passed = Exit.isSuccess(exit)
 
     const outputs: Record<string, string> = {}
     for (const [name, path] of Object.entries(def.outputs)) {
+      const source = join(workspace, path)
+      // A failed task keeps what it wrote, such as screenshots of what went wrong, and fails no worse for the rest.
+      if (!passed && !existsSync(source)) continue
       const storeName = `${step.name}-${name}`.replace(/[^A-Za-z0-9+._?=-]/g, "-")
-      outputs[name] = remote === null
-        ? (yield* Exec.run(["nix", "store", "add", "--name", storeName, join(workspace, path)])).trim()
-        : yield* upload(self, storeName, join(workspace, path))
+      const stored = remote === null
+        ? Exec.run(["nix", "store", "add", "--name", storeName, source]).pipe(Effect.map((out) => out.trim()))
+        : upload(self, storeName, source)
+      const kept = yield* passed ? stored : stored.pipe(
+        Effect.catchCause((cause) => log("kiln", `could not keep the output ${name}: ${Cause.pretty(cause)}`).pipe(Effect.as(null))),
+      )
+      if (kept !== null) outputs[name] = kept
     }
     return toResult(exit, { outputs })
   }).pipe(Effect.scoped)

@@ -1,12 +1,12 @@
+import * as Tests from "./Tests.ts"
+
 /** How a task with `each` splits its files into jobs and reads what happened to each file. */
 
-export interface TestOutcome {
-  readonly file: string | null
-  readonly status: "passed" | "failed" | "skipped" | "timeout"
+export interface TestOutcome extends Tests.TestRecord {
   readonly durationMs: number
 }
 
-export type FileStatus = "passed" | "failed" | "unknown"
+export type FileStatus = "passed" | "flaky" | "failed" | "unknown"
 
 const median = (xs: ReadonlyArray<number>) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!
 
@@ -31,14 +31,19 @@ export const split = (files: ReadonlyArray<string>, duration: (file: string) => 
 }
 
 /**
- * What a job's report says about each of its files: a failed test fails the file; any result, or a
- * job that exited cleanly, passes it; a file the report doesn't mention after a failed job is unknown.
+ * What a job's report says about each of its files, by each test's last outcome when the job ran it
+ * more than once: a failed test fails the file, and one that failed before it passed makes it flaky;
+ * any result, or a job that exited cleanly, passes it; a file the report doesn't mention after a
+ * failed job is unknown.
  */
-export const outcomes = (files: ReadonlyArray<string>, tests: ReadonlyArray<TestOutcome>, exitedCleanly: boolean) =>
-  new Map(files.map((file) => {
-    const mine = tests.filter((t) => t.file === file)
-    const status: FileStatus = mine.some((t) => t.status === "failed" || t.status === "timeout") ? "failed"
+export const outcomes = (files: ReadonlyArray<string>, tests: ReadonlyArray<TestOutcome>, exitedCleanly: boolean) => {
+  const latest = Tests.outcomes(tests).filter((t) => !t.superseded)
+  return new Map(files.map((file) => {
+    const mine = latest.filter((t) => t.file === file)
+    const status: FileStatus = mine.some(Tests.failing) ? "failed"
+      : mine.some((t) => t.flaky) ? "flaky"
       : mine.length > 0 || exitedCleanly ? "passed"
       : "unknown"
     return [file, { status, ms: mine.reduce((sum, t) => sum + t.durationMs, 0) }] as const
   }))
+}

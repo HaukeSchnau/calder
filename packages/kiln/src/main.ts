@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { NotFound, Refused } from "@kiln/api"
+import { Domain, NotFound, Refused } from "@kiln/api"
 import { Event, Kiln } from "@kiln/core"
 import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import { Argument, CliError, Command, Flag } from "effect/cli"
@@ -250,8 +250,14 @@ const status = Command.make("status", { run: runId, url }, ({ run, url }) =>
     const detail = yield* client.run({ id: run })
     const r = detail.run
     yield* Console.log(`${r.project} #${r.number} ${r.status}${r.error ? `: ${r.error}` : ""}  ${r.commit.sha.slice(0, 12)} ${r.commit.title}`)
-    for (const step of detail.steps) if (step.kind !== "output") yield* Console.log(Cli.stepLine(step))
-  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(Command.withDescription("Show a run's steps, and why the failed ones failed"))
+    for (const step of detail.steps) {
+      if (step.kind === "output") continue
+      yield* Console.log(Cli.stepLine(step))
+      for (const o of step.outputs) yield* Console.log(`    ${o.name}: ${url.replace(/\/$/, "")}${Domain.outputPath(r.id, step.name, o.name)}`)
+    }
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
+    Command.withDescription("Show a run's steps, why the failed ones failed, and links to their outputs"),
+  )
 
 /** `kiln logs <run> [step]`: the output of a step, or of every step with its name in front. */
 const logs = Command.make("logs", {

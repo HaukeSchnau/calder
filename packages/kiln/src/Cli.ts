@@ -59,7 +59,12 @@ export const table = (rows: ReadonlyArray<ReadonlyArray<string>>) => {
   return rows.map((row) => row.map((cell, i) => (i === row.length - 1 ? cell : cell.padEnd(widths[i]!))).join("  "))
 }
 
-export const stepLine = (step: Domain.StepRun) => `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}`
+export const stepLine = (step: Domain.StepRun) =>
+  `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}${
+    step.contradicts === null
+      ? ""
+      : ` (${step.status === "passed" ? "failed" : "passed"} with the same key in ${step.contradicts.id}: the key misses an input, or the step is flaky)`
+  }`
 
 /** Prints a run's status and steps as they change until it ends; returns the run as it ended. */
 export const follow = <E>(

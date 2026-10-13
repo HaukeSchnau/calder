@@ -5,6 +5,7 @@ import { HttpRouter, HttpServerResponse, HttpStaticServer } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { AgentRpcs, WorkerRpcs } from "../Protocol.ts"
 import { Config } from "./Config.ts"
+import * as Outputs from "./Outputs.ts"
 import * as Remote from "./Remote.ts"
 import * as Ui from "./Ui.ts"
 import * as Webhook from "./Webhook.ts"
@@ -38,6 +39,7 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
     HttpRouter.add("POST", "/git/*", Remote.git),
     HttpRouter.add("PUT", "/outputs", Remote.output),
     HttpRouter.add("GET", "/store", Remote.store),
+    HttpRouter.add("GET", "/outputs/*", Outputs.serve),
     rpc,
     agents,
     workers,

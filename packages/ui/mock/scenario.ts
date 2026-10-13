@@ -573,6 +573,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     key: s.key,
     // A reused build is one whose output already existed; reused tasks point at the run that ran them.
     reusedFrom: st.status === "reused" && s.plan.kind !== "build" && s.reusedFrom !== null ? { id: s.reusedFrom, number: world.run(s.reusedFrom)?.number ?? 0 } : null,
+    contradicts: null,
     needs: s.plan.needs ?? [],
     exits: s.plan.exits ?? [],
     after: s.plan.after ?? [],
@@ -594,6 +595,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     spanId: ran || st.status === "reused" ? spanIdOf(run, s.plan.name) : null,
     tests: finished || st.status === "reused" ? testCounts(run, s) : null,
     files: s.plan.name === "test server" && st.status === "passed" ? { total: 114, ran: 114, flaky: 1 } : null,
+    outputs: [],
   }
 }
 
@@ -665,7 +667,8 @@ function testCounts(run: SimRun, s: SimStep): Domain.StepRun["tests"] {
   const total = run.project === "hopwatch" && s.plan.name === "flake check" ? 96 : totals[s.plan.name]
   if (total === undefined) return null
   const failed = testResults(run, s).filter((t) => t.status === "failed" || t.status === "timeout").length
-  return { passed: total - failed - (s.plan.name === "test server" ? 2 : 0), failed, skipped: s.plan.name === "test server" ? 2 : 0 }
+  const server = s.plan.name === "test server"
+  return { passed: total - failed - (server ? 2 : 0), failed, skipped: server ? 2 : 0, flaky: server && s.outcome === "passed" ? 1 : 0 }
 }
 
 /* ------------------------------------------------------------------ */

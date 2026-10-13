@@ -2,7 +2,7 @@ import type { Domain } from "@kiln/api"
 import { Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import { Kiln } from "@kiln/core"
-import type { PlannedStep } from "../Protocol.ts"
+import type { PlannedStep, PlanSpec } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 
 export interface RunRow {
@@ -55,6 +55,8 @@ export interface StepRow {
   readonly tests_passed: number | null
   readonly tests_failed: number | null
   readonly tests_skipped: number | null
+  readonly tests_flaky: number | null
+  readonly contradicts: string | null
   /** Absent in rows read before migration 0008. */
   readonly files_total?: number | null
   readonly files_ran?: number | null
@@ -76,6 +78,16 @@ export const spec = (row: StepRow): PlannedStep => {
   }
   return { ...planned, setup: planned.setup ?? null, task: planned.task === null ? null : { ...planned.task, each: planned.task.each ?? null } }
 }
+
+/**
+ * Whether a task, or a file of a task with `each`, may take an earlier result with its key.
+ * `reuse: "builds"` runs tasks without outputs again.
+ */
+export const reusable = (
+  step: { readonly neverReuse: boolean; readonly task: { readonly outputs: ReadonlyArray<string> } | null },
+  reuse: PlanSpec["reuse"],
+) =>
+  !step.neverReuse && (reuse === "all" || (reuse === "builds" && (step.task?.outputs.length ?? 0) > 0))
 
 export const run = (row: RunRow, counts: Record<string, number> = {}): Domain.Run => ({
   id: row.id,
@@ -127,6 +139,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     status: row.status,
     key: row.key,
     reusedFrom: row.reused_from === null ? null : { id: row.reused_from, number: runNumber(row.reused_from) },
+    contradicts: row.contradicts === null ? null : { id: row.contradicts, number: runNumber(row.contradicts) },
     needs: s.needs,
     exits: s.exits,
     after: s.after,
@@ -148,8 +161,9 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     spanId: row.span_id,
     tests: row.tests_passed === null
       ? null
-      : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0 },
+      : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0, flaky: row.tests_flaky ?? 0 },
     files: row.files_total == null ? null : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
+    outputs: Object.entries(JSON.parse(row.outputs ?? "{}") as Record<string, string>).map(([name, path]) => ({ name, path })),
   }
 }
 
@@ -219,7 +233,7 @@ export const failingTests = (runId: string, step: string) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     const rows = yield* sql<TestRow>`select * from tests where run_id = ${runId} and step = ${step}
-      and status in ('failed', 'timeout') limit 200`
+      and status in ('failed', 'timeout') and superseded = 0 limit 200`
     return rows.map((r) => testResult(r, false))
   }).pipe(Effect.orDie)
 

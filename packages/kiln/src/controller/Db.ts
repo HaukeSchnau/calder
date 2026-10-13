@@ -182,6 +182,18 @@ const migrations = {
     yield* sql`alter table file_results add column job integer`
     yield* sql`create index file_results_job on file_results (run_id, step, job)`
   }),
+  "0011_test_retries": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // A test that ran again in its step keeps every record; the last one holds its outcome.
+    yield* sql`alter table tests add column superseded integer not null default 0`
+    yield* sql`alter table steps add column tests_flaky integer`
+  }),
+  "0012_result_outcomes": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Failed results too, so a key whose outcome changes shows. Only passed ones are reused.
+    yield* sql`alter table results add column status text not null default 'passed'`
+    yield* sql`alter table steps add column contradicts text`
+  }),
 }
 
 export const layer = Layer.unwrap(Effect.gen(function*() {

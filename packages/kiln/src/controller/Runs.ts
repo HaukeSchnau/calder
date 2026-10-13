@@ -21,6 +21,7 @@ import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 import * as Slots from "./Slots.ts"
 import * as Telemetry from "./Telemetry.ts"
+import * as Tests from "./Tests.ts"
 
 const activeStatuses = ["queued", "planning", "running"] as const
 
@@ -345,8 +346,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       // A timeout or a worker that died leaves no trace in the output itself.
       if (failed && s.error) yield* logTo(run, row.name, row.span_id, null)({ _tag: "Log", stream: "kiln", text: s.error.message, timestamp: now })
       const excerpt = failed ? live.excerpt(run.id, row.name) : null
-      const tests = s.tests ?? []
-      const counted = tests.length > 0
+      const tests = Tests.outcomes(s.tests ?? [])
+      const counts = tests.length > 0 ? Tests.count(tests) : null
+      const outcome = row.kind === "task" && (s.status === "passed" || s.status === "failed") && s.key ? { key: s.key, status: s.status } : null
+      // A task that never reuses depends on more than its key, so another outcome for its key says nothing.
+      const [contradicts] = outcome === null || Rows.spec(row).neverReuse ? [] : yield* db(sql<{ run_id: string }>`select run_id from results
+        where key = ${outcome.key} and status != ${outcome.status} and run_id != ${run.id} order by created_at desc limit 1`)
       yield* db(sql`update steps set
         status = ${s.status},
         finished_at = ${now},
@@ -361,21 +366,25 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         cpu_seconds = ${s.usage?.cpuSeconds ?? null},
         memory_peak = ${s.usage?.memoryPeakBytes ?? null},
         attempts = max(attempts, ${s.attempts ?? 0}),
-        tests_passed = ${counted ? tests.filter((t) => t.status === "passed").length : null},
-        tests_failed = ${counted ? tests.filter((t) => t.status === "failed" || t.status === "timeout").length : null},
-        tests_skipped = ${counted ? tests.filter((t) => t.status === "skipped").length : null},
+        tests_passed = ${counts?.passed ?? null},
+        tests_failed = ${counts?.failed ?? null},
+        tests_skipped = ${counts?.skipped ?? null},
+        tests_flaky = ${counts?.flaky ?? null},
         files_total = ${s.files?.total ?? null},
         files_ran = ${s.files?.ran ?? null},
-        files_flaky = ${s.files?.flaky ?? null}
+        files_flaky = ${s.files?.flaky ?? null},
+        contradicts = ${contradicts?.run_id ?? null}
         where run_id = ${run.id} and name = ${row.name}`)
-      if (counted) {
+      if (counts !== null) {
         yield* db(sql.withTransaction(Effect.forEach(tests, (t) =>
-          sql`insert into tests (run_id, project, step, suite, name, file, status, duration_ms, message, created_at)
-            values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now})`, { discard: true })))
+          sql`insert into tests (run_id, project, step, suite, name, file, status, duration_ms, message, created_at, superseded)
+            values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now},
+              ${t.superseded ? 1 : 0})`, { discard: true })))
       }
-      if (s.status === "passed" && s.key !== undefined && s.key !== null && row.kind === "task") {
-        yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at)
-          values (${s.key}, ${run.id}, ${row.name}, ${run.trust}, ${JSON.stringify(s.value ?? null)}, ${JSON.stringify(s.outputs ?? {})}, ${now})`)
+      if (outcome !== null) {
+        yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
+          values (${outcome.key}, ${run.id}, ${row.name}, ${run.trust}, ${JSON.stringify(s.value ?? null)}, ${JSON.stringify(s.outputs ?? {})}, ${now},
+            ${outcome.status})`)
       }
       live.finish(run.id, row.name)
       yield* publishStep(run.id, row.name)
@@ -417,7 +426,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       case "Passed":
         return { status: "passed", value: result.value, outputs: result.outputs, key: result.key, usage, ...extra }
       case "Failed":
-        return { status: "failed", error: { tag: result.tag, message: result.message, json: result.error }, key: result.key, usage, ...extra }
+        return {
+          status: "failed",
+          error: { tag: result.tag, message: result.message, json: result.error },
+          key: result.key,
+          ...(result.outputs === undefined ? {} : { outputs: result.outputs }),
+          usage,
+          ...extra,
+        }
       case "Died":
       case "Lost":
         return { status: "died", error: { tag: "Died", message: result.message, json: null }, usage, ...extra }
@@ -713,14 +729,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const key = count === 1 ? shardKeys[0]! : sha256(shardKeys)
       yield* db(sql`update steps set key = ${key} where run_id = ${runId} and name = ${name}`)
 
-      const reusable = !spec.neverReuse && (plan.reuse === "all" || (plan.reuse === "builds" && task.outputs.length > 0))
+      const reusable = Rows.reusable(spec, plan.reuse)
       // Pull-request runs take any result. Trusted runs take trusted ones, and with reuse "all" also
       // those of same-repo pull requests, which the same people push.
       const prResults = run.trust === "pr" || plan.reuse === "all"
       const lookup = (k: string) =>
         db(sql<{ run_id: string; value: string | null; outputs: string | null }>`select results.run_id, results.value,
             results.outputs from results join runs on runs.id = results.run_id
-          where results.key = ${k} and (results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))
+          where results.key = ${k} and results.status = 'passed'
+            and (results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))
           order by results.created_at desc limit 1`).pipe(Effect.map((rows) => rows[0]))
       const reused = (hit: { run_id: string; value: string | null; outputs: string | null }): Settled => ({
         status: "reused",
@@ -827,9 +844,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   type TestRow = Extract<JobEvent, { _tag: "Tests" }>["results"][number]
 
   /**
-   * A task with `each`: files whose key passed before don't run, except `always` files. The rest run in
-   * up to `shards` jobs split by their recorded durations; files that fail run once more, and a pass
-   * then counts as flaky. A nightly run without reuse checks that the keys still cover what files read.
+   * A task with `each`: where the run may reuse the task, files whose key passed before don't run,
+   * except `always` files. The rest run in up to `shards` jobs split by their recorded durations; files
+   * that fail run once more, and a pass then counts as flaky. A nightly run without reuse checks that
+   * the keys still cover what files read.
    */
   const eachTask = (
     run: Rows.RunRow,
@@ -848,7 +866,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const keys = new Map(each.map((e) => [e.file, task.interpolates.length === 0 ? e.key : taskKey(e.key, values, null)]))
       const key = sha256([...keys.values()])
       yield* db(sql`update steps set key = ${key} where run_id = ${run.id} and name = ${row.name}`)
-      const reusable = !Rows.spec(row).neverReuse && context.plan.reuse !== "none"
+      const reusable = Rows.reusable(Rows.spec(row), context.plan.reuse)
       const prResults = run.trust === "pr" || context.plan.reuse === "all"
 
       const passed = new Map<string, string>()
@@ -920,23 +938,22 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       // Jobs that finished keep their results even when the run was cancelled or replaced meanwhile.
       const results = new Map(first.filter((d) => !stopped(d.r)).flatMap((d) => [...outcomes(d)]))
       const failing = [...results].filter(([, o]) => o.status === "failed").map(([file]) => file)
-      const flaky = new Set<string>()
       let retry: (typeof first)[number] | undefined
       const interrupted = first.some((d) => stopped(d.r))
       if (!interrupted && failing.length > 0 && failing.length <= 10) {
         retry = yield* job(failing, count + 1, count, failing.reduce((sum, f) => sum + duration(f), 0))
         for (const [file, o] of stopped(retry.r) ? [] : outcomes(retry)) {
-          if (o.status === "passed") flaky.add(file)
-          results.set(file, o.status === "passed" ? { ...o, status: "passed" } : results.get(file)!)
+          if (o.status === "passed" || o.status === "flaky") results.set(file, { ...o, status: "flaky" })
         }
       }
+      const flaky = [...results].filter(([, o]) => o.status === "flaky").map(([file]) => file)
 
       const now = Date.now()
       const known = [...results].filter(([, o]) => o.status !== "unknown")
       yield* db(sql.withTransaction(Effect.forEach(known, ([file, o]) =>
         sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at, job)
           values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
-            ${flaky.has(file) ? "flaky" : o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true })))
+            ${o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true })))
       if (interrupted || (retry !== undefined && stopped(retry.r))) return yield* settle(run, row, { status: "cancelled" })
 
       const jobs = retry === undefined ? first : [...first, retry]
@@ -944,14 +961,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         cpuSeconds: jobs.reduce((sum, d) => sum + (d.r.usage.cpuSeconds ?? 0), 0),
         memoryPeakBytes: Math.max(0, ...jobs.map((d) => d.r.usage.memoryPeakBytes ?? 0)),
       }
-      const extra = { attempts: context.collect.attempts, tests: context.collect.tests, files: { total: each.length, ran: misses.length, flaky: flaky.size } }
-      const bad = [...results].filter(([, o]) => o.status !== "passed").map(([file]) => file)
+      const extra = { attempts: context.collect.attempts, tests: context.collect.tests, files: { total: each.length, ran: misses.length, flaky: flaky.length } }
+      const bad = [...results].filter(([, o]) => o.status === "failed" || o.status === "unknown").map(([file]) => file)
       if (bad.length > 0) {
         const failed = jobs.find((d) => d.r.result._tag !== "Passed" && d.files.some((f) => bad.includes(f)))
         const result: JobResult = failed?.r.result ?? { _tag: "Died", message: `no result for ${bad.join(", ")}` }
         return yield* settle(run, row, { ...fromResult(result, usage, extra), key })
       }
-      if (flaky.size > 0) yield* Effect.logInfo(`${run.id} ${row.name}: ${[...flaky].join(", ")} passed on retry`)
+      if (flaky.length > 0) yield* Effect.logInfo(`${run.id} ${row.name}: ${flaky.join(", ")} passed on retry`)
       return yield* settle(run, row, { status: "passed", value: null, key, usage, ...extra })
     })
 

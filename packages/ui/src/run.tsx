@@ -2,7 +2,7 @@
 // the observability panel docked under it, the selected step's inspector on the right. Failure
 // comes first: a failed step is selected, and its error and failing tests show without a click.
 
-import type { Domain } from "@kiln/api"
+import { Domain } from "@kiln/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
@@ -278,6 +278,11 @@ function FailureBlock({ detail, step, onSelect, onTab }: {
         {shown.error.excerpt ? <pre className="excerpt">{shown.error.excerpt}</pre> : null}
       </div>
       {shown.attempts > 1 ? <p className="fl-act dim">{shown.attempts} attempts</p> : null}
+      {shown.contradicts !== null ? (
+        <p className="fl-act heat">
+          <span>It passed with the same key in <a className="lnk" href={href({ page: "run", id: shown.contradicts.id, step: shown.name })}>#{shown.contradicts.number}</a>: the key misses an input, or the step is flaky.</span>
+        </p>
+      ) : null}
     </section>
   )
 }
@@ -330,6 +335,11 @@ function Inspector({ detail, step, onSelect, onTab }: {
         <Kv rows={[
           ["status", <Meta step={step} steps={detail.steps} />],
           ["key", step.key ? <><Swatch k={step.key} solid={hasBits(step.status)} /><code data-tip={step.key} data-key={step.key}>{shortKey(step.key)}</code></> : <span className="dim">not known yet</span>],
+          step.contradicts !== null && ["same key", (
+            <span className="heat">
+              {step.status === "passed" ? "failed" : "passed"} in <a className="lnk" href={href({ page: "run", id: step.contradicts.id, step: step.name })}>#{step.contradicts.number}</a>: the key misses an input, or the step is flaky
+            </span>
+          )],
           step.status === "reused" && ["from", step.reusedFrom ? <a className="lnk" href={href({ page: "run", id: step.reusedFrom.id, step: step.name })}>#{step.reusedFrom.number}</a> : <span className="dim">already built, nothing ran</span>],
           step.startedAt !== null && ["started", <span className="tnum">{clockS(step.startedAt)}</span>],
           d !== null && step.status !== "running" && ["took", <span className="tnum">{dur(d)}</span>],
@@ -340,6 +350,14 @@ function Inspector({ detail, step, onSelect, onTab }: {
           step.error !== null && ["error", <span className="bad">{step.error.tag}</span>],
         ]} />
       </section>
+      {step.outputs.length > 0 ? (
+        <section className="isec">
+          <h3>Outputs</h3>
+          <Kv rows={step.outputs.map((o) => [o.name, (
+            <a className="lnk" href={Domain.outputPath(step.runId, step.name, o.name)} target="_blank" rel="noreferrer"><code className="wrap">{o.path}</code></a>
+          )] as const)} />
+        </section>
+      ) : null}
       <section className="isec">
         <h3>Inputs</h3>
         {step.needs.length + step.after.length + step.exits.length === 0 ? <p className="dim">Only the source at {shortSha(detail.run.commit.sha)}.</p> : (
@@ -358,7 +376,7 @@ function Inspector({ detail, step, onSelect, onTab }: {
             step.files !== null && ["files", <span className="tnum">{step.files.ran === 0 ? `all ${step.files.total} reused` : `${step.files.ran} of ${step.files.total} ran`}{step.files.flaky ? <>, <span className="bad">{step.files.flaky} passed on retry</span></> : null}</span>],
             step.cpuSeconds !== null && ["cpu", <span className="tnum">{step.cpuSeconds.toFixed(1)} s</span>],
             step.memoryPeakBytes !== null && ["memory", <span className="tnum">{bytes(step.memoryPeakBytes)} peak</span>],
-            step.tests !== null && ["tests", <span>{step.tests.passed} passed{step.tests.failed ? <>, <span className="bad">{step.tests.failed} failed</span></> : null}{step.tests.skipped ? `, ${step.tests.skipped} skipped` : ""}</span>],
+            step.tests !== null && ["tests", <span>{step.tests.passed} passed{step.tests.flaky ? <span className="heat"> ({step.tests.flaky} on retry)</span> : null}{step.tests.failed ? <>, <span className="bad">{step.tests.failed} failed</span></> : null}{step.tests.skipped ? `, ${step.tests.skipped} skipped` : ""}</span>],
           ]} />
         ) : <p className="dim">{step.status === "running" ? "Live in the metrics tab." : step.status === "reused" ? "Nothing ran." : "No process yet."}</p>}
       </section>
@@ -373,13 +391,13 @@ function Inspector({ detail, step, onSelect, onTab }: {
   )
 }
 
-/** Files that failed in their job and passed when they ran again with only the files that failed. */
+/** Files that failed in their job and passed when they ran again. */
 function Retried({ files }: { readonly files: ReadonlyArray<Domain.RetriedFile> }) {
   if (files.length === 0) return null
   return (
     <section className="isec">
       <h3>Passed on retry</h3>
-      <p className="dim">These files failed in their job and passed when they ran again with only the files that failed. Either a test is flaky, or another file of the job left state behind that the test depends on.</p>
+      <p className="dim">These files failed in their job and passed when they ran again. Either a test is flaky, or another file of the job left state behind that the test depends on.</p>
       {files.map((f) => (
         <div key={f.file} className="retried">
           <code className="wrap">{f.file}</code>

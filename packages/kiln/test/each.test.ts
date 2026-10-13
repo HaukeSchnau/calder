@@ -23,13 +23,25 @@ describe("Each", () => {
 
   it("reads a file's outcome from its tests, or from a clean exit", () => {
     const tests: ReadonlyArray<Each.TestOutcome> = [
-      { file: "ok.test.ts", status: "passed", durationMs: 5 },
-      { file: "ok.test.ts", status: "skipped", durationMs: 0 },
-      { file: "bad.test.ts", status: "passed", durationMs: 5 },
-      { file: "bad.test.ts", status: "timeout", durationMs: 60_000 },
+      { file: "ok.test.ts", suite: "", name: "a", status: "passed", durationMs: 5 },
+      { file: "ok.test.ts", suite: "", name: "b", status: "skipped", durationMs: 0 },
+      { file: "bad.test.ts", suite: "", name: "a", status: "passed", durationMs: 5 },
+      { file: "bad.test.ts", suite: "", name: "b", status: "timeout", durationMs: 60_000 },
     ]
     const after = (clean: boolean) => Object.fromEntries([...Each.outcomes(["ok.test.ts", "bad.test.ts", "silent.test.ts"], tests, clean)].map(([f, o]) => [f, o.status]))
     expect(after(false)).toEqual({ "ok.test.ts": "passed", "bad.test.ts": "failed", "silent.test.ts": "unknown" })
     expect(after(true)["silent.test.ts"]).toBe("passed")
+  })
+
+  it("reads a file whose test failed and then passed when the job ran again as flaky, not failed", () => {
+    const tests: ReadonlyArray<Each.TestOutcome> = [
+      { file: "retried.test.ts", suite: "", name: "a", status: "failed", durationMs: 5 },
+      { file: "broken.test.ts", suite: "", name: "a", status: "failed", durationMs: 5 },
+      { file: "retried.test.ts", suite: "", name: "a", status: "passed", durationMs: 5 },
+      { file: "broken.test.ts", suite: "", name: "a", status: "failed", durationMs: 5 },
+    ]
+    const outcomes = Each.outcomes(["retried.test.ts", "broken.test.ts"], tests, false)
+    expect(outcomes.get("retried.test.ts")).toEqual({ status: "flaky", ms: 5 })
+    expect(outcomes.get("broken.test.ts")?.status).toBe("failed")
   })
 })
