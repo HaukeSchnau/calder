@@ -51,7 +51,8 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   repository by default), its setup's key, the dev shell, the command and the values it interpolates.
   A task with a setup needn't list manifests or lockfiles, since the setup's key covers them. A path
   or pattern in a step's files that matches no file fails the plan, since that part of the key would
-  never change. Wrap files that may be missing in `Files.optional(...)`. Pull requests and pushes
+  never change; `kiln plan` checks the working copy for this before you push. Wrap files that may be
+  missing in `Files.optional(...)`. Pull requests and pushes
   reuse everything by default. Schedules and manual runs (`reuse: "builds"`) run tasks without
   `outputs` again, files of tasks with `each` included. A task with `reuse: "never"` runs every time,
   for checks of the machine rather than the code. When a task's outcome differs from an earlier one
@@ -113,7 +114,8 @@ const testServer = Vitest.files({
 kiln gen [dir]                       # writes .kiln/flake.ts, .kiln/tsconfig.json, links .kiln/node_modules,
                                      # and the standard .kiln/ci.ts if there is none
 kiln plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref], schedule:<cron> or
-                                     # manual[:<json object>] would run
+                                     # manual[:<json object>] would run; exits 1 when a path or pattern
+                                     # matches no file of the working copy (jj or git)
 kiln check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 kiln trigger <project> [--branch b]  # runs a branch head on the controller, follows it, and exits 1 unless
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match

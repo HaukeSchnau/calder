@@ -145,7 +145,7 @@ const unmatched = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArray<
  * Fails the plan when a path or pattern the project wrote matches no file: its key would never change.
  * Every task's and setup's files count, also those of steps this event doesn't run.
  */
-const checkFiles = (project: Kiln.Project, repo: Repo) =>
+export const checkFiles = (project: Kiln.Project, repo: Repo) =>
   Effect.gen(function*() {
     const universe = yield* Kiln.universe(project)
     const written = [
