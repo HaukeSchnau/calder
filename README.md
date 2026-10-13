@@ -18,10 +18,12 @@ import { flake } from "./flake.ts"
 const shell = flake.devShells.ci
 const install = Pnpm.install({ shell })
 
-export const qa = Task.make("qa", { shell, setup: install, run: cmd`just qa` }).pipe(Step.timeout("30 minutes"))
+const qa = Task.make("qa", { shell, setup: install, run: cmd`just qa` }).pipe(Step.timeout("30 minutes"))
 
 export default Project.standard({ flake, checks: [qa] })
 ```
+
+Kiln reads only the default export and finds the steps by following the rules, so steps need no `export`.
 
 Every flake check is a step, plus `checks`. Pull requests run them and build `packages.projectRelease`;
 the default branch reuses identical results (also from same-repo pull requests) and promotes the release
