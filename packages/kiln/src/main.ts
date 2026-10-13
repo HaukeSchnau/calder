@@ -4,6 +4,7 @@ import { type Domain, NotFound, Refused } from "@kiln/api"
 import { Event, Kiln } from "@kiln/core"
 import { Console, Effect, Layer, Option, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
+import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import * as Agent from "./Agent.ts"
 import * as Check from "./Check.ts"
@@ -79,7 +80,10 @@ const plan = Command.make("plan", {
   required: Flag.String("required").pipe(Flag.optional),
 }, ({ dir, event, required }) =>
   Effect.gen(function*() {
-    const project = yield* Load.project(resolve(dir, ".kiln"))
+    const kilnDir = resolve(dir, ".kiln")
+    // A link from an older `kiln gen` may point at a Kiln that is gone; planning repairs it.
+    if (existsSync(kilnDir)) Gen.linkCheckout(kilnDir)
+    const project = yield* Load.project(kilnDir)
     const requiredChecks = Option.match(required, { onNone: () => [], onSome: (r) => r.split(",") })
     const planned = yield* Kiln.plan(project, parseEvent(event), { requiredChecks })
     yield* Console.log(`${Event.describe(planned.event)}: ${planned.trust}, reuse ${planned.reuse}`)

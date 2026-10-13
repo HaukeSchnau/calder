@@ -1,10 +1,10 @@
 import { Effect } from "effect"
-import { existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { delimiter, join, resolve } from "node:path"
 import * as Exec from "./Exec.ts"
 
 /** Kiln's SDK next to this file: in a checkout `<repo>/sdk/node_modules`, in the Nix package the same layout. */
-export const sdkPath = resolve(dirname(import.meta.path), "../../../sdk/node_modules")
+export const sdkPath = resolve(import.meta.dirname, "../../../sdk/node_modules")
 
 const tsconfig = {
   compilerOptions: {
@@ -12,7 +12,8 @@ const tsconfig = {
     module: "preserve",
     moduleResolution: "bundler",
     lib: ["ES2024"],
-    types: [],
+    // ci.ts runs on the worker's Bun, so actions can use fetch, node:crypto and Bun.file.
+    types: ["bun"],
     strict: true,
     exactOptionalPropertyTypes: true,
     noUncheckedIndexedAccess: true,
@@ -65,11 +66,30 @@ export const flake = Flake.make({
     )
     writeFileSync(join(kiln, "tsconfig.json"), `${JSON.stringify(tsconfig, null, 2)}\n`)
     writeFileSync(join(kiln, ".gitignore"), "node_modules\n")
-    link(join(kiln, "node_modules"), sdkPath)
+    linkCheckout(kiln)
     const created = !existsSync(join(kiln, "ci.ts"))
     if (created) writeFileSync(join(kiln, "ci.ts"), standard)
     return { packages, checks, devShells, created }
   })
+
+/**
+ * The SDK as seen through the profile that put this Kiln on PATH, such as
+ * `/run/current-system/sw/lib/kiln/sdk/node_modules`. A checkout linked there follows Kiln upgrades,
+ * while a link to the store path breaks once a garbage collection removes an older Kiln. Without such
+ * a profile, as in a checkout of Kiln itself, the SDK's own path.
+ */
+export const stableSdk = (sdk: string, path: string): string => {
+  const real = realpathSync(sdk)
+  for (const dir of path.split(delimiter)) {
+    if (dir === "") continue
+    const candidate = resolve(dir, "../lib/kiln/sdk/node_modules")
+    if (existsSync(candidate) && realpathSync(candidate) === real) return candidate
+  }
+  return sdk
+}
+
+/** Points a checkout's `.kiln/node_modules` at the SDK of the Kiln on PATH. */
+export const linkCheckout = (kilnDir: string) => link(join(kilnDir, "node_modules"), stableSdk(sdkPath, process.env.PATH ?? ""))
 
 export const link = (path: string, target: string) => {
   if (existsSync(path) || isLink(path)) {

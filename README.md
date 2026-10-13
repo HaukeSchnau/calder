@@ -49,6 +49,10 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`kiln/<step>`).
 
+`ci.ts` runs on the worker's Bun, and `.kiln/tsconfig.json` gives it Bun's types, so an action can use `fetch`,
+`node:crypto` or `Bun.file` and still type-check. `.kiln/node_modules` links through the profile that put Kiln on
+PATH (`/run/current-system/sw/lib/kiln/...`), so it follows upgrades; `kiln plan` repairs an older link.
+
 `kiln gen` writes `.kiln/flake.ts` and `.kiln/tsconfig.json` in its own style; if the repository runs a
 formatter over everything, format `.kiln/` with it. Task workspaces get the same `.kiln/node_modules` link
 as `kiln gen` creates, so the repository's type-aware lint can check `ci.ts` in CI too.
