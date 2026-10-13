@@ -49,7 +49,9 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   or pattern in a step's files that matches no file fails the plan, since that part of the key would
   never change. Wrap files that may be missing in `Files.optional(...)`. Pull requests
   reuse everything; pushes rerun tasks unless they build `outputs`. A task with another `platform`
-  than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only).
+  than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only). An agent of
+  the controller's platform with a free slot also takes trusted tasks off the controller. Pull-request
+  tasks always run on the controller, because agents run every worker as one user without a sandbox.
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
   `name`; a step that names a secret the project doesn't configure dies saying so.

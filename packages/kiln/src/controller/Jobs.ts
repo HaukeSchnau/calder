@@ -250,6 +250,12 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const result = yield* Deferred.make<JobResult>()
       const platform = options.platform ?? config.system
       const remote = options.agent === true || platform !== config.system
+      // An agent runs every worker as one user in one workspace directory, so pull-request work there
+      // could read and change what trusted work keeps.
+      if (remote && options.pool === "pr") {
+        const refused: JobResult = { _tag: "Died", message: "agents only take jobs of trusted runs" }
+        return { result: refused, usage: { cpuSeconds: null, memoryPeakBytes: null }, id }
+      }
       const job: ActiveJob = { id, tokenHash: sha256(token), spec, pool: options.pool, remote, onEvent: options.onEvent, result, samples: [], lease: undefined }
       const tokenFile = join(jobsDir, `${id}.token`)
       const persisted = options.adoptable === true && !remote && config.jobs.mode === "systemd" && spec._tag === "Step"

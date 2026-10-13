@@ -407,17 +407,21 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     }
   }
 
-  /** A step of another platform runs on an agent of it, and only trusted runs may use those. */
+  /**
+   * A step of another platform runs on an agent of it, and only trusted runs may use those: an agent
+   * runs every worker as one user, without the pull-request sandbox's egress allowlist, private network
+   * and private /tmp.
+   */
   const refuses = (run: Rows.RunRow, platform: string | null) => platform !== null && platform !== config.system && run.trust !== "trusted"
 
   /**
    * Where a job runs: here, or on an agent, whose workers fetch what local ones read from disk. A job
-   * of another platform needs an agent of it. Other jobs go to a connected agent of this platform with
-   * a free slot, which is there to take load off this host, unless they come from a fork or `here`.
+   * of another platform needs an agent of it. Other jobs of trusted runs go to a connected agent of this
+   * platform with a free slot, which is there to take load off this host, unless they are to run `here`.
    */
   const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false) => {
     const foreign = platform !== null && platform !== config.system
-    const offload = !foreign && !here && run.fork === 0 &&
+    const offload = !foreign && !here && run.trust === "trusted" &&
       agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
     const remote = foreign || offload
     const system = platform ?? config.system
