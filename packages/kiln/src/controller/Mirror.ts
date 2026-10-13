@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schedule, Schema, Semaphore } from "effect"
+import { Context, Effect, Layer, Schema, Semaphore } from "effect"
 import { SqlClient } from "effect/sql"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs"
 import { rm } from "node:fs/promises"
@@ -167,11 +167,9 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
       }
     }
   })
-  yield* sweep.pipe(
-    Effect.catchCause((cause) => Effect.logWarning("sweeping mirrors failed", cause)),
-    Effect.repeat(Schedule.spaced("10 minutes")),
-    Effect.forkScoped,
-  )
+  const swept = sweep.pipe(Effect.catchCause((cause) => Effect.logWarning("sweeping mirrors failed", cause)))
+  yield* swept
+  yield* Effect.sleep("10 minutes").pipe(Effect.andThen(swept), Effect.forever, Effect.forkScoped)
 
   return {
     path,

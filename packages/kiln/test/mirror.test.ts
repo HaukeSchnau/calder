@@ -58,7 +58,7 @@ describe("extract", () => {
     }))
 })
 
-/** Lets the mirror sweep once at start, with `kept` as the only project. */
+/** Starts the mirror, which sweeps once before it is ready, with `kept` as the only project. */
 const sweptOnce = (state: string) =>
   Effect.gen(function*() {
     const projects = Layer.succeed(Projects)({
@@ -67,7 +67,7 @@ const sweptOnce = (state: string) =>
       byRepo: () => Effect.die("unused"),
     })
     const spawner = Layer.succeed(Exec.SpawnerTag)(ChildProcessSpawner.make(() => Effect.die("unused")))
-    yield* Effect.andThen(Mirror.Mirror, Effect.sleep("200 millis")).pipe(
+    yield* Effect.asVoid(Mirror.Mirror).pipe(
       Effect.provide(Mirror.layer.pipe(Layer.provide([config({ stateDir: state }), projects, spawner]))),
     )
   })
@@ -77,7 +77,7 @@ const directories = (state: string, dirs: ReadonlyArray<string>) => {
 }
 
 describe("Mirror", () => {
-  it.live("removes the mirror and revisions of a repository that is no longer a project", () =>
+  it.effect("removes the mirror and revisions of a repository that is no longer a project", () =>
     Effect.gen(function*() {
       const state = mkdtempSync(join(tmpdir(), "kiln-state-"))
       directories(state, ["mirrors/kept.git", "mirrors/gone.git", "revs/kept/sha", "revs/gone/sha"])
@@ -86,7 +86,7 @@ describe("Mirror", () => {
       expect(readdirSync(join(state, "revs"))).toEqual(["kept"])
     }).pipe(Effect.provide(sqlite)))
 
-  it.live("removes revisions no run used for a day, unless a run of them is still going", () =>
+  it.effect("removes revisions no run used for a day, unless a run of them is still going", () =>
     Effect.gen(function*() {
       const state = mkdtempSync(join(tmpdir(), "kiln-state-"))
       const revisions = ["idle", "idle.scratch", "running", "fresh"]
