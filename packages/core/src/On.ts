@@ -58,21 +58,35 @@ export const push: {
 }
 
 /** Runs the default branch's head on a cron schedule. */
-export const schedule = <const T extends ReadonlyArray<Step.Any>>(
-  cron: string,
-  options: { readonly reuse?: Reuse },
-  targets: T,
-): Rule<"trusted", Step.Services<T[number]>> => make("trusted", { _tag: "Schedule", cron }, options.reuse ?? "builds", targets)
+export const schedule: {
+  <const T extends ReadonlyArray<Step.Any>>(cron: string, targets: T): Rule<"trusted", Step.Services<T[number]>>
+  <const T extends ReadonlyArray<Step.Any>>(
+    cron: string,
+    options: { readonly reuse?: Reuse },
+    targets: T,
+  ): Rule<"trusted", Step.Services<T[number]>>
+} = (cron: string, ...args: ReadonlyArray<unknown>) => {
+  const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [{ readonly reuse?: Reuse }, ReadonlyArray<Step.Any>]
+  return make("trusted", { _tag: "Schedule", cron }, options.reuse ?? "builds", targets)
+}
 
 /**
  * Runs when started with `kiln trigger --inputs` and the inputs match. A manual run starts every
  * manual rule whose inputs match, so rules that take different inputs start separately.
  */
-export const manual = <const I extends Schema.Struct.Fields, const T extends ReadonlyArray<Step.Any>>(
-  options: { readonly inputs?: I; readonly reuse?: Reuse },
-  targets: T,
-): Rule<"trusted", Step.Services<T[number]>> =>
-  make("trusted", { _tag: "Manual", inputs: options.inputs ?? {} }, options.reuse ?? "builds", targets)
+export const manual: {
+  <const T extends ReadonlyArray<Step.Any>>(targets: T): Rule<"trusted", Step.Services<T[number]>>
+  <const I extends Schema.Struct.Fields, const T extends ReadonlyArray<Step.Any>>(
+    options: { readonly inputs?: I; readonly reuse?: Reuse },
+    targets: T,
+  ): Rule<"trusted", Step.Services<T[number]>>
+} = (...args: ReadonlyArray<unknown>) => {
+  const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [
+    { readonly inputs?: Schema.Struct.Fields; readonly reuse?: Reuse },
+    ReadonlyArray<Step.Any>,
+  ]
+  return make("trusted", { _tag: "Manual", inputs: options.inputs ?? {} }, options.reuse ?? "builds", targets)
+}
 
 export const matchesBranch = (pattern: string, branch: string) =>
   pattern === branch || new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`).test(branch)
