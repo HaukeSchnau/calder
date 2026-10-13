@@ -2,7 +2,7 @@ import type { Domain } from "@kiln/api"
 import { Event } from "@kiln/core"
 import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { sha256, taskKey } from "../Keys.ts"
@@ -17,6 +17,7 @@ import { Gitea, type StatusState } from "./Gitea.ts"
 import { type Pool, Jobs, type Usage } from "./Jobs.ts"
 import { Live } from "./Live.ts"
 import { Mirror } from "./Mirror.ts"
+import * as Outputs from "./Outputs.ts"
 import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 import * as Slots from "./Slots.ts"
@@ -339,6 +340,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     }
   }
 
+  /** Outputs stay in the store while a run inside retention or a reusable result names them (`Outputs.sweep`). */
+  const keep = (outputs: Record<string, string> | undefined) =>
+    Effect.forEach(Object.values(outputs ?? {}), (path) =>
+      Outputs.root(config.stateDir, path).pipe(
+        Effect.provideService(Exec.SpawnerTag, spawner),
+        Effect.catch((e) => Effect.logWarning(`could not keep ${path} from the garbage collector`, e)),
+      ), { discard: true })
+
   const settle = (run: Rows.RunRow, stale: Rows.StepRow, s: Settled) =>
     Effect.gen(function*() {
       // The step's row changed while it ran (started_at, attempts); read it again.
@@ -388,6 +397,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           values (${outcome.key}, ${run.id}, ${row.name}, ${run.trust}, ${JSON.stringify(s.value ?? null)}, ${JSON.stringify(s.outputs ?? {})}, ${now},
             ${outcome.status})`)
       }
+      yield* keep(s.outputs)
       live.finish(run.id, row.name)
       yield* publishStep(run.id, row.name)
       if (row.kind !== "output") {
@@ -740,7 +750,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             results.outputs from results join runs on runs.id = results.run_id
           where results.key = ${k} and results.status = 'passed'
             and (results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))
-          order by results.created_at desc limit 1`).pipe(Effect.map((rows) => rows[0]))
+          order by results.created_at desc limit 1`).pipe(
+          // A result whose outputs left the store, such as one from before Kiln kept them, is no use.
+          Effect.map((rows) => rows.find((hit) => Object.values(JSON.parse(hit.outputs ?? "{}") as Record<string, string>).every((path) => existsSync(path)))),
+        )
       const reused = (hit: { run_id: string; value: string | null; outputs: string | null }): Settled => ({
         status: "reused",
         value: hit.value === null ? null : JSON.parse(hit.value),
@@ -798,6 +811,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at)
               values (${shardKeys[index - 1]!}, ${runId}, ${name}, ${run.trust}, ${JSON.stringify(r.result.value ?? null)},
                 ${JSON.stringify(r.result.outputs ?? {})}, ${now})`)
+            yield* keep(r.result.outputs)
           } else if (!failed) {
             // Shards still waiting stay out of it; running ones finish, so a rerun repeats only what failed.
             failed = true
