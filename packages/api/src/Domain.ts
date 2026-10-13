@@ -144,8 +144,14 @@ export const StepRun = Schema.Struct({
   tests: Schema.NullOr(Schema.Struct({ passed: Schema.Number, failed: Schema.Number, skipped: Schema.Number, flaky: Schema.Number })),
   /** For a task with `each`: its files, how many ran rather than being reused, and how many passed only on retry. */
   files: Schema.NullOr(Schema.Struct({ total: Schema.Number, ran: Schema.Number, flaky: Schema.Number })),
+  /** A task's outputs, also those a failed task wrote, at the store path the controller serves at `outputPath`. */
+  outputs: Schema.Array(Schema.Struct({ name: Schema.String, path: Schema.String })),
 })
 export type StepRun = typeof StepRun.Type
+
+/** Where the controller serves a step's output: a file as it is, a directory as a list of links. */
+export const outputPath = (runId: string, step: string, output: string) =>
+  `/outputs/${[runId, step, output].map(encodeURIComponent).join("/")}`
 
 export const TestResult = Schema.Struct({
   runId: Schema.String,

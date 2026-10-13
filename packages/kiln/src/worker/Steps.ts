@@ -49,6 +49,7 @@ const toResult = <A>(exit: Exit.Exit<A, unknown>, extra: { readonly outputs?: Re
       tag: failure.value._tag,
       message: failure.value.message,
       key: extra.key ?? null,
+      outputs: extra.outputs ?? {},
     }
   }
   return { _tag: "Died", message: Cause.pretty(exit.cause) }
@@ -323,14 +324,21 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       if (exitCode !== 0) return yield* new Kiln.TaskFailed({ exitCode, failures })
     })
     const exit = yield* Effect.exit(withPolicies(once, step.policies))
-    if (Exit.isFailure(exit)) return toResult(exit)
+    const passed = Exit.isSuccess(exit)
 
     const outputs: Record<string, string> = {}
     for (const [name, path] of Object.entries(def.outputs)) {
+      const source = join(workspace, path)
+      // A failed task keeps what it wrote, such as screenshots of what went wrong, and fails no worse for the rest.
+      if (!passed && !existsSync(source)) continue
       const storeName = `${step.name}-${name}`.replace(/[^A-Za-z0-9+._?=-]/g, "-")
-      outputs[name] = remote === null
-        ? (yield* Exec.run(["nix", "store", "add", "--name", storeName, join(workspace, path)])).trim()
-        : yield* upload(self, storeName, join(workspace, path))
+      const stored = remote === null
+        ? Exec.run(["nix", "store", "add", "--name", storeName, source]).pipe(Effect.map((out) => out.trim()))
+        : upload(self, storeName, source)
+      const kept = yield* passed ? stored : stored.pipe(
+        Effect.catchCause((cause) => log("kiln", `could not keep the output ${name}: ${Cause.pretty(cause)}`).pipe(Effect.as(null))),
+      )
+      if (kept !== null) outputs[name] = kept
     }
     return toResult(exit, { outputs })
   }).pipe(Effect.scoped)

@@ -53,7 +53,8 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   `outputs` again, files of tasks with `each` included. A task with `reuse: "never"` runs every time,
   for checks of the machine rather than the code. When a task's outcome differs from an earlier one
   with the same key, the UI and `kiln status` flag it: the key misses an input, or the task is flaky.
-  A task with another `platform`
+  The paths a task names in `outputs` go to the Nix store, also when the task fails, and the UI and
+  `kiln status` link to them; a failed task's outputs are never reused. A task with another `platform`
   than the controller's runs on an agent of that platform (`kiln agent`, trusted runs only). An agent of
   the controller's platform with a free slot also takes trusted tasks off the controller. Pull-request
   tasks always run on the controller, because agents run every worker as one user without a sandbox.
@@ -115,7 +116,7 @@ kiln trigger <project> [--branch b]  # runs a branch head on the controller, fol
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
 kiln runs [project] [--limit n]      # recent runs with their status, event, commit and age
 kiln projects                        # the projects and the latest run of each default branch
-kiln status <run>                    # a run's steps, with why those that failed did
+kiln status <run>                    # a run's steps, with why those that failed did and links to outputs
 kiln logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
                                      # until the step ends, or the run without a step
 kiln rerun <run> | kiln cancel <run>  # run ids look like studienbuch-12

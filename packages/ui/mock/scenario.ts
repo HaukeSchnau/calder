@@ -595,6 +595,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     spanId: ran || st.status === "reused" ? spanIdOf(run, s.plan.name) : null,
     tests: finished || st.status === "reused" ? testCounts(run, s) : null,
     files: s.plan.name === "test server" && st.status === "passed" ? { total: 114, ran: 114, flaky: 1 } : null,
+    outputs: [],
   }
 }
 

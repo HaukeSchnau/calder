@@ -426,7 +426,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       case "Passed":
         return { status: "passed", value: result.value, outputs: result.outputs, key: result.key, usage, ...extra }
       case "Failed":
-        return { status: "failed", error: { tag: result.tag, message: result.message, json: result.error }, key: result.key, usage, ...extra }
+        return {
+          status: "failed",
+          error: { tag: result.tag, message: result.message, json: result.error },
+          key: result.key,
+          ...(result.outputs === undefined ? {} : { outputs: result.outputs }),
+          usage,
+          ...extra,
+        }
       case "Died":
       case "Lost":
         return { status: "died", error: { tag: "Died", message: result.message, json: null }, usage, ...extra }

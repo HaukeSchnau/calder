@@ -2,7 +2,7 @@
 // the observability panel docked under it, the selected step's inspector on the right. Failure
 // comes first: a failed step is selected, and its error and failing tests show without a click.
 
-import type { Domain } from "@kiln/api"
+import { Domain } from "@kiln/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
@@ -350,6 +350,14 @@ function Inspector({ detail, step, onSelect, onTab }: {
           step.error !== null && ["error", <span className="bad">{step.error.tag}</span>],
         ]} />
       </section>
+      {step.outputs.length > 0 ? (
+        <section className="isec">
+          <h3>Outputs</h3>
+          <Kv rows={step.outputs.map((o) => [o.name, (
+            <a className="lnk" href={Domain.outputPath(step.runId, step.name, o.name)} target="_blank" rel="noreferrer"><code className="wrap">{o.path}</code></a>
+          )] as const)} />
+        </section>
+      ) : null}
       <section className="isec">
         <h3>Inputs</h3>
         {step.needs.length + step.after.length + step.exits.length === 0 ? <p className="dim">Only the source at {shortSha(detail.run.commit.sha)}.</p> : (

@@ -163,6 +163,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
       ? null
       : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0, flaky: row.tests_flaky ?? 0 },
     files: row.files_total == null ? null : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
+    outputs: Object.entries(JSON.parse(row.outputs ?? "{}") as Record<string, string>).map(([name, path]) => ({ name, path })),
   }
 }
 
