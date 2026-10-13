@@ -124,7 +124,7 @@ doesn't know, such as jobs from before its restart, before it gives that agent n
 | Path | What |
 | --- | --- |
 | `packages/core` | `@kiln/core`: the API and the plan engine (`Kiln.plan` is pure and testable) |
-| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness), `Pnpm.install`, `Bun.install`, `Vitest.files` |
+| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when no host runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/kiln` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |

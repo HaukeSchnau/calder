@@ -34,6 +34,23 @@ export class Fleet extends Context.Service<Fleet, {
   readonly targets: (project: Project, app: string) => Effect.Effect<ReadonlyArray<string>>
 }>()("kiln/controller/Fleet") {}
 
+/**
+ * The apps each endpoint's `/health` lists, kept for a minute. An endpoint that doesn't answer counts
+ * with its last answer, or with none, and is asked again on the next lookup.
+ */
+export const remembered = <E>(health: (endpoint: string) => Effect.Effect<ReadonlyArray<string>, E>) => {
+  const answers = new Map<string, { readonly at: number; readonly apps: ReadonlyArray<string> }>()
+  return (endpoint: string) =>
+    Effect.suspend(() => {
+      const hit = answers.get(endpoint)
+      if (hit !== undefined && Date.now() - hit.at < 60_000) return Effect.succeed(hit.apps)
+      return health(endpoint).pipe(
+        Effect.tap((apps) => Effect.sync(() => answers.set(endpoint, { at: Date.now(), apps }))),
+        Effect.orElseSucceed(() => hit?.apps ?? []),
+      )
+    })
+}
+
 export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
   const config = yield* Config
   const telemetry = yield* Telemetry.Telemetry
@@ -46,20 +63,13 @@ export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
       Effect.timeout("2 minutes"),
     )
   const Health = Schema.Struct({ apps: Schema.Array(Schema.String) })
-  const apps = new Map<string, { readonly at: number; readonly apps: ReadonlyArray<string> }>()
-  const appsOf = (endpoint: string) =>
-    Effect.gen(function*() {
-      const hit = apps.get(endpoint)
-      if (hit !== undefined && Date.now() - hit.at < 60_000) return hit.apps
-      const health = yield* client.get(`${endpoint}/health`).pipe(
-        Effect.flatMap(HttpClientResponse.schemaBodyJson(Health)),
-        Effect.timeout("5 seconds"),
-        Effect.map((h) => h.apps),
-        Effect.orElseSucceed(() => hit?.apps ?? []),
-      )
-      apps.set(endpoint, { at: Date.now(), apps: health })
-      return health
-    })
+  const appsOf = remembered((endpoint) =>
+    client.get(`${endpoint}/health`).pipe(
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(Health)),
+      Effect.timeout("5 seconds"),
+      Effect.map((h) => h.apps),
+    )
+  )
 
   const reason = (text: string) => {
     try {
