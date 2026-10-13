@@ -69,8 +69,11 @@ export class Gitea extends Context.Service<Gitea, {
   }>
   /** Merges the base branch into the pull request's branch; fails with Gitea's message, such as a conflict. */
   readonly updatePull: (repo: string, number: number) => Effect.Effect<void, string>
-  /** Merges the pull request with a merge commit; fails with Gitea's message, such as a missing required check. */
-  readonly mergePull: (repo: string, number: number) => Effect.Effect<void, string>
+  /**
+   * Merges the pull request with a merge commit if its head is still `sha`; fails with Gitea's message,
+   * such as a missing required check or a head that moved.
+   */
+  readonly mergePull: (repo: string, number: number, sha: string) => Effect.Effect<void, string>
   readonly openPulls: (repo: string) => Effect.Effect<ReadonlyArray<{
     readonly number: number
     readonly base: string
@@ -177,7 +180,7 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
         Effect.orDie,
       ),
     updatePull: (repo, number) => attempt(`/repos/${repo}/pulls/${number}/update?style=merge`, {}),
-    mergePull: (repo, number) => attempt(`/repos/${repo}/pulls/${number}/merge`, { Do: "merge" }),
+    mergePull: (repo, number, sha) => attempt(`/repos/${repo}/pulls/${number}/merge`, { Do: "merge", head_commit_id: sha }),
     hasFile: (repo, ref, path) =>
       client.get(`${base}/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`).pipe(
         Effect.as(true),
