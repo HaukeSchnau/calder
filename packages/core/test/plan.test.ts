@@ -70,7 +70,7 @@ describe("Kiln.plan", () => {
         rules: [
           On.manual({ inputs: { release: Schema.Literal("ios") } }, [ios]),
           On.manual({ inputs: { release: Schema.Literal("android") } }, [android]),
-          On.manual({}, [any]),
+          On.manual([any]),
         ],
       })
       expect(names(yield* Kiln.plan(apps, Event.manual({ release: "android" }))).sort()).toEqual(["android", "any"])
