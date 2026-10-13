@@ -1,5 +1,6 @@
-import { Context, Effect, Layer, Schema, Semaphore } from "effect"
+import { Context, Effect, Layer, Schedule, Schema, Semaphore } from "effect"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link } from "../Gen.ts"
@@ -134,6 +135,26 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
         changeId: field("change-id") ?? null,
       }
     })
+
+  const entries = (dir: string) => (existsSync(dir) ? readdirSync(dir) : [])
+  const remove = (dir: string) => Effect.promise(() => rm(dir, { recursive: true, force: true }))
+  /** Removes the mirror and revisions of a repository that is no longer a project. */
+  const sweep = Effect.gen(function*() {
+    const mirrors = join(config.stateDir, "mirrors")
+    const revs = join(config.stateDir, "revs")
+    const names = new Set([...entries(mirrors).map((entry) => entry.replace(/\.git$/, "")), ...entries(revs)])
+    yield* Effect.forEach([...names].filter((name) => projects.get(name) === undefined), (name) =>
+      lock(name).withPermits(1)(Effect.gen(function*() {
+        yield* remove(join(mirrors, `${name}.git`))
+        yield* remove(join(revs, name))
+        yield* Effect.logInfo(`removed the mirror of ${name}, which is no longer a project`)
+      })), { discard: true })
+  })
+  yield* sweep.pipe(
+    Effect.catchCause((cause) => Effect.logWarning("sweeping mirrors failed", cause)),
+    Effect.repeat(Schedule.spaced("10 minutes")),
+    Effect.forkScoped,
+  )
 
   return {
     path,

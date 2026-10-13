@@ -1,9 +1,15 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
+import { ChildProcessSpawner } from "effect/process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { extract } from "../src/controller/Mirror.ts"
+import * as Exec from "../src/Exec.ts"
+import * as Mirror from "../src/controller/Mirror.ts"
+import { Projects } from "../src/controller/Projects.ts"
+import { config } from "./config.ts"
+
+const { extract } = Mirror
 
 const revision = () => join(mkdtempSync(join(tmpdir(), "kiln-revs-")), "project", "sha")
 
@@ -44,5 +50,26 @@ describe("extract", () => {
       const failed = yield* extract(root, (scratch) => Effect.andThen(fill(scratch), Effect.fail("tar failed"))).pipe(Effect.flip)
       expect(failed).toBe("tar failed")
       expect(readdirSync(join(root, ".."))).toEqual([])
+    }))
+})
+
+describe("Mirror", () => {
+  it.live("removes the mirror and revisions of a repository that is no longer a project", () =>
+    Effect.gen(function*() {
+      const state = mkdtempSync(join(tmpdir(), "kiln-state-"))
+      for (const dir of ["mirrors/kept.git", "mirrors/gone.git", "revs/kept/sha", "revs/gone/sha"]) {
+        mkdirSync(join(state, dir), { recursive: true })
+      }
+      const projects = Layer.succeed(Projects)({
+        get: (name) => (name === "kept" ? { name, repo: "schnau/kept", defaultBranch: "main", targets: null, secrets: {} } : undefined),
+        all: () => [],
+        byRepo: () => Effect.die("unused"),
+      })
+      const spawner = Layer.succeed(Exec.SpawnerTag)(ChildProcessSpawner.make(() => Effect.die("unused")))
+      yield* Effect.andThen(Mirror.Mirror, Effect.sleep("200 millis")).pipe(
+        Effect.provide(Mirror.layer.pipe(Layer.provide([config({ stateDir: state }), projects, spawner]))),
+      )
+      expect(readdirSync(join(state, "mirrors"))).toEqual(["kept.git"])
+      expect(readdirSync(join(state, "revs"))).toEqual(["kept"])
     }))
 })

@@ -16,14 +16,20 @@ export interface Project {
 
 /**
  * Every repository of an allowed owner that carries `.kiln/ci.ts` is a project; configuration only adds
- * overrides (another name, fixed targets, secrets). Enrolled projects are kept, so their history stays.
+ * overrides (another name, fixed targets, secrets). Enrolled projects that ran are kept, so their
+ * history stays.
  */
 export class Projects extends Context.Service<Projects, {
   readonly get: (name: string) => Project | undefined
   readonly all: () => ReadonlyArray<Project>
-  /** The project of a repository, enrolling it if its owner is allowed. */
-  readonly byRepo: (repo: string, defaultBranch?: string) => Effect.Effect<Project | undefined>
+  /**
+   * The project of a repository. One of an allowed owner is enrolled when the revision `sha` or its
+   * default branch carries `.kiln/ci.ts`.
+   */
+  readonly byRepo: (repo: string, at?: { readonly sha?: string | undefined; readonly defaultBranch?: string | undefined }) => Effect.Effect<Project | undefined>
 }>()("kiln/controller/Projects") {}
+
+const pipeline = ".kiln/ci.ts"
 
 export const layer = Layer.effect(Projects)(Effect.gen(function*() {
   const config = yield* Config
@@ -42,14 +48,18 @@ export const layer = Layer.effect(Projects)(Effect.gen(function*() {
 
   const find = (repo: string) => [...projects.values()].find((p) => p.repo.toLowerCase() === repo.toLowerCase())
 
-  const byRepo = (repo: string, defaultBranch?: string) =>
+  const byRepo: Projects["Service"]["byRepo"] = (repo, at = {}) =>
     Effect.gen(function*() {
       const known = find(repo)
       if (known !== undefined) return known
       const [owner, name] = repo.split("/")
       if (owner === undefined || name === undefined || !config.owners.includes(owner)) return undefined
-      const project: Project = { name: name.toLowerCase(), repo, defaultBranch: defaultBranch ?? "main", targets: null, secrets: {} }
-      if (projects.has(project.name)) return undefined
+      const project: Project = { name: name.toLowerCase(), repo, defaultBranch: at.defaultBranch ?? "main", targets: null, secrets: {} }
+      const carries = (at.sha !== undefined && (yield* gitea.hasFile(repo, at.sha, pipeline))) ||
+        (yield* gitea.hasFile(repo, project.defaultBranch, pipeline))
+      if (!carries) return undefined
+      // Another event of the repository may have enrolled it meanwhile, or another repository has the name.
+      if (projects.has(project.name)) return find(repo)
       yield* sql`insert into projects (name, repo, default_branch, created_at)
         values (${project.name}, ${repo}, ${project.defaultBranch}, ${Date.now()}) on conflict do nothing`.pipe(Effect.orDie)
       add(project)
@@ -57,20 +67,30 @@ export const layer = Layer.effect(Projects)(Effect.gen(function*() {
       return project
     })
 
+  /** Drops an enrolled project that never ran and whose default branch carries no ci.ts. */
+  const forget = (project: Project) =>
+    Effect.gen(function*() {
+      if (yield* gitea.hasFile(project.repo, project.defaultBranch, pipeline)) return
+      const ran = yield* sql`select 1 from runs where project = ${project.name} limit 1`
+      if (ran.length > 0) return
+      yield* sql`delete from projects where name = ${project.name}`
+      projects.delete(project.name)
+      yield* Effect.logInfo(`forgot ${project.repo}: it never ran and ${project.defaultBranch} has no ${pipeline}`)
+    })
+
   // Webhooks enroll a repository on its next push; this finds the ones that carry ci.ts already.
-  yield* Effect.forEach(config.owners, (owner) =>
+  const scan = Effect.forEach(config.owners, (owner) =>
     gitea.repos(owner).pipe(
       Effect.flatMap(Effect.forEach(({ repo, defaultBranch }) => {
         const known = find(repo)
-        if (known !== undefined) {
-          if (branchFromRepo.has(known.name)) add({ ...known, defaultBranch })
-          return Effect.void
-        }
-        return gitea.hasFile(repo, defaultBranch, ".kiln/ci.ts").pipe(
-          Effect.flatMap((has) => (has ? byRepo(repo, defaultBranch) : Effect.void)),
-        )
+        if (known === undefined) return byRepo(repo, { defaultBranch })
+        if (branchFromRepo.has(known.name)) add({ ...known, defaultBranch })
+        return Effect.void
       }, { concurrency: 4, discard: true })),
-    ), { discard: true }).pipe(
+    ), { discard: true })
+  const enrolled = stored.flatMap((row) => (config.projects[row.name] === undefined ? [projects.get(row.name)!] : []))
+  yield* Effect.forEach(enrolled, forget, { concurrency: 4, discard: true }).pipe(
+    Effect.andThen(scan),
     Effect.catchCause((cause) => Effect.logWarning("scanning for projects failed", cause)),
     Effect.forkScoped,
   )
