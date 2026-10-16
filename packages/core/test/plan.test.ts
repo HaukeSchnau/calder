@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Exit, Schema } from "effect"
-import { Action, Event, Files, Kiln, Nix, On, Setup, Step, Task, cmd } from "../src/index.ts"
+import { Action, Cmd, Event, Files, Kiln, Nix, On, Secret, Setup, Step, Task, cmd } from "../src/index.ts"
 import { comment, flake, gate, preview, project, promote, qa, release, smoke } from "./fixtures.ts"
 
 const names = (plan: Kiln.Plan) => plan.steps.map((s) => s.name)
@@ -82,6 +82,41 @@ describe("Kiln.plan", () => {
       const sneaky = Kiln.project({ rules: [On.pullRequest([promote as never])] })
       const exit = yield* Effect.exit(Kiln.plan(sneaky, Event.pullRequest({ number: 2 })))
       expect(String(exit)).toContain("don't run steps with grants")
+    }))
+
+  it.effect("previews read secrets on same-repo pull requests only", () =>
+    Effect.gen(function*() {
+      const deploy = Task.make("deploy-preview", { after: [qa], run: cmd`deploy pr-${Cmd.pullRequest} ${Secret.file("token")}` })
+      const withPreview = Kiln.project({ rules: [On.pullRequest([qa]), On.preview([deploy])] })
+      const same = yield* Kiln.plan(withPreview, Event.pullRequest({ number: 3 }))
+      expect(same.trust).toBe("pr")
+      expect(same.get(deploy)?.preview).toBe(true)
+      expect(same.get(qa)?.preview).toBe(false)
+      const fork = yield* Kiln.plan(withPreview, Event.pullRequest({ number: 3, fork: true }))
+      expect(fork.runs(deploy)).toBe(false)
+      const check = yield* Kiln.plan(withPreview, Event.check({ ref: "kiln/check/local" }))
+      expect(check.runs(deploy)).toBe(false)
+    }))
+
+  it.effect("a preview never vouches for a step a plain pull-request rule runs", () =>
+    Effect.gen(function*() {
+      const secret = Task.make("secret", { run: cmd`cat ${Secret.file("token")}` })
+      const both = Kiln.project({ rules: [On.preview([secret]), On.pullRequest([secret])] })
+      const exit = yield* Effect.exit(Kiln.plan(both, Event.pullRequest({ number: 4 })))
+      expect(String(exit)).toContain("don't run steps with grants")
+      const leased = Task.make("deploy", { lease: true, run: cmd`deploy` })
+      const leaseExit = yield* Effect.exit(Kiln.plan(Kiln.project({ rules: [On.preview([leased])] }), Event.pullRequest({ number: 4 })))
+      expect(String(leaseExit)).toContain("deploy lease")
+    }))
+
+  it.effect("a closed pull request runs its own rules as a trusted run", () =>
+    Effect.gen(function*() {
+      const destroy = Task.make("destroy-preview", { run: cmd`destroy pr-${Cmd.pullRequest} ${Secret.file("token")}` })
+      const closing = Kiln.project({ rules: [On.pullRequest([qa]), On.pullRequestClosed([destroy])] })
+      const plan = yield* Kiln.plan(closing, Event.pullRequestClosed({ number: 5 }))
+      expect(plan.trust).toBe("trusted")
+      expect(names(plan)).toEqual(["destroy-preview"])
+      expect(Event.pullRequestNumber(plan.event)).toBe(5)
     }))
 
   it.effect("rejects two steps with one name, but merges identical builds", () =>

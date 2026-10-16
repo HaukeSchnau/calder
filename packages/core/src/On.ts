@@ -14,6 +14,8 @@ export type Reuse =
 
 export type Trigger =
   | { readonly _tag: "PullRequest" }
+  | { readonly _tag: "Preview" }
+  | { readonly _tag: "PullRequestClosed" }
   | { readonly _tag: "Push"; readonly branch: string }
   | { readonly _tag: "Schedule"; readonly cron: string }
   | { readonly _tag: "Manual"; readonly inputs: Schema.Struct.Fields }
@@ -39,6 +41,24 @@ const make = <T extends "pr" | "trusted", R>(
 export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, any, never>>>(
   targets: T,
 ): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "PullRequest" }, "all", targets)
+
+/**
+ * Runs on pull requests from a branch of the same repository, next to the `pullRequest` rules. Its
+ * tasks may read secrets, such as the token a preview deploy needs: the people who can push a branch
+ * are the ones a trusted run trusts. Fork pull requests and `kiln check` don't run it. Actions with
+ * grants and tasks that hold the deploy lease are still refused, and the run gets `PrBase`.
+ */
+export const preview = <const T extends ReadonlyArray<Step<any, any, any, any, never>>>(
+  targets: T,
+): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "Preview" }, "all", targets)
+
+/**
+ * Runs when a pull request is merged or closed, on the base branch's head: a trusted run, with the
+ * pull request's number for `Cmd.pullRequest`, such as to remove what its previews deployed.
+ */
+export const pullRequestClosed = <const T extends ReadonlyArray<Step.Any>>(
+  targets: T,
+): Rule<"trusted", Step.Services<T[number]>> => make("trusted", { _tag: "PullRequestClosed" }, "builds", targets)
 
 /**
  * Runs on pushes to `branch` (`*` matches within a segment). A push reuses results with the same key,

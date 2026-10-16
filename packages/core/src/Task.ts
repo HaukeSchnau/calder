@@ -47,6 +47,11 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
    * run on their platform's agents.
    */
   readonly offload?: false
+  /**
+   * `true`: the task holds the project's deploy lease while its command runs, like `Release.promote`.
+   * One deploy at a time, and a run that a newer one replaced passes without running. Trusted runs only.
+   */
+  readonly lease?: true
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
@@ -79,4 +84,5 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     platform: options.platform,
     reuse: options.reuse,
     offload: options.offload,
+    lease: options.lease,
   }) as Step<void, TaskFailed, R, O>

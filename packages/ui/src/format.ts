@@ -77,6 +77,8 @@ export function refOf(run: Domain.Run): string {
   switch (run.event._tag) {
     case "PullRequest":
       return `PR #${run.event.number}`
+    case "PullRequestClosed":
+      return `PR #${run.event.number} closed`
     case "Push":
       return run.event.branch
     case "Schedule":
@@ -92,6 +94,8 @@ export function eventLine(event: Domain.Event): string {
   switch (event._tag) {
     case "PullRequest":
       return `pull request, ${event.head} into ${event.base}`
+    case "PullRequestClosed":
+      return `closed pull request, ${event.head} into ${event.base}`
     case "Push":
       return `push to ${event.branch}`
     case "Schedule":

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cmd, cmd } from "../src/index.ts"
+import { Cmd, cmd, Secret } from "../src/index.ts"
 import { release } from "./fixtures.ts"
 
 describe("cmd", () => {
@@ -22,5 +22,23 @@ describe("cmd", () => {
   })
   it("refuses unclosed quotes", () => {
     expect(() => cmd`echo 'oops`).toThrow(/unclosed/)
+  })
+  it("passes secrets as file paths and the pull request's number", () => {
+    const c = cmd`alchemy deploy --stage pr-${Cmd.pullRequest} --env-file ${Secret.file("cloudflare")}`
+    expect(c.secrets).toEqual(["cloudflare"])
+    expect(c.pullRequest).toBe(true)
+    expect(Cmd.render(c, {}, { secrets: { cloudflare: "/run/kiln/cloudflare" }, pullRequest: 42 })).toEqual([
+      "alchemy",
+      "deploy",
+      "--stage",
+      "pr-42",
+      "--env-file",
+      "/run/kiln/cloudflare",
+    ])
+    expect(Cmd.show(c)).toBe("alchemy deploy --stage pr-${pull-request} --env-file ${secret:cloudflare}")
+  })
+  it("refuses to render a secret it wasn't granted or a pull request the run lacks", () => {
+    expect(() => Cmd.render(cmd`cat ${Secret.file("token")}`, {})).toThrow(/not granted/)
+    expect(() => Cmd.render(cmd`echo ${Cmd.pullRequest}`, {})).toThrow(/no pull request/)
   })
 })

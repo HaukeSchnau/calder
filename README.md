@@ -67,11 +67,36 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   garbage before the limit throttles them; a task's own `env` overrides it.
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
-  `name`; a step that names a secret the project doesn't configure dies saying so.
+  `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
+  secret the project doesn't configure dies saying so. ``cmd`... ${Cmd.pullRequest}` `` passes the
+  run's pull-request number. `lease: true` makes a trusted task hold the project's deploy lease while
+  it runs, like `Release.promote`: one deploy at a time, and a run a newer one replaced passes without
+  running.
 - **action** (`Action.make`): Effect code with side effects. `needs` are the steps whose values the
   body reads, `after` the steps that must pass first, `grants` what it may do (`deploy`, `secrets`).
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`kiln/<step>`).
+
+`On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
+same repository, never for forks or `kiln check`. Their tasks may read secrets: whoever can push a branch
+is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
+and home. Actions with grants and tasks with `lease` stay refused. `On.pullRequestClosed` rules run when
+a pull request is merged or closed, as a trusted run of the base branch's head that knows the pull
+request's number, such as to remove its preview. `kiln plan --event closed:<n>` shows them.
+
+`Project.alchemy` from `@kiln/std` is the pipeline of a repository its [Alchemy](https://alchemy.run)
+stack deploys. The default branch deploys the production stage (`Alchemy.deploy`, holding the lease)
+once the checks passed; with `previews`, same-repo pull requests deploy a stage `pr-<n>` of their own
+and comment its URL (`Alchemy.preview`), and closing them destroys it (`Alchemy.destroy`). The project's
+secret `env` is a dotenv file of the providers' credentials, which the CLI reads with `--env-file`.
+
+```ts
+export default Project.alchemy({
+  flake,
+  stack: { shell, setup: Pnpm.install({ shell }), env: "cloudflare" },
+  previews: { url: (pr) => `https://pr-${pr}-site.example.workers.dev` },
+})
+```
 
 `ci.ts` runs on the worker's Bun. `.kiln/tsconfig.json` extends `@kiln/tsconfig` from the SDK, which gives it Bun's
 types, so an action can use `fetch`, `node:crypto` or `Bun.file` and still type-check. `.kiln/node_modules` links
@@ -161,7 +186,7 @@ them, so Nix's garbage collector leaves them alone; reuse skips a result whose o
 | Path | What |
 | --- | --- |
 | `packages/core` | `@kiln/core`: the API and the plan engine (`Kiln.plan` is pure and testable) |
-| `packages/std` | `@kiln/std`: `Project.standard`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
+| `packages/std` | `@kiln/std`: `Project.standard`, `Project.alchemy` and `Alchemy`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/kiln` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |

@@ -597,6 +597,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly offload?: boolean
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
+      /** The pool when it isn't the run's, such as a preview's trusted job in a pull-request run. */
+      readonly pool?: Pool
     },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
@@ -636,10 +638,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         const done = yield* jobs.reattach(adopted.id, onEvent)
         return { ...done, startedAt: adopted.startedAt }
       })
+      const pool = options.pool ?? poolOf(run)
       const running = Effect.scoped(Effect.gen(function*() {
-        const ws = options.workspace ? (yield* workspace(poolOf(run), run.project, options.remote === true)).path : null
+        const ws = options.workspace ? (yield* workspace(pool, run.project, options.remote === true)).path : null
         const done = yield* jobs.run(job(ws), {
-          pool: poolOf(run),
+          pool,
           onEvent,
           // A job that waits for an agent, or that none takes, stays queued.
           onStart: Effect.suspend(() => {
@@ -847,7 +850,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         if (hit !== undefined) return yield* settle(run, row, reused(hit))
       }
 
-      const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
+      // A same-repo pull request grants a preview task its secrets. It then runs as a trusted job: in
+      // the trusted pool, whose network and home it needs. It never goes to an agent, which only
+      // takes trusted runs.
+      const event = JSON.parse(run.event) as Domain.Event
+      const preview = task.preview === true && run.trust === "pr" && run.fork === 0 &&
+        event._tag === "PullRequest" && event.fork === false
+      const secrets = run.trust === "trusted" || preview ? readSecrets(run.project, task.secrets) : {}
       if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
       const sharded = count > 1
       // Shards that passed with the same key before don't run again.
@@ -869,10 +878,18 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             execute(
               run,
               row,
-              (ws) => stepJob({ run: p.where, workspace: ws, secrets, shard: sharded ? { index, count } : null, deps: task.deps }),
+              (ws) =>
+                stepJob({
+                  run: preview ? { ...p.where, trust: "trusted" } : p.where,
+                  workspace: ws,
+                  secrets,
+                  shard: sharded ? { index, count } : null,
+                  deps: task.deps,
+                }),
               {
                 slots: p.remote ? slots.agents : slots.tasks,
                 expected: perShard,
+                ...(preview ? { pool: "trusted" as const } : {}),
                 action: false,
                 shard: sharded ? index : null,
                 workspace: true,

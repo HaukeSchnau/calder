@@ -34,7 +34,7 @@ export const layer = Layer.effectDiscard(Effect.gen(function*() {
       for (const pull of yield* gitea.openPulls(project.repo)) {
         yield* ensure(project.name, pull.sha, {
           project: project.name,
-          event: { _tag: "PullRequest", number: pull.number, base: pull.base, head: pull.head },
+          event: { _tag: "PullRequest", number: pull.number, base: pull.base, head: pull.head, fork: pull.fork },
           sha: pull.sha,
           fork: pull.fork,
         })

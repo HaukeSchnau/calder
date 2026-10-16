@@ -1,4 +1,4 @@
-import { Busy, Cache, Cmd, CurrentRun, Flake, Fleet, Git, Gitea, Kiln, PullRequest, Rejected, Report, Secret, type Step } from "@kiln/core"
+import { Busy, Cache, Cmd, CurrentRun, Event, Flake, Fleet, Git, Gitea, Kiln, PullRequest, Rejected, Report, Secret, Step } from "@kiln/core"
 import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
@@ -282,10 +282,28 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       files = shardFiles(yield* paths(repo, def.shards.split), shard.index, shard.count)
     }
     const command = typeof def.run === "function" ? def.run({ index: shard.index, count: shard.count, files }) : def.run
-    const argv = Cmd.render(command, values)
 
-    const secrets = yield* secretFiles(job, step.name, Object.values(def.secrets).map((ref) => ref.name))
+    const secretNames = Step.taskSecrets(def)
+    const secrets = yield* secretFiles(job, step.name, secretNames)
     const secretEnv = Object.fromEntries(Object.entries(def.secrets).map(([env, ref]) => [env, secrets[ref.name]!.path]))
+    const pullRequest = Event.pullRequestNumber(job.run.event)
+    const argv = Cmd.render(command, values, {
+      secrets: Object.fromEntries(secretNames.map((name) => [name, secrets[name]!.path])),
+      ...(pullRequest === undefined ? {} : { pullRequest }),
+    })
+
+    if (def.lease === true) {
+      const auth = { job: self.id, token: self.token }
+      const lease = yield* Effect.acquireRelease(
+        Effect.orDie(reconnecting(self.client.fleetAcquire({ ...auth, project: job.run.project }))),
+        () => Effect.orDie(reconnecting(self.client.fleetRelease(auth))),
+      )
+      if (lease._tag === "Replaced") {
+        yield* log("kiln", "a newer run took the deploy lease, so this one doesn't run")
+        return toResult(Exit.succeed(undefined))
+      }
+      yield* log("kiln", `holding the deploy lease, fence ${lease.fence}`)
+    }
 
     const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "kiln-task", ...argv])
     const taskEnv = env(job.run, step.name, {

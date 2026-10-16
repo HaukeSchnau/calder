@@ -126,6 +126,7 @@ export type Def =
     readonly platform: Platform | undefined
     readonly reuse: "never" | undefined
     readonly offload: false | undefined
+    readonly lease: true | undefined
   }
   | {
     readonly _tag: "Action"
@@ -200,7 +201,7 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
     case "Output":
       return [{ step: def.task, via: "needs" }]
     case "Task": {
-      const run = typeof def.run === "function" ? def.run({ index: 1, count: def.shards?.count ?? 1, files: [] }) : def.run
+      const run = taskCommand(def)
       return [
         ...(def.setup === undefined ? [] : [{ step: def.setup, via: "needs" } satisfies Dependency]),
         ...run.steps.map((s): Dependency => ({ step: s, via: "needs" })),
@@ -220,6 +221,17 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
       ]
   }
 }
+
+type TaskDef = Extract<Def, { readonly _tag: "Task" }>
+
+/** A task's command; a sharded task's as its first shard gets it. */
+export const taskCommand = (def: TaskDef): Cmd<any> =>
+  typeof def.run === "function" ? def.run({ index: 1, count: def.shards?.count ?? 1, files: [] }) : def.run
+
+/** Every secret a task reads: those its environment points at and those its command interpolates. */
+export const taskSecrets = (def: TaskDef): ReadonlyArray<string> => [
+  ...new Set([...Object.values(def.secrets).map((ref) => ref.name), ...taskCommand(def).secrets]),
+]
 
 export type Any = Step.Any
 export type Success<S> = Step.Success<S>
