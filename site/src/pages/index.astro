@@ -1,0 +1,331 @@
+---
+import { Code } from "astro:components"
+import kiln from "../../../.kiln/ci.ts?raw"
+import { theme } from "../code.ts"
+import Layout from "../Layout.astro"
+import extension from "../samples/extension.ts?raw"
+import Wall from "../wall/Wall.astro"
+
+const title = "Kiln, CI that doesn't do the same work twice"
+const description =
+  "Kiln is an experimental CI/CD system for Nix and TypeScript repositories. It keys every result by the git trees a step read, so identical work runs once."
+
+const pipelines = [
+  {
+    id: "kiln",
+    label: "Kiln and this website",
+    code: kiln,
+    note: "Kiln's own pipeline. The tests run file by file in two shards, the website has an install of its own, and pull requests deploy a preview of it.",
+  },
+  {
+    id: "extension",
+    label: "A browser extension",
+    code: extension,
+    note: "Ebb's pipeline, shortened. Pushes to main submit the build to the Chrome Web Store once qa passed.",
+  },
+]
+
+const plan = `$ kiln plan --event pr:7
+pull request #7: pr, reuse all
+  build  package
+  setup  install (pulled in)
+  task   check  ← needs install
+  task   test  ← needs install
+  setup  site-install (pulled in)
+  task   site  ← needs site-install
+  task   preview  ← needs site-install, after package, after check, after test, after site
+  action preview-url  ← after preview`
+
+const measurements = [
+  {
+    name: "portfolio, push to main",
+    what: "Checks, release build and deploy of a static site.",
+    before: { seconds: 510, label: "8.5 min" },
+    after: { seconds: 51, label: "51 s" },
+    cold: "4.3 min when nothing could be reused",
+  },
+  {
+    name: "Studienbuch qa",
+    what: "Formatting, lint, tests and lockfile checks of a web app.",
+    before: { seconds: 144, label: "2.4 min" },
+    after: { seconds: 58, label: "58 s" },
+    cold: "3 min with the first install",
+  },
+  {
+    name: "t3code pull request",
+    what: "A large monorepo, after a lockfile change reran every test.",
+    before: { seconds: 6000, label: "100 min" },
+    after: { seconds: 3000, label: "50 min" },
+    cold: "Gitea Actions spent much of its time queueing for two runners",
+  },
+]
+---
+
+<Layout title={title} description={description}>
+  <Fragment slot="head">
+    <link rel="canonical" href={Astro.site} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={Astro.site} />
+    <meta property="og:type" content="website" />
+  </Fragment>
+
+  <section class="hero">
+    <div class="hero-top">
+      <h1>CI that doesn't do the same work twice</h1>
+      <div class="hero-text">
+        <p class="lede">
+          Kiln is a CI/CD system for repositories built with Nix and TypeScript. It keys every
+          result by the git trees the step read. A check that passed on a pull request doesn't run
+          again after the merge, and a README edit doesn't rerun your tests.
+        </p>
+        <p class="caveat">
+          Kiln is highly experimental. It runs CI for one developer's projects, its API changes
+          every week, and there is no release to install.
+        </p>
+      </div>
+    </div>
+    <Wall />
+  </section>
+
+  <section id="reuse" class="section">
+    <h2>A key is the git trees a step read</h2>
+    <p>
+      Before a task runs, Kiln computes its key. When the repository already has a result with
+      that key, from the default branch or a pull request of the same repository, the step
+      settles at once as reused.
+    </p>
+    <figure class="key" aria-label="What goes into a task's key">
+      <dl class="key-parts">
+        <div>
+          <dt>Inputs</dt>
+          <dd>The git tree id of every path the task reads. That is the whole repository unless it names fewer.</dd>
+          <dd class="key-eg"><code>packages/core</code> <code>4b825dc642cb</code></dd>
+        </div>
+        <div>
+          <dt>Setup</dt>
+          <dd>The key of the install it starts from, which covers manifests and lockfile.</dd>
+          <dd class="key-eg"><code>install</code> <code>1c0a2f9d3e8b</code></dd>
+        </div>
+        <div>
+          <dt>Toolchain</dt>
+          <dd>The Nix dev shell it runs in, down to its store path.</dd>
+          <dd class="key-eg"><code>devShells.default</code></dd>
+        </div>
+        <div>
+          <dt>Command</dt>
+          <dd>The command line, with every value interpolated into it.</dd>
+          <dd class="key-eg"><code>pnpm run check</code></dd>
+        </div>
+      </dl>
+      <div class="key-result">
+        <span class="tile" data-state="ran" style="--g:#86a8e7"></span>
+        <p>check<br /><code>7c1e2a9f04d3</code></p>
+      </div>
+    </figure>
+    <p>
+      Git already hashes every file and directory, so a key needs no pass over the files. A
+      change to the README leaves the tree of <code>packages/core</code> as it was, and so every
+      key that reads only that tree.
+    </p>
+
+    <div class="points">
+      <div>
+        <h3>Installs run once per lockfile</h3>
+        <p>
+          A setup such as <code>Pnpm.install</code> prepares a workspace once per key, and the
+          tasks that need it start from a btrfs snapshot of it. When every one of those tasks
+          reuses its result, the install doesn't run at all.
+        </p>
+      </div>
+      <div>
+        <h3>Tests run file by file</h3>
+        <p>
+          <code>Vitest.files</code> gives each test file a key of its own that follows its
+          imports. Edit <code>Plan.ts</code> and only the test files that import it run again.
+        </p>
+      </div>
+      <div>
+        <h3>A changed outcome gets flagged</h3>
+        <p>
+          When a task fails under a key that passed before, or the other way round, Kiln marks
+          the step. Either the key misses an input or the task is flaky. A test that passes on a
+          retry counts as flaky, not as failed.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="pipelines" class="section">
+    <h2>A pipeline is a TypeScript file</h2>
+    <p>
+      Pipelines live in <code>.kiln/ci.ts</code> and are
+      written in <a href="https://effect.website">Effect</a> TypeScript. Kiln reads the default
+      export and follows its rules to the steps they name. Your editor checks the file against
+      the same SDK the workers run, and Nix flake outputs arrive as typed references.
+    </p>
+
+    <div class="tabs">
+      <div role="tablist" aria-label="Pipelines">
+        {pipelines.map((p, i) => (
+          <button type="button" role="tab" id={`tab-${p.id}`} aria-controls={`panel-${p.id}`} aria-selected={i === 0 ? "true" : "false"} tabindex={i === 0 ? 0 : -1}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {pipelines.map((p, i) => (
+        <div role="tabpanel" id={`panel-${p.id}`} aria-labelledby={`tab-${p.id}`} hidden={i !== 0}>
+          <p class="tab-note">{p.note}</p>
+          <div class="code">
+            <p class="code-file">.kiln/ci.ts</p>
+            <Code code={p.code.trimEnd()} lang="ts" theme={theme} />
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <h3 class="kinds-title">Four kinds of step</h3>
+    <dl class="kinds">
+      <div>
+        <dt><code>Nix.build</code></dt>
+        <dd>Builds a derivation of the repository's flake. Its value is the output path, so a later step can deploy exactly what was tested.</dd>
+      </div>
+      <div>
+        <dt><code>Setup.make</code></dt>
+        <dd>Prepares a workspace once per key, such as an install. It runs only when a task that needs it runs.</dd>
+      </div>
+      <div>
+        <dt><code>Task.make</code></dt>
+        <dd>Runs a command in a dev shell, in a workspace that is checked out and cleaned before every task.</dd>
+      </div>
+      <div>
+        <dt><code>Action.make</code></dt>
+        <dd>Runs Effect code with side effects, such as a deploy. It names the steps it reads, the steps it waits for and what it may do.</dd>
+      </div>
+    </dl>
+
+    <div class="cli">
+      <div class="cli-text">
+        <h3>Know before you push</h3>
+        <p>
+          <code>kiln plan</code> prints what an event would run, and fails when a path in the
+          pipeline matches no file. <code>kiln check</code> runs your working copy like a pull
+          request before you push, from jj or git.
+        </p>
+      </div>
+      <pre class="term" aria-label="Output of kiln plan for a pull request of Kiln"><code>{plan}</code></pre>
+    </div>
+  </section>
+
+  <section id="trust" class="section">
+    <h2>Pull requests can't deploy</h2>
+    <p>
+      A step that deploys or reads a secret says so in its grants.
+      The rule <code>On.pullRequest</code> only accepts steps without grants, so a pipeline that
+      hands a pull request a deploy doesn't type-check, and the controller refuses it again when
+      it plans the run.
+    </p>
+    <div class="table">
+      <table>
+        <caption class="visually-hidden">What each kind of run may do</caption>
+        <thead>
+          <tr>
+            <th scope="col"></th>
+            <th scope="col">Pull requests</th>
+            <th scope="col">Previews</th>
+            <th scope="col">Pushes to main</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Runs as</th>
+            <td data-label="Pull requests">A user of its own, in a systemd unit</td>
+            <td data-label="Previews">The trusted user</td>
+            <td data-label="Pushes to main">The trusted user</td>
+          </tr>
+          <tr>
+            <th scope="row">Network</th>
+            <td data-label="Pull requests">Only allowlisted hosts, through the controller's proxy</td>
+            <td data-label="Previews">Open</td>
+            <td data-label="Pushes to main">Open</td>
+          </tr>
+          <tr>
+            <th scope="row">Secrets</th>
+            <td data-label="Pull requests">None</td>
+            <td data-label="Previews">Those the project configures</td>
+            <td data-label="Pushes to main">Those the project configures</td>
+          </tr>
+          <tr>
+            <th scope="row">Deploys</th>
+            <td data-label="Pull requests">Refused</td>
+            <td data-label="Previews">Its own stage only</td>
+            <td data-label="Pushes to main">One at a time, under the project's lease</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Previews run only for branches of the same repository, never for forks, because whoever can
+      push a branch is already trusted. Closing the pull request removes its stage. A deploy
+      that a newer push overtook passes without deploying, and fleet hosts turn away a release
+      whose fencing token is older than the last one they accepted.
+    </p>
+  </section>
+
+  <section id="numbers" class="section">
+    <h2>Measured against what it replaced</h2>
+    <p>
+      The fleet ran on Gitea Actions until October 2026. These are the medians of its successful
+      runs in September, next to Kiln's first warm runs.
+    </p>
+    <ul class="bars">
+      {measurements.map((m) => (
+        <li>
+          <p class="bar-name"><b>{m.name}</b> {m.what}</p>
+          <div class="bar-pair">
+            <p class="bar before" style={`--w:${100}%`}><span>Gitea Actions</span> <span>{m.before.label}</span></p>
+            <p class="bar after" style={`--w:${((m.after.seconds / m.before.seconds) * 100).toFixed(1)}%`}><span>Kiln</span> <span>{m.after.label}</span></p>
+          </div>
+          <p class="bar-note">{m.cold}.</p>
+        </li>
+      ))}
+    </ul>
+  </section>
+
+  <section id="status" class="section">
+    <h2>Highly experimental</h2>
+    <p>
+      Kiln went live on 2 October 2026 and runs the CI and deploys of Hauke Schnau's projects.
+      That is the only installation. Its controller assumes NixOS, Gitea, Bun and btrfs, its API
+      changes most weeks, and there is no release, manual or support for anyone else.
+    </p>
+    <p>
+      This page explains how it works in case the ideas are useful to you. It lives in Kiln's
+      repository, and Kiln's own pipeline checks it, deploys a preview for every pull request and
+      deploys it to Cloudflare with <a href="https://alchemy.run">Alchemy</a> on every push to main.
+    </p>
+  </section>
+  <script>
+    const tabs = [...document.querySelectorAll<HTMLButtonElement>("[role=tab]")]
+    const select = (tab: HTMLButtonElement) => {
+      for (const t of tabs) {
+        const on = t === tab
+        t.setAttribute("aria-selected", String(on))
+        t.tabIndex = on ? 0 : -1
+        const panel = document.getElementById(t.getAttribute("aria-controls") ?? "")
+        if (panel) panel.hidden = !on
+      }
+    }
+    for (const [i, tab] of tabs.entries()) {
+      tab.addEventListener("click", () => select(tab))
+      tab.addEventListener("keydown", (event) => {
+        const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0
+        const next = tabs[(i + step + tabs.length) % tabs.length]
+        if (!step || !next) return
+        event.preventDefault()
+        select(next)
+        next.focus()
+      })
+    }
+  </script>
+</Layout>

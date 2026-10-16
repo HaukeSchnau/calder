@@ -1,0 +1,59 @@
+---
+import "@fontsource-variable/instrument-sans/wdth.css"
+import "@fontsource-variable/jetbrains-mono"
+import "./site.css"
+
+interface Props {
+  readonly title: string
+  readonly description: string
+}
+
+const { title, description } = Astro.props
+
+// Kiln gives every task the run and the revision it builds; a local build has neither.
+const run = process.env["KILN_RUN"]
+const revision = process.env["KILN_REVISION"]
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#eef0ed" />
+    <slot name="head" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="top">
+      <a class="brand" href="/" aria-label="Kiln, home">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1.6" fill="#8fc1a9" /><rect x="11" y="1" width="8" height="8" rx="1.6" fill="#8fc1a9" /><rect x="1" y="11" width="8" height="8" rx="1.6" fill="#8fc1a9" /><rect x="11.75" y="11.75" width="6.5" height="6.5" rx="1.2" fill="none" stroke="#f29b41" stroke-width="1.5" /></svg>
+        Kiln
+      </a>
+      <span class="badge">Experimental</span>
+      <nav aria-label="Sections">
+        <a href="/#reuse">Reuse</a>
+        <a href="/#pipelines">Pipelines</a>
+        <a href="/#trust">Trust</a>
+        <a href="/#status">Status</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <slot />
+    </main>
+
+    <footer class="foot">
+      <p>
+        Kiln is made by <a href="https://schnau.dev/">Hauke Schnau</a>.
+        {run && revision
+          ? <span>Kiln deployed this page in run {run}, from commit <code>{revision.slice(0, 12)}</code>.</span>
+          : <span>This copy was built outside Kiln.</span>}
+      </p>
+      <p><a href="https://schnau.dev/en/legal-notice/">Legal notice</a></p>
+    </footer>
+  </body>
+</html>

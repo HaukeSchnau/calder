@@ -1,0 +1,39 @@
+---
+import { runRow } from "./markup.ts"
+import { changes, Simulation, steps } from "./model.ts"
+
+const runs = new Simulation().seed()
+---
+
+<figure class="wall" aria-labelledby="wall-caption">
+  <div class="wall-frame">
+    <div class="wall-heads" aria-hidden="true">
+      <span></span>
+      <div class="tiles">{steps.map((step) => <span>{step.name}</span>)}</div>
+    </div>
+    <ol class="runs" aria-label="Runs, oldest first">
+      <Fragment set:html={runs.map((run) => runRow(run)).join("")} />
+    </ol>
+    <div class="wall-controls" role="group" aria-labelledby="wall-open">
+      <p id="wall-open">Open a pull request</p>
+      {changes.map((c) => <button type="button" data-change={c.file}>{c.label}</button>)}
+    </div>
+    <p class="tip" hidden></p>
+    <p class="visually-hidden" role="status"></p>
+  </div>
+  <figcaption id="wall-caption">
+    <p>
+      Each row is a run and each column a step. A tile's glaze comes from the step's key, so a tile
+      with the glaze of the tile above it had the same inputs and Kiln reused the result. Bright tiles
+      ran, faded ones were reused, and orange ones are running. The repository is made up, and so are
+      the durations.
+    </p>
+  </figcaption>
+</figure>
+
+<script>
+  import { mount } from "./client.ts"
+
+  const wall = document.querySelector<HTMLElement>(".wall")
+  if (wall) mount(wall)
+</script>

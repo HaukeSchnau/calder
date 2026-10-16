@@ -1,0 +1,12 @@
+---
+import Layout from "../Layout.astro"
+---
+
+<Layout title="Not found, Kiln" description="There is no page at this address.">
+  <meta slot="head" name="robots" content="noindex" />
+  <section class="missing">
+    <span class="tile" data-state="waiting" aria-hidden="true"></span>
+    <h1>Nothing at this address</h1>
+    <p>This site is a single page. <a href="/">Read about Kiln</a> instead.</p>
+  </section>
+</Layout>
