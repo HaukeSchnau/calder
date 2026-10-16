@@ -89,6 +89,8 @@ stack deploys. The default branch deploys the production stage (`Alchemy.deploy`
 once the checks passed; with `previews`, same-repo pull requests deploy a stage `pr-<n>` of their own
 and comment its URL (`Alchemy.preview`), and closing them destroys it (`Alchemy.destroy`). The project's
 secret `env` is a dotenv file of the providers' credentials, which the CLI reads with `--env-file`.
+The CLI starts as `pnpm exec alchemy`; a Bun repository sets `runner: "bun"` and installs with
+`Bun.install`, and its steps run `bun alchemy`.
 
 ```ts
 export default Project.alchemy({
