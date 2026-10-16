@@ -2,10 +2,12 @@ import { Action, Cmd, cmd, type Flake, PullRequest, Secret, type Setup, type Ste
 
 /** How the repository's Alchemy stack deploys. */
 export interface Stack {
-  /** The dev shell with node and pnpm, and nix when the stack's build runs it. */
+  /** The dev shell with node and pnpm, or bun for `runner: "bun"`, and nix when the stack's build runs it. */
   readonly shell?: Flake.FlakeRef<"devShells">
-  /** The installed dependencies the CLI runs from, as `pnpm exec alchemy`: usually `Pnpm.install`. */
+  /** The installed dependencies the CLI runs from: `Pnpm.install`, or `Bun.install` with `runner: "bun"`. */
   readonly setup: Setup.Setup
+  /** What starts the CLI: `pnpm exec alchemy` by default, `bun alchemy` with `"bun"`. */
+  readonly runner?: "pnpm" | "bun"
   /** The project's secret with a dotenv file of the providers' credentials, for `--env-file`. */
   readonly env: string
   /** The stack file, when it isn't `alchemy.run.ts`. */
@@ -14,6 +16,7 @@ export interface Stack {
 
 const shellOf = (stack: Stack) => (stack.shell === undefined ? {} : { shell: stack.shell })
 const configOf = (stack: Stack) => (stack.config === undefined ? [] : ["--config", stack.config])
+const cliOf = (stack: Stack) => (stack.runner === "bun" ? ["bun", "alchemy"] : ["pnpm", "exec", "alchemy"])
 
 /**
  * `alchemy deploy --stage <stage>`, holding the project's deploy lease: one deploy at a time, and a
@@ -27,7 +30,7 @@ export const deploy = (stack: Stack, options: { readonly stage: string; readonly
     after: options.after ?? [],
     lease: true,
     reuse: "never",
-    run: cmd`pnpm exec alchemy deploy ${configOf(stack)} --stage ${options.stage} --yes --env-file ${Secret.file(stack.env)}`,
+    run: cmd`${cliOf(stack)} deploy ${configOf(stack)} --stage ${options.stage} --yes --env-file ${Secret.file(stack.env)}`,
   })
 
 /**
@@ -43,7 +46,7 @@ export const preview = (
     setup: stack.setup,
     after: options.after ?? [],
     reuse: "never",
-    run: cmd`pnpm exec alchemy deploy ${configOf(stack)} --stage pr-${Cmd.pullRequest} --yes --env-file ${Secret.file(stack.env)}`,
+    run: cmd`${cliOf(stack)} deploy ${configOf(stack)} --stage pr-${Cmd.pullRequest} --yes --env-file ${Secret.file(stack.env)}`,
   })
   const link = Action.make("preview-url", { after: [upload] }, function*() {
     const pr = yield* PullRequest
@@ -58,5 +61,5 @@ export const destroy = (stack: Stack) =>
     ...shellOf(stack),
     setup: stack.setup,
     reuse: "never",
-    run: cmd`pnpm exec alchemy destroy ${configOf(stack)} --stage pr-${Cmd.pullRequest} --yes --env-file ${Secret.file(stack.env)}`,
+    run: cmd`${cliOf(stack)} destroy ${configOf(stack)} --stage pr-${Cmd.pullRequest} --yes --env-file ${Secret.file(stack.env)}`,
   })
