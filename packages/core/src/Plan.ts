@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect"
 import type { Event } from "./Event.ts"
 import type { Project } from "./Kiln.ts"
 import { matchesBranch, type Reuse, type Rule } from "./On.ts"
-import { dependencies, isStep, type Kind, type Step } from "./Step.ts"
+import { dependencies, isStep, type Kind, type Step, taskSecrets } from "./Step.ts"
 
 export class PlanError extends Schema.TaggedError<PlanError>("@kiln/core/PlanError")("PlanError", {
   message: Schema.String,
@@ -24,6 +24,8 @@ export interface PlannedStep {
   readonly target: boolean
   /** Downstream of an action, so its result is never reused. */
   readonly neverReuse: boolean
+  /** A task of a preview rule that reads secrets: a same-repo pull request's run grants them. */
+  readonly preview: boolean
 }
 
 export interface Plan {
@@ -53,8 +55,11 @@ const matches = (rule: Rule<any, any>, event: Event): boolean => {
   const t = rule.trigger
   switch (event._tag) {
     case "PullRequest":
+      return t._tag === "PullRequest" || (t._tag === "Preview" && event.fork === false)
     case "Check":
       return t._tag === "PullRequest"
+    case "PullRequestClosed":
+      return t._tag === "PullRequestClosed"
     case "Push":
       return t._tag === "Push" && matchesBranch(t.branch, event.branch)
     case "Schedule":
@@ -66,7 +71,10 @@ const matches = (rule: Rule<any, any>, event: Event): boolean => {
 
 const hasGrants = (step: Step.Any) =>
   (step.def._tag === "Action" && (step.def.grants.deploy === true || (step.def.grants.secrets?.length ?? 0) > 0)) ||
-  (step.def._tag === "Task" && Object.keys(step.def.secrets).length > 0)
+  (step.def._tag === "Task" && (taskSecrets(step.def).length > 0 || step.def.lease === true))
+
+/** What a preview may hold: a task's secrets, but not the deploy lease. */
+const previewable = (step: Step.Any) => step.def._tag === "Task" && step.def.lease !== true
 
 const sameBuild = (a: Step.Any, b: Step.Any) =>
   a.def._tag === "Build" && b.def._tag === "Build" && a.def.ref.output === b.def.ref.output &&
@@ -126,18 +134,27 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
 
     const planned = new Map<string, PlannedStep>()
     const order: Array<string> = []
-    const targets = new Set(rules.flatMap((r) => r.targets.map((t) => canonical(t).name)))
+    const names = (keep: (rule: Rule<any, any>) => boolean) =>
+      new Set(rules.filter(keep).flatMap((r) => r.targets.map((t) => canonical(t).name)))
+    const previews = names((r) => r.trigger._tag === "Preview")
+    const plain = names((r) => r.trigger._tag !== "Preview")
+    const targets = new Set([...plain, ...previews])
     const state = new Map<string, "visiting" | "done">()
 
-    const visit = (input: Step.Any, path: ReadonlyArray<string>): PlanError | undefined => {
+    // A step reached from a plain rule is visited as one first, so a preview never vouches for it.
+    const visit = (input: Step.Any, path: ReadonlyArray<string>, preview: boolean): PlanError | undefined => {
       const step = canonical(input)
       const mark = state.get(step.name)
       if (mark === "done") return
       if (mark === "visiting") return fail(`steps depend on each other in a cycle: ${[...path, step.name].join(" → ")}`)
       state.set(step.name, "visiting")
 
-      if (trust === "pr" && hasGrants(step)) {
-        return fail(`pull-request runs don't run steps with grants or secrets, but "${step.name}" has them`)
+      if (trust === "pr" && hasGrants(step) && !(preview && previewable(step))) {
+        return fail(
+          preview
+            ? `previews don't run actions with grants or tasks that hold the deploy lease, but "${step.name}" is one`
+            : `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them`,
+        )
       }
 
       const def = step.def
@@ -174,7 +191,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       }
 
       for (const name of [...needs, ...exits, ...after, ...implicit]) {
-        const error = visit(all.get(name)!, [...path, step.name])
+        const error = visit(all.get(name)!, [...path, step.name], preview)
         if (error) return error
       }
 
@@ -189,14 +206,17 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
         required: unique(implicit),
         target: targets.has(step.name),
         neverReuse: step.kind === "action" || upstream.some((p) => p.kind === "action" || p.neverReuse),
+        preview: trust === "pr" && preview && hasGrants(step),
       })
       state.set(step.name, "done")
       order.push(step.name)
     }
 
-    for (const name of targets) {
-      const error = visit(all.get(name)!, [])
-      if (error) return yield* error
+    for (const [preview, group] of [[false, plain], [true, previews]] as const) {
+      for (const name of group) {
+        const error = visit(all.get(name)!, [], preview)
+        if (error) return yield* error
+      }
     }
 
     const steps = order.map((name) => planned.get(name)!)

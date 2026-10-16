@@ -28,7 +28,10 @@ export const tag = <S extends string>(name: S): Context.Service<Secret<S>, Secre
 export const value = <S extends string>(name: S): Effect.Effect<Redacted.Redacted<string>, never, Secret<S>> =>
   tag(name).use((s) => Effect.succeed(s.value))
 
-/** For tasks: the env var holds the path of a file with the secret. Trusted runs only. */
+/**
+ * For tasks: the path of a file with the secret, in an environment variable (`secrets`) or as a
+ * `cmd` argument. Trusted runs and previews only.
+ */
 export interface SecretRef {
   readonly _tag: "SecretRef"
   readonly name: string

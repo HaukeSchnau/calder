@@ -9,9 +9,11 @@ const readEvent = (kind: string, arg: string | undefined): Event.Event | undefin
   switch (kind) {
     case "push":
       return arg === "" ? undefined : Event.push(arg ?? "main")
-    case "pr": {
+    case "pr":
+    case "closed": {
       const number = Number(arg ?? 1)
-      return Number.isSafeInteger(number) && number > 0 ? Event.pullRequest({ number }) : undefined
+      if (!Number.isSafeInteger(number) || number <= 0) return undefined
+      return kind === "pr" ? Event.pullRequest({ number }) : Event.pullRequestClosed({ number })
     }
     case "check":
       return arg === "" ? undefined : Event.check({ ref: arg ?? "kiln/check/local" })
@@ -27,7 +29,7 @@ export const parseEvent = (text: string): Effect.Effect<Event.Event, Error> => {
   const colon = text.indexOf(":")
   const event = colon === -1 ? readEvent(text, undefined) : readEvent(text.slice(0, colon), text.slice(colon + 1))
   return event === undefined
-    ? Effect.fail(new Error(`--event ${text} is not an event; use push[:<branch>], pr[:<number>], check[:<ref>], schedule:<cron> or manual[:<json object>]`))
+    ? Effect.fail(new Error(`--event ${text} is not an event; use push[:<branch>], pr[:<number>], closed[:<number>], check[:<ref>], schedule:<cron> or manual[:<json object>]`))
     : Effect.succeed(event)
 }
 

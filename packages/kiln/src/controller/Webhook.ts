@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { Config } from "./Config.ts"
+import { Gitea } from "./Gitea.ts"
 import { Mirror } from "./Mirror.ts"
 import { Projects } from "./Projects.ts"
 import { Runs } from "./Workflow.ts"
@@ -39,6 +40,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     const runs = yield* Runs
     const sql = yield* SqlClient.SqlClient
     const projects = yield* Projects
+    const gitea = yield* Gitea
     const body = yield* request.text
     if (!verified(config.webhookSecret, body, request.headers["x-gitea-signature"])) {
       return HttpServerResponse.text("bad signature", { status: 401 })
@@ -84,16 +86,29 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
         const active = yield* sql<{ id: string }>`select id from runs where project = ${project} and pr = ${number}
           and status in ('queued', 'planning', 'running')`.pipe(Effect.orDie)
         yield* Effect.forEach(active, (r) => runs.cancel(r.id, "pull request closed"), { discard: true })
+        // `On.pullRequestClosed` rules run the base branch's head, which the repository's owners pushed.
+        const base = pr.base?.ref ?? enrolled.defaultBranch
+        yield* gitea.head(enrolled.repo, base).pipe(
+          Effect.flatMap((sha) =>
+            start(sha, runs.ensure({
+              project,
+              event: { _tag: "PullRequestClosed", number, base, head: pr.head?.ref ?? `pr-${number}` },
+              sha,
+            }))
+          ),
+          Effect.catchCause((cause) => Effect.logError(`closing pull request ${number} of ${project} failed`, cause)),
+        )
         return HttpServerResponse.text("cancelled")
       }
       if (!["opened", "reopened", "synchronized"].includes(payload.action ?? "")) return HttpServerResponse.text("ignored")
       const sha = pr.head?.sha
       if (sha === undefined) return HttpServerResponse.text("ignored")
+      const fork = pr.head?.repo?.full_name !== undefined && pr.head.repo.full_name !== pr.base?.repo?.full_name
       yield* start(sha, runs.ensure({
         project,
-        event: { _tag: "PullRequest", number, base: pr.base?.ref ?? "main", head: pr.head?.ref ?? `pr-${number}` },
+        event: { _tag: "PullRequest", number, base: pr.base?.ref ?? "main", head: pr.head?.ref ?? `pr-${number}`, fork },
         sha,
-        fork: pr.head?.repo?.full_name !== undefined && pr.head.repo.full_name !== pr.base?.repo?.full_name,
+        fork,
       }))
       return HttpServerResponse.text("accepted", { status: 202 })
     }

@@ -42,6 +42,10 @@ export const PlannedStep = Schema.Struct({
     platform: Schema.NullOr(Schema.String),
     /** False when the task must run on the controller's host; plans from before it was added lack it. */
     offload: Schema.optional(Schema.Boolean),
+    /** A preview rule's task that reads secrets; same-repo pull requests grant them. Older plans lack it. */
+    preview: Schema.optional(Schema.Boolean),
+    /** Holds the project's deploy lease while it runs. Older plans lack it. */
+    lease: Schema.optional(Schema.Boolean),
   })),
   action: Schema.NullOr(Schema.Struct({ deploy: Schema.Boolean, secrets: Schema.Array(Schema.String) })),
   output: Schema.NullOr(Schema.Struct({ task: Schema.String, output: Schema.String })),

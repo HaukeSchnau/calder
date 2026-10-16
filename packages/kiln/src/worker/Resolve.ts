@@ -1,4 +1,4 @@
-import { Cmd, Files, Flake, Kiln, type Step } from "@kiln/core"
+import { Cmd, Event, Files, Flake, Kiln, Step } from "@kiln/core"
 import { Effect, Schedule } from "effect"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
@@ -379,6 +379,9 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
               command: describeCmd(def.run, count),
               env: Object.entries(def.env).sort(),
               secrets: Object.entries(def.secrets).map(([env, ref]) => [env, ref.name]).sort(),
+              // Two pull requests with the same trees must not share a preview's result. Absent otherwise,
+              // so the keys of tasks that don't read it stay what they were.
+              ...(command.pullRequest ? { pullRequest: Event.pullRequestNumber(run.event) ?? null } : {}),
               report: def.report ?? null,
               outputs: Object.entries(def.outputs).sort(),
               shards: def.shards?.count ?? null,
@@ -396,9 +399,11 @@ export const resolve = (plan: Kiln.Plan, project: Kiln.Project, run: RunInfo, re
                 each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
                 deps: setup ?? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
                 outputs: Object.keys(def.outputs),
-                secrets: Object.values(def.secrets).map((s) => s.name),
+                secrets: [...Step.taskSecrets(def)],
                 platform: def.platform ?? null,
                 offload: def.offload !== false,
+                preview: p.preview,
+                lease: def.lease === true,
               },
             }
           }

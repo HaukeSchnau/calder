@@ -1,4 +1,5 @@
 import { Action, type Base, type Files, type Flake, Kiln, Nix, On, type Step } from "@kiln/core"
+import * as Alchemy from "./Alchemy.ts"
 import * as Release from "./Release.ts"
 
 /** The parts of `.kiln/flake.ts` the standard pipeline reads. */
@@ -55,4 +56,38 @@ export const standard = (options: StandardOptions): Kiln.Project => {
       ...nightly,
     ],
   })
+}
+
+export interface AlchemyOptions {
+  readonly flake: Pick<StandardFlake, "checks">
+  readonly stack: Alchemy.Stack
+  /** Checks beyond the flake's own. They run on pull requests and pushes, and gate every deploy. */
+  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
+  /** The stage the default branch deploys, `prod` by default. */
+  readonly production?: string
+  /** Previews of same-repo pull requests at the URL `url` gives, removed when the pull request closes. */
+  readonly previews?: { readonly url: (pr: number) => string }
+  readonly defaultBranch?: string
+  readonly shared?: Files.Files
+  /** As in `standard`: a cron schedule that runs every check without reusing anything. */
+  readonly nightly?: string
+}
+
+/**
+ * The pipeline of a project its Alchemy stack deploys: pull requests and pushes run the checks, and
+ * the default branch deploys the production stage once they passed. With `previews`, a same-repo pull
+ * request deploys a stage of its own after its checks, and closing it removes the stage.
+ */
+export const alchemy = (options: AlchemyOptions): Kiln.Project => {
+  const flakeChecks = Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name }))
+  const checks = [...flakeChecks, ...(options.checks ?? [])]
+  const branch = options.defaultBranch ?? "main"
+  const shared = options.shared === undefined ? {} : { shared: options.shared }
+  const nightly = options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)]
+  const deploy = Alchemy.deploy(options.stack, { stage: options.production ?? "prod", after: checks })
+  const previews = options.previews === undefined ? [] : [
+    On.preview(Alchemy.preview(options.stack, { url: options.previews.url, after: checks })),
+    On.pullRequestClosed([Alchemy.destroy(options.stack)]),
+  ]
+  return Kiln.project({ ...shared, rules: [On.pullRequest(checks), ...previews, On.push(branch, [deploy]), ...nightly] })
 }

@@ -31,7 +31,13 @@ export const StepKind = Schema.Literals(["build", "setup", "task", "action", "ou
 export type StepKind = typeof StepKind.Type
 
 export const Event = Schema.Union([
-  Schema.TaggedStruct("PullRequest", { number: Schema.Number, base: Schema.String, head: Schema.String }),
+  Schema.TaggedStruct("PullRequest", {
+    number: Schema.Number,
+    base: Schema.String,
+    head: Schema.String,
+    fork: Schema.optional(Schema.Boolean),
+  }),
+  Schema.TaggedStruct("PullRequestClosed", { number: Schema.Number, base: Schema.String, head: Schema.String }),
   Schema.TaggedStruct("Push", { branch: Schema.String }),
   Schema.TaggedStruct("Schedule", { cron: Schema.String }),
   Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown) }),

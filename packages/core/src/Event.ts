@@ -4,6 +4,14 @@ export const PullRequest = Schema.TaggedStruct("PullRequest", {
   number: Schema.Number,
   base: Schema.String,
   head: Schema.String,
+  /** Whether the head branch is in another repository. Unknown on older runs, which previews treat as forks. */
+  fork: Schema.optional(Schema.Boolean),
+})
+/** A pull request was merged or closed. Its run plans the base branch's head, so it is trusted. */
+export const PullRequestClosed = Schema.TaggedStruct("PullRequestClosed", {
+  number: Schema.Number,
+  base: Schema.String,
+  head: Schema.String,
 })
 export const Push = Schema.TaggedStruct("Push", { branch: Schema.String })
 export const Scheduled = Schema.TaggedStruct("Schedule", { cron: Schema.String })
@@ -14,11 +22,25 @@ export const Manual = Schema.TaggedStruct("Manual", { inputs: Schema.Record(Sche
  */
 export const Check = Schema.TaggedStruct("Check", { ref: Schema.String, base: Schema.String, background: Schema.optional(Schema.Boolean) })
 
-export const Event = Schema.Union([PullRequest, Push, Scheduled, Manual, Check])
+export const Event = Schema.Union([PullRequest, PullRequestClosed, Push, Scheduled, Manual, Check])
 export type Event = typeof Event.Type
 
-export const pullRequest = (options: { readonly number: number; readonly base?: string; readonly head?: string }): Event =>
-  PullRequest.make({ number: options.number, base: options.base ?? "main", head: options.head ?? `pr-${options.number}` })
+export const pullRequest = (
+  options: { readonly number: number; readonly base?: string; readonly head?: string; readonly fork?: boolean },
+): Event =>
+  PullRequest.make({
+    number: options.number,
+    base: options.base ?? "main",
+    head: options.head ?? `pr-${options.number}`,
+    fork: options.fork ?? false,
+  })
+
+export const pullRequestClosed = (options: { readonly number: number; readonly base?: string; readonly head?: string }): Event =>
+  PullRequestClosed.make({ number: options.number, base: options.base ?? "main", head: options.head ?? `pr-${options.number}` })
+
+/** The pull request a run belongs to, for `Cmd.pullRequest`. */
+export const pullRequestNumber = (event: Event): number | undefined =>
+  event._tag === "PullRequest" || event._tag === "PullRequestClosed" ? event.number : undefined
 
 export const push = (branch: string): Event => Push.make({ branch })
 
@@ -33,6 +55,8 @@ export const describe = (event: Event): string => {
   switch (event._tag) {
     case "PullRequest":
       return `pull request #${event.number}`
+    case "PullRequestClosed":
+      return `closed pull request #${event.number}`
     case "Push":
       return `push to ${event.branch}`
     case "Schedule":

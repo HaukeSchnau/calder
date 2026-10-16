@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Event, Flake, Kiln, Task, cmd } from "@kiln/core"
 import { Effect } from "effect"
+import * as Pnpm from "../src/Pnpm.ts"
 import * as Project from "../src/Project.ts"
 
 const flake = Flake.make({ packages: ["projectRelease"], checks: ["artifact", "projectRelease"], devShells: ["ci"] })
@@ -36,5 +37,44 @@ describe("Project.standard", () => {
       const plan = yield* Kiln.plan(Project.standard({ flake: checksOnly }), Event.push("main"))
       expect(plan.steps.map((s) => s.name)).toEqual(["package"])
       expect(plan.reuse).toBe("all")
+    }))
+})
+
+describe("Project.alchemy", () => {
+  const site = Flake.make({ packages: ["site"], checks: ["artifact"], devShells: ["ci"] })
+  const stack = { shell: site.devShells.ci, setup: Pnpm.install({ shell: site.devShells.ci }), env: "cloudflare" }
+  const project = Project.alchemy({ flake: site, stack, previews: { url: (pr) => `https://pr-${pr}.example.workers.dev` } })
+
+  it.effect("main deploys production after the checks, holding the deploy lease", () =>
+    Effect.gen(function*() {
+      const plan = yield* Kiln.plan(project, Event.push("main"))
+      expect(plan.steps.map((s) => s.name).sort()).toEqual(["artifact", "deploy-prod", "install"])
+      const deploy = plan.get("deploy-prod")!
+      expect(deploy.after).toEqual(["artifact"])
+      expect(deploy.step.def._tag === "Task" && deploy.step.def.lease).toBe(true)
+    }))
+
+  it.effect("a same-repo pull request deploys its own stage and links it; a fork only checks", () =>
+    Effect.gen(function*() {
+      const same = yield* Kiln.plan(project, Event.pullRequest({ number: 7 }))
+      expect(same.steps.map((s) => s.name).sort()).toEqual(["artifact", "install", "preview", "preview-url"])
+      expect(same.get("preview")?.preview).toBe(true)
+      const fork = yield* Kiln.plan(project, Event.pullRequest({ number: 7, fork: true }))
+      expect(fork.steps.map((s) => s.name)).toEqual(["artifact"])
+    }))
+
+  it.effect("closing a pull request removes its stage", () =>
+    Effect.gen(function*() {
+      const plan = yield* Kiln.plan(project, Event.pullRequestClosed({ number: 7 }))
+      expect(plan.trust).toBe("trusted")
+      expect(plan.steps.map((s) => s.name).sort()).toEqual(["destroy-preview", "install"])
+    }))
+
+  it.effect("without previews, pull requests only check", () =>
+    Effect.gen(function*() {
+      const plan = yield* Kiln.plan(Project.alchemy({ flake: site, stack }), Event.pullRequest({ number: 8 }))
+      expect(plan.steps.map((s) => s.name)).toEqual(["artifact"])
+      const closed = yield* Kiln.plan(Project.alchemy({ flake: site, stack }), Event.pullRequestClosed({ number: 8 }))
+      expect(closed.steps).toEqual([])
     }))
 })

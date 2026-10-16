@@ -1,3 +1,4 @@
+export * as Alchemy from "./Alchemy.ts"
 export * as Bun from "./Bun.ts"
 export * as Gitea from "./Gitea.ts"
 export * as Pnpm from "./Pnpm.ts"

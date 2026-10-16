@@ -91,9 +91,10 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
       const trust: Domain.Trust = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted"
       const branch = event._tag === "Push" ? event.branch
         : event._tag === "PullRequest" ? event.head
+        : event._tag === "PullRequestClosed" ? event.base
         : event._tag === "Check" ? event.ref
         : project.defaultBranch
-      const pr = event._tag === "PullRequest" ? event.number : null
+      const pr = event._tag === "PullRequest" || event._tag === "PullRequestClosed" ? event.number : null
       const title = pr === null ? null : yield* gitea.pullTitle(project.repo, pr)
       const number = yield* db(Counters.next(`run:${input.project}`))
       const id = `${input.project}-${number}`

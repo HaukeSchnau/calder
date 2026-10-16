@@ -79,7 +79,7 @@ const plan = Command.make("plan", {
   dir: repository,
   event: Flag.String("event").pipe(
     Flag.withDescription(
-      "push[:<branch>], pr[:<number>], check[:<ref>], schedule:<cron> or manual[:<json object>] (default push:main)",
+      "push[:<branch>], pr[:<number>], closed[:<number>], check[:<ref>], schedule:<cron> or manual[:<json object>] (default push:main)",
     ),
     Flag.withDefault("push:main"),
   ),
