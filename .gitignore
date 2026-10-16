@@ -4,3 +4,5 @@ dist
 result
 result-*
 /.kiln-state
+.astro
+.alchemy

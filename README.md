@@ -196,6 +196,7 @@ them, so Nix's garbage collector leaves them alone; reuse skips a result whose o
 | `packages/kiln` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
 | `sdk` | What `.kiln/node_modules` links to, so ci.ts and the worker share one copy of Effect, and the tsconfig `.kiln/tsconfig.json` extends |
+| `site` | The website at https://kiln-ci.schnau.dev (Astro, deployed to Cloudflare by `.kiln/ci.ts`), with a lockfile of its own so its dependencies stay out of Kiln's package |
 
 ```
 pnpm install
