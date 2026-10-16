@@ -237,7 +237,7 @@ export class WorkerRpcs extends RpcGroup.make(
  * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
  * newer SDK, need no bump: failed steps are not reused.
  */
-export const compatibility = 1
+export const compatibility = 2
 
 /** What the controller tells an agent: start a worker for a job, or stop one. */
 export const AgentOrder = Schema.Union([
