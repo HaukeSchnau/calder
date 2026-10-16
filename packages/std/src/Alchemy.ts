@@ -10,13 +10,22 @@ export interface Stack {
   readonly runner?: "pnpm" | "bun"
   /** The project's secret with a dotenv file of the providers' credentials, for `--env-file`. */
   readonly env: string
+  /**
+   * The directory the CLI runs in, relative to the repository root, when the stack and its package
+   * aren't at the root. The setup installs that package (`dir` of `Pnpm.install`), and `config` is
+   * relative to it.
+   */
+  readonly dir?: string
   /** The stack file, when it isn't `alchemy.run.ts`. */
   readonly config?: string
 }
 
 const shellOf = (stack: Stack) => (stack.shell === undefined ? {} : { shell: stack.shell })
 const configOf = (stack: Stack) => (stack.config === undefined ? [] : ["--config", stack.config])
-const cliOf = (stack: Stack) => (stack.runner === "bun" ? ["bun", "alchemy"] : ["pnpm", "exec", "alchemy"])
+const cliOf = (stack: Stack) => {
+  const at = stack.dir === undefined ? [] : stack.runner === "bun" ? ["--cwd", stack.dir] : ["--dir", stack.dir]
+  return stack.runner === "bun" ? ["bun", ...at, "alchemy"] : ["pnpm", ...at, "exec", "alchemy"]
+}
 
 /**
  * `alchemy deploy --stage <stage>`, holding the project's deploy lease: one deploy at a time, and a

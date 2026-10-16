@@ -43,7 +43,8 @@ that is a `Kiln.project({ rules: [...] })` of the steps below (see `@kiln/std` `
   keep only caches that tools check against the sources themselves (`node_modules`, `*.tsbuildinfo`,
   `.vite`). Build output such as `dist` doesn't belong in `keep`, because a task would read what another
   revision built. `Pnpm.install` and `Bun.install` name their step `install`; a second install, say
-  with another shell, needs its own `name`.
+  with another shell, needs its own `name`. With `dir` they install a directory with its own lockfile
+  instead of the root, and put its `node_modules/.bin` on PATH.
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
   setup keeps. A task is reused
@@ -90,7 +91,9 @@ once the checks passed; with `previews`, same-repo pull requests deploy a stage 
 and comment its URL (`Alchemy.preview`), and closing them destroys it (`Alchemy.destroy`). The project's
 secret `env` is a dotenv file of the providers' credentials, which the CLI reads with `--env-file`.
 The CLI starts as `pnpm exec alchemy`; a Bun repository sets `runner: "bun"` and installs with
-`Bun.install`, and its steps run `bun alchemy`.
+`Bun.install`, and its steps run `bun alchemy`. A stack whose package has its own lockfile in a
+directory, such as a website in `site/`, sets `dir` on the stack and on its install, and the CLI runs
+there.
 
 ```ts
 export default Project.alchemy({
