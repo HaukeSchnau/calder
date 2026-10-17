@@ -1,21 +1,21 @@
 ---
 import { Code } from "astro:components"
-import kiln from "../../../.kiln/ci.ts?raw"
+import calder from "../../../.calder/ci.ts?raw"
 import { theme } from "../code.ts"
 import Layout from "../Layout.astro"
 import extension from "../samples/extension.ts?raw"
 import Wall from "../wall/Wall.astro"
 
-const title = "Kiln, CI that doesn't do the same work twice"
+const title = "Calder, CI that doesn't do the same work twice"
 const description =
-  "Kiln is an experimental CI/CD system for Nix and TypeScript repositories. It keys every result by the git trees a step read, so identical work runs once."
+  "Calder is an experimental CI/CD system for Nix and TypeScript repositories. It keys every result by the git trees a step read, so identical work runs once."
 
 const pipelines = [
   {
-    id: "kiln",
-    label: "Kiln and this website",
-    code: kiln,
-    note: "Kiln's own pipeline. The tests run file by file in two shards, the website has an install of its own, and pull requests deploy a preview of it.",
+    id: "calder",
+    label: "Calder and this website",
+    code: calder,
+    note: "Calder's own pipeline. The tests run file by file in two shards, the website has an install of its own, and pull requests deploy a preview of it.",
   },
   {
     id: "extension",
@@ -25,7 +25,7 @@ const pipelines = [
   },
 ]
 
-const plan = `$ kiln plan --event pr:7
+const plan = `$ calder plan --event pr:7
 pull request #7: pr, reuse all
   build  package
   setup  install (pulled in)
@@ -75,12 +75,12 @@ const measurements = [
       <h1>CI that doesn't do the same work twice</h1>
       <div class="hero-text">
         <p class="lede">
-          Kiln is a CI/CD system for repositories built with Nix and TypeScript. It keys every
+          Calder is a CI/CD system for repositories built with Nix and TypeScript. It keys every
           result by the git trees the step read. A check that passed on a pull request doesn't run
           again after the merge, and a README edit doesn't rerun your tests.
         </p>
         <p class="caveat">
-          Kiln is highly experimental. It runs CI for one developer's projects, its API changes
+          Calder is highly experimental. It runs CI for one developer's projects, its API changes
           every week, and there is no release to install.
         </p>
       </div>
@@ -91,7 +91,7 @@ const measurements = [
   <section id="reuse" class="section">
     <h2>A key is the git trees a step read</h2>
     <p>
-      Before a task runs, Kiln computes its key. When the repository already has a result with
+      Before a task runs, Calder computes its key. When the repository already has a result with
       that key, from the default branch or a pull request of the same repository, the step
       settles at once as reused.
     </p>
@@ -148,7 +148,7 @@ const measurements = [
       <div>
         <h3>A changed outcome gets flagged</h3>
         <p>
-          When a task fails under a key that passed before, or the other way round, Kiln marks
+          When a task fails under a key that passed before, or the other way round, Calder marks
           the step. Either the key misses an input or the task is flaky. A test that passes on a
           retry counts as flaky, not as failed.
         </p>
@@ -159,8 +159,8 @@ const measurements = [
   <section id="pipelines" class="section">
     <h2>A pipeline is a TypeScript file</h2>
     <p>
-      Pipelines live in <code>.kiln/ci.ts</code> and are
-      written in <a href="https://effect.website">Effect</a> TypeScript. Kiln reads the default
+      Pipelines live in <code>.calder/ci.ts</code> and are
+      written in <a href="https://effect.website">Effect</a> TypeScript. Calder reads the default
       export and follows its rules to the steps they name. Your editor checks the file against
       the same SDK the workers run, and Nix flake outputs arrive as typed references.
     </p>
@@ -177,7 +177,7 @@ const measurements = [
         <div role="tabpanel" id={`panel-${p.id}`} aria-labelledby={`tab-${p.id}`} hidden={i !== 0}>
           <p class="tab-note">{p.note}</p>
           <div class="code">
-            <p class="code-file">.kiln/ci.ts</p>
+            <p class="code-file">.calder/ci.ts</p>
             <Code code={p.code.trimEnd()} lang="ts" theme={theme} />
           </div>
         </div>
@@ -208,12 +208,12 @@ const measurements = [
       <div class="cli-text">
         <h3>Know before you push</h3>
         <p>
-          <code>kiln plan</code> prints what an event would run, and fails when a path in the
-          pipeline matches no file. <code>kiln check</code> runs your working copy like a pull
+          <code>calder plan</code> prints what an event would run, and fails when a path in the
+          pipeline matches no file. <code>calder check</code> runs your working copy like a pull
           request before you push, from jj or git.
         </p>
       </div>
-      <pre class="term" aria-label="Output of kiln plan for a pull request of Kiln"><code>{plan}</code></pre>
+      <pre class="term" aria-label="Output of calder plan for a pull request of Calder"><code>{plan}</code></pre>
     </div>
   </section>
 
@@ -276,7 +276,7 @@ const measurements = [
     <h2>Measured against what it replaced</h2>
     <p>
       The fleet ran on Gitea Actions until October 2026. These are the medians of its successful
-      runs in September, next to Kiln's first warm runs.
+      runs in September, next to Calder's first warm runs.
     </p>
     <ul class="bars">
       {measurements.map((m) => (
@@ -284,7 +284,7 @@ const measurements = [
           <p class="bar-name"><b>{m.name}</b> {m.what}</p>
           <div class="bar-pair">
             <p class="bar before" style={`--w:${100}%`}><span>Gitea Actions</span> <span>{m.before.label}</span></p>
-            <p class="bar after" style={`--w:${((m.after.seconds / m.before.seconds) * 100).toFixed(1)}%`}><span>Kiln</span> <span>{m.after.label}</span></p>
+            <p class="bar after" style={`--w:${((m.after.seconds / m.before.seconds) * 100).toFixed(1)}%`}><span>Calder</span> <span>{m.after.label}</span></p>
           </div>
           <p class="bar-note">{m.cold}.</p>
         </li>
@@ -295,13 +295,13 @@ const measurements = [
   <section id="status" class="section">
     <h2>Highly experimental</h2>
     <p>
-      Kiln went live on 2 October 2026 and runs the CI and deploys of Hauke Schnau's projects.
+      Calder went live on 2 October 2026 and runs the CI and deploys of Hauke Schnau's projects.
       That is the only installation. Its controller assumes NixOS, Gitea, Bun and btrfs, its API
       changes most weeks, and there is no release, manual or support for anyone else.
     </p>
     <p>
-      This page explains how it works in case the ideas are useful to you. It lives in Kiln's
-      repository, and Kiln's own pipeline checks it, deploys a preview for every pull request and
+      This page explains how it works in case the ideas are useful to you. It lives in Calder's
+      repository, and Calder's own pipeline checks it, deploys a preview for every pull request and
       deploys it to Cloudflare with <a href="https://alchemy.run">Alchemy</a> on every push to main.
     </p>
   </section>

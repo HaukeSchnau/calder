@@ -1,10 +1,10 @@
 /**
  * The hero's simulated runs of a small TypeScript monorepo. A step's key comes from the versions of
- * the files it reads, the way Kiln's come from git tree ids, and a tile takes the glaze of its key.
+ * the files it reads, the way Calder's come from git tree ids, and a tile takes the glaze of its key.
  * The page renders the opening runs at build time, and the browser replays them to continue.
  */
 
-// Kiln's UI glazes (packages/ui/src/format.ts). No reds or oranges: those mean failure and heat.
+// Calder's UI glazes (packages/ui/src/format.ts). No reds or oranges: those mean failure and heat.
 const glazes = [
   "#8fc1a9", "#86a8e7", "#5b7fe0", "#e7c9a0", "#4fb3a9", "#a592e0",
   "#7fa65e", "#a7aea4", "#ddd3bf", "#d4b04a", "#3f9b98", "#c7a0d9",
@@ -80,7 +80,7 @@ const fnv = (text: string, seed: number) => {
 const hex = (text: string) =>
   (fnv(text, 0x811c9dc5).toString(16).padStart(8, "0") + fnv(text, 0x9e3779b9).toString(16).padStart(8, "0")).slice(0, 12)
 
-/** Settling a reused step still takes Kiln a moment: planning, the lookup and the status. */
+/** Settling a reused step still takes Calder a moment: planning, the lookup and the status. */
 const overhead = 2
 
 export class Simulation {
@@ -127,7 +127,7 @@ export class Simulation {
   }
 
   /**
-   * Kiln hashes a key to one of twelve glazes, so two keys can share one. Here a new key skips the
+   * Calder hashes a key to one of twelve glazes, so two keys can share one. Here a new key skips the
    * glazes any column shows, so that a change of glaze always means a change of key.
    */
   private glaze(step: Step, key: string): string {

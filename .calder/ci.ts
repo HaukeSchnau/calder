@@ -1,5 +1,5 @@
-import { Files, Task, cmd } from "@kiln/core"
-import { Pnpm, Project, Vitest } from "@kiln/std"
+import { Files, Task, cmd } from "@calder-ci/core"
+import { Pnpm, Project, Vitest } from "@calder-ci/std"
 import { flake } from "./flake.ts"
 
 const shell = flake.devShells.default
@@ -21,7 +21,7 @@ const test = Vitest.files({
   shards: 2,
 })
 
-/** The website has a lockfile of its own, so that Astro and Alchemy stay out of Kiln's package. */
+/** The website has a lockfile of its own, so that Astro and Alchemy stay out of Calder's package. */
 const siteInstall = Pnpm.install({ name: "site-install", shell, dir: "site" })
 const site = Task.make("site", {
   shell,
