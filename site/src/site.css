@@ -1,5 +1,5 @@
-/* Porcelain for the explanation, the firebox for Kiln's own surfaces (runs, code). Colour keeps the
-   meaning it has in Kiln's UI: glazes for keys, heat for work in progress, nothing decorative. */
+/* Porcelain for the explanation, the firebox for Calder's own surfaces (runs, code). Colour keeps the
+   meaning it has in Calder's UI: glazes for keys, heat for work in progress, nothing decorative. */
 
 :root {
   --porcelain: #eef0ed;

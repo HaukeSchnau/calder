@@ -1,5 +1,5 @@
-import { Action, Files, Kiln, On, Task, cmd } from "@kiln/core"
-import { Bun } from "@kiln/std"
+import { Action, Files, Calder, On, Task, cmd } from "@calder-ci/core"
+import { Bun } from "@calder-ci/std"
 import { flake } from "./flake.ts"
 import * as WebStore from "./WebStore.ts"
 
@@ -26,6 +26,6 @@ const release = Action.make("release", {
   return yield* WebStore.release({ zip })
 })
 
-export default Kiln.project({
+export default Calder.project({
   rules: [On.pullRequest([qa, build]), On.push("main", [release])],
 })

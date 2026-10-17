@@ -1,7 +1,7 @@
 import type { Code } from "astro:components"
 import type { ComponentProps } from "astro/types"
 
-/** Code on the firebox: Kiln's UI colours, with glazes for strings, calls and types. */
+/** Code on the firebox: Calder's UI colours, with glazes for strings, calls and types. */
 export const theme = {
   name: "firebox",
   type: "dark",

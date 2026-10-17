@@ -10,9 +10,9 @@ interface Props {
 
 const { title, description } = Astro.props
 
-// Kiln gives every task the run and the revision it builds; a local build has neither.
-const run = process.env["KILN_RUN"]
-const revision = process.env["KILN_REVISION"]
+// Calder gives every task the run and the revision it builds; a local build has neither.
+const run = process.env["CALDER_RUN"]
+const revision = process.env["CALDER_REVISION"]
 ---
 
 <!doctype html>
@@ -29,9 +29,9 @@ const revision = process.env["KILN_REVISION"]
   <body>
     <a class="skip" href="#main">Skip to content</a>
     <header class="top">
-      <a class="brand" href="/" aria-label="Kiln, home">
+      <a class="brand" href="/" aria-label="Calder, home">
         <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1.6" fill="#8fc1a9" /><rect x="11" y="1" width="8" height="8" rx="1.6" fill="#8fc1a9" /><rect x="1" y="11" width="8" height="8" rx="1.6" fill="#8fc1a9" /><rect x="11.75" y="11.75" width="6.5" height="6.5" rx="1.2" fill="none" stroke="#f29b41" stroke-width="1.5" /></svg>
-        Kiln
+        Calder
       </a>
       <span class="badge">Experimental</span>
       <nav aria-label="Sections">
@@ -48,10 +48,10 @@ const revision = process.env["KILN_REVISION"]
 
     <footer class="foot">
       <p>
-        Kiln is made by <a href="https://schnau.dev/">Hauke Schnau</a>.
+        Calder is made by <a href="https://schnau.dev/">Hauke Schnau</a>.
         {run && revision
-          ? <span>Kiln deployed this page in run {run}, from commit <code>{revision.slice(0, 12)}</code>.</span>
-          : <span>This copy was built outside Kiln.</span>}
+          ? <span>Calder deployed this page in run {run}, from commit <code>{revision.slice(0, 12)}</code>.</span>
+          : <span>This copy was built outside Calder.</span>}
       </p>
       <p><a href="https://schnau.dev/en/legal-notice/">Legal notice</a></p>
     </footer>
