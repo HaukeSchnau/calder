@@ -1,0 +1,85 @@
+---
+import { edits, events, type EventName, steps } from "./model.ts"
+
+interface Props {
+  /** "plan" has the event switch, the mistake toggle and the plan display; "edits" has the file keys. */
+  readonly mode: "plan" | "edits"
+  readonly label: string
+}
+
+const { mode, label } = Astro.props
+const initial = events.pr
+const eventNames = Object.keys(events) as ReadonlyArray<EventName>
+---
+
+<div class="instrument" data-mode={mode} role="group" aria-label={label}>
+  {mode === "plan" && (
+    <fieldset class="selector">
+      <legend>Event</legend>
+      <div class="selector-track">
+        {eventNames.map((name, i) => (
+          <label class="selector-stop">
+            <input type="radio" name="event" value={name} checked={i === 0} />
+            <span>{events[name].label}</span>
+          </label>
+        ))}
+        <span class="selector-thumb" aria-hidden="true"></span>
+      </div>
+    </fieldset>
+  )}
+
+  <div class="rack">
+    <svg class="wires" aria-hidden="true"></svg>
+    {steps.map((step) => (
+      <div class="module" data-step={step.name} data-lamp={mode === "plan" ? initial.lamps[step.name] : "off"} data-lines={step.lines.join("-")}>
+        <span class="lamp" aria-hidden="true"></span>
+        <span class="module-name">{step.name}</span>
+        <span class="module-kind">{step.kind}</span>
+        {step.name === "test" && <span class="module-note" data-tests></span>}
+        <span class="jack jack-in" aria-hidden="true"></span>
+        <span class="jack jack-out" aria-hidden="true"></span>
+        {step.name === "deploy" && <span class="jack jack-value" aria-hidden="true"></span>}
+      </div>
+    ))}
+  </div>
+
+  {mode === "plan" && (
+    <div class="deck">
+      <label class="toggle">
+        <input type="checkbox" role="switch" name="mistake" />
+        <span class="toggle-body" aria-hidden="true"><span class="toggle-lever"></span></span>
+        <span class="toggle-label">Deploy on pull requests</span>
+        <span class="lamp lamp-fault" aria-hidden="true"></span>
+      </label>
+      <pre class="display" aria-live="polite"><code>{initial.plan}</code></pre>
+    </div>
+  )}
+
+  {mode === "edits" && (
+    <div class="deck">
+      <p class="keys-label" id="keys-label">Edit one file</p>
+      <div class="keys" role="group" aria-labelledby="keys-label">
+        {edits.map((edit, i) => (
+          <button type="button" class="key" data-edit={i} aria-pressed="false">{edit.file}</button>
+        ))}
+      </div>
+      <p class="why" aria-live="polite">Pick a file. The lamps show what a pull request that edits it runs, and what it takes from main.</p>
+    </div>
+  )}
+
+  <ul class="legend" aria-label="Lamps">
+    {mode === "plan" ? (
+      <>
+        <li><span class="lamp" data-lamp="planned"></span>runs</li>
+        <li><span class="lamp" data-lamp="pulled"></span>pulled in</li>
+        <li><span class="lamp" data-lamp="off"></span>not in this event</li>
+      </>
+    ) : (
+      <>
+        <li><span class="lamp" data-lamp="runs"></span>runs</li>
+        <li><span class="lamp" data-lamp="remembered"></span>result from main</li>
+        <li><span class="lamp" data-lamp="off"></span>not in a pull request</li>
+      </>
+    )}
+  </ul>
+</div>

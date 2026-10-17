@@ -1,0 +1,59 @@
+---
+import { Code } from "astro:components"
+import type { ComponentProps } from "astro/types"
+import ci from "../example/ci.ts?raw"
+import { theme } from "../code.ts"
+import { mistake } from "./model.ts"
+
+type Transformer = NonNullable<ComponentProps<typeof Code>["transformers"]>[number]
+
+const source = ci.trimEnd()
+if (!source.split("\n")[mistake.line - 1]?.startsWith(mistake.before)) {
+  throw new Error(`line ${mistake.line} of the example is no longer the pull-request rule`)
+}
+const wrong = source.replace(mistake.before, mistake.after)
+
+/** Numbers each line, so the instrument can light the ones it plays. */
+const numbered: Transformer = {
+  line(node, line) {
+    node.properties["data-line"] = line
+  },
+}
+
+/** Marks `deploy` in the pull-request rule and puts the compiler's error under that line. */
+const diagnosed: Transformer = {
+  span(node, line) {
+    const [text] = node.children
+    if (line !== mistake.line || text?.type !== "text" || text.value.trim() !== "deploy") return
+    // Shiki keeps the space before a name in its token; only the name gets the squiggle.
+    const space = text.value.slice(0, text.value.indexOf("deploy"))
+    node.children = [
+      { type: "text", value: space },
+      { type: "element", tagName: "span", properties: { class: "squiggle" }, children: [{ type: "text", value: "deploy" }] },
+    ]
+  },
+  code(node) {
+    const at = node.children.findIndex((child) => child.type === "element" && child.properties["data-line"] === mistake.line)
+    // After the newline that ends the line, so no empty line follows the note.
+    node.children.splice(at + 2, 0, {
+      type: "element",
+      tagName: "span",
+      properties: { class: "diagnostic", role: "note" },
+      children: [
+        { type: "element", tagName: "span", properties: { class: "diagnostic-where" }, children: [{ type: "text", value: `error TS2322 at ci.ts:${mistake.line}:${mistake.column}` }] },
+        { type: "element", tagName: "span", properties: { class: "diagnostic-why" }, children: [{ type: "text", value: mistake.reason }] },
+      ],
+    })
+  },
+}
+---
+
+<figure class="code-panel" aria-label="The pipeline the instrument plays">
+  <figcaption class="code-file"><span>.calder/ci.ts</span></figcaption>
+  <div class="code-variant" data-variant="right">
+    <Code code={source} lang="ts" theme={theme} transformers={[numbered]} />
+  </div>
+  <div class="code-variant" data-variant="wrong" hidden>
+    <Code code={wrong} lang="ts" theme={theme} transformers={[numbered, diagnosed]} />
+  </div>
+</figure>

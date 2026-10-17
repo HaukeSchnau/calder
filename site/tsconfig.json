@@ -5,5 +5,5 @@
     "noEmit": true
   },
   "include": [".astro/types.d.ts", "**/*"],
-  "exclude": ["dist", ".alchemy", "src/samples"]
+  "exclude": ["dist", "src/example"]
 }
