@@ -16,6 +16,7 @@
     {
       packages = forAll (pkgs: rec {
         calder = pkgs.callPackage ./nix/package.nix { };
+        site = pkgs.callPackage ./nix/site.nix { };
         default = calder;
       });
 
@@ -32,6 +33,7 @@
 
       checks = forAll (pkgs: {
         package = self.packages.${pkgs.stdenv.hostPlatform.system}.calder;
+        site = self.packages.${pkgs.stdenv.hostPlatform.system}.site;
       });
     };
 }

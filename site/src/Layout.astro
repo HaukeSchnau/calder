@@ -9,10 +9,6 @@ interface Props {
 }
 
 const { title, description } = Astro.props
-
-// Calder gives every task the run and the revision it builds; a local build has neither.
-const run = process.env["CALDER_RUN"]
-const revision = process.env["CALDER_REVISION"]
 ---
 
 <!doctype html>
@@ -49,9 +45,6 @@ const revision = process.env["CALDER_REVISION"]
     <footer class="foot">
       <p>
         Calder is made by <a href="https://schnau.dev/">Hauke Schnau</a>.
-        {run && revision
-          ? <span>Calder deployed this page in run {run}, from commit <code>{revision.slice(0, 12)}</code>.</span>
-          : <span>This copy was built outside Calder.</span>}
       </p>
       <p><a href="https://schnau.dev/en/legal-notice/">Legal notice</a></p>
     </footer>

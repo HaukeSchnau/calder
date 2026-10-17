@@ -70,7 +70,8 @@ export const serve = (request: HttpServerRequest.HttpServerRequest) =>
     const real = below(root, rest)
     if (real === null) return HttpServerResponse.text(`${join(root, ...rest)} is not in the store, or not inside the output`, { status: 404 })
     if (!statSync(real).isDirectory()) return yield* HttpServerResponse.file(real)
-    if (!url.pathname.endsWith("/")) return HttpServerResponse.redirect(`${url.pathname}/`)
+    // Relative, so the redirect keeps a prefix the UI is served under, such as /app.
+    if (!url.pathname.endsWith("/")) return HttpServerResponse.redirect(`${url.pathname.split("/").pop()}/`)
     const links = readdirSync(real, { withFileTypes: true })
       .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
       .sort()

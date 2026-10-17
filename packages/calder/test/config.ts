@@ -5,7 +5,9 @@ import { Config } from "../src/controller/Config.ts"
 export const config = (overrides: Partial<Config["Service"]> = {}) =>
   Layer.succeed(Config)({
     listen: { host: "127.0.0.1", port: 0 },
+    url: "http://calder.test",
     publicUrl: "http://calder.test",
+    web: null,
     stateDir: "/nonexistent/state",
     runtimeDir: "/nonexistent/run",
     sdk: "/nonexistent/sdk",

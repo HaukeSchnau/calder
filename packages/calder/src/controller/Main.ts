@@ -19,10 +19,11 @@ import * as Projects from "./Projects.ts"
 import * as Runs from "./Runs.ts"
 import * as Scheduler from "./Scheduler.ts"
 import * as Telemetry from "./Telemetry.ts"
+import * as Web from "./Web.ts"
 import * as WorkerServer from "./WorkerServer.ts"
 import * as Workflow from "./Workflow.ts"
 
-/** The controller: every service, the run driver, the worker socket and the HTTP server. */
+/** The controller: every service, the run driver, the worker socket, the HTTP server and the UI for the web. */
 export const layer = (configPath: string) => {
   const platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunCrypto.layer)
   const config = Config.fromFile(configPath)
@@ -35,5 +36,5 @@ export const layer = (configPath: string) => {
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const runs = Workflow.layer.pipe(Layer.provideMerge(core))
   const merging = Merges.layer.pipe(Layer.provideMerge(runs))
-  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer).pipe(Layer.provide(merging))
+  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer, Web.layer).pipe(Layer.provide(merging))
 }

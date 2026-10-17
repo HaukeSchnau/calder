@@ -15,8 +15,20 @@ export type ProjectConfig = typeof ProjectConfig.Type
 
 export const ConfigSchema = Schema.Struct({
   listen: Schema.Struct({ host: Schema.String, port: Schema.Number }),
-  /** Where people open the UI; used in commit status links. */
+  /** Where agents and their workers reach `listen` on a private network, to fetch revisions and upload outputs. */
+  url: Schema.String,
+  /** Where people open the UI, such as `https://calder.example/app`; commit statuses and comments link there. */
   publicUrl: Schema.String,
+  /**
+   * The UI for people beyond the private network: served at the path of `publicUrl` on a listener of its
+   * own for a proxy to expose, to the Gitea users in `users` once they signed in through the OAuth2
+   * application `oauth`, whose redirect URI is `<publicUrl>/auth/callback`. Null without one.
+   */
+  web: Schema.NullOr(Schema.Struct({
+    listen: Schema.Struct({ host: Schema.String, port: Schema.Number }),
+    oauth: Schema.Struct({ clientId: Schema.String, clientSecretFile: Schema.String }),
+    users: Schema.Array(Schema.String),
+  })).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   stateDir: Schema.String,
   runtimeDir: Schema.String,
   /** The `node_modules` that each revision's `.calder/node_modules` links to. */

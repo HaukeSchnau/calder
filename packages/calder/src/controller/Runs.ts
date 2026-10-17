@@ -502,7 +502,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
     const remote = foreign || offload
     const system = platform ?? config.system
-    const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, pipelineDir: "", system } : info
+    const where = remote ? { ...info, flake: "", mirror: `${config.url.replace(/\/$/, "")}/git/${run.project}.git`, pipelineDir: "", system } : info
     return { remote, offload, where, platform: remote ? system : platform }
   }
   type Placement = ReturnType<typeof place>
