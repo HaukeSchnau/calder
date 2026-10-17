@@ -110,6 +110,8 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
     Effect.gen(function*() {
       const request = yield* HttpServerRequest.HttpServerRequest
       const url = urlOf(request)
+      // The UI's page finds its assets and RPC next to it, so it must end in a slash.
+      if (url.pathname === prefix) return HttpServerResponse.redirect(`${prefix}/${url.search}`)
       const session = verify<Session>(key, request.cookies[sessionCookie], Date.now())
       switch (admit({ prefix, path: url.pathname, method: request.method, session, users: web.users })) {
         case "pass":
@@ -191,7 +193,6 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
   )
   const routes = Layer.mergeAll(
     gate,
-    HttpRouter.add("GET", prefix, HttpServerResponse.redirect(`${prefix}/`)),
     HttpRouter.add("GET", `${prefix}/auth/sign-in`, signIn),
     HttpRouter.add("GET", `${prefix}/auth/callback`, callback),
     HttpRouter.add("GET", `${prefix}/auth/sign-out`, signOut),
