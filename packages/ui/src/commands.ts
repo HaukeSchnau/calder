@@ -1,7 +1,7 @@
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { useAtomSet } from "@effect/atom-react"
 import { Cause, type Exit } from "effect"
-import { Kiln } from "./client.ts"
+import { Calder } from "./client.ts"
 import { go } from "./route.ts"
 import { toast } from "./toast.ts"
 import { errorText } from "./ui.tsx"
@@ -10,9 +10,9 @@ const failureOf = <A, E>(exit: Exit.Exit<A, E>): unknown => (exit._tag === "Fail
 
 /** Trigger, cancel and rerun, reporting the outcome in the status bar and opening a new run. */
 export function useRunCommands() {
-  const cancelRpc = useAtomSet(Kiln.mutation("cancel"), { mode: "promiseExit" })
-  const rerunRpc = useAtomSet(Kiln.mutation("rerun"), { mode: "promiseExit" })
-  const triggerRpc = useAtomSet(Kiln.mutation("trigger"), { mode: "promiseExit" })
+  const cancelRpc = useAtomSet(Calder.mutation("cancel"), { mode: "promiseExit" })
+  const rerunRpc = useAtomSet(Calder.mutation("rerun"), { mode: "promiseExit" })
+  const triggerRpc = useAtomSet(Calder.mutation("trigger"), { mode: "promiseExit" })
   const started = (exit: Exit.Exit<Domain.Run, unknown>) => {
     if (exit._tag === "Success") {
       toast(`Started ${exit.value.project} #${exit.value.number}`)

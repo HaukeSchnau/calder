@@ -1,5 +1,5 @@
 {
-  description = "Kiln: CI/CD written in Effect TypeScript, built on Nix";
+  description = "Calder: CI/CD written in Effect TypeScript, built on Nix";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -15,8 +15,8 @@
     in
     {
       packages = forAll (pkgs: rec {
-        kiln = pkgs.callPackage ./nix/package.nix { };
-        default = kiln;
+        calder = pkgs.callPackage ./nix/package.nix { };
+        default = calder;
       });
 
       devShells = forAll (pkgs: {
@@ -31,7 +31,7 @@
       });
 
       checks = forAll (pkgs: {
-        package = self.packages.${pkgs.stdenv.hostPlatform.system}.kiln;
+        package = self.packages.${pkgs.stdenv.hostPlatform.system}.calder;
       });
     };
 }

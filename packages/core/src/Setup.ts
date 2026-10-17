@@ -1,7 +1,7 @@
 import type { Cmd } from "./Cmd.ts"
 import * as Files from "./Files.ts"
 import type { FlakeRef } from "./Flake.ts"
-import type { TaskFailed } from "./Kiln.ts"
+import type { TaskFailed } from "./Calder.ts"
 import { make as makeStep, type Platform, type Step } from "./Step.ts"
 
 /** A step that prepares a workspace for tasks. */

@@ -1,9 +1,9 @@
 import type { Effect, Scope } from "effect"
-import type { FailureOf, Result } from "./Kiln.ts"
+import type { FailureOf, Result } from "./Calder.ts"
 import type { Granted } from "./Services.ts"
 import { make as makeStep, type Grants, type Step } from "./Step.ts"
 
-/** What an action may return: plain data, `void`, or `Kiln.Result` instances. */
+/** What an action may return: plain data, `void`, or `Calder.Result` instances. */
 export type Storable<A> = A extends void | undefined | null | boolean | number | string ? A
   : A extends Result.Brand ? A
   : A extends Function | Date | Map<any, any> | Set<any> | Effect.Effect<any, any, any> ? never

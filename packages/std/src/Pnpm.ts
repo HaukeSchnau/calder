@@ -1,4 +1,4 @@
-import { cmd, Files, type Flake, Setup } from "@kiln/core"
+import { cmd, Files, type Flake, Setup } from "@calder-ci/core"
 
 export interface InstallOptions {
   /** The step's name, `install` by default. Name a second install that needs another shell or `keep`. */

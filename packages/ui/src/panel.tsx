@@ -1,12 +1,12 @@
 // The docked panel under the graph. One selected step drives every tab: its log lines, its span in
 // the run's trace, its metrics and history, its failing tests and its value or error.
 
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { BarChart, LineChart } from "./charts.tsx"
-import { Kiln } from "./client.ts"
+import { Calder } from "./client.ts"
 import { LOG_PAGE, earlierLogs, isActive, isTerminal, logsAtom, metricsAtom, traceAtom } from "./data.ts"
 import { bytes, clockS, dur, spanDur, stepDuration } from "./format.ts"
 import { Check, Fail, Kbd, Loaded, Ring, useNow } from "./ui.tsx"
@@ -66,11 +66,11 @@ type LogStream = Domain.LogLine["stream"]
 const memory: { scope: "step" | "run"; levels: Record<Level, boolean>; streams: Record<LogStream, boolean> } = {
   scope: "step",
   levels: { error: true, warn: true, info: true, debug: false },
-  streams: { stdout: true, stderr: true, kiln: true },
+  streams: { stdout: true, stderr: true, calder: true },
 }
 
 const LEVELS: ReadonlyArray<Level> = ["error", "warn", "info", "debug"]
-const STREAMS: ReadonlyArray<LogStream> = ["stdout", "stderr", "kiln"]
+const STREAMS: ReadonlyArray<LogStream> = ["stdout", "stderr", "calder"]
 
 function LogsTab({ detail, step, onSelect }: { readonly detail: Domain.RunDetail; readonly step: Domain.StepRun; readonly onSelect: (name: string) => void }) {
   const [scope, setScope] = useState(memory.scope)
@@ -250,7 +250,7 @@ type SpanKind = "run" | "build" | "task" | "action" | "nix" | "http" | "detail"
 
 function spanKind(s: Domain.Span): SpanKind {
   if (s.parentId === null) return "run"
-  const kind = s.attributes["kiln.kind"]
+  const kind = s.attributes["calder.kind"]
   if (kind === "build" || kind === "task" || kind === "action") return kind
   if (kind === "setup") return "task"
   if (s.attributes["http.status"] !== undefined) return "http"
@@ -291,7 +291,7 @@ export function orderSpans(spans: ReadonlyArray<Domain.Span>, root?: string): Ar
 }
 
 const stepSpanOf = (spans: ReadonlyArray<Domain.Span>, step: Domain.StepRun) =>
-  spans.find((s) => s.spanId === step.spanId) ?? spans.find((s) => s.attributes["kiln.step"] === step.name)
+  spans.find((s) => s.spanId === step.spanId) ?? spans.find((s) => s.attributes["calder.step"] === step.name)
 
 export function Waterfall({ spans, step, live, onSelect, root, compact = false }: {
   readonly spans: ReadonlyArray<Domain.Span>
@@ -322,7 +322,7 @@ export function Waterfall({ spans, step, live, onSelect, root, compact = false }
   const stepOf = (s: Domain.Span): string | undefined => {
     const byId = new Map(spans.map((x) => [x.spanId, x]))
     for (let cur: Domain.Span | undefined = s; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) {
-      const name = cur.attributes["kiln.step"]
+      const name = cur.attributes["calder.step"]
       if (name !== undefined) return name
     }
     return undefined
@@ -359,11 +359,11 @@ export function Waterfall({ spans, step, live, onSelect, root, compact = false }
               "tr", `k-${kind}`,
               span.status === "error" ? "failed" : "",
               open ? "open" : "",
-              span.attributes["kiln.status"] === "reused" ? "reused" : "",
+              span.attributes["calder.status"] === "reused" ? "reused" : "",
               own && span.spanId === own.spanId ? "on" : inside.has(span.spanId) ? "in" : "",
               selected && span.spanId === selected.spanId ? "sel" : "",
             ].join(" ")
-            const tag = span.attributes["http.status"] ? `http ${span.attributes["http.status"]}` : span.attributes["nix.activity"] ?? (span.attributes["kiln.status"] === "reused" ? "reused" : "")
+            const tag = span.attributes["http.status"] ? `http ${span.attributes["http.status"]}` : span.attributes["nix.activity"] ?? (span.attributes["calder.status"] === "reused" ? "reused" : "")
             return (
               <div key={span.spanId} className={cls} onClick={() => {
                 setPicked(span.spanId)
@@ -409,7 +409,7 @@ const axisLabel = (ms: number) => (ms === 0 ? "0" : ms < 1000 ? `${ms}ms` : ms <
 /* Metrics                                                             */
 
 function MetricsTab({ detail, step }: { readonly detail: Domain.RunDetail; readonly step: Domain.StepRun }) {
-  const stats = useAtomValue(Kiln.query("stepStats", { project: detail.run.project, step: step.name }))
+  const stats = useAtomValue(Calder.query("stepStats", { project: detail.run.project, step: step.name }))
   return (
     <div className="pbody">
       <div className="metrics">
@@ -558,7 +558,7 @@ function TestsTab({ detail, step, onSelect }: { readonly detail: Domain.RunDetai
 }
 
 export function TestHistory({ project, test }: { readonly project: string; readonly test: Domain.TestResult }) {
-  const result = useAtomValue(Kiln.query("testHistory", { project, suite: test.suite, name: test.name }))
+  const result = useAtomValue(Calder.query("testHistory", { project, suite: test.suite, name: test.name }))
   if (!AsyncResult.isSuccess(result)) return <span className="thist" />
   const runs = result.value.slice(-20)
   return (

@@ -17,7 +17,7 @@ export const Push = Schema.TaggedStruct("Push", { branch: Schema.String })
 export const Scheduled = Schema.TaggedStruct("Schedule", { cron: Schema.String })
 export const Manual = Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown) })
 /**
- * A working copy checked before it is pushed (`kiln check`), pushed as `ref`. It runs what a pull request
+ * A working copy checked before it is pushed (`calder check`), pushed as `ref`. It runs what a pull request
  * would; `background` checks only take slots nothing else wants.
  */
 export const Check = Schema.TaggedStruct("Check", { ref: Schema.String, base: Schema.String, background: Schema.optional(Schema.Boolean) })

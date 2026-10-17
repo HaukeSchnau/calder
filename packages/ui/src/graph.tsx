@@ -1,4 +1,4 @@
-import { Domain } from "@kiln/api"
+import { Domain } from "@calder-ci/api"
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useAtomValue } from "@effect/atom-react"
 import { agentWaitsAtom } from "./data.ts"

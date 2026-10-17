@@ -1,7 +1,7 @@
-import type { TaskFailed, TestFailure } from "./Kiln.ts"
+import type { TaskFailed, TestFailure } from "./Calder.ts"
 import type { Failed } from "./Step.ts"
 
-/** Where a task writes test results. Kiln reads them after the command, also when it fails. */
+/** Where a task writes test results. Calder reads them after the command, also when it fails. */
 export type ReportSpec =
   | { readonly _tag: "JUnit"; readonly path: string }
   | { readonly _tag: "Vitest"; readonly path: string }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cmd } from "@kiln/core"
+import { Cmd } from "@calder-ci/core"
 import { spawnSync } from "node:child_process"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -8,7 +8,7 @@ import * as Vitest from "../src/Vitest.ts"
 
 /** A repository whose package `pkg` has its own `vitest` and `prepare`, which record where and how they ran. */
 const repository = () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "kiln-vitest-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "calder-vitest-")))
   const bin = join(root, "pkg/node_modules/.bin")
   mkdirSync(bin, { recursive: true })
   const fake = (name: string, body: string) => {
@@ -33,7 +33,7 @@ const run = (root: string, step: ReturnType<typeof Vitest.files>, files: Readonl
 }
 
 describe("Vitest.files", () => {
-  it("runs the package's vitest in its directory with its files and writes the report where Kiln reads it", () => {
+  it("runs the package's vitest in its directory with its files and writes the report where Calder reads it", () => {
     const root = repository()
     const step = Vitest.files({ dir: "pkg", tests: ["src/**/*.test.ts"], args: ["--maxWorkers", "2"] })
     const { report, ran } = run(root, step, ["pkg/src/a.test.ts", "pkg/src/b.test.ts"])

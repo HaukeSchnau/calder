@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Schema } from "effect"
-import { Action, Cache, CurrentRun, Files, Fleet, Flake, Kiln, Nix, On, PullRequest, Report, Step, Task, cmd } from "../src/index.ts"
+import { Action, Cache, CurrentRun, Files, Fleet, Flake, Calder, Nix, On, PullRequest, Report, Step, Task, cmd } from "../src/index.ts"
 
 export const flake = Flake.make({
   packages: ["projectRelease"],
@@ -7,8 +7,8 @@ export const flake = Flake.make({
   devShells: ["ci"],
 })
 
-export class Live extends Kiln.Result<Live>("@test/Release")("Live", { revision: Schema.String }) {}
-export class Skipped extends Kiln.Result<Skipped>("@test/Release")("Skipped", { reason: Schema.Literals(["Superseded"]) }) {}
+export class Live extends Calder.Result<Live>("@test/Release")("Live", { revision: Schema.String }) {}
+export class Skipped extends Calder.Result<Skipped>("@test/Release")("Skipped", { reason: Schema.Literals(["Superseded"]) }) {}
 
 export const promoteRelease = Effect.fn("promote")(function*(release: string) {
   const run = yield* CurrentRun
@@ -51,7 +51,7 @@ export const comment = Action.make("comment", { needs: { url: preview, qa: Step.
 
 export const smoke = Task.make("smoke", { run: cmd`./smoke ${release} --url ${preview}`, inputs: Files.of("scripts/smoke") })
 
-export const project = Kiln.project({
+export const project = Calder.project({
   shared: Files.of("justfile"),
   layer: DevControllerLive,
   rules: [

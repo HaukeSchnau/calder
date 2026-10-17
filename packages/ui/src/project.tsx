@@ -1,10 +1,10 @@
 // One project: its runs with filters for ref and status, and how long each step takes over time.
 
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { useState } from "react"
-import { Kiln } from "./client.ts"
+import { Calder } from "./client.ts"
 import { useRunCommands } from "./commands.ts"
 import { isActive, overviewAtom, projectRunsAtom, runAtom } from "./data.ts"
 import { ago, count, dur, refOf, runDuration, shortSha, titleOf, totalSteps, when } from "./format.ts"
@@ -69,7 +69,7 @@ function Runs({ project }: { readonly project: string }) {
   const all = useAtomValue(projectRunsAtom({ project, pullRequest: null }))
   const result = useAtomValue(projectRunsAtom({ project, pullRequest }))
   const [older, setOlder] = useState<{ readonly key: string; readonly runs: ReadonlyArray<Domain.Run>; readonly done: boolean }>({ key: "", runs: [], done: false })
-  const fetchRuns = useAtomSet(Kiln.mutation("runs"), { mode: "promiseExit" })
+  const fetchRuns = useAtomSet(Calder.mutation("runs"), { mode: "promiseExit" })
   const key = `${project}|${pullRequest ?? ""}`
   const extra = older.key === key ? older.runs : []
   const refs = AsyncResult.isSuccess(all) ? [...new Set(all.value.map(refOf))].sort((a, b) => (a === "main" ? -1 : b === "main" ? 1 : b.localeCompare(a, "en", { numeric: true }))) : []
@@ -146,7 +146,7 @@ function StepHistory({ project, mainId }: { readonly project: string; readonly m
 }
 
 function StepRow({ project, step }: { readonly project: string; readonly step: string }) {
-  const result = useAtomValue(Kiln.query("stepStats", { project, step }))
+  const result = useAtomValue(Calder.query("stepStats", { project, step }))
   const samples = AsyncResult.isSuccess(result) ? result.value.samples : []
   const durations = samples.flatMap((s) => (s.durationMs === null ? [] : [s.durationMs]))
   const sorted = [...durations].sort((a, b) => a - b)

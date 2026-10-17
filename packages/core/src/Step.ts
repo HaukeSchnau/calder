@@ -2,11 +2,11 @@ import { Duration, Pipeable, type Effect } from "effect"
 import type { Cmd } from "./Cmd.ts"
 import type { Files } from "./Files.ts"
 import type { FlakeRef } from "./Flake.ts"
-import type { StorePath, TimedOut } from "./Kiln.ts"
+import type { StorePath, TimedOut } from "./Calder.ts"
 import type { ReportSpec } from "./Report.ts"
 import type { SecretRef } from "./Secret.ts"
 
-export const TypeId = "~@kiln/core/Step" as const
+export const TypeId = "~@calder-ci/core/Step" as const
 
 export type Kind = "build" | "setup" | "task" | "action" | "output"
 export type Platform = "aarch64-linux" | "x86_64-linux" | "aarch64-darwin"
@@ -70,7 +70,7 @@ export interface Failed<E> {
   readonly step: string
   readonly error: E
 }
-/** The step threw something that isn't a `Kiln.Failure`, or its process died. */
+/** The step threw something that isn't a `Calder.Failure`, or its process died. */
 export interface Died {
   readonly _tag: "Died"
   readonly step: string
@@ -181,7 +181,7 @@ export const retry =
   <E>(options: Effect.Retry.Options<E>) => <A, R, O, G>(self: Step<A, E, R, O, G>): Step<A, E, R, O, G> =>
     withPolicy(self, { _tag: "Retry", options }) as Step<A, E, R, O, G>
 
-/** Fails the step with `Kiln.TimedOut` after `duration`. Policies apply in pipe order. */
+/** Fails the step with `Calder.TimedOut` after `duration`. Policies apply in pipe order. */
 export const timeout =
   (duration: Duration.Input) => <A, E, R, O, G>(self: Step<A, E, R, O, G>): Step<A, E | TimedOut, R, O, G> =>
     withPolicy(self, { _tag: "Timeout", duration: Duration.fromInputUnsafe(duration) }) as Step<A, E | TimedOut, R, O, G>

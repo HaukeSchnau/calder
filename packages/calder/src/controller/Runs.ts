@@ -1,0 +1,1196 @@
+import type { Domain } from "@calder-ci/api"
+import { Event } from "@calder-ci/core"
+import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
+import { SqlClient } from "effect/sql"
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import * as Exec from "../Exec.ts"
+import { sha256, taskKey } from "../Keys.ts"
+import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
+import { Agents } from "./Agents.ts"
+import { Cache } from "./Cache.ts"
+import { Config } from "./Config.ts"
+import * as Each from "./Each.ts"
+import * as Estimates from "./Estimates.ts"
+import * as InFlight from "./InFlight.ts"
+import { Gitea, type StatusState } from "./Gitea.ts"
+import { type Pool, Jobs, type Usage } from "./Jobs.ts"
+import { Live } from "./Live.ts"
+import { Mirror } from "./Mirror.ts"
+import * as Outputs from "./Outputs.ts"
+import { Projects } from "./Projects.ts"
+import * as Rows from "./Rows.ts"
+import * as Slots from "./Slots.ts"
+import * as Telemetry from "./Telemetry.ts"
+import * as Tests from "./Tests.ts"
+
+const activeStatuses = ["queued", "planning", "running"] as const
+
+const short = (sha: string) => sha.slice(0, 12)
+
+const duration = (ms: number) => Duration.format(Duration.millis(Math.round(ms / 1000) * 1000))
+
+/**
+ * What the run workflow's activities do: plan a revision, execute one step, finish the run. Each reads
+ * and writes the journal, so a resumed workflow sees what already happened.
+ */
+export class RunsCore extends Context.Service<RunsCore, {
+  readonly plan: (runId: string) => Effect.Effect<PlanSpec | null>
+  readonly step: (runId: string, name: string) => Effect.Effect<Domain.StepStatus>
+  /** A build whose output already exists settles at once, without waiting for the builds it uses. */
+  readonly built: (runId: string, name: string) => Effect.Effect<boolean>
+  readonly finish: (runId: string) => Effect.Effect<void>
+  readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
+  /**
+   * Cancels a run a newer one replaces: its waiting work never starts, but jobs already running finish
+   * and keep their results, which the newer run reuses or waits for.
+   */
+  readonly supersede: (runId: string, reason: string) => Effect.Effect<void>
+}>()("calder/controller/RunsCore") {}
+
+/** Terminal colours and titles some tools write even without a terminal; the UI styles lines itself. */
+const plain = (text: string) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+
+export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
+  const config = yield* Config
+  const sql = yield* SqlClient.SqlClient
+  const jobs = yield* Jobs
+  const agents = yield* Agents
+  const mirror = yield* Mirror
+  const gitea = yield* Gitea
+  const live = yield* Live
+  const telemetry = yield* Telemetry.Telemetry
+  const projects = yield* Projects
+  const spawner = yield* Exec.SpawnerTag
+  const cache = yield* Cache
+  const estimates = yield* Estimates.Estimates
+  const slots = {
+    plans: Slots.make({ capacity: config.jobs.slots.plans }),
+    builds: Slots.make({ capacity: config.jobs.slots.builds }),
+    // One project's shards may not take every task slot, so other projects can always start.
+    tasks: Slots.make({ capacity: config.jobs.slots.tasks, perProject: Math.max(1, config.jobs.slots.tasks - 1) }),
+    actions: Slots.make({ capacity: config.jobs.slots.actions }),
+    // Agents limit themselves; this only orders their jobs.
+    agents: Slots.make({ capacity: 64 }),
+  }
+  const cancels = new Map<string, Deferred.Deferred<string>>()
+  const signal = (map: Map<string, Deferred.Deferred<string>>) => (runId: string) => {
+    let d = map.get(runId)
+    if (d === undefined) {
+      d = Deferred.makeUnsafe<string>()
+      map.set(runId, d)
+    }
+    return d
+  }
+  const cancelSignal = signal(cancels)
+  const supersedes = new Map<string, Deferred.Deferred<string>>()
+  const supersedeSignal = signal(supersedes)
+  /** One latch per run and step, dropped when the run finishes. */
+  const latches = () => {
+    const runs = new Map<string, Map<string, Deferred.Deferred<void>>>()
+    return {
+      get: (runId: string, name: string) => {
+        const steps = runs.get(runId) ?? new Map<string, Deferred.Deferred<void>>()
+        runs.set(runId, steps)
+        let latch = steps.get(name)
+        if (latch === undefined) {
+          latch = Deferred.makeUnsafe<void>()
+          steps.set(name, latch)
+        }
+        return latch
+      },
+      drop: (runId: string) => runs.delete(runId),
+    }
+  }
+  /** Opens when `step` of the step returned. */
+  const stepped = latches()
+  /** Opens when a task that starts from the setup runs. */
+  const wanted = latches()
+
+  const { flying, landing, has: inFlight } = InFlight.make()
+  const workspaces = new Map<string, Set<number>>()
+  // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
+  // lands in a workspace that is still in use.
+  for (const adopted of jobs.adopted()) {
+    const { spec } = adopted
+    const pool: Pool = spec.run.trust === "pr" ? "pr" : "trusted"
+    const index = spec.workspace === null ? null : Number(/slot-(\d+)$/.exec(spec.workspace)?.[1] ?? Number.NaN)
+    const key = `local/${pool}/${spec.run.project}`
+    if (index !== null && !Number.isNaN(index)) {
+      workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index))
+    }
+    // Taken before any run is driven again, or the run would claim the same slots for new jobs.
+    const release = (spec.derivation === null ? slots.tasks : slots.builds).reserve(spec.run.project)
+    yield* jobs.settled(adopted.id).pipe(
+      Effect.ensuring(release),
+      Effect.ensuring(Effect.sync(() => index !== null && workspaces.get(key)?.delete(index))),
+      Effect.forkScoped,
+    )
+  }
+  /** An agent's worker gets the path relative to its agent's workspace directory. */
+  const workspace = (pool: Pool, project: string, remote: boolean) => {
+    const key = `${remote ? "agent" : "local"}/${pool}/${project}`
+    return Effect.acquireRelease(
+      Effect.sync(() => {
+        const used = workspaces.get(key) ?? new Set<number>()
+        workspaces.set(key, used)
+        let i = 0
+        while (used.has(i)) i++
+        used.add(i)
+        const relative = join(pool, project, `slot-${i}`)
+        return { index: i, path: remote ? relative : join(config.stateDir, "workspaces", relative) }
+      }),
+      (slot) => Effect.sync(() => workspaces.get(key)?.delete(slot.index)),
+    )
+  }
+
+  const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
+    effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
+
+  const repoOf = (project: string) => projects.get(project)!.repo
+  const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`
+  const poolOf = (run: Rows.RunRow): Pool => (run.trust === "pr" ? "pr" : "trusted")
+
+  const publishRun = (runId: string) =>
+    Effect.gen(function*() {
+      const row = yield* db(Rows.loadRun(runId))
+      if (row === undefined) return
+      const [run] = yield* db(Rows.runsWithCounts([row]))
+      yield* live.publish({ _tag: "RunChanged", run: run! })
+    })
+  const publishStep = (runId: string, name: string) =>
+    Effect.gen(function*() {
+      const row = yield* db(Rows.loadStep(runId, name))
+      const run = yield* db(Rows.loadRun(runId))
+      if (row === undefined || run === undefined) return
+      yield* estimates.stepSettled(run.project, row)
+      const estimate = (yield* estimates.steps(run.project)).get(name) ?? null
+      const failingTests = row.status === "failed" ? yield* db(Rows.failingTests(runId, name)) : []
+      yield* live.publish({ _tag: "StepChanged", step: Rows.step(row, estimate), failingTests })
+    })
+
+  const status = (run: Rows.RunRow, context: string, state: StatusState, description: string) =>
+    gitea.status(repoOf(run.project), run.sha, { context, state, description, targetUrl: link(run.id) })
+
+  const runInfo = (run: Rows.RunRow, pipelineDir: string): RunInfo => ({
+    id: run.id,
+    project: run.project,
+    number: run.number,
+    revision: run.sha,
+    branch: run.branch,
+    trust: run.trust,
+    event: JSON.parse(run.event) as Domain.Event,
+    flake: mirror.flake(run.project, run.sha),
+    mirror: mirror.path(run.project),
+    pipelineDir,
+    system: config.system,
+  })
+
+  const logTo = (run: Rows.RunRow, step: string, spanId: string, shard: number | null) => (event: JobEvent) =>
+    Effect.gen(function*() {
+      if (event._tag !== "Log") return
+      const text = plain(event.text)
+      const level: Domain.LogLine["level"] = event.stream === "calder" ? "info" : event.stream === "stderr" && /\berror\b/i.test(text) ? "error" : "info"
+      live.append(run.id, { step, shard, stream: event.stream, level, timestamp: event.timestamp, text })
+      yield* telemetry.log({
+        parent: { traceId: run.trace_id, spanId },
+        timestamp: event.timestamp,
+        text,
+        level,
+        attributes: {
+          "calder.project": run.project,
+          "calder.run": run.id,
+          "calder.step": step,
+          "calder.stream": event.stream,
+          ...(shard === null ? {} : { "calder.shard": String(shard) }),
+        },
+      })
+    })
+
+  // ------------------------------------------------------------------------------------------- plan
+
+  /** Ends a run that could not be planned, unless a cancel came in first. */
+  const unplanned = (run: Rows.RunRow, message: string) =>
+    Effect.gen(function*() {
+      const ended = yield* db(sql`update runs set status = 'errored', error = ${message}, finished_at = ${Date.now()}
+        where id = ${run.id} and status in ('queued', 'planning') returning id`)
+      if (ended.length === 0) return null
+      yield* status(run, "calder", "error", message.split("\n")[0]!)
+      yield* telemetry.exportSpan({
+        traceId: run.trace_id,
+        spanId: run.span_id,
+        parentId: null,
+        name: `${run.project} #${run.number}`,
+        start: run.created_at,
+        end: Date.now(),
+        error: true,
+        attributes: { "calder.project": run.project, "calder.run": run.id, "calder.error": message },
+      })
+      yield* publishRun(run.id)
+      return null
+    })
+
+  const plan = (runId: string) =>
+    Effect.gen(function*() {
+      const run = yield* db(Rows.loadRun(runId))
+      if (run === undefined || run.status === "cancelled") return null
+      if (run.plan !== null) return JSON.parse(run.plan) as PlanSpec
+      const now = Date.now()
+      yield* db(sql`update runs set status = 'planning', started_at = ${now} where id = ${runId}`)
+      yield* publishRun(runId)
+
+      const pipelineDir = yield* mirror.fetch(run.project).pipe(
+        Effect.andThen(mirror.pipelineDir(run.project, run.sha)),
+        Effect.map((dir) => ({ dir, error: null })),
+        Effect.catch((e) => Effect.succeed({ dir: null, error: e._tag === "NoPipeline" ? "no .calder/ci.ts at this revision" : e.message })),
+      )
+      if (pipelineDir.dir === null) return yield* unplanned(run, pipelineDir.error ?? "could not read the revision")
+
+      const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
+      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required }
+      const planned = yield* Effect.raceFirst(
+        slots.plans.with(
+          { project: run.project, expected: 0, run: run.created_at },
+          jobs.run(job, { pool: poolOf(run), onEvent: logTo(run, "plan", run.span_id, null) }),
+        ).pipe(Effect.map(Option.some)),
+        Effect.raceFirst(Deferred.await(cancelSignal(runId)), Deferred.await(supersedeSignal(runId))).pipe(Effect.as(Option.none())),
+      )
+      live.finish(runId, "plan")
+      if (Option.isNone(planned)) return null
+      const { result } = planned.value
+      if (result._tag !== "Planned") {
+        return yield* unplanned(run, result._tag === "PlanFailed" ? result.message : result._tag === "Died" ? result.message : "planning failed")
+      }
+
+      const spec = result.plan
+      const event = JSON.parse(run.event) as Domain.Event
+      // The default branch's plan says which schedules exist, even when its push runs nothing.
+      if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
+        yield* db(sql.withTransaction(Effect.gen(function*() {
+          yield* sql`delete from schedules where project = ${run.project}`
+          for (const cron of spec.schedules) yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`
+        })))
+      }
+      // A push to a branch no rule names, for example: nothing to run, keep or report on the commit. Whoever
+      // follows the run, such as `calder trigger`, still sees it end and why.
+      if (spec.steps.length === 0) {
+        const reason = `no rule of ${run.project} runs anything for ${Event.describe(event)}`
+        yield* db(sql`update runs set status = 'cancelled', error = ${reason}, finished_at = ${Date.now()} where id = ${runId}`)
+        yield* publishRun(runId)
+        yield* db(sql`delete from runs where id = ${runId}`)
+        yield* Effect.logInfo(`${runId} matches no rule, dropped`)
+        return null
+      }
+      // A cancel that came in while the plan job ran wins.
+      const stored = yield* db(sql.withTransaction(Effect.gen(function*() {
+        const updated = yield* sql`update runs set plan = ${JSON.stringify(spec)}, status = 'running'
+          where id = ${runId} and status = 'planning' returning id`
+        if (updated.length === 0) return false
+        for (const [position, step] of spec.steps.entries()) {
+          yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
+            values (${runId}, ${step.name}, ${step.kind}, 'pending', ${JSON.stringify(step)}, ${position}, ${Telemetry.spanId()})
+            on conflict do nothing`
+        }
+        return true
+      })))
+      if (!stored) return null
+      yield* status(run, "calder", "pending", `${spec.steps.filter((s) => s.kind !== "output").length} steps`)
+      yield* Effect.forEach(spec.steps.filter((s) => s.kind !== "output"), (s) => status(run, `calder/${s.name}`, "pending", "waiting"), {
+        concurrency: 4,
+        discard: true,
+      })
+      yield* publishRun(runId)
+      return spec
+    }).pipe(
+      // Gitea failing past its retries, for example: the run still ends, and the merge queue stops waiting for it.
+      Effect.catchDefect((defect) =>
+        Effect.gen(function*() {
+          yield* Effect.logError(`planning ${runId} failed`, defect)
+          const run = yield* db(Rows.loadRun(runId))
+          if (run === undefined) return null
+          return yield* unplanned(run, `Calder could not plan the run: ${defect instanceof Error ? defect.message : String(defect)}`)
+        })
+      ),
+      Effect.catchCause((cause) => Effect.logError("plan failed", cause).pipe(Effect.as(null))),
+    )
+
+  // ------------------------------------------------------------------------------------------- step
+
+  const outcomeOf = (row: Rows.StepRow): Outcome => {
+    switch (row.status) {
+      case "passed":
+      case "reused":
+        return { _tag: "Passed", value: row.value === null ? null : JSON.parse(row.value) }
+      case "failed":
+        return { _tag: "Failed", error: row.error_json === null ? null : JSON.parse(row.error_json) }
+      case "died":
+        return { _tag: "Died", message: row.error_message ?? "" }
+      default:
+        return { _tag: "Blocked" }
+    }
+  }
+
+  interface Settled {
+    readonly status: Domain.StepStatus
+    readonly value?: unknown
+    readonly outputs?: Record<string, string>
+    readonly key?: string | null
+    readonly reusedFrom?: string | null
+    readonly error?: { readonly tag: string; readonly message: string; readonly json: unknown } | null
+    readonly usage?: Usage
+    readonly tests?: ReadonlyArray<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>
+    readonly attempts?: number
+    readonly files?: { readonly total: number; readonly ran: number; readonly flaky: number }
+    /** A setup no task asked for. */
+    readonly unneeded?: boolean
+  }
+
+  const describe = (s: Settled, row: Rows.StepRow): [StatusState, string] => {
+    const took = row.started_at === null ? "" : ` in ${duration(Date.now() - row.started_at)}`
+    switch (s.status) {
+      case "passed":
+        return ["success", `passed${took}`]
+      case "reused":
+        return [
+          "success",
+          row.kind === "build" ? "already built"
+          : row.kind !== "setup" ? "reused an identical result"
+          : s.unneeded === true ? "not needed: no task that starts from it ran"
+          : "already set up",
+        ]
+      case "failed":
+        return ["failure", s.error?.message.split("\n")[0] ?? "failed"]
+      case "died":
+        return ["error", s.error?.message.split("\n")[0] ?? "died"]
+      case "blocked":
+        return ["failure", "blocked by a failed step"]
+      default:
+        return ["error", s.status]
+    }
+  }
+
+  /** Outputs stay in the store while a run inside retention or a reusable result names them (`Outputs.sweep`). */
+  const keep = (outputs: Record<string, string> | undefined) =>
+    Effect.forEach(Object.values(outputs ?? {}), (path) =>
+      Outputs.root(config.stateDir, path).pipe(
+        Effect.provideService(Exec.SpawnerTag, spawner),
+        Effect.catch((e) => Effect.logWarning(`could not keep ${path} from the garbage collector`, e)),
+      ), { discard: true })
+
+  const settle = (run: Rows.RunRow, stale: Rows.StepRow, s: Settled) =>
+    Effect.gen(function*() {
+      // The step's row changed while it ran (started_at, attempts); read it again.
+      const row = (yield* db(Rows.loadStep(run.id, stale.name))) ?? stale
+      const now = Date.now()
+      const failed = s.status === "failed" || s.status === "died"
+      // A timeout or a worker that died leaves no trace in the output itself.
+      if (failed && s.error) yield* logTo(run, row.name, row.span_id, null)({ _tag: "Log", stream: "calder", text: s.error.message, timestamp: now })
+      const excerpt = failed ? live.excerpt(run.id, row.name) : null
+      const tests = Tests.outcomes(s.tests ?? [])
+      const counts = tests.length > 0 ? Tests.count(tests) : null
+      const outcome = row.kind === "task" && (s.status === "passed" || s.status === "failed") && s.key ? { key: s.key, status: s.status } : null
+      // A task that never reuses depends on more than its key, so another outcome for its key says nothing.
+      const [contradicts] = outcome === null || Rows.spec(row).neverReuse ? [] : yield* db(sql<{ run_id: string }>`select run_id from results
+        where key = ${outcome.key} and status != ${outcome.status} and run_id != ${run.id} order by created_at desc limit 1`)
+      yield* db(sql`update steps set
+        status = ${s.status},
+        finished_at = ${now},
+        value = ${s.value === undefined ? null : JSON.stringify(s.value)},
+        outputs = ${s.outputs === undefined ? null : JSON.stringify(s.outputs)},
+        key = coalesce(${s.key ?? null}, key),
+        reused_from = ${s.reusedFrom ?? null},
+        error_tag = ${s.error?.tag ?? null},
+        error_message = ${s.error?.message ?? null},
+        error_json = ${s.error === undefined || s.error === null ? null : JSON.stringify(s.error.json)},
+        excerpt = ${excerpt},
+        cpu_seconds = ${s.usage?.cpuSeconds ?? null},
+        memory_peak = ${s.usage?.memoryPeakBytes ?? null},
+        attempts = max(attempts, ${s.attempts ?? 0}),
+        tests_passed = ${counts?.passed ?? null},
+        tests_failed = ${counts?.failed ?? null},
+        tests_skipped = ${counts?.skipped ?? null},
+        tests_flaky = ${counts?.flaky ?? null},
+        files_total = ${s.files?.total ?? null},
+        files_ran = ${s.files?.ran ?? null},
+        files_flaky = ${s.files?.flaky ?? null},
+        contradicts = ${contradicts?.run_id ?? null}
+        where run_id = ${run.id} and name = ${row.name}`)
+      if (counts !== null) {
+        yield* db(Rows.inChunks(tests, (chunk) =>
+          sql.withTransaction(Effect.forEach(chunk, (t) =>
+            sql`insert into tests (run_id, project, step, suite, name, file, status, duration_ms, message, created_at, superseded)
+              values (${run.id}, ${run.project}, ${row.name}, ${t.suite}, ${t.name}, ${t.file}, ${t.status}, ${t.durationMs}, ${t.message}, ${now},
+                ${t.superseded ? 1 : 0})`, { discard: true }))))
+      }
+      if (outcome !== null) {
+        yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
+          values (${outcome.key}, ${run.id}, ${row.name}, ${run.trust}, ${JSON.stringify(s.value ?? null)}, ${JSON.stringify(s.outputs ?? {})}, ${now},
+            ${outcome.status})`)
+      }
+      yield* keep(s.outputs)
+      live.finish(run.id, row.name)
+      yield* publishStep(run.id, row.name)
+      if (row.kind !== "output") {
+        const [state, description] = describe(s, row)
+        yield* status(run, `calder/${row.name}`, state, description)
+      }
+      // Gitea's combined state fails with the first failed step; the run's own status says it goes on.
+      if (failed) {
+        const steps = (yield* db(Rows.loadSteps(run.id))).filter((x) => x.kind !== "output")
+        const left = steps.filter((x) => !Rows.terminal(x.status)).length
+        const failing = steps.filter((x) => x.status === "failed" || x.status === "died").map((x) => x.name)
+        if (left > 0) yield* status(run, "calder", "pending", `${left} steps left; failed: ${failing.join(", ")}`)
+      }
+      if (row.started_at !== null || s.status === "reused") {
+        yield* telemetry.exportSpan({
+          traceId: run.trace_id,
+          spanId: row.span_id,
+          parentId: run.span_id,
+          name: row.name,
+          start: row.started_at ?? now,
+          end: now,
+          error: failed,
+          attributes: {
+            "calder.project": run.project,
+            "calder.run": run.id,
+            "calder.step": row.name,
+            "calder.kind": row.kind,
+            "calder.status": s.status,
+            ...(s.key ? { "calder.key": s.key } : {}),
+          },
+        })
+      }
+      return s.status
+    })
+
+  const fromResult = (result: JobResult, usage: Usage, extra: Partial<Settled> = {}): Settled => {
+    switch (result._tag) {
+      case "Passed":
+        return { status: "passed", value: result.value, outputs: result.outputs, key: result.key, usage, ...extra }
+      case "Failed":
+        return {
+          status: "failed",
+          error: { tag: result.tag, message: result.message, json: result.error },
+          key: result.key,
+          ...(result.outputs === undefined ? {} : { outputs: result.outputs }),
+          usage,
+          ...extra,
+        }
+      case "Died":
+      case "Lost":
+        return { status: "died", error: { tag: "Died", message: result.message, json: null }, usage, ...extra }
+      default:
+        return { status: "died", error: { tag: "Died", message: `unexpected ${result._tag}`, json: null }, usage, ...extra }
+    }
+  }
+
+  /**
+   * A step of another platform runs on an agent of it, and only trusted runs may use those: an agent
+   * runs every worker as one user, without the pull-request sandbox's egress allowlist, private network
+   * and private /tmp.
+   */
+  const refuses = (run: Rows.RunRow, platform: string | null) => platform !== null && platform !== config.system && run.trust !== "trusted"
+
+  /**
+   * Where a job runs: here, or on an agent, whose workers fetch what local ones read from disk. A job
+   * of another platform needs an agent of it. Other jobs of trusted runs go to a connected agent of this
+   * platform with a free slot, which is there to take load off this host, unless they are to run `here`.
+   */
+  const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false) => {
+    const foreign = platform !== null && platform !== config.system
+    const offload = !foreign && !here && run.trust === "trusted" &&
+      agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
+    const remote = foreign || offload
+    const system = platform ?? config.system
+    const where = remote ? { ...info, flake: "", mirror: `${config.publicUrl}/git/${run.project}.git`, pipelineDir: "", system } : info
+    return { remote, offload, where, platform: remote ? system : platform }
+  }
+  type Placement = ReturnType<typeof place>
+
+  /**
+   * Runs a job where `place` puts it. A job runs once more, here unless its platform needs an agent,
+   * when an agent lost it or none took it, when its worker died on an agent (which can't always reach
+   * this host), and for setups, when it failed on an agent it was only offloaded to.
+   */
+  const placed = <R extends { readonly result: JobResult; readonly startedAt: number | null }, E, Q>(
+    run: Rows.RunRow,
+    row: Rows.StepRow,
+    info: RunInfo,
+    platform: string | null,
+    shard: number | null,
+    attempt: (placement: Placement) => Effect.Effect<R, E, Q>,
+    options: { readonly setup?: boolean; readonly here?: boolean } = {},
+  ) =>
+    Effect.gen(function*() {
+      const placement = place(run, info, platform, options.here)
+      const first = yield* attempt(placement)
+      const { result } = first
+      const why = stopped(first)
+        ? null
+        : result._tag === "Lost"
+        ? result.message
+        : (placement.remote && result._tag === "Died") || (options.setup === true && placement.offload && result._tag === "Failed")
+        ? `on the agent: ${result.message.split("\n")[0]}`
+        : null
+      if (why === null) return first
+      // An offloaded job no agent took never started; it simply runs here.
+      if (first.startedAt !== null) {
+        yield* logTo(run, row.name, row.span_id, shard)({ _tag: "Log", stream: "calder", text: `${why}, so it runs again`, timestamp: Date.now() })
+      }
+      return yield* attempt(place(run, info, platform, true))
+    })
+  const agentsRefuse = (platform: string | null): Settled => ({
+    status: "died",
+    error: { tag: "Died", message: `${platform} steps run on agents, which only take trusted runs`, json: null },
+  })
+
+  type Executed = Effect.Success<ReturnType<typeof execute>>
+  /** A job that never ran to a result: its run was cancelled, or replaced before the job started. */
+  const stopped = (r: object) => "cancelled" in r || "withdrawn" in r
+  const preparing = new Map<string, Deferred.Deferred<Option.Option<Executed>>>()
+  /**
+   * Runs a setup once for concurrent runs that need the same prepared workspace: the others wait and
+   * reuse it, or try themselves if it didn't pass.
+   */
+  const once = <E, R>(key: string, setup: Effect.Effect<Executed, E, R>): Effect.Effect<{ readonly executed: Executed; readonly reused: boolean }, E, R> =>
+    Effect.suspend(() => {
+      const running = preparing.get(key)
+      if (running !== undefined) {
+        return Deferred.await(running).pipe(Effect.flatMap(Option.match({
+          onNone: () => once(key, setup),
+          onSome: (executed) => Effect.succeed({ executed, reused: true }),
+        })))
+      }
+      const done = Deferred.makeUnsafe<Option.Option<Executed>>()
+      preparing.set(key, done)
+      return setup.pipe(
+        Effect.onExit((exit) =>
+          Effect.suspend(() => {
+            preparing.delete(key)
+            const passed = Exit.isSuccess(exit) && !stopped(exit.value) && exit.value.result._tag === "Passed"
+            return Deferred.succeed(done, passed ? Option.some(exit.value) : Option.none())
+          })
+        ),
+        Effect.map((executed) => ({ executed, reused: false })),
+      )
+    })
+
+  /**
+   * Runs a job in a slot unless the run is cancelled first. Tasks get their workspace only once they
+   * hold a slot, so waiting tasks don't each claim (and warm up) a workspace. Actions are never cut short.
+   */
+  const execute = (
+    run: Rows.RunRow,
+    row: Rows.StepRow,
+    job: (workspace: string | null) => Job,
+    options: {
+      readonly slots: Slots.Slots
+      /** Expected run time in ms, which orders the slot's queue. */
+      readonly expected: number
+      readonly action: boolean
+      readonly shard: number | null
+      readonly workspace: boolean
+      readonly platform?: string | null
+      /** Runs on an agent, of `platform` or of this host's. */
+      readonly remote?: boolean
+      /** Runs on an agent of this host's platform only if one has a free slot when the job starts. */
+      readonly offload?: boolean
+      /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
+      readonly withdraw?: Deferred.Deferred<void>
+      /** The pool when it isn't the run's, such as a preview's trusted job in a pull-request run. */
+      readonly pool?: Pool
+    },
+    collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
+  ) =>
+    Effect.gen(function*() {
+      const onEvent = (event: JobEvent) =>
+        Effect.gen(function*() {
+          yield* logTo(run, row.name, row.span_id, options.shard)(event)
+          if (event._tag === "Tests") collect.tests.push(...event.results)
+          if (event._tag === "Attempt") collect.attempts = Math.max(collect.attempts, event.attempt)
+          if (event._tag === "Activity" && event.activity.end !== null) {
+            yield* telemetry.exportSpan({
+              traceId: run.trace_id,
+              spanId: Telemetry.spanId(),
+              parentId: row.span_id,
+              name: `nix ${event.activity.type} ${event.activity.drv?.replace(/^\/nix\/store\/[a-z0-9]{32}-/, "") ?? event.activity.text}`,
+              start: event.activity.start,
+              end: event.activity.end,
+              error: event.activity.failed,
+              attributes: { "nix.activity": event.activity.type, ...(event.activity.drv ? { "nix.drv": event.activity.drv } : {}) },
+            })
+          }
+        })
+      const started = Effect.gen(function*() {
+        yield* db(sql`update steps set status = 'running', started_at = coalesce(started_at, ${Date.now()}), attempts = max(attempts, 1)
+          where run_id = ${run.id} and name = ${row.name}`)
+        yield* publishStep(run.id, row.name)
+        yield* status(run, `calder/${row.name}`, "pending", "running")
+      })
+      let startedAt: number | null = null
+      // A worker that ran on while the controller restarted already holds its slot and workspace.
+      const adopted = options.action
+        ? undefined
+        : jobs.adopted().find((a) => a.spec.run.id === run.id && a.spec.step === row.name && (a.spec.shard?.index ?? null) === options.shard)
+      const reattached = adopted === undefined ? undefined : Effect.gen(function*() {
+        startedAt = adopted.startedAt
+        yield* started
+        const done = yield* jobs.reattach(adopted.id, onEvent)
+        return { ...done, startedAt: adopted.startedAt }
+      })
+      const pool = options.pool ?? poolOf(run)
+      const running = Effect.scoped(Effect.gen(function*() {
+        const ws = options.workspace ? (yield* workspace(pool, run.project, options.remote === true)).path : null
+        const done = yield* jobs.run(job(ws), {
+          pool,
+          onEvent,
+          // A job that waits for an agent, or that none takes, stays queued.
+          onStart: Effect.suspend(() => {
+            startedAt = Date.now()
+            return started
+          }),
+          uninterruptible: options.action,
+          platform: options.platform ?? null,
+          agent: options.remote === true,
+          offload: options.offload === true,
+          adoptable: !options.action,
+        })
+        return { ...done, startedAt }
+      }))
+      const event = JSON.parse(run.event) as Domain.Event
+      const background = event._tag === "Check" && event.background === true
+      const work = reattached ?? options.slots.with({ project: run.project, expected: options.expected, run: run.created_at, background }, running)
+      if (options.action) return yield* work
+      const none = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
+      const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
+        Effect.map((reason) => ({ ...none, result: { _tag: "Died", message: reason } satisfies JobResult, cancelled: true as const })),
+      )
+      const withdrawal = options.withdraw === undefined
+        ? Deferred.await(supersedeSignal(run.id))
+        : Effect.raceFirst(Deferred.await(options.withdraw), Deferred.await(supersedeSignal(run.id)))
+      const withdrawn = withdrawal.pipe(
+        Effect.andThen(Effect.suspend(() => startedAt === null ? Effect.void : Effect.never)),
+        Effect.as({ ...none, result: { _tag: "Died", message: "withdrawn" } satisfies JobResult, withdrawn: true as const }),
+      )
+      return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, withdrawn))
+    })
+
+  /**
+   * Whether the run needs the setup. Tasks that start from it ask once they know they run, so the setup
+   * waits for the first of them, or until all of them settled without asking. It runs at once when one
+   * of them runs whatever earlier results exist, or when another kind of step waits for it.
+   */
+  const asked = (run: Rows.RunRow, setup: string, steps: ReadonlyArray<Rows.StepRow>) => {
+    const reuse = (JSON.parse(run.plan ?? "{}") as PlanSpec).reuse
+    const kinds = new Map(steps.map((s) => [s.name, s.kind]))
+    const dependents = steps.map(Rows.spec).filter((s) => [...s.needs, ...s.exits, ...s.after].includes(setup))
+    const starters = dependents.filter((s) => Rows.setupsOf(s, (name) => kinds.get(name)).includes(setup))
+    const eager = starters.length < dependents.length ||
+      starters.some((s) => !Rows.reusable(s, reuse) || (s.task?.each?.some((e) => e.always) ?? false))
+    if (eager) return Effect.succeed(true)
+    return Effect.raceFirst(
+      Deferred.await(wanted.get(run.id, setup)).pipe(Effect.as(true)),
+      Effect.forEach(starters, (s) => Deferred.await(stepped.get(run.id, s.name)), { discard: true }).pipe(Effect.as(false)),
+    )
+  }
+
+  /**
+   * Asks for the setups a task starts from once it knows it runs, and waits for them. Returns how the
+   * task settles instead of running, when the run was cancelled meanwhile or a setup didn't pass.
+   */
+  const ready = (run: Rows.RunRow, row: Rows.StepRow, setups: ReadonlyArray<string>) =>
+    Effect.gen(function*() {
+      if (setups.length === 0) return null
+      yield* Effect.forEach(setups, (s) => Deferred.succeed(wanted.get(run.id, s), undefined), { discard: true })
+      // A task whose setup still runs isn't waiting for a slot yet, so its queue time starts after.
+      const waits = (yield* db(Rows.loadSteps(run.id))).some((s) => setups.includes(s.name) && !Rows.terminal(s.status))
+      if (waits) {
+        yield* db(sql`update steps set status = 'pending' where run_id = ${run.id} and name = ${row.name}`)
+        yield* publishStep(run.id, row.name)
+      }
+      yield* Effect.forEach(setups, (s) => Deferred.await(stepped.get(run.id, s)), { discard: true })
+      if (waits) {
+        yield* db(sql`update steps set status = 'queued', queued_at = ${Date.now()} where run_id = ${run.id} and name = ${row.name}`)
+        yield* publishStep(run.id, row.name)
+      }
+      const cancelled = (yield* db(Rows.loadRun(run.id)))?.status === "cancelled"
+      const failed = (yield* db(Rows.loadSteps(run.id))).some((s) => setups.includes(s.name) && !Rows.succeeded(s.status))
+      const instead: Settled | null = cancelled ? { status: "cancelled" } : failed ? { status: "blocked" } : null
+      return instead
+    })
+
+  const step = (runId: string, name: string) =>
+    Effect.gen(function*() {
+      const run = yield* db(Rows.loadRun(runId))
+      const row = yield* db(Rows.loadStep(runId, name))
+      if (run === undefined || row === undefined) return "died" as const
+      if (Rows.terminal(row.status)) return row.status
+      if (run.status === "cancelled") return yield* settle(run, row, { status: "cancelled" })
+
+      const spec = Rows.spec(row)
+      if (spec.build !== null && spec.build.drv !== null && spec.build.out !== null && (yield* available(spec.build.out))) {
+        yield* share(run, name, spec.build.out)
+        return yield* settle(run, row, { status: "reused", value: spec.build.out, key: spec.build.drv })
+      }
+      const all = yield* db(Rows.loadSteps(runId))
+      const byName = new Map(all.map((s) => [s.name, s]))
+      const setups = Rows.setupsOf(spec, (n) => byName.get(n)?.kind)
+      if ([...spec.needs, ...spec.after].some((n) => !setups.includes(n) && !Rows.succeeded(byName.get(n)?.status ?? "blocked"))) {
+        return yield* settle(run, row, { status: "blocked" })
+      }
+      if (spec.setup !== null && !(yield* asked(run, name, all))) {
+        const cancelled = (yield* db(Rows.loadRun(runId)))?.status === "cancelled"
+        return yield* settle(run, row, cancelled ? { status: "cancelled" } : { status: "reused", key: spec.setup.deps, unneeded: true })
+      }
+      yield* db(sql`update steps set status = 'queued', queued_at = ${Date.now()} where run_id = ${runId} and name = ${name}`)
+      yield* publishStep(runId, name)
+
+      const inputs = Object.fromEntries([...spec.needs.filter((n) => !setups.includes(n)), ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
+      const expected = Estimates.of(yield* estimates.steps(run.project), name)
+      const plan = JSON.parse(run.plan ?? "{}") as PlanSpec
+      const pipelineDir = yield* mirror.pipelineDir(run.project, run.sha).pipe(Effect.orDie)
+      const info = runInfo(run, pipelineDir)
+      const collect = { tests: [] as Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>, attempts: 0 }
+      const stepJob = (extra: Partial<Extract<Job, { _tag: "Step" }>> = {}): Job => ({
+        _tag: "Step",
+        run: info,
+        step: name,
+        shard: null,
+        attempt: 1,
+        workspace: null,
+        inputs,
+        secrets: {},
+        derivation: null,
+        deps: null,
+        files: null,
+        ...extra,
+      })
+
+      if (spec.output !== null) {
+        const task = byName.get(spec.output.task)!
+        const outputs = JSON.parse(task.outputs ?? "{}") as Record<string, string>
+        const path = outputs[spec.output.output]
+        return yield* settle(run, row, path === undefined
+          ? { status: "died", error: { tag: "Died", message: `${spec.output.task} did not produce ${spec.output.output}`, json: null } }
+          : { status: "passed", value: path, key: path })
+      }
+
+      if (spec.build !== null) {
+        const { drv } = spec.build
+        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: slots.builds, expected, action: false, shard: null, workspace: false }, collect)
+        if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
+        if (r.result._tag === "Passed" && typeof r.result.value === "string") yield* share(run, name, r.result.value)
+        return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
+      }
+
+      if (spec.setup !== null) {
+        const { deps, platform } = spec.setup
+        if (refuses(run, platform)) return yield* settle(run, row, agentsRefuse(platform))
+        const executed = yield* placed(run, row, info, platform, null, (p) =>
+          once(
+            `${p.remote ? "agent" : "local"}/${poolOf(run)}/${run.project}/${p.platform ?? config.system}/${deps}`,
+            execute(run, row, (ws) => stepJob({ run: p.where, workspace: ws, deps }), {
+              slots: p.remote ? slots.agents : slots.tasks,
+              // Every task of the run waits for it.
+              expected: 0,
+              action: false,
+              shard: null,
+              workspace: true,
+              platform: p.platform,
+              remote: p.remote,
+              offload: p.offload,
+            }, collect),
+          ).pipe(Effect.map(({ executed, reused }) => ({ ...executed, reused }))), { setup: true })
+        const { reused } = executed
+        if (stopped(executed)) return yield* settle(run, row, { status: "cancelled" })
+        const settled = fromResult(executed.result, executed.usage, { attempts: collect.attempts })
+        const fresh = executed.result._tag === "Passed" && (executed.result.value as { readonly fresh?: boolean } | null)?.fresh === true
+        // Nothing ran when a prepared copy existed or another run prepared it.
+        return yield* settle(run, row, settled.status === "passed" && (reused || !fresh) ? { status: "reused", key: deps } : settled)
+      }
+
+      if (spec.action !== null) {
+        const secrets = run.trust === "trusted" ? readSecrets(run.project, spec.action.secrets) : {}
+        const r = yield* execute(run, row, () => stepJob({ secrets }), { slots: slots.actions, expected, action: true, shard: null, workspace: false }, collect)
+        return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
+      }
+
+      const task = spec.task!
+      const values = Object.fromEntries(task.interpolates.map((n) => [n, JSON.parse(byName.get(n)?.value ?? "null")]))
+      const prepared = ready(run, row, setups)
+      if (task.each !== null) return yield* eachTask(run, row, task, task.each, values, { plan, info, stepJob, collect, prepared })
+      const count = task.shards ?? 1
+      const shardKeys = count === 1 ? [taskKey(task.keyBase, values, null)] : Array.from({ length: count }, (_, i) => taskKey(task.keyBase, values, { index: i + 1, count }))
+      const key = count === 1 ? shardKeys[0]! : sha256(shardKeys)
+      yield* db(sql`update steps set key = ${key} where run_id = ${runId} and name = ${name}`)
+
+      const reusable = Rows.reusable(spec, plan.reuse)
+      // Pull-request runs take any result. Trusted runs take trusted ones, and with reuse "all" also
+      // those of same-repo pull requests, which the same people push.
+      const prResults = run.trust === "pr" || plan.reuse === "all"
+      const lookup = (k: string) =>
+        db(sql<{ run_id: string; value: string | null; outputs: string | null }>`select results.run_id, results.value,
+            results.outputs from results join runs on runs.id = results.run_id
+          where results.key = ${k} and results.status = 'passed'
+            and (results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))
+          order by results.created_at desc limit 1`).pipe(
+          // A result whose outputs left the store, such as one from before Calder kept them, is no use.
+          Effect.map((rows) => rows.find((hit) => Object.values(JSON.parse(hit.outputs ?? "{}") as Record<string, string>).every((path) => existsSync(path)))),
+        )
+      const reused = (hit: { run_id: string; value: string | null; outputs: string | null }): Settled => ({
+        status: "reused",
+        value: hit.value === null ? null : JSON.parse(hit.value),
+        outputs: JSON.parse(hit.outputs ?? "{}") as Record<string, string>,
+        key,
+        reusedFrom: hit.run_id,
+      })
+      if (reusable) {
+        yield* landing(count === 1 ? [key] : shardKeys)
+        const hit = yield* lookup(key)
+        if (hit !== undefined) return yield* settle(run, row, reused(hit))
+      }
+
+      // A same-repo pull request grants a preview task its secrets. It then runs as a trusted job: in
+      // the trusted pool, whose network and home it needs. It never goes to an agent, which only
+      // takes trusted runs.
+      const event = JSON.parse(run.event) as Domain.Event
+      const preview = task.preview === true && run.trust === "pr" && run.fork === 0 &&
+        event._tag === "PullRequest" && event.fork === false
+      const secrets = run.trust === "trusted" || preview ? readSecrets(run.project, task.secrets) : {}
+      if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
+      const sharded = count > 1
+      // Shards that passed with the same key before don't run again.
+      const shardHits = reusable && sharded ? yield* Effect.forEach(shardKeys, lookup) : shardKeys.map(() => undefined)
+      for (const [i, hit] of shardHits.entries()) {
+        if (hit === undefined) continue
+        yield* db(sql`insert or replace into shards (run_id, step, shard, key, status, reused_from)
+          values (${runId}, ${name}, ${i + 1}, ${shardKeys[i]!}, 'reused', ${hit.run_id})`)
+      }
+      const perShard = sharded ? (yield* estimates.shards(run.project)).get(name) ?? expected : expected
+      const withdraw = Deferred.makeUnsafe<void>()
+      let failed = false
+      const pending = shardHits.flatMap((hit, i) => (hit === undefined ? [i + 1] : []))
+      const instead = pending.length === 0 ? null : yield* prepared
+      if (instead !== null) return yield* settle(run, row, instead)
+      const shards = yield* Effect.forEach(pending, (index) =>
+        Effect.gen(function*() {
+          const r = yield* flying([count === 1 ? key : shardKeys[index - 1]!], placed(run, row, info, task.platform, sharded ? index : null, (p) =>
+            execute(
+              run,
+              row,
+              (ws) =>
+                stepJob({
+                  run: preview ? { ...p.where, trust: "trusted" } : p.where,
+                  workspace: ws,
+                  secrets,
+                  shard: sharded ? { index, count } : null,
+                  deps: task.deps,
+                }),
+              {
+                slots: p.remote ? slots.agents : slots.tasks,
+                expected: perShard,
+                ...(preview ? { pool: "trusted" as const } : {}),
+                action: false,
+                shard: sharded ? index : null,
+                workspace: true,
+                platform: p.platform,
+                remote: p.remote,
+                offload: p.offload,
+                withdraw,
+              },
+              collect,
+            ), { here: task.offload === false }))
+          if (!sharded || stopped(r)) return r
+          const passed = r.result._tag === "Passed"
+          const now = Date.now()
+          yield* db(sql`insert or replace into shards (run_id, step, shard, key, status, started_at, finished_at, cpu_seconds, memory_peak)
+            values (${runId}, ${name}, ${index}, ${shardKeys[index - 1]!}, ${passed ? "passed" : "failed"}, ${r.startedAt}, ${now},
+              ${r.usage.cpuSeconds}, ${r.usage.memoryPeakBytes})`)
+          if (r.startedAt !== null) yield* estimates.shardSettled(run.project, { run: runId, step: name, index, startedAt: r.startedAt, finishedAt: now })
+          if (r.result._tag === "Passed") {
+            yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at)
+              values (${shardKeys[index - 1]!}, ${runId}, ${name}, ${run.trust}, ${JSON.stringify(r.result.value ?? null)},
+                ${JSON.stringify(r.result.outputs ?? {})}, ${now})`)
+            yield* keep(r.result.outputs)
+          } else if (!failed) {
+            // Shards still waiting stay out of it; running ones finish, so a rerun repeats only what failed.
+            failed = true
+            yield* Deferred.succeed(withdraw, undefined)
+            yield* status(run, `calder/${name}`, "failure", `shard ${index} of ${count} failed; the running shards finish first`)
+          }
+          return r
+        }), { concurrency: "unbounded" })
+      // Withdrawn shards without a failure mean the run was replaced.
+      if (shards.some((r) => "cancelled" in r) || (!failed && shards.some((r) => "withdrawn" in r))) {
+        return yield* settle(run, row, { status: "cancelled" })
+      }
+      const ran = shards.filter((r) => !("withdrawn" in r))
+      const usage: Usage = {
+        cpuSeconds: ran.reduce((sum, r) => sum + (r.usage.cpuSeconds ?? 0), 0),
+        memoryPeakBytes: Math.max(0, ...ran.map((r) => r.usage.memoryPeakBytes ?? 0)),
+      }
+      const failure = ran.find((r) => r.result._tag !== "Passed")
+      if (failure !== undefined) return yield* settle(run, row, { ...fromResult(failure.result, usage, { attempts: collect.attempts, tests: collect.tests }), key })
+      const first = shardHits[0]
+      if (ran.length === 0 && first !== undefined) return yield* settle(run, row, reused(first))
+      // A sharded step's value is its first shard's.
+      const { value, outputs } = first === undefined ? fromResult(ran[0]!.result, usage) : reused(first)
+      return yield* settle(run, row, {
+        status: "passed",
+        value,
+        ...(outputs === undefined ? {} : { outputs }),
+        key,
+        usage,
+        attempts: collect.attempts,
+        tests: collect.tests,
+      })
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.gen(function*() {
+          yield* Effect.logError(`step ${name} of ${runId} crashed`, cause)
+          const run = yield* db(Rows.loadRun(runId))
+          const row = yield* db(Rows.loadStep(runId, name))
+          if (run === undefined || row === undefined) return "died" as const
+          return yield* settle(run, row, { status: "died", error: { tag: "Died", message: `Calder failed to run the step: ${String(cause)}`, json: null } })
+        })
+      ),
+      Effect.tap(() => Deferred.succeed(stepped.get(runId, name), undefined)),
+    )
+
+  type TaskSpec = NonNullable<PlannedStep["task"]>
+  type TestRow = Extract<JobEvent, { _tag: "Tests" }>["results"][number]
+
+  /**
+   * A task with `each`: where the run may reuse the task, files whose key passed before don't run,
+   * except `always` files. The rest run in up to `shards` jobs split by their recorded durations; files
+   * that fail run once more, and a pass then counts as flaky. A nightly run without reuse checks that
+   * the keys still cover what files read.
+   */
+  const eachTask = (
+    run: Rows.RunRow,
+    row: Rows.StepRow,
+    task: TaskSpec,
+    each: NonNullable<TaskSpec["each"]>,
+    values: Record<string, unknown>,
+    context: {
+      readonly plan: PlanSpec
+      readonly info: RunInfo
+      readonly stepJob: (extra: Partial<Extract<Job, { _tag: "Step" }>>) => Job
+      readonly collect: { tests: Array<TestRow>; attempts: number }
+      /** Waits for the task's setups; how the task settles instead, if it can't run. */
+      readonly prepared: Effect.Effect<Settled | null>
+    },
+  ) =>
+    Effect.gen(function*() {
+      const keys = new Map(each.map((e) => [e.file, task.interpolates.length === 0 ? e.key : taskKey(e.key, values, null)]))
+      const key = sha256([...keys.values()])
+      yield* db(sql`update steps set key = ${key} where run_id = ${run.id} and name = ${row.name}`)
+      const reusable = Rows.reusable(Rows.spec(row), context.plan.reuse)
+      const prResults = run.trust === "pr" || context.plan.reuse === "all"
+
+      const passed = new Map<string, string>()
+      const look = (wanted: ReadonlyArray<string>) =>
+        Effect.gen(function*() {
+          for (let i = 0; i < wanted.length; i += 400) {
+            const hits = yield* db(sql<{ key: string; run_id: string }>`select file_results.key, file_results.run_id
+              from file_results join runs on runs.id = file_results.run_id
+              where ${sql.in("file_results.key", wanted.slice(i, i + 400))} and file_results.status in ('passed', 'flaky')
+                and (file_results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))`)
+            for (const hit of hits) passed.set(hit.key, hit.run_id)
+          }
+        })
+      if (reusable) {
+        yield* look([...keys.values()])
+        // Files another run is checking right now: wait for them rather than check them twice.
+        const inAir = each.filter((e) => !passed.has(keys.get(e.file)!) && inFlight(keys.get(e.file)!)).map((e) => keys.get(e.file)!)
+        if (inAir.length > 0) {
+          yield* landing(inAir)
+          yield* look(inAir)
+        }
+      }
+      const misses = each.filter((e) => e.always || !passed.has(keys.get(e.file)!)).map((e) => e.file)
+      if (misses.length === 0) {
+        const from = passed.values().next().value ?? null
+        return yield* settle(run, row, { status: "reused", value: null, key, reusedFrom: from, files: { total: each.length, ran: 0, flaky: 0 } })
+      }
+
+      if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
+      const instead = yield* context.prepared
+      if (instead !== null) return yield* settle(run, row, instead)
+      const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
+
+      const history = yield* db(sql<{ file: string; duration_ms: number }>`select file, duration_ms from (
+          select file, duration_ms, row_number() over (partition by file order by created_at desc) as n
+          from file_results where project = ${run.project} and step = ${row.name} and status != 'failed'
+        ) where n <= 5`)
+      const duration = Each.durations(history.map((h) => ({ file: h.file, durationMs: h.duration_ms })))
+      const bins = Each.split(misses, duration, task.shards ?? 1)
+      const count = bins.length
+
+      const job = (files: ReadonlyArray<string>, index: number, total: number, ms: number) =>
+        Effect.gen(function*() {
+          const mine = { tests: [] as Array<TestRow>, attempts: 0 }
+          const r = yield* flying(files.map((f) => keys.get(f)!), placed(run, row, context.info, task.platform, index, (p) =>
+            execute(
+              run,
+              row,
+              (ws) => context.stepJob({ run: p.where, workspace: ws, secrets, shard: { index, count: total }, deps: task.deps, files }),
+              {
+                slots: p.remote ? slots.agents : slots.tasks,
+                expected: ms,
+                action: false,
+                shard: index,
+                workspace: true,
+                platform: p.platform,
+                remote: p.remote,
+                offload: p.offload,
+              },
+              mine,
+            ), { here: task.offload === false }))
+          context.collect.tests.push(...mine.tests)
+          context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
+          return { r, tests: mine.tests, files }
+        })
+      const outcomes = (done: { readonly r: { readonly result: JobResult }; readonly tests: ReadonlyArray<TestRow>; readonly files: ReadonlyArray<string> }) =>
+        Each.outcomes(done.files, done.tests, done.r.result._tag === "Passed")
+
+      const first = yield* Effect.forEach(bins.map((b, i) => [b, i] as const), ([b, i]) => job(b.files, i + 1, count, b.ms), { concurrency: "unbounded" })
+      const jobOf = new Map(first.flatMap((d, i) => d.files.map((f) => [f, i + 1] as const)))
+      // Jobs that finished keep their results even when the run was cancelled or replaced meanwhile.
+      const results = new Map(first.filter((d) => !stopped(d.r)).flatMap((d) => [...outcomes(d)]))
+      const failing = [...results].filter(([, o]) => o.status === "failed").map(([file]) => file)
+      let retry: (typeof first)[number] | undefined
+      const interrupted = first.some((d) => stopped(d.r))
+      if (!interrupted && failing.length > 0 && failing.length <= 10) {
+        retry = yield* job(failing, count + 1, count, failing.reduce((sum, f) => sum + duration(f), 0))
+        for (const [file, o] of stopped(retry.r) ? [] : outcomes(retry)) {
+          if (o.status === "passed" || o.status === "flaky") results.set(file, { ...o, status: "flaky" })
+        }
+      }
+      const flaky = [...results].filter(([, o]) => o.status === "flaky").map(([file]) => file)
+
+      const now = Date.now()
+      const known = [...results].filter(([, o]) => o.status !== "unknown")
+      yield* db(Rows.inChunks(known, (chunk) =>
+        sql.withTransaction(Effect.forEach(chunk, ([file, o]) =>
+          sql`insert into file_results (key, project, step, file, run_id, trust, status, duration_ms, created_at, job)
+            values (${keys.get(file)!}, ${run.project}, ${row.name}, ${file}, ${run.id}, ${run.trust},
+              ${o.status}, ${o.ms}, ${now}, ${jobOf.get(file) ?? null})`, { discard: true }))))
+      if (interrupted || (retry !== undefined && stopped(retry.r))) return yield* settle(run, row, { status: "cancelled" })
+
+      const jobs = retry === undefined ? first : [...first, retry]
+      const usage: Usage = {
+        cpuSeconds: jobs.reduce((sum, d) => sum + (d.r.usage.cpuSeconds ?? 0), 0),
+        memoryPeakBytes: Math.max(0, ...jobs.map((d) => d.r.usage.memoryPeakBytes ?? 0)),
+      }
+      const extra = { attempts: context.collect.attempts, tests: context.collect.tests, files: { total: each.length, ran: misses.length, flaky: flaky.length } }
+      const bad = [...results].filter(([, o]) => o.status === "failed" || o.status === "unknown").map(([file]) => file)
+      if (bad.length > 0) {
+        const failed = jobs.find((d) => d.r.result._tag !== "Passed" && d.files.some((f) => bad.includes(f)))
+        const result: JobResult = failed?.r.result ?? { _tag: "Died", message: `no result for ${bad.join(", ")}` }
+        return yield* settle(run, row, { ...fromResult(result, usage, extra), key })
+      }
+      if (flaky.length > 0) yield* Effect.logInfo(`${run.id} ${row.name}: ${flaky.join(", ")} passed on retry`)
+      return yield* settle(run, row, { status: "passed", value: null, key, usage, ...extra })
+    })
+
+  /** Whether a build output exists here or in the binary cache, which means its derivation built before. */
+  const available = (out: string) =>
+    Effect.gen(function*() {
+      const local = yield* Exec.exec(["nix-store", "--check-validity", out]).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
+      return local.exitCode === 0 || (yield* cache.has(out))
+    }).pipe(Effect.timeout("20 seconds"), Effect.orElseSucceed(() => false))
+
+  /**
+   * Publishes a build output for the other hosts, in the background. Sharing is a convenience: a cache that can't
+   * take the output slows no run down and fails none. Promotes to other hosts publish their release themselves.
+   */
+  const share = (run: Rows.RunRow, step: string, out: string) =>
+    Effect.gen(function*() {
+      if (yield* cache.has(out)) return
+      yield* cache.publish(out)
+    }).pipe(
+      Effect.catch((e) => Effect.logWarning(`${run.project} #${run.number} ${step}: publishing ${out} to the binary cache failed`, e)),
+      Effect.forkDetach,
+      Effect.asVoid,
+    )
+
+  const readSecrets = (project: string, names: ReadonlyArray<string>) =>
+    Object.fromEntries(names.flatMap((name) => {
+      const file = projects.get(project)?.secrets[name]
+      return file === undefined ? [] : [[name, readFileSync(file, "utf8").trim()]]
+    }))
+
+  // ----------------------------------------------------------------------------------------- finish
+
+  const finish = (runId: string) =>
+    Effect.gen(function*() {
+      const run = yield* db(Rows.loadRun(runId))
+      if (run === undefined) return
+      const steps = yield* db(Rows.loadSteps(runId))
+      const failed = steps.some((s) => s.status === "failed" || s.status === "died" || s.status === "blocked")
+      const cancelled = run.status === "cancelled" || steps.some((s) => s.status === "cancelled")
+      const final: Domain.RunStatus = run.status === "errored" ? "errored" : failed ? "failed" : cancelled ? "cancelled" : "passed"
+      const now = Date.now()
+      yield* db(sql`update runs set status = ${final}, finished_at = coalesce(finished_at, ${now}) where id = ${runId}`)
+      // A run cancelled across a restart or while planning can leave steps that never settled.
+      const left = yield* db(sql<{ name: string; kind: string }>`update steps set status = 'cancelled', finished_at = ${now}
+        where run_id = ${runId} and status in ('pending', 'queued', 'running') returning name, kind`)
+      yield* Effect.forEach(left, (s) =>
+        Effect.gen(function*() {
+          live.finish(runId, s.name)
+          yield* publishStep(runId, s.name)
+          if (s.kind !== "output") yield* status(run, `calder/${s.name}`, "error", "cancelled")
+        }), { concurrency: 4, discard: true })
+      const failing = steps.filter((s) => s.status === "failed" || s.status === "died").map((s) => s.name)
+      yield* status(
+        run,
+        "calder",
+        final === "passed" ? "success" : final === "failed" ? "failure" : "error",
+        final === "passed" ? `passed in ${duration(now - (run.started_at ?? run.created_at))}` : failing.length > 0 ? `failed: ${failing.join(", ")}` : final,
+      )
+      yield* telemetry.exportSpan({
+        traceId: run.trace_id,
+        spanId: run.span_id,
+        parentId: null,
+        name: `${run.project} #${run.number}`,
+        start: run.created_at,
+        end: now,
+        error: final !== "passed",
+        attributes: { "calder.project": run.project, "calder.run": run.id, "calder.status": final, "vcs.revision": run.sha },
+      })
+      cancels.delete(runId)
+      supersedes.delete(runId)
+      stepped.drop(runId)
+      wanted.drop(runId)
+      yield* publishRun(runId)
+    }).pipe(Effect.catchCause((cause) => Effect.logError("finish failed", cause)))
+
+  const cancel = (runId: string, reason: string) =>
+    Effect.gen(function*() {
+      const rows = yield* db(sql<{ id: string }>`update runs set status = 'cancelled', error = ${reason}
+        where id = ${runId} and ${sql.in("status", activeStatuses)} returning id`)
+      if (rows.length === 0) return
+      yield* Deferred.succeed(cancelSignal(runId), reason)
+      yield* publishRun(runId)
+    })
+
+  const supersede = (runId: string, reason: string) =>
+    Effect.gen(function*() {
+      const rows = yield* db(sql<{ id: string }>`update runs set status = 'cancelled', error = ${reason}
+        where id = ${runId} and ${sql.in("status", activeStatuses)} returning id`)
+      if (rows.length === 0) return
+      yield* Deferred.succeed(supersedeSignal(runId), reason)
+      yield* publishRun(runId)
+    })
+
+  const built = (runId: string, name: string) =>
+    Effect.gen(function*() {
+      const row = yield* db(Rows.loadStep(runId, name))
+      const build = row === undefined ? null : Rows.spec(row).build
+      return build !== null && build.out !== null && (yield* available(build.out))
+    })
+
+  return { plan, step, built, finish, cancel, supersede }
+})).pipe(Layer.provideMerge(Estimates.layer))
+

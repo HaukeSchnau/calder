@@ -1,15 +1,15 @@
 // Checked by tsc, not run. Each @ts-expect-error is an error the API must produce.
 import { Effect, Schema } from "effect"
 import type { HttpClient } from "effect/http"
-import { Action, Busy, type Cache, type Fleet, Kiln, On, PullRequest, Step, Task, cmd, type CurrentRun } from "../src/index.ts"
-import type { TaskFailed, TimedOut } from "../src/Kiln.ts"
+import { Action, Busy, type Cache, type Fleet, Calder, On, PullRequest, Step, Task, cmd, type CurrentRun } from "../src/index.ts"
+import type { TaskFailed, TimedOut } from "../src/Calder.ts"
 import type { Blocked, Died, Failed, Passed } from "../src/Step.ts"
 import { DevController, DevControllerLive, gate, Live, preview, project, promote, promoteRelease, qa, release, Skipped } from "./fixtures.ts"
 
 type Expect<T extends true> = T
 type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2) ? true : false
 
-export type _project = Expect<Equal<typeof project, Kiln.Project>>
+export type _project = Expect<Equal<typeof project, Calder.Project>>
 export type _promoteA = Expect<Equal<Step.Success<typeof promote>, Live | Skipped>>
 export type _promoteR = Expect<Equal<Step.Services<typeof promote>, CurrentRun | Cache>>
 export type _qaE = Expect<Equal<Step.Error<typeof qa>, TaskFailed | TimedOut>>
@@ -27,7 +27,7 @@ const data = Action.make("data", {}, function*() {
 })
 export type _data = Expect<Equal<Step.Success<typeof data>, { readonly url: string; readonly n: number }>>
 
-// Only Kiln.Failure errors stay typed.
+// Only Calder.Failure errors stay typed.
 const failing = Action.make("failing", {}, function*() {
   yield* new Busy({ target: "srv-2" })
   yield* Effect.fail(new Error("plain"))
@@ -46,7 +46,7 @@ const ungranted = Action.make("ungranted", { needs: { release } }, function*({ r
 })
 export type _ungranted = Expect<Equal<Step.Services<typeof ungranted>, CurrentRun | Fleet | Cache>>
 // @ts-expect-error Fleet is not part of Base
-Kiln.project({ rules: [On.push("main", [ungranted])] })
+Calder.project({ rules: [On.push("main", [ungranted])] })
 
 // 3. Pull-request rules don't run steps with grants.
 // @ts-expect-error promote has grants
@@ -54,8 +54,8 @@ On.pullRequest([promote])
 
 // 4. A service from the project layer has to be provided.
 // @ts-expect-error DevController is missing
-Kiln.project({ rules: [On.pullRequest([preview])] })
-Kiln.project({ layer: DevControllerLive, rules: [On.pullRequest([preview])] })
+Calder.project({ rules: [On.pullRequest([preview])] })
+Calder.project({ layer: DevControllerLive, rules: [On.pullRequest([preview])] })
 
 // 5. Only string or number values can go into a command.
 // @ts-expect-error promote's value is a Result
@@ -67,21 +67,21 @@ export type _cmdR = Expect<Equal<typeof typed, import("../src/Cmd.ts").Cmd<DevCo
 const commenter = Action.make("commenter", {}, function*() {
   yield* PullRequest.comment("hi")
 })
-Kiln.project({ rules: [On.pullRequest([commenter])] })
+Calder.project({ rules: [On.pullRequest([commenter])] })
 // @ts-expect-error trusted rules have no PullRequest
-Kiln.project({ rules: [On.push("main", [commenter])] })
+Calder.project({ rules: [On.push("main", [commenter])] })
 
 // HttpClient is in both bases.
 declare const http: Effect.Effect<void, never, HttpClient.HttpClient>
 const fetcher = Action.make("fetcher", {}, function*() {
   yield* http
 })
-Kiln.project({ rules: [On.pullRequest([fetcher]), On.push("main", [fetcher])] })
+Calder.project({ rules: [On.pullRequest([fetcher]), On.push("main", [fetcher])] })
 
 // Retry keeps outputs; timeout adds TimedOut.
 const archive = Task.make("archive", { run: cmd`make`, outputs: { ipa: "build/app.ipa" } })
 const retried = archive.pipe(Step.retry({ while: (e) => e.failures.length > 0, times: 1 }), Step.timeout("1 minute"))
-export const ipa: Step.Step<Kiln.StorePath, never, never> = retried.outputs.ipa
+export const ipa: Step.Step<Calder.StorePath, never, never> = retried.outputs.ipa
 export type _retried = Expect<Equal<Step.Error<typeof retried>, TaskFailed | TimedOut>>
 
 // Manual inputs are a Schema struct.

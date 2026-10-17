@@ -34,7 +34,7 @@ export function App() {
     if (e.key === "Escape" && route.page !== "overview") go(route.page === "rollout" ? { page: "run", id: route.id, step: null } : { page: "overview" })
   })
   useEffect(() => {
-    document.title = route.page === "overview" ? "Kiln" : `Kiln, ${route.page === "project" ? route.name : route.page}`
+    document.title = route.page === "overview" ? "Calder" : `Calder, ${route.page === "project" ? route.name : route.page}`
   }, [route.page])
 
   return (
@@ -54,7 +54,7 @@ export function App() {
 function TitleBar({ route, onPalette }: { readonly route: Route; readonly onPalette: () => void }) {
   return (
     <header className="titlebar">
-      <a className="brand" href="#/">Kiln</a>
+      <a className="brand" href="#/">Calder</a>
       <nav className="crumbs" aria-label="Location">
         <a className={`crumb${route.page === "overview" ? " cur" : ""}`} href="#/">Overview</a>
         {route.page === "project" && <><span className="sep">/</span><span className="crumb cur">{route.name}</span></>}

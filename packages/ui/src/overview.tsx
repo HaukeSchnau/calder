@@ -2,7 +2,7 @@
 // deploying where. Attention rows first, then one ruled grid of projects with what each host runs,
 // then the most recent runs.
 
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { RunSpark } from "./charts.tsx"

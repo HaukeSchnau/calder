@@ -1,17 +1,17 @@
-import { Cache, CurrentRun, Fleet, Git, Kiln, type StorePath } from "@kiln/core"
+import { Cache, CurrentRun, Fleet, Git, Calder, type StorePath } from "@calder-ci/core"
 import { Effect, Schedule, Schema, type Duration } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/http"
 
-export class Live extends Kiln.Result<Live>("@kiln/std/Release")("Live", {
+export class Live extends Calder.Result<Live>("@calder-ci/std/Release")("Live", {
   revision: Schema.String,
   hosts: Schema.Array(Schema.String),
 }) {}
 
-export class Skipped extends Kiln.Result<Skipped>("@kiln/std/Release")("Skipped", {
+export class Skipped extends Calder.Result<Skipped>("@calder-ci/std/Release")("Skipped", {
   reason: Schema.Literals(["Superseded"]),
 }) {}
 
-export class NotReady extends Kiln.Failure<NotReady>("@kiln/std/Release")("NotReady", {
+export class NotReady extends Calder.Failure<NotReady>("@calder-ci/std/Release")("NotReady", {
   url: Schema.String,
   revision: Schema.String,
   seen: Schema.NullOr(Schema.String),
@@ -21,18 +21,18 @@ export class NotReady extends Kiln.Failure<NotReady>("@kiln/std/Release")("NotRe
   }
 }
 
-export class NoHosts extends Kiln.Failure<NoHosts>("@kiln/std/Release")("NoHosts", { project: Schema.String }) {
+export class NoHosts extends Calder.Failure<NoHosts>("@calder-ci/std/Release")("NoHosts", { project: Schema.String }) {
   override get message() {
     return `no host runs ${this.project}: no promotion endpoint's /health lists its app, or none answered`
   }
 }
 
-export class Unreachable extends Kiln.Failure<Unreachable>("@kiln/std/Release")("Unreachable", {
+export class Unreachable extends Calder.Failure<Unreachable>("@calder-ci/std/Release")("Unreachable", {
   project: Schema.String,
   hosts: Schema.Array(Schema.String),
 }) {
   override get message() {
-    return `${this.hosts.join(", ")} didn't answer /health, so Kiln can't tell whether ${this.project} runs there; nothing was deployed`
+    return `${this.hosts.join(", ")} didn't answer /health, so Calder can't tell whether ${this.project} runs there; nothing was deployed`
   }
 }
 

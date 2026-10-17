@@ -27,13 +27,13 @@ describe("cmd", () => {
     const c = cmd`alchemy deploy --stage pr-${Cmd.pullRequest} --env-file ${Secret.file("cloudflare")}`
     expect(c.secrets).toEqual(["cloudflare"])
     expect(c.pullRequest).toBe(true)
-    expect(Cmd.render(c, {}, { secrets: { cloudflare: "/run/kiln/cloudflare" }, pullRequest: 42 })).toEqual([
+    expect(Cmd.render(c, {}, { secrets: { cloudflare: "/run/calder/cloudflare" }, pullRequest: 42 })).toEqual([
       "alchemy",
       "deploy",
       "--stage",
       "pr-42",
       "--env-file",
-      "/run/kiln/cloudflare",
+      "/run/calder/cloudflare",
     ])
     expect(Cmd.show(c)).toBe("alchemy deploy --stage pr-${pull-request} --env-file ${secret:cloudflare}")
   })

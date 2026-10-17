@@ -1,4 +1,4 @@
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { useAtomValue } from "@effect/atom-react"
 import { agentWaitsAtom } from "./data.ts"
 import { article } from "./format.ts"
@@ -27,13 +27,13 @@ export function HostSlots({ ov, compact = false }: { readonly ov: Domain.Overvie
         const awaited = waits.filter((w) => w.agent === a.name)
         if (a.connected && !a.current) {
           return (
-            <span key={a.name} className="hsl gone" data-tip={`${a.name} has compatibility version ${a.compatibility} (Kiln build ${a.build}), not the controller's, and gets no jobs`}>
+            <span key={a.name} className="hsl gone" data-tip={`${a.name} has compatibility version ${a.compatibility} (Calder build ${a.build}), not the controller's, and gets no jobs`}>
               <b>{a.name}</b><span className="bad">incompatible</span>
             </span>
           )
         }
         return a.connected ? (
-          <span key={a.name} className="hsl" data-tip={`${a.name}, ${a.platform} agent, compatibility version ${a.compatibility} (Kiln build ${a.build})`}>
+          <span key={a.name} className="hsl" data-tip={`${a.name}, ${a.platform} agent, compatibility version ${a.compatibility} (Calder build ${a.build})`}>
             <b>{a.name}</b>
             {compact ? null : <Meter used={a.running} max={a.slots} />}<span className="n">{a.running}/{a.slots}</span>
           </span>

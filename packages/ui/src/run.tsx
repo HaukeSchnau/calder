@@ -2,7 +2,7 @@
 // the observability panel docked under it, the selected step's inspector on the right. Failure
 // comes first: a failed step is selected, and its error and failing tests show without a click.
 
-import { Domain } from "@kiln/api"
+import { Domain } from "@calder-ci/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
@@ -402,7 +402,7 @@ function Retried({ files }: { readonly files: ReadonlyArray<Domain.RetriedFile> 
         <div key={f.file} className="retried">
           <code className="wrap">{f.file}</code>
           <p>
-            {f.job === null ? "It ran before Kiln recorded jobs." : `It failed in job ${f.job}, with ${plural(f.companions.length, "other file")}.`}
+            {f.job === null ? "It ran before Calder recorded jobs." : `It failed in job ${f.job}, with ${plural(f.companions.length, "other file")}.`}
             {f.others.length > 0
               ? <> It also passed only on retry in {f.others.map((o, i) => <Fragment key={o.id}>{i > 0 ? ", " : null}<a className="lnk" href={href({ page: "run", id: o.id, step: f.step })}>#{o.number}</a></Fragment>)}.</>
               : " No other run needed a retry for it."}

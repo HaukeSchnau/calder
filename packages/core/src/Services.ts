@@ -1,7 +1,7 @@
 import { Context, Effect, Schema, type Scope } from "effect"
 import type { HttpClient } from "effect/http"
 import type { Event } from "./Event.ts"
-import { Failure, type Sha, type StorePath } from "./Kiln.ts"
+import { Failure, type Sha, type StorePath } from "./Calder.ts"
 import type { Secret } from "./Secret.ts"
 
 /** The run an action belongs to. */
@@ -15,12 +15,12 @@ export class CurrentRun extends Context.Service<CurrentRun, {
   readonly event: Event
   /** The repository's `.#lib.project` descriptor at this revision. */
   readonly descriptor: Effect.Effect<unknown>
-}>()("@kiln/core/CurrentRun") {}
+}>()("@calder-ci/core/CurrentRun") {}
 
 export class Git extends Context.Service<Git, {
   /** The branch's current head on Gitea. */
   readonly head: (branch: string) => Effect.Effect<Sha>
-}>()("@kiln/core/Git") {
+}>()("@calder-ci/core/Git") {
   static head = (branch: string) => Git.use((git) => git.head(branch))
 }
 
@@ -30,7 +30,7 @@ export class Gitea extends Context.Service<Gitea, {
     workflow: string,
     options?: { readonly ref?: string; readonly inputs?: { readonly [name: string]: string } },
   ) => Effect.Effect<void>
-}>()("@kiln/core/Gitea") {
+}>()("@calder-ci/core/Gitea") {
   static dispatch = (
     workflow: string,
     options?: { readonly ref?: string; readonly inputs?: { readonly [name: string]: string } },
@@ -43,7 +43,7 @@ export class Cache extends Context.Service<Cache, {
    * binary cache gets the release's closure and keeps it as the project's release.
    */
   readonly publish: (path: StorePath) => Effect.Effect<void>
-}>()("@kiln/core/Cache") {
+}>()("@calder-ci/core/Cache") {
   static publish = (path: StorePath) => Cache.use((cache) => cache.publish(path))
 }
 
@@ -53,16 +53,16 @@ export class PullRequest extends Context.Service<PullRequest, {
   readonly head: string
   /** Posts or updates this step's comment on the pull request. The controller posts it. */
   readonly comment: (markdown: string) => Effect.Effect<void>
-}>()("@kiln/core/PullRequest") {
+}>()("@calder-ci/core/PullRequest") {
   static comment = (markdown: string) => PullRequest.use((pr) => pr.comment(markdown))
 }
 
-export class Busy extends Failure<Busy>("@kiln/core/Fleet")("Busy", { target: Schema.String }) {
+export class Busy extends Failure<Busy>("@calder-ci/core/Fleet")("Busy", { target: Schema.String }) {
   override get message() {
     return `${this.target} is busy with another deployment`
   }
 }
-export class Rejected extends Failure<Rejected>("@kiln/core/Fleet")("Rejected", {
+export class Rejected extends Failure<Rejected>("@calder-ci/core/Fleet")("Rejected", {
   target: Schema.String,
   status: Schema.Number,
   reason: Schema.String,
@@ -94,7 +94,7 @@ export type Lease =
 /** Only actions with `grants: { deploy: true }` get Fleet. */
 export class Fleet extends Context.Service<Fleet, {
   readonly deploying: (project: string, options: { readonly queue: "latest-wins" }) => Effect.Effect<Lease, never, Scope.Scope>
-}>()("@kiln/core/Fleet") {
+}>()("@calder-ci/core/Fleet") {
   static deploying = (project: string, options: { readonly queue: "latest-wins" }) =>
     Fleet.use((fleet) => fleet.deploying(project, options))
 }

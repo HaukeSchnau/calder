@@ -1,8 +1,8 @@
-import { Action, type Base, type Files, type Flake, Kiln, Nix, On, type Step } from "@kiln/core"
+import { Action, type Base, type Files, type Flake, Calder, Nix, On, type Step } from "@calder-ci/core"
 import * as Alchemy from "./Alchemy.ts"
 import * as Release from "./Release.ts"
 
-/** The parts of `.kiln/flake.ts` the standard pipeline reads. */
+/** The parts of `.calder/flake.ts` the standard pipeline reads. */
 export interface StandardFlake {
   readonly checks: { readonly [name: string]: Flake.FlakeRef<"checks"> }
   /** Without `projectRelease` there is nothing to deploy, and the default branch only runs the checks. */
@@ -34,7 +34,7 @@ export interface StandardOptions {
  * requests run them and build the release; the default branch reuses identical results (also from
  * same-repo pull requests) and promotes the release once every check passed.
  */
-export const standard = (options: StandardOptions): Kiln.Project => {
+export const standard = (options: StandardOptions): Calder.Project => {
   const flakeChecks = Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name }))
   const checks = [...flakeChecks, ...(options.checks ?? [])]
   const branch = options.defaultBranch ?? "main"
@@ -42,13 +42,13 @@ export const standard = (options: StandardOptions): Kiln.Project => {
   const nightly = options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)]
   const ref = options.flake.packages.projectRelease
   if (ref === undefined) {
-    return Kiln.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly] })
+    return Calder.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly] })
   }
   const release = Nix.build(ref, { name: "release" })
   const promote = Action.make("promote", { needs: { release }, after: checks, grants: { deploy: true } }, function*({ release }) {
     return yield* Release.promote(release, options.readiness === undefined ? {} : { readiness: options.readiness })
   })
-  return Kiln.project({
+  return Calder.project({
     ...shared,
     rules: [
       On.pullRequest([...checks, release]),
@@ -78,7 +78,7 @@ export interface AlchemyOptions {
  * the default branch deploys the production stage once they passed. With `previews`, a same-repo pull
  * request deploys a stage of its own after its checks, and closing it removes the stage.
  */
-export const alchemy = (options: AlchemyOptions): Kiln.Project => {
+export const alchemy = (options: AlchemyOptions): Calder.Project => {
   const flakeChecks = Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name }))
   const checks = [...flakeChecks, ...(options.checks ?? [])]
   const branch = options.defaultBranch ?? "main"
@@ -89,5 +89,5 @@ export const alchemy = (options: AlchemyOptions): Kiln.Project => {
     On.preview(Alchemy.preview(options.stack, { url: options.previews.url, after: checks })),
     On.pullRequestClosed([Alchemy.destroy(options.stack)]),
   ]
-  return Kiln.project({ ...shared, rules: [On.pullRequest(checks), ...previews, On.push(branch, [deploy]), ...nightly] })
+  return Calder.project({ ...shared, rules: [On.pullRequest(checks), ...previews, On.push(branch, [deploy]), ...nightly] })
 }

@@ -2,7 +2,7 @@
 import { Flake } from "@kiln/core"
 
 export const flake = Flake.make({
-  packages: ["default", "kiln"],
+  packages: ["calder", "default"],
   checks: ["package"],
   devShells: ["default"],
 })

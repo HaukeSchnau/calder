@@ -1,4 +1,4 @@
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react"
 import { href } from "./route.ts"
 import { dur } from "./format.ts"

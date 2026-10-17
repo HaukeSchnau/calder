@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cache, CurrentRun, Event, Fleet, Git, type Lease, Sha, StorePath } from "@kiln/core"
+import { Cache, CurrentRun, Event, Fleet, Git, type Lease, Sha, StorePath } from "@calder-ci/core"
 import { Effect, Layer } from "effect"
 import { HttpClient } from "effect/http"
 import * as Release from "../src/Release.ts"
@@ -12,8 +12,8 @@ const promoting = (lease: Lease) =>
     Release.promote(release),
     Layer.mergeAll(
       Layer.succeed(CurrentRun, {
-        id: "kiln-1",
-        project: "kiln",
+        id: "calder-1",
+        project: "calder",
         revision,
         branch: "main",
         trust: "trusted",
@@ -31,7 +31,7 @@ describe("Release.promote", () => {
   it.effect("fails instead of going live when no host runs the app", () =>
     Effect.gen(function*() {
       const error = yield* Effect.flip(promoting({ _tag: "Held", fence: 1, targets: [], unreachable: [] }))
-      expect(error).toEqual(new Release.NoHosts({ project: "kiln" }))
+      expect(error).toEqual(new Release.NoHosts({ project: "calder" }))
     }))
 
   it.effect("deploys nowhere while a host that might run the app can't be reached", () =>
@@ -43,7 +43,7 @@ describe("Release.promote", () => {
         deploy: () => Effect.sync(() => touched.push("deploy")),
       }
       const error = yield* Effect.flip(promoting({ _tag: "Held", fence: 1, targets: [srv2], unreachable: ["srv-1"] }))
-      expect(error).toEqual(new Release.Unreachable({ project: "kiln", hosts: ["srv-1"] }))
+      expect(error).toEqual(new Release.Unreachable({ project: "calder", hosts: ["srv-1"] }))
       expect(touched).toEqual([])
     }))
 })
