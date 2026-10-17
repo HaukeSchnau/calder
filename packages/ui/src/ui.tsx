@@ -1,4 +1,4 @@
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { AsyncResult } from "effect/reactivity"
 import { Cause } from "effect"
 import { type ReactNode, useSyncExternalStore } from "react"
@@ -149,7 +149,7 @@ export function Loaded<A, E>({ result, children, what }: {
 function failureText<E>(cause: Cause.Cause<E>, what: string): string {
   const error: unknown = Cause.squash(cause)
   if (typeof error === "object" && error !== null && "_tag" in error) {
-    if (error._tag === "NotFound") return `Kiln has no record of ${what}.`
+    if (error._tag === "NotFound") return `Calder has no record of ${what}.`
     if (error._tag === "Refused" && "reason" in error) return String(error.reason)
   }
   return `Couldn't load ${what}.`

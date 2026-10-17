@@ -1,6 +1,6 @@
 {
-  "name": "@kiln/tsconfig",
+  "name": "@calder-ci/tsconfig",
   "version": "0.1.0",
   "private": true,
-  "description": "The compiler options `.kiln/tsconfig.json` extends, so changes reach every project without `kiln gen`."
+  "description": "The compiler options `.calder/tsconfig.json` extends, so changes reach every project without `calder gen`."
 }

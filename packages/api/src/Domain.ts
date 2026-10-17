@@ -19,7 +19,7 @@ export const StepStatus = Schema.Literals([
   /** Passed earlier with the same key; this run reused the result. */
   "reused",
   "failed",
-  /** Crashed or threw something that isn't a Kiln.Failure. */
+  /** Crashed or threw something that isn't a Calder.Failure. */
   "died",
   /** A step it depends on didn't pass. */
   "blocked",
@@ -41,7 +41,7 @@ export const Event = Schema.Union([
   Schema.TaggedStruct("Push", { branch: Schema.String }),
   Schema.TaggedStruct("Schedule", { cron: Schema.String }),
   Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown) }),
-  /** A working copy checked before it is pushed (`kiln check`), pushed as `ref`. It runs what a pull request would. */
+  /** A working copy checked before it is pushed (`calder check`), pushed as `ref`. It runs what a pull request would. */
   Schema.TaggedStruct("Check", { ref: Schema.String, base: Schema.String, background: Schema.optional(Schema.Boolean) }),
 ])
 export type Event = typeof Event.Type
@@ -56,7 +56,7 @@ export const Commit = Schema.Struct({
 })
 export type Commit = typeof Commit.Type
 
-/** A pull request Kiln merges once it is green and up to date with its base. */
+/** A pull request Calder merges once it is green and up to date with its base. */
 export const MergeRequest = Schema.Struct({
   project: Schema.String,
   pr: Schema.Number,
@@ -90,7 +90,7 @@ export type Run = typeof Run.Type
 
 /** A value a step produced, ready to show. */
 export const Value = Schema.Struct({
-  /** `Kiln.Result` class id such as `@kiln/std/Release/Live`, or null for plain data. */
+  /** `Calder.Result` class id such as `@calder-ci/std/Release/Live`, or null for plain data. */
   type: Schema.NullOr(Schema.String),
   render: Schema.NullOr(Schema.Literals(["link", "text"])),
   label: Schema.NullOr(Schema.String),
@@ -187,7 +187,7 @@ export type TestResult = typeof TestResult.Type
 export const RetriedFile = Schema.Struct({
   step: Schema.String,
   file: Schema.String,
-  /** The job it failed in, null for results from before Kiln recorded jobs, and the other files of that job. */
+  /** The job it failed in, null for results from before Calder recorded jobs, and the other files of that job. */
   job: Schema.NullOr(Schema.Number),
   companions: Schema.Array(Schema.String),
   /** Other runs in which it passed only on retry, newest first. */
@@ -214,7 +214,7 @@ export const LogLine = Schema.Struct({
   step: Schema.String,
   /** Shard number for sharded tasks. */
   shard: Schema.NullOr(Schema.Number),
-  stream: Schema.Literals(["stdout", "stderr", "kiln"]),
+  stream: Schema.Literals(["stdout", "stderr", "calder"]),
   level: Schema.Literals(["debug", "info", "warn", "error"]),
   timestamp: Schema.Number,
   text: Schema.String,
@@ -230,9 +230,9 @@ export const LogEntry = Schema.Struct({
 export type LogEntry = typeof LogEntry.Type
 
 /**
- * A span of a run's trace. Kiln's own spans carry `kiln.project`, `kiln.run`, `kiln.step`, `kiln.kind`,
- * `kiln.status` and `kiln.key`; Nix activities carry `nix.activity` and `nix.drv`; deploy calls carry
- * `http.url`, `http.status` and `kiln.fence`.
+ * A span of a run's trace. Calder's own spans carry `calder.project`, `calder.run`, `calder.step`, `calder.kind`,
+ * `calder.status` and `calder.key`; Nix activities carry `nix.activity` and `nix.drv`; deploy calls carry
+ * `http.url`, `http.status` and `calder.fence`.
  */
 export const Span = Schema.Struct({
   spanId: Schema.String,
@@ -324,7 +324,7 @@ export const Metrics = Schema.Struct({
 })
 export type Metrics = typeof Metrics.Type
 
-/** A deploy Kiln made: one promotion of one revision to one host. */
+/** A deploy Calder made: one promotion of one revision to one host. */
 export const DeploymentRecord = Schema.Struct({
   project: Schema.String,
   host: Schema.String,

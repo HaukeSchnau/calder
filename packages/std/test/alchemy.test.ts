@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cmd, Files, Flake } from "@kiln/core"
+import { Cmd, Files, Flake } from "@calder-ci/core"
 import * as Alchemy from "../src/Alchemy.ts"
 import * as Bun from "../src/Bun.ts"
 import * as Pnpm from "../src/Pnpm.ts"

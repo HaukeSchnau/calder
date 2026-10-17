@@ -1,4 +1,4 @@
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 
 // Twelve glazes, muted like ceramic glazes. No reds or oranges: those mean failure and work in progress.
 const GLAZES = ["#8fc1a9", "#86a8e7", "#5b7fe0", "#e7c9a0", "#4fb3a9", "#a592e0", "#7fa65e", "#a7aea4", "#ddd3bf", "#d4b04a", "#3f9b98", "#c7a0d9"] as const

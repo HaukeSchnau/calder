@@ -1,7 +1,7 @@
 import type { SecretRef } from "./Secret.ts"
 import { isStep, type Step } from "./Step.ts"
 
-export const TypeId = "~@kiln/core/Cmd" as const
+export const TypeId = "~@calder-ci/core/Cmd" as const
 
 /** The run's pull-request number, such as `--stage pr-${Cmd.pullRequest}`. A run without one can't render it. */
 export const pullRequest = { _tag: "PullRequestNumber" } as const

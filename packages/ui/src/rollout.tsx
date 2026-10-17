@@ -2,7 +2,7 @@
 // now, then the deploy step's own trace and log. Only what deployments and the step report; no
 // invented bake metrics.
 
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { useLayoutEffect, useRef, useState } from "react"
@@ -141,9 +141,9 @@ function Rollout({ detail, step, deployments }: { readonly detail: Domain.RunDet
               <DeployLog runId={run.id} step={step} />
             </div>
             <aside className="ro-hist">
-              <header className="sub-h"><h3>History</h3><span className="dim">deploys of {run.project} by Kiln, per host</span></header>
+              <header className="sub-h"><h3>History</h3><span className="dim">deploys of {run.project} by Calder, per host</span></header>
               {hosts.map((d) => <HostHistory key={d.host} deployment={d} records={records.filter((r) => r.host === d.host)} runId={run.id} />)}
-              {AsyncResult.isSuccess(history) && !records.length ? <p className="empty">Kiln hasn't deployed {run.project} yet.</p> : null}
+              {AsyncResult.isSuccess(history) && !records.length ? <p className="empty">Calder hasn't deployed {run.project} yet.</p> : null}
             </aside>
           </div>
         </section>

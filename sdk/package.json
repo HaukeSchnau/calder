@@ -1,13 +1,16 @@
 {
-  "name": "@kiln/sdk",
+  "name": "@calder-ci/sdk",
   "version": "0.1.0",
   "private": true,
-  "description": "The node_modules that `.kiln/node_modules` links to: what ci.ts may import, the types of the Bun it runs on, and the tsconfig `.kiln/tsconfig.json` extends.",
+  "description": "The node_modules that `.calder/node_modules` links to: what ci.ts may import, the types of the Bun it runs on, and the tsconfig `.calder/tsconfig.json` extends. The `@kiln/*` names resolve to the same packages for pipelines still in `.kiln/`; remove them once none imports them.",
   "dependencies": {
-    "@kiln/core": "workspace:*",
-    "@kiln/std": "workspace:*",
-    "@kiln/tsconfig": "link:./tsconfig",
+    "@calder-ci/core": "workspace:*",
+    "@calder-ci/std": "workspace:*",
+    "@calder-ci/tsconfig": "link:./tsconfig",
     "effect": "4.0.0",
-    "@types/bun": "1.4.2"
+    "@types/bun": "1.4.2",
+    "@kiln/core": "workspace:@calder-ci/core@*",
+    "@kiln/std": "workspace:@calder-ci/std@*",
+    "@kiln/tsconfig": "link:./tsconfig"
   }
 }

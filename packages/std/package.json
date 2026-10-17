@@ -1,5 +1,5 @@
 {
-  "name": "@kiln/std",
+  "name": "@calder-ci/std",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "@kiln/core": "workspace:*",
+    "@calder-ci/core": "workspace:*",
     "effect": "4.0.0"
   }
 }

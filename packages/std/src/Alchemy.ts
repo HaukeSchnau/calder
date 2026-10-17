@@ -1,4 +1,4 @@
-import { Action, Cmd, cmd, type Flake, PullRequest, Secret, type Setup, type Step, Task } from "@kiln/core"
+import { Action, Cmd, cmd, type Flake, PullRequest, Secret, type Setup, type Step, Task } from "@calder-ci/core"
 
 /** How the repository's Alchemy stack deploys. */
 export interface Stack {

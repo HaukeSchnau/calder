@@ -1,11 +1,11 @@
 // A stand-in controller for UI work: implements `UiRpcs` over the same WebSocket transport the
 // real controller uses, on deterministic fake data from ./scenario.ts.
 //
-//   bun mock/server.ts                       listens on 127.0.0.1:8791 (KILN_MOCK_PORT overrides)
-//   KILN_MOCK_M1=offline bun mock/server.ts  the m1 agent is gone and t3code's testflight waits for it
+//   bun mock/server.ts                       listens on 127.0.0.1:8791 (CALDER_MOCK_PORT overrides)
+//   CALDER_MOCK_M1=offline bun mock/server.ts  the m1 agent is gone and t3code's testflight waits for it
 
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { type Domain, NotFound, Refused, UiRpcs } from "@kiln/api"
+import { type Domain, NotFound, Refused, UiRpcs } from "@calder-ci/api"
 import { Effect, Layer, PubSub, Stream } from "effect"
 import { HttpRouter } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
@@ -14,8 +14,8 @@ import {
   type SimRun, type SimStep,
 } from "./scenario.ts"
 
-const port = Number(process.env["KILN_MOCK_PORT"] ?? 8791)
-const m1 = process.env["KILN_MOCK_M1"] === "offline" ? "offline" : "online"
+const port = Number(process.env["CALDER_MOCK_PORT"] ?? 8791)
+const m1 = process.env["CALDER_MOCK_M1"] === "offline" ? "offline" : "online"
 
 const terminal = new Set<Domain.StepStatus>(["passed", "reused", "failed", "died", "blocked", "cancelled"])
 const isActive = (status: Domain.RunStatus) => status === "queued" || status === "planning" || status === "running"

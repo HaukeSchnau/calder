@@ -3,7 +3,7 @@
 // checks" group, as in the prototype, so their gate edges merge into one. Within a column, nodes
 // follow the average height of what feeds them, so a chain of values runs on one straight row.
 
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 
 export type EdgeKind = "needs" | "after" | "required" | "exit"
 

@@ -1,7 +1,7 @@
 import type { Cmd } from "./Cmd.ts"
 import * as Files from "./Files.ts"
 import type { FlakeRef } from "./Flake.ts"
-import type { TaskFailed } from "./Kiln.ts"
+import type { TaskFailed } from "./Calder.ts"
 import type { ReportSpec } from "./Report.ts"
 import type { SecretRef } from "./Secret.ts"
 import type { Setup } from "./Setup.ts"
@@ -22,7 +22,7 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
   /**
    * Files the task checks one by one, such as test files, usually `Files.imports(...)`. Each has its own
    * key, a file that passed with its key doesn't run again, and `run` gets the files a job should
-   * check. Needs a `report` that names files, so Kiln knows which passed.
+   * check. Needs a `report` that names files, so Calder knows which passed.
    */
   readonly each?: Files.Files
   /** Steps that must pass first. They don't enter the task's key. */

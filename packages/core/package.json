@@ -1,5 +1,5 @@
 {
-  "name": "@kiln/core",
+  "name": "@calder-ci/core",
   "version": "0.1.0",
   "private": true,
   "type": "module",

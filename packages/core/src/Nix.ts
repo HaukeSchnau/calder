@@ -1,5 +1,5 @@
 import type { FlakeRef } from "./Flake.ts"
-import type { BuildFailed, StorePath } from "./Kiln.ts"
+import type { BuildFailed, StorePath } from "./Calder.ts"
 import { make, type Step } from "./Step.ts"
 
 /**

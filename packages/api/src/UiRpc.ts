@@ -2,15 +2,15 @@ import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/rpc"
 import { Change, DeploymentRecord, LogEntry, MergeRequest, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
 
-export class NotFound extends Schema.TaggedError<NotFound>("@kiln/api/NotFound")("NotFound", {
+export class NotFound extends Schema.TaggedError<NotFound>("@calder-ci/api/NotFound")("NotFound", {
   what: Schema.String,
 }) {
   override get message() {
-    return `Kiln has no record of ${this.what}`
+    return `Calder has no record of ${this.what}`
   }
 }
 
-export class Refused extends Schema.TaggedError<Refused>("@kiln/api/Refused")("Refused", {
+export class Refused extends Schema.TaggedError<Refused>("@calder-ci/api/Refused")("Refused", {
   reason: Schema.String,
 }) {
   override get message() {
@@ -55,7 +55,7 @@ export class UiRpcs extends RpcGroup.make(
   /** The run's trace from Tempo: steps, Nix builds, HTTP calls of deploys. */
   Rpc.make("trace", { payload: { runId: Schema.String }, success: Schema.Array(Span), error: NotFound }),
   Rpc.make("stepStats", { payload: { project: Schema.String, step: Schema.String }, success: StepStats }),
-  /** Deploys Kiln made, newest first. */
+  /** Deploys Calder made, newest first. */
   Rpc.make("deployments", {
     payload: { project: Schema.String, host: Schema.optional(Schema.String), limit: Schema.optional(Schema.Number) },
     success: Schema.Array(DeploymentRecord),
@@ -80,7 +80,7 @@ export class UiRpcs extends RpcGroup.make(
     error: Schema.Union([NotFound, Refused]),
   }),
   /**
-   * Runs a working copy that `kiln check` pushed as `ref` (under `kiln/check/`) the way a pull request
+   * Runs a working copy that `calder check` pushed as `ref` (under `calder/check/`) the way a pull request
    * would. A newer check of the same ref replaces an older one; a background check only takes slots
    * nothing else wants.
    */

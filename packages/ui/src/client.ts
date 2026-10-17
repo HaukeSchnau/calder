@@ -1,4 +1,4 @@
-import { UiRpcs } from "@kiln/api"
+import { UiRpcs } from "@calder-ci/api"
 import { Effect, Layer } from "effect"
 import { Atom, AtomRpc } from "effect/reactivity"
 import { RpcClient, RpcSerialization } from "effect/rpc"
@@ -11,7 +11,7 @@ export const connectionAtom = Atom.make<Connection>("connecting").pipe(Atom.keep
 const url = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/rpc`
 
 /** The controller's UI RPCs over one WebSocket on the page's origin, reconnecting on its own. */
-export class Kiln extends AtomRpc.Service<Kiln>()("Kiln", {
+export class Calder extends AtomRpc.Service<Calder>()("Calder", {
   group: UiRpcs,
   protocol: (get) =>
     RpcClient.layerProtocolSocket({ retryTransientErrors: true }).pipe(

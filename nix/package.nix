@@ -27,7 +27,7 @@ let
   };
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
-  pname = "kiln";
+  pname = "calder";
   version = "0.1.0";
   inherit src;
 
@@ -48,34 +48,36 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   buildPhase = ''
     runHook preBuild
     if [ -f packages/ui/package.json ]; then
-      pnpm --filter @kiln/ui build
+      pnpm --filter @calder-ci/ui build
     fi
     runHook postBuild
   '';
 
-  # The worker imports each revision's .kiln/ci.ts through sdk/node_modules, and that has to resolve to
+  # The worker imports each revision's .calder/ci.ts through sdk/node_modules, and that has to resolve to
   # the very modules the worker runs, so the sources ship unbundled with their node_modules.
   installPhase = ''
     runHook preInstall
-    mkdir -p $out/lib/kiln $out/bin
-    cp -a package.json pnpm-workspace.yaml tsconfig.base.json node_modules packages sdk $out/lib/kiln/
+    mkdir -p $out/lib/calder $out/bin
+    cp -a package.json pnpm-workspace.yaml tsconfig.base.json node_modules packages sdk $out/lib/calder/
     # The source's path depends only on its content, so every platform's build of it gets the same id.
     # Twelve characters, because Nix would take the whole hash for a runtime reference to the source.
-    basename "$src" | cut -c1-12 > $out/lib/kiln/build
-    makeWrapper ${lib.getExe bun} $out/bin/kiln \
-      --add-flags $out/lib/kiln/packages/kiln/src/main.ts \
+    basename "$src" | cut -c1-12 > $out/lib/calder/build
+    makeWrapper ${lib.getExe bun} $out/bin/calder \
+      --add-flags $out/lib/calder/packages/calder/src/main.ts \
       --prefix PATH : ${lib.makeBinPath [ git gnutar bash coreutils ]}
+    # The name before the rename, for scripts and habits; remove once nothing calls `kiln`.
+    ln -s calder $out/bin/kiln
     runHook postInstall
   '';
 
   passthru = {
-    sdk = "${finalAttrs.finalPackage}/lib/kiln/sdk/node_modules";
-    ui = "${finalAttrs.finalPackage}/lib/kiln/packages/ui/dist";
+    sdk = "${finalAttrs.finalPackage}/lib/calder/sdk/node_modules";
+    ui = "${finalAttrs.finalPackage}/lib/calder/packages/ui/dist";
   };
 
   meta = {
     description = "CI/CD written in Effect TypeScript, built on Nix";
-    mainProgram = "kiln";
+    mainProgram = "calder";
     platforms = lib.platforms.unix;
   };
 })

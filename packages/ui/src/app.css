@@ -1,4 +1,4 @@
-/* Kiln: the Workbench with the Console overview.
+/* Calder: the Workbench with the Console overview.
    Graphite chrome around a darker canvas. Colour is reserved: red for failure, heat for work in
    progress, and glazes for content keys. Hairlines instead of boxes. */
 
@@ -203,7 +203,7 @@ kbd + kbd { margin-left: 2px; }
 .step-link:hover { color: var(--ink); text-decoration: underline; }
 .ll.cur .ls { color: var(--ink); }
 .loglist.run .ll:not(.cur) .lm { color: var(--ink-2); }
-.ll.st-kiln .lm { color: var(--ink-2); }
+.ll.st-calder .lm { color: var(--ink-2); }
 .ll.lv-error { background: color-mix(in oklab, var(--bad) 9%, transparent); }
 .ll.lv-error .lm, .loglist.run .ll.lv-error .lm { color: var(--bad-ink); }
 .ll.lv-error .lv { color: var(--bad); }

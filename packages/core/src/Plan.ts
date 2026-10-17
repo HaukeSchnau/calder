@@ -1,10 +1,10 @@
 import { Effect, Schema } from "effect"
 import type { Event } from "./Event.ts"
-import type { Project } from "./Kiln.ts"
+import type { Project } from "./Calder.ts"
 import { matchesBranch, type Reuse, type Rule } from "./On.ts"
 import { dependencies, isStep, type Kind, type Step, taskSecrets } from "./Step.ts"
 
-export class PlanError extends Schema.TaggedError<PlanError>("@kiln/core/PlanError")("PlanError", {
+export class PlanError extends Schema.TaggedError<PlanError>("@calder-ci/core/PlanError")("PlanError", {
   message: Schema.String,
 }) {}
 
@@ -45,7 +45,7 @@ export interface Plan {
 }
 
 export interface Options {
-  /** Status contexts that branch protection requires, such as `kiln/qa`. */
+  /** Status contexts that branch protection requires, such as `calder/qa`. */
   readonly requiredChecks?: ReadonlyArray<string>
 }
 
@@ -110,7 +110,7 @@ export const universe = (project: Project): Effect.Effect<Map<string, Step.Any>,
 
 /**
  * Resolves which steps an event runs and how they depend on each other. Pure: it never runs user code
- * and reads nothing but the project, so pipelines can be tested with `Kiln.plan`.
+ * and reads nothing but the project, so pipelines can be tested with `Calder.plan`.
  */
 export const plan = (project: Project, event: Event, options: Options = {}): Effect.Effect<Plan, PlanError> =>
   Effect.gen(function*() {
@@ -128,7 +128,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
     }
 
     const required = (options.requiredChecks ?? []).map((context) => {
-      const name = context.startsWith("kiln/") ? context.slice("kiln/".length) : undefined
+      const name = context.startsWith("calder/") ? context.slice("calder/".length) : undefined
       return { context, name }
     })
 
@@ -181,7 +181,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       if (trust === "trusted" && step.kind === "action" && hasGrants(step)) {
         for (const r of required) {
           if (r.name === undefined) {
-            return fail(`branch protection requires "${r.context}", which Kiln doesn't report; required checks must be kiln/<step>`)
+            return fail(`branch protection requires "${r.context}", which Calder doesn't report; required checks must be calder/<step>`)
           }
           if (!all.has(r.name)) {
             return fail(`branch protection requires "${r.context}", but no step is named "${r.name}"`)

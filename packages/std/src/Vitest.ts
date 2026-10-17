@@ -1,4 +1,4 @@
-import { cmd, Files, type Flake, Report, type Setup, Task } from "@kiln/core"
+import { cmd, Files, type Flake, Report, type Setup, Task } from "@calder-ci/core"
 
 export interface FilesOptions {
   /** The step's name, `test` by default. */

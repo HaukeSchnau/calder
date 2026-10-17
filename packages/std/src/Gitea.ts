@@ -1,4 +1,4 @@
-import { Gitea } from "@kiln/core"
+import { Gitea } from "@calder-ci/core"
 import { Effect } from "effect"
 
 /**

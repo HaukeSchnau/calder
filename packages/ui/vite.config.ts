@@ -3,7 +3,7 @@ import { defineConfig } from "vite"
 
 // The controller serves dist/ and the RPC socket on one origin; in development the mock server
 // stands in for it behind the same path.
-const rpc = { "/rpc": { target: `ws://127.0.0.1:${process.env["KILN_MOCK_PORT"] ?? 8791}`, ws: true } }
+const rpc = { "/rpc": { target: `ws://127.0.0.1:${process.env["CALDER_MOCK_PORT"] ?? 8791}`, ws: true } }
 
 export default defineConfig({
   base: "./",

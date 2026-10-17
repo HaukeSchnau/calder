@@ -1,7 +1,7 @@
 // Cmd-K: go to a project or run, start a run of a project's default branch, and act on the run
 // being looked at. Every word typed must match.
 
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult, Atom } from "effect/reactivity"
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"

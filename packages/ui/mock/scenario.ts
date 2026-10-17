@@ -2,7 +2,7 @@
 // when the run is created; the state of the fleet at any instant is then a pure function of the
 // clock, so the server only has to diff snapshots to produce `changes`.
 
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 
 type Outcome = "passed" | "failed" | "died"
 type Kind = Domain.StepKind
@@ -247,7 +247,7 @@ function history(project: string): Array<Spec> {
         at: -d * 86400 + 3 * 3600 - 11 * 3600,
         event: { _tag: "Schedule", cron: "0 3 * * *" },
         title: null,
-        commit: { title: "Nightly cold run", author: "kiln", changeId: null },
+        commit: { title: "Nightly cold run", author: "calder", changeId: null },
       })
     }
   }
@@ -317,7 +317,7 @@ const SCRIPTED: ReadonlyArray<Spec> = [
   {
     key: "igs:manual", project: "igs", at: -5 * 3600, event: { _tag: "Manual", inputs: { reason: "redeploy after cert renewal" } }, title: null,
     commit: { title: "New school year dates", author: "hauke", changeId: null },
-    error: "plan failed: .kiln/ci.ts: step \"promote\" needs \"projectRelease\", which On.manual doesn't target",
+    error: "plan failed: .calder/ci.ts: step \"promote\" needs \"projectRelease\", which On.manual doesn't target",
   },
   {
     key: "mb:pr12", project: "merkbeet", at: -4 * 3600, event: pr(12, "codex/frost-warnings"),
@@ -339,7 +339,7 @@ interface Memory {
 const median = (xs: ReadonlyArray<number>) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
 
 /**
- * With m1 gone (`KILN_MOCK_M1=offline`), it left six minutes before the server started: the deploying
+ * With m1 gone (`CALDER_MOCK_M1=offline`), it left six minutes before the server started: the deploying
  * main run's desktop package finished just before, so its testflight waits for an agent ever since.
  */
 const OFFLINE_DURATIONS: Readonly<Record<string, Readonly<Record<string, number>>>> = { "t3:main-merge": { "desktop-package": 100 } }
@@ -621,7 +621,7 @@ function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
     case "action": {
       if (s.plan.name === "promote") {
         const hosts = hostsOf(run.project)
-        return { type: "@kiln/std/Release/Live", render: "text", label: "Live", text: `${short(run.commit.sha)} on ${hosts.join(", ")}`, json: { _tag: "Live", revision: run.commit.sha, hosts } }
+        return { type: "@calder-ci/std/Release/Live", render: "text", label: "Live", text: `${short(run.commit.sha)} on ${hosts.join(", ")}`, json: { _tag: "Live", revision: run.commit.sha, hosts } }
       }
       return { type: null, render: "text", label: null, text: "comment posted", json: null }
     }
@@ -678,7 +678,7 @@ type Line = readonly [at: number, level: Domain.LogLine["level"], stream: Domain
 
 function errorOf(run: SimRun, s: SimStep): Domain.StepError {
   const lines = scriptOf(run, s)
-  const excerpt = lines.filter((l) => l[2] !== "kiln").slice(-7).map((l) => l[3]).join("\n")
+  const excerpt = lines.filter((l) => l[2] !== "calder").slice(-7).map((l) => l[3]).join("\n")
   if (run.project === "t3code" && s.plan.name === "test web") {
     return { tag: "TestFailed", message: "2 tests failed: TokenUsage › formats large counts with a thin space, ThreadView › replays tool output after reconnect (timeout)", excerpt }
   }
@@ -719,14 +719,14 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
   const sha = short(run.commit.sha)
   const where = run.event._tag === "PullRequest" ? `pr/${run.project}/1` : `trusted/${run.project}/1`
   const failed = s.outcome === "failed"
-  const cmd: Line = [0, "info", "kiln", s.plan.kind === "build" ? `nix build .#${s.plan.detail.replace(/^\.#/, "")}` : `$ ${s.plan.detail}`]
-  const ws: Line = [0.004, "debug", "kiln", `workspace ${where} at ${sha}`]
+  const cmd: Line = [0, "info", "calder", s.plan.kind === "build" ? `nix build .#${s.plan.detail.replace(/^\.#/, "")}` : `$ ${s.plan.detail}`]
+  const ws: Line = [0.004, "debug", "calder", `workspace ${where} at ${sha}`]
   const p = `${run.project}:${s.plan.name}`
   if (s.plan.kind === "build") {
     const drv = `/nix/store/${nixHash(`drv:${p}:${sha}`, 32)}-${run.project}-${s.plan.name}.drv`
     const lines: Array<Line> = [
       cmd,
-      [0.01, "debug", "kiln", `evaluating ${s.plan.detail} at ${sha}`],
+      [0.01, "debug", "calder", `evaluating ${s.plan.detail} at ${sha}`],
       [0.04, "info", "stderr", `copying ${12 + (fnv(p) % 300)} paths from http://srv-1:5080`],
       [0.12, "info", "stderr", `building '${drv}' on srv-2`],
     ]
@@ -742,7 +742,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           [0.92, "info", "stdout", " Test Files  1 failed | 11 passed (12)"],
           [0.93, "info", "stdout", "      Tests  1 failed | 95 passed (96)"],
           [0.97, "error", "stderr", `error: builder for '/nix/store/${nixHash(`fail:${run.id}`, 32)}-${run.project}-vitest.drv' failed with exit code 1`],
-          [0.99, "error", "kiln", "step failed: BuildFailed"],
+          [0.99, "error", "calder", "step failed: BuildFailed"],
         )
         return lines
       }
@@ -758,11 +758,11 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
   if (s.plan.kind === "task") {
     switch (s.plan.name) {
       case "static":
-        return [cmd, ws, [0.4, "info", "stdout", "oxlint 1.14: 0 problems in 1,204 files"], [0.8, "info", "stdout", "prettier --check: 1,204 files formatted"], [0.99, "info", "kiln", "exit 0"]]
+        return [cmd, ws, [0.4, "info", "stdout", "oxlint 1.14: 0 problems in 1,204 files"], [0.8, "info", "stdout", "prettier --check: 1,204 files formatted"], [0.99, "info", "calder", "exit 0"]]
       case "typecheck clients":
         return failed
-          ? [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"], [0.93, "error", "stdout", "apps/web/src/components/TokenUsage.tsx:12:27 - error TS2339: Property 'usage' does not exist on type 'TurnSummary'."], [0.94, "error", "stdout", "Found 1 error in apps/web/src/components/TokenUsage.tsx:12"], [0.99, "error", "kiln", "exit 2"]]
-          : [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"], [0.72, "info", "stdout", "apps/web: 0 errors"], [0.9, "info", "stdout", "apps/desktop, apps/mobile: 0 errors"], [0.99, "info", "kiln", "exit 0"]]
+          ? [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"], [0.93, "error", "stdout", "apps/web/src/components/TokenUsage.tsx:12:27 - error TS2339: Property 'usage' does not exist on type 'TurnSummary'."], [0.94, "error", "stdout", "Found 1 error in apps/web/src/components/TokenUsage.tsx:12"], [0.99, "error", "calder", "exit 2"]]
+          : [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"], [0.72, "info", "stdout", "apps/web: 0 errors"], [0.9, "info", "stdout", "apps/desktop, apps/mobile: 0 errors"], [0.99, "info", "calder", "exit 0"]]
       case "typecheck rest":
         return [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/server packages/*"], [0.99, "info", "stdout", "0 errors in 7 projects"]]
       case "test web": {
@@ -779,48 +779,48 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
             [0.902, "error", "stdout", "     Error: Test timed out in 5000ms."],
             [0.96, "info", "stdout", " Test Files  2 failed | 40 passed (42)"],
             [0.961, "info", "stdout", "      Tests  2 failed | 401 passed (403)"],
-            [0.98, "info", "kiln", "report: reports/vitest.json decoded, 2 failing"],
-            [0.99, "error", "kiln", "exit 1"],
+            [0.98, "info", "calder", "report: reports/vitest.json decoded, 2 failing"],
+            [0.99, "error", "calder", "exit 1"],
           )
           return lines
         }
-        lines.push([0.9, "info", "stdout", " ✓ src/components/TokenUsage.test.tsx (6 tests) 0.81s"], [0.96, "info", "stdout", " Test Files  42 passed (42)"], [0.961, "info", "stdout", "      Tests  403 passed (403)"], [0.98, "info", "kiln", "report: reports/vitest.json decoded, 403 passed"], [0.99, "info", "kiln", "exit 0"])
+        lines.push([0.9, "info", "stdout", " ✓ src/components/TokenUsage.test.tsx (6 tests) 0.81s"], [0.96, "info", "stdout", " Test Files  42 passed (42)"], [0.961, "info", "stdout", "      Tests  403 passed (403)"], [0.98, "info", "calder", "report: reports/vitest.json decoded, 403 passed"], [0.99, "info", "calder", "exit 0"])
         return lines
       }
       case "test server": {
-        const lines: Array<Line> = [cmd, [0.01, "debug", "kiln", "3 shards: 38, 38 and 38 files"]]
+        const lines: Array<Line> = [cmd, [0.01, "debug", "calder", "3 shards: 38, 38 and 38 files"]]
         for (const shard of [1, 2, 3]) {
-          lines.push([0.02, "info", "kiln", `$ just qa-test-server-shard ${shard} 3`, shard])
+          lines.push([0.02, "info", "calder", `$ just qa-test-server-shard ${shard} 3`, shard])
           lines.push(...files(["src/git/GitService.test.ts (31 tests)", "src/provider/Codex.test.ts (18 tests)", "src/ws/Protocol.test.ts (40 tests)", "src/db/Threads.test.ts (25 tests)"].map((f) => ` ✓ ${f}`), 0.1 + shard * 0.05, 0.8 + shard * 0.05, shard))
           lines.push([0.92 + shard * 0.02, "info", "stdout", `shard ${shard} of 3: 38 passed`, shard])
         }
-        if (s.attempts > 1) lines.splice(6, 0, [0.4, "warn", "kiln", "shard 2 of 3: TestTimeout, retrying once", 2])
+        if (s.attempts > 1) lines.splice(6, 0, [0.4, "warn", "calder", "shard 2 of 3: TestTimeout, retrying once", 2])
         return lines
       }
       case "desktop-package":
         return [
-          cmd, [0.002, "info", "kiln", "running on m1 (aarch64-darwin)"], ws,
+          cmd, [0.002, "info", "calder", "running on m1 (aarch64-darwin)"], ws,
           ...files(["electron-vite build: main, preload, renderer", "electron-builder --mac --arm64", "packaging T3 Code.app for darwin arm64", "signing with Developer ID Application: Hauke Schnau", "notarizing T3 Code.app with notarytool", "notarytool: status Accepted", "stapling the notarization ticket"], 0.05, 0.92),
-          [0.97, "info", "stdout", "dist/T3 Code-0.9.4-arm64.dmg (148.2 MB)"], [0.99, "info", "kiln", "exit 0"],
+          [0.97, "info", "stdout", "dist/T3 Code-0.9.4-arm64.dmg (148.2 MB)"], [0.99, "info", "calder", "exit 0"],
         ]
       case "testflight":
         return [
-          cmd, [0.002, "info", "kiln", "running on m1 (aarch64-darwin)"], ws,
+          cmd, [0.002, "info", "calder", "running on m1 (aarch64-darwin)"], ws,
           [0.1, "info", "stdout", "xcodebuild archive -scheme T3Mobile -configuration Release"], [0.55, "info", "stdout", "** ARCHIVE SUCCEEDED **"],
-          [0.6, "info", "stdout", "xcrun altool --upload-app -f T3Mobile.ipa"], [0.97, "info", "stdout", "uploaded build 0.9.4 (412) to TestFlight"], [0.99, "info", "kiln", "exit 0"],
+          [0.6, "info", "stdout", "xcrun altool --upload-app -f T3Mobile.ipa"], [0.97, "info", "stdout", "uploaded build 0.9.4 (412) to TestFlight"], [0.99, "info", "calder", "exit 0"],
         ]
       case "qa": {
         const lines: Array<Line> = [cmd, ws, [0.02, "info", "stdout", "oxlint: 0 problems in 318 files"], [0.12, "info", "stdout", "tsc -b: 0 errors"]]
         const total = 412
         for (let i = 1; i <= 24; i++) lines.push([0.15 + (0.8 * i) / 24, "info", "stdout", `vitest: ${Math.round((total * i) / 24)} of ${total} done`])
-        lines.push([0.4, "warn", "stderr", "moodle-sync: MOODLE_TOKEN not set, sync tests use the fixture"], [0.98, "info", "stdout", `vitest: ${total} passed (${total})`], [0.99, "info", "kiln", "report: reports/junit.xml decoded, 412 passed"])
+        lines.push([0.4, "warn", "stderr", "moodle-sync: MOODLE_TOKEN not set, sync tests use the fixture"], [0.98, "info", "stdout", `vitest: ${total} passed (${total})`], [0.99, "info", "calder", "report: reports/junit.xml decoded, 412 passed"])
         return lines.sort((a, b) => a[0] - b[0])
       }
     }
-    return [cmd, ws, [0.99, "info", "kiln", "exit 0"]]
+    return [cmd, ws, [0.99, "info", "calder", "exit 0"]]
   }
   if (s.plan.name === "promote") return promoteScript(run, s)
-  return [[0, "info", "kiln", "Gitea.comment"], [0.9, "info", "kiln", `comment posted on PR #${run.event._tag === "PullRequest" ? run.event.number : 0}`]]
+  return [[0, "info", "calder", "Gitea.comment"], [0.9, "info", "calder", `comment posted on PR #${run.event._tag === "PullRequest" ? run.event.number : 0}`]]
 }
 
 /** Phase boundaries of a deploy as fractions of the promote step: per host, from start to activation. */
@@ -834,23 +834,23 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
   const duration = (s.finishedAt - s.startedAt) / 1000
   const after = [...(s.plan.after ?? [])]
   const lines: Array<Line> = [
-    [0, "info", "kiln", `lease deploy:${run.project} acquired (latest wins, fencing token ${1100 + run.number})`],
-    [0.002, "info", "kiln", `required checks passed: ${after.join(", ")}`],
+    [0, "info", "calder", `lease deploy:${run.project} acquired (latest wins, fencing token ${1100 + run.number})`],
+    [0.002, "info", "calder", `required checks passed: ${after.join(", ")}`],
   ]
   for (const ph of phases(run)) {
     const span = ph.activate - ph.from
     const at = (f: number) => ph.from + span * f
-    lines.push([at(0.01), "info", "kiln", `POST ${ph.host}:18100/preflight/${run.project} 200`])
-    lines.push([at(0.04), "info", "kiln", `cache: narinfo for ${storePathOf(run).slice(11, 19)} present`])
-    lines.push([at(0.06), "info", "kiln", `head check: main still at ${sha}`])
-    lines.push([at(0.08), "info", "kiln", `POST ${ph.host}:18100/deploy/${run.project} 202 (fence ${1100 + run.number})`])
+    lines.push([at(0.01), "info", "calder", `POST ${ph.host}:18100/preflight/${run.project} 200`])
+    lines.push([at(0.04), "info", "calder", `cache: narinfo for ${storePathOf(run).slice(11, 19)} present`])
+    lines.push([at(0.06), "info", "calder", `head check: main still at ${sha}`])
+    lines.push([at(0.08), "info", "calder", `POST ${ph.host}:18100/deploy/${run.project} 202 (fence ${1100 + run.number})`])
     const polls = Math.max(1, Math.floor((span * duration) / 15))
     for (let i = 1; i < polls; i++) {
-      lines.push([at(0.1 + (0.88 * i) / polls), "debug", "kiln", `readiness: ${ph.host} still reports the previous revision, retry in 15 s`])
+      lines.push([at(0.1 + (0.88 * i) / polls), "debug", "calder", `readiness: ${ph.host} still reports the previous revision, retry in 15 s`])
     }
-    lines.push([at(1), "info", "kiln", `readiness: ${ph.host} reports ${sha}`])
+    lines.push([at(1), "info", "calder", `readiness: ${ph.host} reports ${sha}`])
   }
-  lines.push([0.99, "info", "kiln", `${run.project} ${sha} live on ${hostsOf(run.project).join(", ")}`])
+  lines.push([0.99, "info", "calder", `${run.project} ${sha} live on ${hostsOf(run.project).join(", ")}`])
   return lines
 }
 
@@ -858,13 +858,13 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
   const st = stepState(run, s, now)
   const name = s.plan.name
   if (st.status === "reused") {
-    return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.queuedAt, text: s.plan.kind === "build" ? `already built: ${s.key ?? ""}` : `reused ${s.key ?? ""} from run ${s.reusedFrom ?? ""}, nothing ran` }]
+    return [{ step: name, shard: null, stream: "calder", level: "info", timestamp: s.queuedAt, text: s.plan.kind === "build" ? `already built: ${s.key ?? ""}` : `reused ${s.key ?? ""} from run ${s.reusedFrom ?? ""}, nothing ran` }]
   }
   if (st.status === "blocked") {
-    return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.finishedAt, text: "blocked: a step it depends on didn't pass" }]
+    return [{ step: name, shard: null, stream: "calder", level: "info", timestamp: s.finishedAt, text: "blocked: a step it depends on didn't pass" }]
   }
   if (st.status === "queued" && s.plan.platform !== undefined) {
-    return [{ step: name, shard: null, stream: "kiln", level: "info", timestamp: s.queuedAt, text: `waiting for a ${s.plan.platform} agent` }]
+    return [{ step: name, shard: null, stream: "calder", level: "info", timestamp: s.queuedAt, text: `waiting for a ${s.plan.platform} agent` }]
   }
   if (st.startedAt === null) return []
   const duration = s.finishedAt - s.startedAt
@@ -873,7 +873,7 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
     .sort((a, b) => a[0] - b[0])
     .map(([at, level, stream, text, shard]) => ({ step: name, shard: shard ?? null, stream, level, timestamp: Math.round(s.startedAt + at * duration), text }))
     .filter((l) => l.timestamp <= until)
-  if (st.status === "cancelled") out.push({ step: name, shard: null, stream: "kiln", level: "warn", timestamp: until, text: "cancelled by hauke" })
+  if (st.status === "cancelled") out.push({ step: name, shard: null, stream: "calder", level: "warn", timestamp: until, text: "cancelled by hauke" })
   return out
 }
 
@@ -887,9 +887,9 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
   const spans: Array<Domain.Span> = [{
     spanId: root, parentId: null, name: `run ${run.project} #${run.number}`, start: run.createdAt, end,
     status: isActive(status) ? "unset" : status === "failed" ? "error" : "ok",
-    attributes: { "kiln.run": run.id, "kiln.project": run.project },
+    attributes: { "calder.run": run.id, "calder.project": run.project },
   }]
-  spans.push({ spanId: hex(`span:${run.id}:plan`, 16), parentId: root, name: "plan", start: run.createdAt, end: run.startedAt, status: "ok", attributes: { "kiln.project": run.project, "kiln.run": run.id } })
+  spans.push({ spanId: hex(`span:${run.id}:plan`, 16), parentId: root, name: "plan", start: run.createdAt, end: run.startedAt, status: "ok", attributes: { "calder.project": run.project, "calder.run": run.id } })
   for (const s of run.steps) {
     const st = stepState(run, s, now)
     if (st.status === "pending" || st.status === "blocked" || st.status === "queued") continue
@@ -901,8 +901,8 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
       spanId: id, parentId: root, name: s.plan.name, start: from, end: to,
       status: open ? "unset" : st.status === "failed" || st.status === "died" ? "error" : "ok",
       attributes: {
-        "kiln.project": run.project, "kiln.run": run.id, "kiln.step": s.plan.name, "kiln.kind": s.plan.kind, "kiln.status": st.status,
-        ...(s.key ? { "kiln.key": s.key } : {}),
+        "calder.project": run.project, "calder.run": run.id, "calder.step": s.plan.name, "calder.kind": s.plan.kind, "calder.status": st.status,
+        ...(s.key ? { "calder.key": s.key } : {}),
       },
     })
     if (st.status === "reused" || st.startedAt === null) continue
@@ -926,13 +926,13 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
         child(s.plan.detail, 0.04, 0.99, {}, st.status === "failed")
       }
     } else if (s.plan.name === "promote") {
-      child(`lease deploy:${run.project}`, 0, 0.002, { "kiln.fence": String(1100 + run.number) })
+      child(`lease deploy:${run.project}`, 0, 0.002, { "calder.fence": String(1100 + run.number) })
       for (const ph of phases(run)) {
         const span = ph.activate - ph.from
         const deploy = `http://${ph.host}:18100`
         child(`POST ${ph.host} /preflight`, ph.from + span * 0.005, ph.from + span * 0.02, { "http.url": `${deploy}/preflight/${run.project}`, "http.status": "200" })
         child("query narinfo", ph.from + span * 0.02, ph.from + span * 0.04, { "nix.activity": "query" })
-        child(`POST ${ph.host} /deploy`, ph.from + span * 0.07, ph.from + span * 0.1, { "http.url": `${deploy}/deploy/${run.project}`, "http.status": "202", "kiln.fence": String(1100 + run.number) })
+        child(`POST ${ph.host} /deploy`, ph.from + span * 0.07, ph.from + span * 0.1, { "http.url": `${deploy}/deploy/${run.project}`, "http.status": "202", "calder.fence": String(1100 + run.number) })
         child(`readiness ${ph.host}`, ph.from + span * 0.1, ph.activate, { "http.url": `${urlOf(run.project)}/api/health/ready` })
       }
     } else {

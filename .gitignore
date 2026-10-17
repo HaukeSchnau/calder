@@ -3,6 +3,6 @@ dist
 *.tsbuildinfo
 result
 result-*
-/.kiln-state
+/.calder-state
 .astro
 .alchemy

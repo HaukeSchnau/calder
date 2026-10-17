@@ -1,8 +1,8 @@
-import type { Domain } from "@kiln/api"
+import type { Domain } from "@calder-ci/api"
 import { type Duration, Effect, PubSub, Stream } from "effect"
 import { AsyncResult, Atom } from "effect/reactivity"
 import { RpcClientError } from "effect/rpc/RpcClientError"
-import { Kiln } from "./client.ts"
+import { Calder } from "./client.ts"
 
 const refresh = Symbol("refresh")
 
@@ -18,10 +18,10 @@ const retryWhileOffline = <A, E, R>(self: Stream.Stream<A, E | RpcClientError, R
  * One `changes` subscription per connection, fanned out to every live view. While the socket is down
  * views miss changes; the gap in seq after it comes back makes them reload.
  */
-const changesAtom = Kiln.runtime.atom(Effect.gen(function*() {
-  const kiln = yield* Kiln
+const changesAtom = Calder.runtime.atom(Effect.gen(function*() {
+  const calder = yield* Calder
   const hub = yield* PubSub.unbounded<Domain.Change>()
-  yield* retryWhileOffline(kiln("changes", undefined)).pipe(
+  yield* retryWhileOffline(calder("changes", undefined)).pipe(
     Stream.runForEach((change) => PubSub.publish(hub, change)),
     Effect.forkScoped,
   )
@@ -42,10 +42,10 @@ const withSeq = <A extends { readonly seq: number }>(value: A): Snapshot<A> => (
  * changes don't carry, such as slot use.
  */
 function live<A, E>(get: Atom.AtomContext, options: {
-  readonly load: Effect.Effect<Snapshot<A>, E | RpcClientError, Kiln>
+  readonly load: Effect.Effect<Snapshot<A>, E | RpcClientError, Calder>
   readonly apply: (current: A, change: Domain.Change) => A
   readonly refresh?: { readonly every: Duration.Input; readonly merge: (current: A, fresh: A) => A }
-}): Stream.Stream<A, Exclude<E, RpcClientError>, Kiln> {
+}): Stream.Stream<A, Exclude<E, RpcClientError>, Calder> {
   const { load, apply, refresh: timer } = options
   const step = (state: Snapshot<A>, change: Domain.Change): Snapshot<A> => ({ seq: change.seq, value: apply(state.value, change) })
   const connected = Stream.unwrap(Effect.gen(function*() {
@@ -70,7 +70,7 @@ function live<A, E>(get: Atom.AtomContext, options: {
   return retryWhileOffline(connected)
 }
 
-function poll<A, E>(load: Effect.Effect<A, E | RpcClientError, Kiln>, every: Duration.Input | null): Stream.Stream<A, Exclude<E, RpcClientError>, Kiln> {
+function poll<A, E>(load: Effect.Effect<A, E | RpcClientError, Calder>, every: Duration.Input | null): Stream.Stream<A, Exclude<E, RpcClientError>, Calder> {
   const stream = every === null ? Stream.fromEffect(load) : Stream.tick(every).pipe(Stream.mapEffect(() => load))
   return retryWhileOffline(stream)
 }
@@ -130,8 +130,8 @@ function applyOverview(ov: Domain.Overview, change: Domain.Change): Domain.Overv
   }
 }
 
-export const overviewAtom = Kiln.runtime.atom((get) => live(get, {
-  load: Kiln.use((k) => k("overview", undefined)).pipe(Effect.map(withSeq)),
+export const overviewAtom = Calder.runtime.atom((get) => live(get, {
+  load: Calder.use((k) => k("overview", undefined)).pipe(Effect.map(withSeq)),
   apply: applyOverview,
   refresh: { every: "15 seconds", merge: (current, fresh) => ({ ...current, slots: fresh.slots }) },
 })).pipe(Atom.keepAlive)
@@ -164,7 +164,7 @@ const applyRun = (id: string) => (d: Domain.RunDetail, change: Domain.Change): D
 }
 
 export const runAtom = Atom.family((id: string) =>
-  Kiln.runtime.atom((get) => live(get, { load: Kiln.use((k) => k("run", { id })).pipe(Effect.map(withSeq)), apply: applyRun(id) })))
+  Calder.runtime.atom((get) => live(get, { load: Calder.use((k) => k("run", { id })).pipe(Effect.map(withSeq)), apply: applyRun(id) })))
 
 /* ------------------------------------------------------------------ */
 /* A project's runs                                                    */
@@ -183,9 +183,9 @@ const applyRuns = (key: RunsKey) => (runs: ReadonlyArray<Domain.Run>, change: Do
 }
 
 export const projectRunsAtom = Atom.family((key: RunsKey) =>
-  Kiln.runtime.atom((get) =>
+  Calder.runtime.atom((get) =>
     live(get, {
-      load: Kiln.use((k) => k("runs", key.pullRequest === null ? { project: key.project, limit: 60 } : { project: key.project, pullRequest: key.pullRequest, limit: 60 }))
+      load: Calder.use((k) => k("runs", key.pullRequest === null ? { project: key.project, limit: 60 } : { project: key.project, pullRequest: key.pullRequest, limit: 60 }))
         .pipe(Effect.map(({ seq, runs }) => ({ seq, value: runs }))),
       apply: applyRuns(key),
     })
@@ -206,9 +206,9 @@ export const LOG_PAGE = 2000
 const logsPayload = (runId: string, step: string | null) => (step === null ? { runId } : { runId, step })
 
 export const logsAtom = Atom.family((key: LogsKey) =>
-  Kiln.runtime.atom(
+  Calder.runtime.atom(
     retryWhileOffline(
-      Stream.unwrap(Kiln.use((k) => Effect.succeed(k("logs", { ...logsPayload(key.runId, key.step), follow: key.follow, limit: LOG_PAGE })))).pipe(
+      Stream.unwrap(Calder.use((k) => Effect.succeed(k("logs", { ...logsPayload(key.runId, key.step), follow: key.follow, limit: LOG_PAGE })))).pipe(
         Stream.groupedWithin(2000, "60 millis"),
         Stream.scan((): ReadonlyArray<Domain.LogEntry> => [], (lines, batch) => lines.concat(batch)),
       ),
@@ -216,14 +216,14 @@ export const logsAtom = Atom.family((key: LogsKey) =>
   ))
 
 export const traceAtom = Atom.family((key: { readonly runId: string; readonly live: boolean }) =>
-  Kiln.runtime.atom(poll(Kiln.use((k) => k("trace", { runId: key.runId })), key.live ? "3 seconds" : null)))
+  Calder.runtime.atom(poll(Calder.use((k) => k("trace", { runId: key.runId })), key.live ? "3 seconds" : null)))
 
 export const metricsAtom = Atom.family((key: { readonly runId: string; readonly step: string; readonly live: boolean }) =>
-  Kiln.runtime.atom(poll(Kiln.use((k) => k("stepMetrics", { runId: key.runId, step: key.step })), key.live ? "2 seconds" : null)))
+  Calder.runtime.atom(poll(Calder.use((k) => k("stepMetrics", { runId: key.runId, step: key.step })), key.live ? "2 seconds" : null)))
 
 /** The page before a line's `index`. */
-export const earlierLogs = Kiln.runtime.fn((page: { readonly runId: string; readonly step: string | null; readonly before: number }) =>
-  Kiln.use((k) => Stream.runCollect(k("logs", { ...logsPayload(page.runId, page.step), before: page.before, limit: LOG_PAGE }))))
+export const earlierLogs = Calder.runtime.fn((page: { readonly runId: string; readonly step: string | null; readonly before: number }) =>
+  Calder.use((k) => Stream.runCollect(k("logs", { ...logsPayload(page.runId, page.step), before: page.before, limit: LOG_PAGE }))))
 
 /* ------------------------------------------------------------------ */
 /* Deploys                                                             */
@@ -242,11 +242,11 @@ const applyHistory = (key: HistoryKey) => (records: ReadonlyArray<Domain.Deploym
   return [r, ...records].slice(0, key.limit)
 }
 
-/** Deploys Kiln made, newest first, with each new one prepended as it is recorded. */
+/** Deploys Calder made, newest first, with each new one prepended as it is recorded. */
 export const deployHistoryAtom = Atom.family((key: HistoryKey) =>
-  Kiln.runtime.atom((get) =>
+  Calder.runtime.atom((get) =>
     live(get, {
-      load: Kiln.use((k) => k("deployments", key.host === null ? { project: key.project, limit: key.limit } : { project: key.project, host: key.host, limit: key.limit }))
+      load: Calder.use((k) => k("deployments", key.host === null ? { project: key.project, limit: key.limit } : { project: key.project, host: key.host, limit: key.limit }))
         .pipe(Effect.map((value) => ({ seq: null, value }))),
       apply: applyHistory(key),
     })
