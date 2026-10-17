@@ -15,7 +15,7 @@ const pipelines = [
     id: "calder",
     label: "Calder and this website",
     code: calder,
-    note: "Calder's own pipeline. The tests run file by file in two shards, the website has an install of its own, and pull requests deploy a preview of it.",
+    note: "Calder's own pipeline. The tests run file by file in two shards, and the website has an install of its own.",
   },
   {
     id: "extension",
@@ -28,13 +28,12 @@ const pipelines = [
 const plan = `$ calder plan --event pr:7
 pull request #7: pr, reuse all
   build  package
+  build  site
   setup  install (pulled in)
   task   check  ← needs install
   task   test  ← needs install
   setup  site-install (pulled in)
-  task   site  ← needs site-install
-  task   preview  ← needs site-install, after package, after check, after test, after site
-  action preview-url  ← after preview`
+  task   site-check  ← needs site-install`
 
 const measurements = [
   {
@@ -301,8 +300,8 @@ const measurements = [
     </p>
     <p>
       This page explains how it works in case the ideas are useful to you. It lives in Calder's
-      repository, and Calder's own pipeline checks it, deploys a preview for every pull request and
-      deploys it to Cloudflare with <a href="https://alchemy.run">Alchemy</a> on every push to main.
+      repository, Calder's own pipeline checks and builds it, and the host that runs Calder serves it
+      next to the app.
     </p>
   </section>
   <script>

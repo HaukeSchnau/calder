@@ -21,19 +21,14 @@ const test = Vitest.files({
   shards: 2,
 })
 
-/** The website has a lockfile of its own, so that Astro and Alchemy stay out of Calder's package. */
+/** The website has a lockfile of its own, so that Astro stays out of Calder's package. */
 const siteInstall = Pnpm.install({ name: "site-install", shell, dir: "site" })
-const site = Task.make("site", {
+const siteCheck = Task.make("site-check", {
   shell,
   setup: siteInstall,
-  inputs: Files.of("site"),
+  inputs: Files.of("site", ".calder/ci.ts"),
   run: cmd`pnpm --dir site check`,
 })
 
-/** Pushes to main deploy the website (site/alchemy.run.ts) once every check passed. */
-export default Project.alchemy({
-  flake,
-  stack: { shell, setup: siteInstall, dir: "site", env: "cloudflare" },
-  checks: [check, test, site],
-  previews: { url: (pr) => `https://pr-${pr}-kiln-site.hauke-911.workers.dev` },
-})
+/** The flake's checks build the package and the website, which infra deploys with the controller. */
+export default Project.standard({ flake, checks: [check, test, siteCheck] })

@@ -2,7 +2,7 @@
 import { Flake } from "@calder-ci/core"
 
 export const flake = Flake.make({
-  packages: ["calder", "default"],
-  checks: ["package"],
+  packages: ["calder", "default", "site"],
+  checks: ["package", "site"],
   devShells: ["default"],
 })

@@ -172,6 +172,18 @@ doesn't know, such as jobs from before its restart, before it gives that agent n
 restarts stops the workers its earlier run left behind before it takes jobs, from the pids it keeps in
 `<workspaces>/.workers`.
 
+## Two addresses
+
+The controller listens twice. `listen` is for the private network: Gitea's webhook, agents and their
+workers (who fetch revisions at `url`), the CLI and the UI at `/`, none of it behind a sign-in. `web`
+is the UI for everyone else, at the path of `publicUrl` (`/app`), for a proxy to expose: it serves only
+the UI, its RPC and task outputs, and only to the Gitea users in `web.users` once they signed in
+through the Gitea OAuth2 application `web.oauth` (redirect URI `<publicUrl>/auth/callback`). Sessions
+last 30 days and are signed with a key the controller keeps in its state directory;
+`<publicUrl>/auth/sign-out` ends one. In the fleet, `https://calder.schnau.dev` serves the website at
+`/` and the app at `/app/`, and agents and the CLI use `https://ci.schnau.dev` on the Tailnet
+(`$CALDER_URL`).
+
 ## Projects and history
 
 A repository of one of the controller's `owners` becomes a project once a push, a pull request or `calder check`
@@ -205,7 +217,7 @@ run every time, and the package installs `kiln` as a link to `calder`. `calder g
 | `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
 | `sdk` | What `.calder/node_modules` links to, so ci.ts and the worker share one copy of Effect, and the tsconfig `.calder/tsconfig.json` extends |
-| `site` | The website at https://calder-ci.schnau.dev (Astro, deployed to Cloudflare by `.calder/ci.ts`), with a lockfile of its own so its dependencies stay out of Calder's package |
+| `site` | The website (Astro, `packages.site` of the flake) that the proxy serves at `/` of https://calder.schnau.dev, with a lockfile of its own so its dependencies stay out of Calder's package |
 
 ```
 pnpm install

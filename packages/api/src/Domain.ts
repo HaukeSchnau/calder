@@ -162,9 +162,12 @@ export type StepRun = typeof StepRun.Type
 export const unneeded = (step: Pick<StepRun, "kind" | "status" | "queuedAt">) =>
   step.kind === "setup" && step.status === "reused" && step.queuedAt === null
 
-/** Where the controller serves a step's output: a file as it is, a directory as a list of links. */
+/**
+ * Where the controller serves a step's output, relative to the UI's page: a file as it is, a directory
+ * as a list of links.
+ */
 export const outputPath = (runId: string, step: string, output: string) =>
-  `/outputs/${[runId, step, output].map(encodeURIComponent).join("/")}`
+  `outputs/${[runId, step, output].map(encodeURIComponent).join("/")}`
 
 export const TestResult = Schema.Struct({
   runId: Schema.String,

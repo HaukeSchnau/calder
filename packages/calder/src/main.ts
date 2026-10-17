@@ -22,8 +22,8 @@ const system = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.pla
 const repository = Argument.String("dir").pipe(Argument.withDescription("The repository, by default the current directory"), Argument.withDefault("."))
 const runId = Argument.String("run").pipe(Argument.withDescription("The run id, such as calder-12"))
 const url = Flag.String("url").pipe(
-  Flag.withDescription("The controller (default $CALDER_URL, then https://calder.schnau.dev)"),
-  Flag.withDefault(process.env.CALDER_URL ?? "https://calder.schnau.dev"),
+  Flag.withDescription("The controller (default $CALDER_URL, then https://ci.schnau.dev)"),
+  Flag.withDefault(process.env.CALDER_URL ?? "https://ci.schnau.dev"),
 )
 
 const controller = Command.make("controller", {
@@ -255,7 +255,7 @@ const status = Command.make("status", { run: runId, url }, ({ run, url }) =>
     for (const step of detail.steps) {
       if (step.kind === "output") continue
       yield* Console.log(Cli.stepLine(step))
-      for (const o of step.outputs) yield* Console.log(`    ${o.name}: ${url.replace(/\/$/, "")}${Domain.outputPath(r.id, step.name, o.name)}`)
+      for (const o of step.outputs) yield* Console.log(`    ${o.name}: ${url.replace(/\/$/, "")}/${Domain.outputPath(r.id, step.name, o.name)}`)
     }
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
     Command.withDescription("Show a run's steps, why the failed ones failed, and links to their outputs"),
