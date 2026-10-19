@@ -100,9 +100,9 @@ The CLI starts as `pnpm exec alchemy`; a Bun repository sets `runner: "bun"` and
 directory, such as a website in `site/`, sets `dir` on the stack and on its install, and the CLI runs
 there.
 
-A stack with `outputs` makes what it returns the value of its deploys: after deploying, the step
-reads it with `alchemy state read <name>/<stage>/output` and decodes it with the schema, which leaves
-out secrets such as tokens. A preview's `url` gets the outputs as its second argument.
+A stack with `outputs` makes what it returns, an object, the value of its deploys: after deploying,
+the step reads it with `alchemy state read <name>/<stage>/output` and decodes it with the schema,
+which leaves out secrets such as tokens. A preview's `url` gets the outputs as its second argument.
 
 ```ts
 export default Project.alchemy({
