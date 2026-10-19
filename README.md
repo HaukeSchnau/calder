@@ -77,7 +77,7 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   secret the project doesn't configure dies saying so. ``cmd`... ${Cmd.pullRequest}` `` passes the
   run's pull-request number. `lease: true` makes a trusted task hold the project's deploy lease while
   it runs, like `Release.promote`: one deploy at a time, and a run a newer one replaced passes without
-  running.
+  running. Deploys of the same run take the lease in turn.
 - **action** (`Action.make`): Effect code with side effects. `needs` are the steps whose values the
   body reads, `after` the steps that must pass first, `grants` what it may do (`deploy`, `secrets`).
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch

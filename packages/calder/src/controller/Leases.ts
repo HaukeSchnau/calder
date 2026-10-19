@@ -13,14 +13,15 @@ interface Waiter extends Holder {
 }
 interface State {
   holder: Holder | undefined
-  waiter: Waiter | undefined
+  /** In the order they asked, all of one run: a newer run's request replaces an older run's. */
+  waiters: Array<Waiter>
   /** The newest run that held the lease; older runs are replaced. */
   newest: number
 }
 
 /**
  * One deploy at a time per project, latest wins: a run waiting for the lease gives way to a newer one,
- * and a run older than the last holder never gets it. Every grant carries a fencing token from a counter
+ * and a run older than the last holder never gets it. Deploys of the same run take it in turn. Every grant carries a fencing token from a counter
  * that survives restarts, so a promotion endpoint can refuse a stale holder.
  */
 export class Leases extends Context.Service<Leases, {
@@ -37,7 +38,7 @@ export const make = (nextFence: (project: string) => Effect.Effect<number>): Lea
   const state = (project: string) => {
     let s = states.get(project)
     if (s === undefined) {
-      s = { holder: undefined, waiter: undefined, newest: 0 }
+      s = { holder: undefined, waiters: [], newest: 0 }
       states.set(project, s)
     }
     return s
@@ -52,22 +53,24 @@ export const make = (nextFence: (project: string) => Effect.Effect<number>): Lea
       return { _tag: "Held", fence } satisfies Grant
     })
 
+  /** Tells the waiters `keep` drops that a newer run replaced them. */
+  const replaceWaiters = (s: State, keep: (waiter: Waiter) => boolean) =>
+    Effect.gen(function*() {
+      const replaced = s.waiters.filter((waiter) => !keep(waiter))
+      s.waiters = s.waiters.filter(keep)
+      yield* Effect.forEach(replaced, (waiter) => Deferred.succeed(waiter.granted, { _tag: "Replaced" }), { discard: true })
+    })
+
   const release: Leases["Service"]["release"] = (project, job) =>
     Effect.gen(function*() {
       const s = state(project)
-      if (s.waiter?.job === job) {
-        yield* Deferred.succeed(s.waiter.granted, { _tag: "Replaced" })
-        s.waiter = undefined
-      }
+      yield* replaceWaiters(s, (waiter) => waiter.job !== job)
       if (s.holder?.job !== job) return
       fences.delete(`${project}/${job}`)
       s.holder = undefined
-      const next = s.waiter
-      if (next !== undefined) {
-        s.waiter = undefined
-        const granted: Grant = next.run < s.newest ? { _tag: "Replaced" } : yield* grant(project, next)
-        yield* Deferred.succeed(next.granted, granted)
-      }
+      yield* replaceWaiters(s, (waiter) => waiter.run >= s.newest)
+      const next = s.waiters.shift()
+      if (next !== undefined) yield* Deferred.succeed(next.granted, yield* grant(project, next))
     })
 
   return {
@@ -79,12 +82,10 @@ export const make = (nextFence: (project: string) => Effect.Effect<number>): Lea
         if (s.holder?.job === holder.job && held !== undefined) return { _tag: "Held", fence: held } satisfies Grant
         if (holder.run < s.newest) return { _tag: "Replaced" } satisfies Grant
         if (s.holder === undefined) return yield* grant(project, holder)
-        if (s.waiter !== undefined) {
-          if (s.waiter.run > holder.run) return { _tag: "Replaced" } satisfies Grant
-          yield* Deferred.succeed(s.waiter.granted, { _tag: "Replaced" })
-        }
+        if (s.waiters.some((waiter) => waiter.run > holder.run)) return { _tag: "Replaced" } satisfies Grant
+        yield* replaceWaiters(s, (waiter) => waiter.run === holder.run)
         const granted = yield* Deferred.make<Grant>()
-        s.waiter = { ...holder, granted }
+        s.waiters.push({ ...holder, granted })
         return yield* Deferred.await(granted).pipe(Effect.onInterrupt(() => release(project, holder.job)))
       }),
     release,
