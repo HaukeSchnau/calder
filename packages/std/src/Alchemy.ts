@@ -46,8 +46,10 @@ const quote = (words: ReadonlyArray<string>) => words.map((word) => `'${word.rep
 const withOutputs = <A>(stack: Stack<A>, outputs: NonNullable<Stack<A>["outputs"]>) => {
   const cli = quote(cliOf(stack))
   const config = quote(configOf(stack))
+  // pnpm and Alchemy both log to stdout, which has to hold the JSON alone.
+  const quiet = quote(stack.runner === "bun" ? cliOf(stack) : ["pnpm", "--silent", ...cliOf(stack).slice(1)])
   return `${cli} deploy ${config} --stage "$1" --yes --env-file "$2" && ` +
-    `${cli} state read ${quote([`${outputs.name}/`])}"$1"/output ${config} --env-file "$2" > ${quote([outputsFile])}`
+    `${quiet} state read ${quote([`${outputs.name}/`])}"$1"/output ${config} --env-file "$2" --log-level error > ${quote([outputsFile])}`
 }
 
 const valueOf = <A>(stack: Stack<A>) =>
