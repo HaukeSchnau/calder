@@ -266,7 +266,10 @@ export const goMemLimit = (cgroup = ownCgroup()): Record<string, string> => {
 
 /** A task's value: the JSON file it wrote, decoded with its schema. A task that wrote none died. */
 const readValue = (workspace: string, value: { readonly path: string; readonly schema: Schema.Decoder<unknown> }) =>
-  Effect.try((): unknown => JSON.parse(readFileSync(join(workspace, value.path), "utf8"))).pipe(
+  Effect.try({
+    try: (): unknown => JSON.parse(readFileSync(join(workspace, value.path), "utf8")),
+    catch: (cause) => cause,
+  }).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(value.schema)),
     Effect.catch((error) => Effect.die(new Error(`the task's value at ${value.path} is missing or invalid: ${error}`))),
   )

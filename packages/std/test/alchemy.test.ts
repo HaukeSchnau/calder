@@ -53,7 +53,7 @@ describe("Alchemy.deploy", () => {
     // Stands in for `pnpm exec alchemy`: records each call and answers `state read` like Alchemy does.
     writeFileSync(
       join(dir, "bin", "pnpm"),
-      `#!/usr/bin/env bash\necho "$*" >> calls\n[ "$3" = state ] && echo '{"url":"https://site.example","token":{"__redacted__":"s3cret"}}'\ntrue\n`,
+      `#!/usr/bin/env bash\necho "$*" >> calls\n[[ " $* " == *" state read "* ]] && echo '{"url":"https://site.example","token":{"__redacted__":"s3cret"}}'\ntrue\n`,
       { mode: 0o755 },
     )
     const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) }
@@ -68,7 +68,7 @@ describe("Alchemy.deploy", () => {
 
     expect(readFileSync(join(dir, "calls"), "utf8").trim().split("\n")).toEqual([
       "exec alchemy deploy --stage prod --yes --env-file /secrets/cloudflare",
-      "exec alchemy state read Site/prod/output --env-file /secrets/cloudflare",
+      "--silent exec alchemy state read Site/prod/output --env-file /secrets/cloudflare --log-level error",
     ])
     if (step.def._tag !== "Task" || step.def.value === undefined) throw new Error("not a task with a value")
     const written: unknown = JSON.parse(readFileSync(join(dir, step.def.value.path), "utf8"))
