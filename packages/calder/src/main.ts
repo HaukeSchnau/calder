@@ -88,7 +88,11 @@ const plan = Command.make("plan", {
     Flag.withDescription("Checks branch protection requires, comma-separated, such as calder/qa"),
     Flag.optional,
   ),
-}, ({ dir, event, required }) =>
+  json: Flag.Boolean("json").pipe(
+    Flag.withDescription("Print the plan as JSON, such as for the checks a branch protection should require"),
+    Flag.withDefault(false),
+  ),
+}, ({ dir, event, required, json }) =>
   Effect.gen(function*() {
     const parsed = yield* Cli.parseEvent(event)
     const pipelineDir = Pipeline.find(resolve(dir)) ?? resolve(dir, ".calder")
@@ -97,6 +101,11 @@ const plan = Command.make("plan", {
     const project = yield* Load.project(pipelineDir)
     const requiredChecks = Option.match(required, { onNone: () => [], onSome: (r) => r.split(",") })
     const planned = yield* Calder.plan(project, parsed, { requiredChecks })
+    if (json) {
+      const steps = planned.steps.map(({ kind, name, target, needs, after, exits, required }) => ({ kind, name, target, needs, after, exits, required }))
+      yield* Console.log(JSON.stringify({ event: planned.event, trust: planned.trust, reuse: planned.reuse, steps }, null, 2))
+      return yield* Check.checkFiles(dir, project)
+    }
     yield* Console.log(`${Event.describe(planned.event)}: ${planned.trust}, reuse ${planned.reuse}`)
     for (const step of planned.steps) {
       const deps = [
