@@ -31,6 +31,9 @@ once every check passed. `afterDeploy` adds steps that run after the release is 
 that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci/std` `Project.ts`).
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.
+  Flake inputs that name another project's repository (`git+ssh` or `git+https` on the forge) come
+  from Calder's mirror of it, in plans, builds and tasks alike, so a flake with private inputs
+  evaluates without credentials, also in a pull request's sandbox. Agents fetch inputs themselves.
 - **setup** (`Setup.make`, or `Pnpm.install` and `Bun.install` from `@calder-ci/std`): prepares a workspace once per key,
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key

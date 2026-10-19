@@ -33,7 +33,15 @@ export class Mirror extends Context.Service<Mirror, {
   /** Extracts `.calder/` of a revision and links its `node_modules` to Calder's SDK. */
   readonly pipelineDir: (project: string, sha: string) => Effect.Effect<string, Exec.ExecError | NoPipeline>
   readonly flake: (project: string, sha: string) => string
+  /** Every fetched project's mirror by the URLs a flake input may name its repository with. */
+  readonly byUrl: () => Record<string, string>
 }>()("calder/controller/Mirror") {}
+
+/** The URLs a flake input names a repository of the forge with: `git+ssh` and `git+https`. */
+export const urls = (forge: string, repo: string) => {
+  const base = forge.replace(/\/$/, "")
+  return [`ssh://git@${new URL(base).host}/${repo}.git`, `${base}/${repo}.git`]
+}
 
 const groupReadable = (dir: string) => {
   chmodSync(dir, 0o2750)
@@ -200,5 +208,11 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
         return dir
       }),
     flake: (project, sha) => `git+file://${path(project)}?rev=${sha}`,
+    byUrl: () =>
+      Object.fromEntries(
+        projects.all()
+          .filter((project) => existsSync(join(path(project.name), "HEAD")))
+          .flatMap((project) => urls(config.gitea.url, project.repo).map((url) => [url, path(project.name)])),
+      ),
   }
 }))

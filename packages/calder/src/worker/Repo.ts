@@ -10,6 +10,18 @@ export const gitEnv = {
   GIT_TERMINAL_PROMPT: "0",
 }
 
+/** Git environment that fetches each URL from its mirror instead, for every process of a job. */
+export const insteadOf = (mirrors: Readonly<Record<string, string>>): Record<string, string> => {
+  const entries = Object.entries(mirrors)
+  return Object.fromEntries([
+    ["GIT_CONFIG_COUNT", String(entries.length)],
+    ...entries.flatMap(([url, mirror], i) => [
+      [`GIT_CONFIG_KEY_${i}`, `url.file://${mirror}.insteadOf`],
+      [`GIT_CONFIG_VALUE_${i}`, url],
+    ]),
+  ])
+}
+
 export const make = (mirror: string, revision: string) =>
   Effect.gen(function*() {
     const git = (args: ReadonlyArray<string>) => Exec.run(["git", "--git-dir", mirror, ...args], { env: gitEnv })

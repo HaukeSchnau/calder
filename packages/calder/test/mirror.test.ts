@@ -3,12 +3,14 @@ import { vi } from "vitest"
 import { Effect, Layer } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"
+import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Exec from "../src/Exec.ts"
 import * as Mirror from "../src/controller/Mirror.ts"
 import { Projects } from "../src/controller/Projects.ts"
+import * as Repo from "../src/worker/Repo.ts"
 import { config } from "./config.ts"
 import { insertRun, layer as sqlite } from "./sqlite.ts"
 
@@ -99,4 +101,21 @@ describe("Mirror", () => {
       yield* sweptOnce(state)
       expect(readdirSync(join(state, "revs/kept")).sort()).toEqual(["fresh", "running"])
     }).pipe(Effect.provide(sqlite)))
+})
+
+describe("flake inputs", () => {
+  it("come from the project's mirror under every URL a flake input names its repository with", () => {
+    const mirror = join(mkdtempSync(join(tmpdir(), "calder-mirror-")), "studienbuch.git")
+    execFileSync("git", ["init", "-q", "--bare", mirror])
+    const env = {
+      ...process.env,
+      ...Repo.insteadOf(Object.fromEntries(Mirror.urls("https://git.example.org/", "schnau/Studienbuch").map((url) => [url, mirror]))),
+      GIT_SSH_COMMAND: "false",
+    }
+    for (const url of ["ssh://git@git.example.org/schnau/Studienbuch.git", "https://git.example.org/schnau/Studienbuch.git"]) {
+      expect(execFileSync("git", ["ls-remote", "--get-url", url], { env, encoding: "utf8" }).trim()).toBe(`file://${mirror}`)
+    }
+    expect(execFileSync("git", ["ls-remote", "--get-url", "ssh://git@git.example.org/schnau/Studienbuch-Legacy.git"], { env, encoding: "utf8" }).trim())
+      .toBe("ssh://git@git.example.org/schnau/Studienbuch-Legacy.git")
+  })
 })

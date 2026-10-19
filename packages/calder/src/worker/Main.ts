@@ -92,6 +92,7 @@ export const run = (
     const token = "token" in options ? options.token : readFileSync(options.tokenFile, "utf8").trim()
     const job = yield* Client.make(id, token, remote)
     const spec = yield* Client.reconnecting(job.client.job({ job: id, token }))
+    Object.assign(process.env, Repo.insteadOf(spec.run.mirrors))
     const result: JobResult = yield* (spec._tag === "Plan" ? plan(spec) : step(spec)).pipe(
       Effect.provideService(Client.Job, job),
       Effect.catchCause((cause) => Effect.succeed({ _tag: "Died", message: Cause.pretty(cause) } satisfies JobResult)),
