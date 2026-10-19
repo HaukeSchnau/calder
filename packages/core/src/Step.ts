@@ -1,4 +1,4 @@
-import { Duration, Pipeable, type Effect } from "effect"
+import { Duration, Pipeable, type Effect, type Schema } from "effect"
 import type { Cmd } from "./Cmd.ts"
 import type { Files } from "./Files.ts"
 import type { FlakeRef } from "./Flake.ts"
@@ -121,6 +121,7 @@ export type Def =
     readonly report: ReportSpec | undefined
     readonly shards: { readonly count: number; readonly split: Files | undefined } | undefined
     readonly outputs: { readonly [name: string]: string }
+    readonly value: { readonly path: string; readonly schema: Schema.Decoder<unknown> } | undefined
     readonly secrets: { readonly [env: string]: SecretRef }
     readonly env: { readonly [env: string]: string }
     readonly platform: Platform | undefined

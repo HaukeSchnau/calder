@@ -1,12 +1,17 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Cmd, Files, Flake } from "@calder-ci/core"
+import { Schema } from "effect"
+import { execFileSync } from "node:child_process"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import * as Alchemy from "../src/Alchemy.ts"
 import * as Bun from "../src/Bun.ts"
 import * as Pnpm from "../src/Pnpm.ts"
 
 const shell = Flake.make({ packages: [], checks: [], devShells: ["ci"] }).devShells.ci
 
-const argv = (step: ReturnType<typeof Alchemy.deploy>) => {
+const argv = (step: ReturnType<typeof Alchemy.deploy<unknown>>) => {
   if (step.def._tag !== "Task" || typeof step.def.run === "function") throw new Error("not a task with one command")
   return Cmd.render(step.def.run, {}, { secrets: { cloudflare: "/secrets/cloudflare" } })
 }
@@ -40,5 +45,33 @@ describe("Alchemy.deploy", () => {
         ),
       ),
     )
+  })
+
+  it("with outputs, deploys and then writes what the stack returned where the task's value comes from", () => {
+    const dir = mkdtempSync(join(tmpdir(), "alchemy-outputs-"))
+    mkdirSync(join(dir, "bin"))
+    // Stands in for `pnpm exec alchemy`: records each call and answers `state read` like Alchemy does.
+    writeFileSync(
+      join(dir, "bin", "pnpm"),
+      `#!/usr/bin/env bash\necho "$*" >> calls\n[ "$3" = state ] && echo '{"url":"https://site.example","token":{"__redacted__":"s3cret"}}'\ntrue\n`,
+      { mode: 0o755 },
+    )
+    const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) }
+    const step = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare", outputs }, { stage: "prod" })
+    const [command, ...args] = argv(step)
+    // With a socket for stdin, as in Calder's workers, NixOS's bash sources /etc/bashrc, which resets PATH.
+    execFileSync(command!, args, {
+      cwd: dir,
+      env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    expect(readFileSync(join(dir, "calls"), "utf8").trim().split("\n")).toEqual([
+      "exec alchemy deploy --stage prod --yes --env-file /secrets/cloudflare",
+      "exec alchemy state read Site/prod/output --env-file /secrets/cloudflare",
+    ])
+    if (step.def._tag !== "Task" || step.def.value === undefined) throw new Error("not a task with a value")
+    const written: unknown = JSON.parse(readFileSync(join(dir, step.def.value.path), "utf8"))
+    expect(Schema.decodeUnknownSync(step.def.value.schema)(written)).toEqual({ url: "https://site.example" })
   })
 })
