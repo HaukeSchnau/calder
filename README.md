@@ -149,7 +149,8 @@ calder gen [dir]                       # writes .calder/flake.ts, .calder/tsconf
                                      # and the standard .calder/ci.ts if there is none
 calder plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref], schedule:<cron> or
                                      # manual[:<json object>] would run; exits 1 when a path or pattern
-                                     # matches no file of the working copy (jj or git)
+                                     # matches no file of the working copy (jj or git); --json prints
+                                     # the steps with their kind and edges
 calder check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 calder trigger <project> [--branch b]  # runs a branch head on the controller, follows it, and exits 1 unless
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
