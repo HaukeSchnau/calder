@@ -566,7 +566,8 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
     if (run.trust === "trusted") {
       const files = yield* secretFiles(job, step, grants.secrets ?? [])
       for (const [name, { value, path }] of Object.entries(files)) {
-        context = context.pipe(Context.add(Secret.tag(name), { value: Redacted.make(value), path }))
+        // Code gets the value without the final newline a file may end with; the file keeps it.
+        context = context.pipe(Context.add(Secret.tag(name), { value: Redacted.make(value.trim()), path }))
       }
     }
     const base = Layer.succeedContext(context).pipe(Layer.merge(FetchHttpClient.layer))

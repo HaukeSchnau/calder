@@ -1116,10 +1116,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       Effect.asVoid,
     )
 
+  /** The project's secrets as their files hold them: a key's format can need its final newline. */
   const readSecrets = (project: string, names: ReadonlyArray<string>) =>
     Object.fromEntries(names.flatMap((name) => {
       const file = projects.get(project)?.secrets[name]
-      return file === undefined ? [] : [[name, readFileSync(file, "utf8").trim()]]
+      return file === undefined ? [] : [[name, readFileSync(file, "utf8")]]
     }))
 
   // ----------------------------------------------------------------------------------------- finish
