@@ -6,3 +6,6 @@ result-*
 /.calder-state
 .astro
 .alchemy
+
+# The UI brief is an agent note and stays local.
+/packages/ui/BRIEF.md
