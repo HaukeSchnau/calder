@@ -18,6 +18,7 @@ const run = {
   event: Event.push("main"),
   flake: "git+file:///mirror",
   mirror: "/mirror",
+  mirrors: {},
   pipelineDir: "",
   system: "x86_64-linux",
 } satisfies RunInfo

@@ -100,6 +100,7 @@ const drive = (passed: ReadonlyArray<string>) =>
         commit: unused,
         pipelineDir: () => Effect.succeed("/calder"),
         flake: () => "git+file:///mirror",
+        byUrl: () => ({}),
       }),
       Layer.succeed(Telemetry)({ exportSpan: () => Effect.void, log: () => Effect.void, span: (_parent, _name, _attributes, effect) => effect, logs: unused, trace: unused }),
       Layer.succeed(Gitea)({

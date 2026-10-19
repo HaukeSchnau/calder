@@ -75,6 +75,12 @@ export const RunInfo = Schema.Struct({
   flake: Schema.String,
   /** The bare mirror, for tree ids and file listings. For agents' workers, its URL on the controller. */
   mirror: Schema.String,
+  /**
+   * Every project's mirror by the URLs a flake input may name its repository with, so the job fetches
+   * private inputs from the forge without credentials, also in a pull request's sandbox. Empty for
+   * agents' workers, which fetch inputs themselves.
+   */
+  mirrors: Schema.Record(Schema.String, Schema.String),
   /** The revision's `.calder/` directory, extracted, with `node_modules` linked to Calder's SDK. Empty for agents' workers. */
   pipelineDir: Schema.String,
   system: Schema.String,
