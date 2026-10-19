@@ -29,6 +29,21 @@ describe("Leases", () => {
       expect((yield* leases.acquire("p", { job: "d", run: 11 }))._tag).toBe("Replaced")
     }))
 
+  it.effect("deploys of one run take the lease in turn", () =>
+    Effect.gen(function*() {
+      const leases = Leases.make(counter())
+      expect((yield* leases.acquire("p", { job: "a", run: 5 }))._tag).toBe("Held")
+      const b = yield* Effect.forkChild(leases.acquire("p", { job: "b", run: 5 }))
+      yield* Effect.yieldNow
+      const c = yield* Effect.forkChild(leases.acquire("p", { job: "c", run: 5 }))
+      yield* Effect.yieldNow
+
+      yield* leases.release("p", "a")
+      expect((yield* Fiber.join(b))._tag).toBe("Held")
+      yield* leases.release("p", "b")
+      expect((yield* Fiber.join(c))._tag).toBe("Held")
+    }))
+
   it.effect("asking again for a held lease returns the same fence", () =>
     Effect.gen(function*() {
       const leases = Leases.make(counter())
