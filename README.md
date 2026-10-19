@@ -61,7 +61,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   for checks of the machine rather than the code. When a task's outcome differs from an earlier one
   with the same key, the UI and `calder status` flag it: the key misses an input, or the task is flaky.
   The paths a task names in `outputs` go to the Nix store, also when the task fails, and the UI and
-  `calder status` link to them; a failed task's outputs are never reused. A task with another `platform`
+  `calder status` link to them; a failed task's outputs are never reused. `value: { path, schema }`
+  gives a task a value like an action's: the JSON file the command wrote at `path`, decoded with
+  `schema` once it passed. Only what the schema decodes reaches the journal and the file never enters
+  the store, so it may hold secrets the schema leaves out. A task with another `platform`
   than the controller's runs on an agent of that platform (`calder agent`, trusted runs only). An agent of
   the controller's platform with a free slot also takes trusted tasks off the controller, unless the
   task says `offload: false` because it needs the controller's host. Pull-request
@@ -97,11 +100,20 @@ The CLI starts as `pnpm exec alchemy`; a Bun repository sets `runner: "bun"` and
 directory, such as a website in `site/`, sets `dir` on the stack and on its install, and the CLI runs
 there.
 
+A stack with `outputs` makes what it returns the value of its deploys: after deploying, the step
+reads it with `alchemy state read <name>/<stage>/output` and decodes it with the schema, which leaves
+out secrets such as tokens. A preview's `url` gets the outputs as its second argument.
+
 ```ts
 export default Project.alchemy({
   flake,
-  stack: { shell, setup: Pnpm.install({ shell }), env: "cloudflare" },
-  previews: { url: (pr) => `https://pr-${pr}-site.example.workers.dev` },
+  stack: {
+    shell,
+    setup: Pnpm.install({ shell }),
+    env: "cloudflare",
+    outputs: { name: "Site", schema: Schema.Struct({ url: Schema.String }) },
+  },
+  previews: { url: (_pr, outputs) => outputs.url },
 })
 ```
 

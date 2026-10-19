@@ -1,3 +1,4 @@
+import type { Schema } from "effect"
 import type { Cmd } from "./Cmd.ts"
 import * as Files from "./Files.ts"
 import type { FlakeRef } from "./Flake.ts"
@@ -7,7 +8,7 @@ import type { SecretRef } from "./Secret.ts"
 import type { Setup } from "./Setup.ts"
 import { make as makeStep, type Platform, type Shard, type Step } from "./Step.ts"
 
-export interface Options<R, O extends { readonly [name: string]: string }> {
+export interface Options<R, O extends { readonly [name: string]: string }, A = void> {
   /** The toolchain: a dev shell of the repository's flake. Without it the task runs with the host's PATH. */
   readonly shell?: FlakeRef<"devShells">
   /** The setup the workspace starts from, such as installed dependencies. */
@@ -32,6 +33,12 @@ export interface Options<R, O extends { readonly [name: string]: string }> {
   readonly shards?: { readonly count: number; readonly split?: Files.Files }
   /** Paths the task writes, added to the Nix store by content. Each becomes a step: `task.outputs.name`. */
   readonly outputs?: O
+  /**
+   * A JSON file the task writes, decoded with `schema` once its command passed: the task's value, which
+   * `needs` and `cmd` hand to other steps. Only what the schema decodes reaches the journal, and the file
+   * itself never enters the store, so it may hold secrets the schema leaves out.
+   */
+  readonly value?: { readonly path: string; readonly schema: Schema.Decoder<A> }
   /** Environment variables pointing at secret files. Trusted runs only. */
   readonly secrets?: { readonly [env: string]: SecretRef }
   readonly env?: { readonly [env: string]: string }
@@ -63,10 +70,10 @@ const dependencyFiles = Files.optional(
  * A command in a pinned toolchain, run in a persistent workspace of the repository. It is keyed by the
  * git tree ids of its inputs, its setup's key, the toolchain, the command and the values it interpolates.
  */
-export const make = <R = never, const O extends { readonly [name: string]: string } = {}>(
+export const make = <R = never, const O extends { readonly [name: string]: string } = {}, A = void>(
   name: string,
-  options: Options<R, O>,
-): Step<void, TaskFailed, R, O> =>
+  options: Options<R, O, A>,
+): Step<A, TaskFailed, R, O> =>
   makeStep("task", name, {
     _tag: "Task",
     shell: options.shell,
@@ -79,10 +86,11 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     report: options.report,
     shards: options.shards === undefined ? undefined : { count: options.shards.count, split: options.shards.split },
     outputs: options.outputs ?? {},
+    value: options.value,
     secrets: options.secrets ?? {},
     env: options.env ?? {},
     platform: options.platform,
     reuse: options.reuse,
     offload: options.offload,
     lease: options.lease,
-  }) as Step<void, TaskFailed, R, O>
+  }) as Step<A, TaskFailed, R, O>

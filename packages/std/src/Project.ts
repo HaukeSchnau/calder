@@ -58,15 +58,18 @@ export const standard = (options: StandardOptions): Calder.Project => {
   })
 }
 
-export interface AlchemyOptions {
+export interface AlchemyOptions<A = void> {
   readonly flake: Pick<StandardFlake, "checks">
-  readonly stack: Alchemy.Stack
+  readonly stack: Alchemy.Stack<A>
   /** Checks beyond the flake's own. They run on pull requests and pushes, and gate every deploy. */
   readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
   /** The stage the default branch deploys, `prod` by default. */
   readonly production?: string
-  /** Previews of same-repo pull requests at the URL `url` gives, removed when the pull request closes. */
-  readonly previews?: { readonly url: (pr: number) => string }
+  /**
+   * Previews of same-repo pull requests at the URL `url` gives from the pull request's number and the
+   * stack's `outputs`, removed when the pull request closes.
+   */
+  readonly previews?: { readonly url: (pr: number, outputs: A) => string }
   readonly defaultBranch?: string
   readonly shared?: Files.Files
   /** As in `standard`: a cron schedule that runs every check without reusing anything. */
@@ -78,7 +81,7 @@ export interface AlchemyOptions {
  * the default branch deploys the production stage once they passed. With `previews`, a same-repo pull
  * request deploys a stage of its own after its checks, and closing it removes the stage.
  */
-export const alchemy = (options: AlchemyOptions): Calder.Project => {
+export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project => {
   const flakeChecks = Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name }))
   const checks = [...flakeChecks, ...(options.checks ?? [])]
   const branch = options.defaultBranch ?? "main"

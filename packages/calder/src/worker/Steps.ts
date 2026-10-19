@@ -1,5 +1,5 @@
 import { Busy, Cache, Cmd, CurrentRun, Event, Flake, Fleet, Git, Gitea, Calder, PullRequest, Rejected, Report, Secret, Step } from "@calder-ci/core"
-import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted } from "effect"
+import { Cause, Context, Duration, Effect, Exit, Layer, Option, Redacted, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
 import { createHash } from "node:crypto"
@@ -264,6 +264,13 @@ export const goMemLimit = (cgroup = ownCgroup()): Record<string, string> => {
   return limit === null ? {} : { GOMEMLIMIT: `${Math.floor((limit * 0.9) / 2 ** 20)}MiB` }
 }
 
+/** A task's value: the JSON file it wrote, decoded with its schema. A task that wrote none died. */
+const readValue = (workspace: string, value: { readonly path: string; readonly schema: Schema.Decoder<unknown> }) =>
+  Effect.try((): unknown => JSON.parse(readFileSync(join(workspace, value.path), "utf8"))).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(value.schema)),
+    Effect.catch((error) => Effect.die(new Error(`the task's value at ${value.path} is missing or invalid: ${error}`))),
+  )
+
 export const task = (job: StepJob, step: Step.Any, values: Record<string, unknown>) =>
   Effect.gen(function*() {
     const def = step.def
@@ -321,6 +328,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       if (attempt > 1) yield* emit({ _tag: "Attempt", attempt, reason: "retry" })
       // An attempt that writes no report must not report the previous attempt's tests again.
       if (def.report !== undefined) rmSync(join(workspace, def.report.path), { force: true })
+      if (def.value !== undefined) rmSync(join(workspace, def.value.path), { force: true })
       yield* log("calder", `$ ${argv.join(" ")}`)
       const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) => log(stream, line))
       let failures: ReadonlyArray<Calder.TestFailure> = []
@@ -343,6 +351,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
         }
       }
       if (exitCode !== 0) return yield* new Calder.TaskFailed({ exitCode, failures })
+      return def.value === undefined ? undefined : yield* readValue(workspace, def.value)
     })
     const exit = yield* Effect.exit(withPolicies(once, step.policies))
     const passed = Exit.isSuccess(exit)
