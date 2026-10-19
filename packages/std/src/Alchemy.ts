@@ -39,17 +39,16 @@ const cliOf = (stack: Stack<unknown>) => {
 const quote = (words: ReadonlyArray<string>) => words.map((word) => `'${word.replaceAll("'", `'\\''`)}'`).join(" ")
 
 /**
- * `alchemy deploy`, then `alchemy state read <name>/<stage>/output`, which prints what the stack returned
- * as JSON, into the file the task's value comes from. The stage and the env file are the script's `$1`
- * and `$2`, since they are only known when the task runs.
+ * `alchemy deploy`, then `alchemy state read <name>/<stage>/output` into the file the task's value comes
+ * from. The CLI prints status lines to stdout before the outputs, an object, so the file keeps what
+ * starts at the line `{`. The stage and the env file are the script's `$1` and `$2`, since they are
+ * only known when the task runs.
  */
 const withOutputs = <A>(stack: Stack<A>, outputs: NonNullable<Stack<A>["outputs"]>) => {
   const cli = quote(cliOf(stack))
   const config = quote(configOf(stack))
-  // pnpm and Alchemy both log to stdout, which has to hold the JSON alone.
-  const quiet = quote(stack.runner === "bun" ? cliOf(stack) : ["pnpm", "--silent", ...cliOf(stack).slice(1)])
-  return `${cli} deploy ${config} --stage "$1" --yes --env-file "$2" && ` +
-    `${quiet} state read ${quote([`${outputs.name}/`])}"$1"/output ${config} --env-file "$2" --log-level error > ${quote([outputsFile])}`
+  return `set -o pipefail; ${cli} deploy ${config} --stage "$1" --yes --env-file "$2" && ` +
+    `${cli} state read ${quote([`${outputs.name}/`])}"$1"/output ${config} --env-file "$2" | sed -n '/^{/,$p' > ${quote([outputsFile])}`
 }
 
 const valueOf = <A>(stack: Stack<A>) =>
