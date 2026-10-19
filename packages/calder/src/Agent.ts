@@ -26,7 +26,7 @@ export interface Options {
   readonly calder: ReadonlyArray<string>
   /**
    * A command whose `lease` subcommand prints `ready` once the host admits a job and holds that
-   * admission until its stdin closes (`builder-control` on the Apple builder).
+   * admission until its stdin closes, like a Mac builder's admission wrapper.
    */
   readonly admission: string | null
 }

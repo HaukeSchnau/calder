@@ -33,7 +33,7 @@ const Repo = Schema.Struct({
 })
 
 /**
- * A deploy of srv-2 restarts the proxy in front of Gitea for a minute or so. Requests that can repeat
+ * Redeploying the host in front of Gitea restarts its proxy for a minute or so. Requests that can repeat
  * retry through that and through Gitea's own 5xx answers.
  */
 const transient = {

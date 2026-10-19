@@ -2,6 +2,7 @@ import type { Domain } from "@calder-ci/api"
 import { Cause, Context, Effect, Exit, Layer, Schedule } from "effect"
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
 import { randomBytes } from "node:crypto"
+import { hostname } from "node:os"
 import { Config } from "./Config.ts"
 
 export interface Parent {
@@ -64,7 +65,7 @@ const refused = (e: HttpClientError.HttpClientError | Cause.TimeoutError) => {
 export const layer = Layer.effect(Telemetry)(Effect.gen(function*() {
   const config = yield* Config
   const client = yield* HttpClient.HttpClient
-  const resource = { attributes: attrs({ "service.name": "calder", "service.namespace": "ci", "host.name": process.env.HOSTNAME ?? "srv-2" }) }
+  const resource = { attributes: attrs({ "service.name": "calder", "service.namespace": "ci", "host.name": process.env.HOSTNAME ?? hostname() }) }
   let spans: Array<SpanData> = []
   let logs: Array<LogRecord> = []
 

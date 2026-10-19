@@ -2,8 +2,7 @@
 
 CI/CD for Hauke's fleet. Pipelines are Effect TypeScript in `.calder/ci.ts`, Nix decides what needs
 building, and every task result is keyed by the git trees it read, so identical work is reused
-across pull requests and revisions. The design is in `~/Code/CI-CD-Lab`
-(https://files.schnau.dev/html/ci-cd-lab/); the NixOS module is `~/infra/modules/features/calder`.
+across pull requests and revisions.
 
 ## A pipeline
 
