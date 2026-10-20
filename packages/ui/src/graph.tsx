@@ -123,7 +123,7 @@ export function Graph({ steps, selected, onSelect }: Props) {
               {members.map((s, i) => (
                 <button key={s.name} type="button" className={`gr s-${s.status}${selected === s.name ? " sel" : ""}`} style={{ top: 30 + i * 28 }} onClick={() => onSelect(s.name)} data-step={s.name}>
                   <Swatch k={s.key} solid={hasBits(s.status)} />
-                  <span className="nm">{s.name}{s.shards ? <span className="shards">×{s.shards}</span> : null}{s.attempts > 1 ? <span className="shards">retried</span> : null}<Unstable step={s} /></span>
+                  <span className="nm">{s.name}{s.shards ? <span className="shards">×{s.shards}</span> : null}{s.attempts > 1 ? <span className="shards">retried</span> : null}<Unstable step={s} /><NotCached step={s} /></span>
                   <Track step={s} max={longest} now={now} />
                   <span className="mt"><Meta step={s} steps={steps} short /></span>
                   <span className="mk"><StepMark status={s.status} /></span>
@@ -138,7 +138,7 @@ export function Graph({ steps, selected, onSelect }: Props) {
               <button key={s.name} type="button" className={`gn s-${s.status} k-${s.kind}${selected === s.name ? " sel" : ""}`} style={boxStyle(box)} onClick={() => onSelect(s.name)} data-step={s.name}>
                 <span className="head">
                   <Swatch k={s.key} solid={hasBits(s.status)} />
-                  <span className="nm">{s.name}{s.shards ? <span className="shards">×{s.shards}</span> : null}<Unstable step={s} /></span>
+                  <span className="nm">{s.name}{s.shards ? <span className="shards">×{s.shards}</span> : null}<Unstable step={s} /><NotCached step={s} /></span>
                   <StepMark status={s.status} />
                 </span>
                 <span className="sub"><Meta step={s} steps={steps} /></span>
@@ -159,6 +159,10 @@ const Unstable = ({ step }: { readonly step: Domain.StepRun }) =>
   step.contradicts === null ? null : (
     <span className="shards heat" data-tip={`${step.status === "passed" ? "Failed" : "Passed"} with the same key in #${step.contradicts.number}`}>unstable</span>
   )
+
+/** A build whose output the binary cache didn't take. */
+const NotCached = ({ step }: { readonly step: Domain.StepRun }) =>
+  step.publishError === null ? null : <span className="shards heat" data-tip={`Not in the binary cache: ${step.publishError}`}>not cached</span>
 
 function GroupSummary({ steps }: { readonly steps: ReadonlyArray<Domain.StepRun> }) {
   const failed = steps.filter((s) => s.status === "failed" || s.status === "died").length

@@ -61,6 +61,7 @@ export interface StepRow {
   readonly excerpt: string | null
   readonly cpu_seconds: number | null
   readonly memory_peak: number | null
+  readonly publish_error: string | null
   readonly span_id: string
   readonly tests_passed: number | null
   readonly tests_failed: number | null
@@ -175,6 +176,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     shards: s.task?.shards ?? null,
     value: value(row.value),
     error: row.error_tag === null ? null : { tag: row.error_tag, message: row.error_message ?? "", excerpt: row.excerpt ?? "" },
+    publishError: row.publish_error,
     cpuSeconds: row.cpu_seconds,
     memoryPeakBytes: row.memory_peak,
     spanId: row.span_id,

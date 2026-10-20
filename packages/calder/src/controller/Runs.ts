@@ -51,6 +51,13 @@ export class RunsCore extends Context.Service<RunsCore, {
 /** Terminal colours and titles some tools write even without a terminal; the UI styles lines itself. */
 const plain = (text: string) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
 
+/** Why a publish failed, in one line: Nix's last `error:` line, or the error itself. */
+const publishFailure = (error: Exec.ExecError): string => {
+  if (error._tag !== "CommandFailed") return error.message
+  const lines = plain(error.stderr).split("\n").map((line) => line.trim()).filter((line) => line !== "")
+  return lines.findLast((line) => line.startsWith("error:")) ?? lines.at(-1) ?? `exit code ${error.exitCode}`
+}
+
 export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const config = yield* Config
   const sql = yield* SqlClient.SqlClient
@@ -1104,14 +1111,21 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   /**
    * Publishes a build output for the other hosts, in the background. Sharing is a convenience: a cache that can't
-   * take the output slows no run down and fails none. Promotes to other hosts publish their release themselves.
+   * take the output slows no run down and fails none, but the step says so. Promotes to other hosts publish their
+   * release themselves.
    */
   const share = (run: Rows.RunRow, step: string, out: string) =>
     Effect.gen(function*() {
       if (yield* cache.has(out)) return
       yield* cache.publish(out)
     }).pipe(
-      Effect.catch((e) => Effect.logWarning(`${run.project} #${run.number} ${step}: publishing ${out} to the binary cache failed`, e)),
+      Effect.catch((e) =>
+        Effect.gen(function*() {
+          yield* Effect.logWarning(`${run.project} #${run.number} ${step}: publishing ${out} to the binary cache failed`, e)
+          yield* db(sql`update steps set publish_error = ${publishFailure(e)} where run_id = ${run.id} and name = ${step}`)
+          yield* publishStep(run.id, step)
+        })
+      ),
       Effect.forkDetach,
       Effect.asVoid,
     )

@@ -593,6 +593,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     shards: s.plan.shards ?? null,
     value: st.status === "passed" || st.status === "reused" ? valueOf(world, run, s) : null,
     error: st.status === "failed" || st.status === "died" ? errorOf(run, s) : null,
+    publishError: null,
     cpuSeconds: finished ? Math.round(seconds * cores * 10) / 10 : null,
     memoryPeakBytes: finished ? Math.round((s.plan.kind === "build" ? 2.4 : s.plan.kind === "task" ? 1.3 : 0.08) * 2 ** 30 * (0.8 + (fnv(s.plan.name) % 40) / 100)) : null,
     spanId: ran || st.status === "reused" ? spanIdOf(run, s.plan.name) : null,

@@ -202,6 +202,11 @@ export const migrations = {
     yield* sql`create index results_run on results (run_id)`
     yield* sql`create index steps_reused_from on steps (reused_from) where reused_from is not null`
   }),
+  "0014_publish_errors": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // A build whose output the binary cache didn't take says so on its step.
+    yield* sql`alter table steps add column publish_error text`
+  }),
 }
 
 /**
