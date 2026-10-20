@@ -1,4 +1,8 @@
-import { createHash } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
+
+/** A project's placement token: the release's host accepts it for that project's placement only. */
+export const placementToken = (key: string, project: string): string =>
+  createHmac("sha256", key).update(project).digest("hex")
 
 export const sha256 = (value: unknown): string =>
   createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex")

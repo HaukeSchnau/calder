@@ -40,6 +40,12 @@ export const ConfigSchema = Schema.Struct({
   system: Schema.String,
   gitea: Schema.Struct({ url: Schema.String, tokenFile: Schema.String, webhookSecretFile: Schema.String }),
   promotion: Schema.Struct({ tokenFile: Schema.String }),
+  /**
+   * The key of the fleet's placement tokens. A project's token, HMAC-SHA256(key, project), is its
+   * secret `placement-token` unless it configures one: the release's host accepts it for that
+   * project's placement only.
+   */
+  placementKeyFile: Schema.optional(Schema.NullOr(Schema.String)),
   /** The fleet's binary cache, which the hosts substitute from. */
   cache: Schema.Struct({
     /** Its substituter URL. A narinfo there means the path was built before. */
@@ -85,6 +91,7 @@ export class Config extends Context.Service<Config, ConfigShape & {
   readonly giteaToken: string
   readonly webhookSecret: string
   readonly promotionToken: string
+  readonly placementKey: string | null
 }>()("calder/controller/Config") {}
 
 const readSecret = (path: string) => readFileSync(path, "utf8").trim()
@@ -97,5 +104,6 @@ export const fromFile = (path: string) =>
       giteaToken: readSecret(config.gitea.tokenFile),
       webhookSecret: readSecret(config.gitea.webhookSecretFile),
       promotionToken: readSecret(config.promotion.tokenFile),
+      placementKey: config.placementKeyFile == null ? null : readSecret(config.placementKeyFile),
     }
   }))

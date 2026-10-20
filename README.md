@@ -26,7 +26,7 @@ Calder reads only the default export and finds the steps by following the rules,
 
 Every flake check is a step, plus `checks`. Pull requests run them and build `packages.projectRelease`;
 the default branch reuses identical results (also from same-repo pull requests) and promotes the release
-once every check passed. `afterDeploy` adds steps that run after the release is live. A pipeline beyond
+once every check passed. With `placement`, an Alchemy stack with the release's `Fleet.Placement` (`@schnau/fleet`: its hostname, secret bindings and limits on its host, within the grant the host's configuration gives it), the default branch deploys that stack before the promotion. The stack reads the project's token from `FLEET_TOKEN_FILE` when its `secrets` map it to `placement-token`, which Calder derives for every project when the controller has a `placementKeyFile`. `afterDeploy` adds steps that run after the release is live. A pipeline beyond
 that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci/std` `Project.ts`).
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.

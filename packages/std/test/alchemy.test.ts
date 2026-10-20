@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cmd, Files, Flake } from "@calder-ci/core"
+import { Cmd, Files, Flake, Secret } from "@calder-ci/core"
 import { Schema } from "effect"
 import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
@@ -23,6 +23,15 @@ describe("Alchemy.deploy", () => {
     const rest = ["deploy", "--stage", "prod", "--yes", "--env-file", "/secrets/cloudflare"]
     expect(argv(pnpm)).toEqual(["pnpm", "exec", "alchemy", ...rest])
     expect(argv(bun)).toEqual(["bun", "alchemy", ...rest])
+  })
+
+  it("hands the stack's secrets to the task by environment variable", () => {
+    const step = Alchemy.deploy(
+      { shell, setup: Pnpm.install({ shell }), env: "cloudflare", secrets: { FLEET_TOKEN_FILE: "placement-token" } },
+      { stage: "prod" },
+    )
+    if (step.def._tag !== "Task") throw new Error("not a task")
+    expect(step.def.secrets).toEqual({ FLEET_TOKEN_FILE: Secret.file("placement-token") })
   })
 
   it("runs the CLI in the stack's directory, from that directory's install", () => {

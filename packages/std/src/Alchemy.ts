@@ -20,6 +20,11 @@ export interface Stack<A = void> {
   /** The stack file, when it isn't `alchemy.run.ts`. */
   readonly config?: string
   /**
+   * More of the project's secrets the stack reads, by the environment variable that gets its file's
+   * path, such as `{ FLEET_TOKEN_FILE: "placement-token" }` for a `Fleet.Placement`.
+   */
+  readonly secrets?: { readonly [env: string]: string }
+  /**
    * What the stack returns, as the value of its deploys: `name` is the stack's (`Alchemy.Stack(name, ...)`),
    * `schema` decodes its outputs. Outputs the schema leaves out, such as secrets, never reach Calder.
    */
@@ -29,7 +34,12 @@ export interface Stack<A = void> {
 /** Where a deploy writes the stack's outputs for the task's value; `git clean` removes it before the next task. */
 const outputsFile = ".calder-alchemy-outputs.json"
 
-const shellOf = (stack: Stack<unknown>) => (stack.shell === undefined ? {} : { shell: stack.shell })
+const shellOf = (stack: Stack<unknown>) => ({
+  ...(stack.shell === undefined ? {} : { shell: stack.shell }),
+  ...(stack.secrets === undefined
+    ? {}
+    : { secrets: Object.fromEntries(Object.entries(stack.secrets).map(([env, name]) => [env, Secret.file(name)])) }),
+})
 const configOf = (stack: Stack<unknown>) => (stack.config === undefined ? [] : ["--config", stack.config])
 const cliOf = (stack: Stack<unknown>) => {
   const at = stack.dir === undefined ? [] : stack.runner === "bun" ? ["--cwd", stack.dir] : ["--dir", stack.dir]

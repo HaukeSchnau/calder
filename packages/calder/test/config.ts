@@ -29,5 +29,6 @@ export const config = (overrides: Partial<Config["Service"]> = {}) =>
     giteaToken: "",
     webhookSecret: "",
     promotionToken: "",
+    placementKey: null,
     ...overrides,
   })

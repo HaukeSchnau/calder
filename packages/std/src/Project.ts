@@ -18,6 +18,11 @@ export interface StandardOptions {
   readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
   /** A URL whose JSON `revision` must report the deployed commit before the deploy counts. */
   readonly readiness?: string
+  /**
+   * The Alchemy stack with the release's `Fleet.Placement`: its hostname, secrets and limits on its
+   * host. The default branch deploys it before the promotion, so a release starts with them.
+   */
+  readonly placement?: Alchemy.Stack<unknown>
   /** Steps that run on the default branch after the release is live, such as app store builds. */
   readonly afterDeploy?: (promote: Step.Step<unknown, unknown, Base, {}, { readonly deploy: true }>) => ReadonlyArray<Step.Any>
   readonly defaultBranch?: string
@@ -45,7 +50,10 @@ export const standard = (options: StandardOptions): Calder.Project => {
     return Calder.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly] })
   }
   const release = Nix.build(ref, { name: "release" })
-  const promote = Action.make("promote", { needs: { release }, after: checks, grants: { deploy: true } }, function*({ release }) {
+  const place = options.placement === undefined
+    ? []
+    : [Alchemy.deploy(options.placement, { stage: "prod", name: "placement", after: checks })]
+  const promote = Action.make("promote", { needs: { release }, after: [...checks, ...place], grants: { deploy: true } }, function*({ release }) {
     return yield* Release.promote(release, options.readiness === undefined ? {} : { readiness: options.readiness })
   })
   return Calder.project({

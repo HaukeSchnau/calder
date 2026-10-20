@@ -5,7 +5,7 @@ import { SqlClient } from "effect/sql"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
-import { sha256, taskKey } from "../Keys.ts"
+import { placementToken, sha256, taskKey } from "../Keys.ts"
 import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Cache } from "./Cache.ts"
@@ -1120,7 +1120,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const readSecrets = (project: string, names: ReadonlyArray<string>) =>
     Object.fromEntries(names.flatMap((name) => {
       const file = projects.get(project)?.secrets[name]
-      return file === undefined ? [] : [[name, readFileSync(file, "utf8")]]
+      if (file !== undefined) return [[name, readFileSync(file, "utf8")]]
+      if (name === "placement-token" && config.placementKey !== null) return [[name, placementToken(config.placementKey, project)]]
+      return []
     }))
 
   // ----------------------------------------------------------------------------------------- finish
