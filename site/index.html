@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calder: your pipeline is a program</title>
+<meta name="description" content="Calder is CI/CD you write as a program. The pipeline is .calder/ci.ts, TypeScript with Effect, for repositories with a Nix flake, and the compiler checks how its steps fit.">
+<link rel="canonical" href="https://calder.schnau.dev/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Calder: your pipeline is a program">
+<meta property="og:description" content="Calder is CI/CD you write as a program. The pipeline is .calder/ci.ts, TypeScript with Effect, for repositories with a Nix flake, and the compiler checks how its steps fit.">
+<meta property="og:url" content="https://calder.schnau.dev/">
+<meta property="og:image" content="https://calder.schnau.dev/social.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preload" href="fonts/overpass.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/overpass-mono.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script type="module" src="js/main.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<header class="site-header wrap">
+  <a class="wordmark" href="./">
+    <svg class="mark" width="27" height="22" aria-hidden="true" data-mark></svg>
+    <span>Calder</span>
+  </a>
+  <a class="app-link" href="/app/">Open the app</a>
+</header>
+
+<main id="main">
+
+<section class="hero wrap" id="hero" aria-labelledby="hero-h">
+  <div class="hero-code">
+    <div class="pane">
+      <div class="pane-head"><span class="pane-title">.calder/ci.ts</span><span class="pane-note" data-code-status>37 lines</span></div>
+      <div id="hero-code" role="region" aria-label="The pipeline, .calder/ci.ts"></div>
+    </div>
+  </div>
+  <div class="hero-main">
+    <h1 id="hero-h">Your pipeline is a program.</h1>
+    <p class="lede">Calder is CI/CD for repositories with a Nix flake, and the pipeline is <code>.calder/ci.ts</code>, TypeScript with Effect. In the drawing, every step is a part cut to the shape of its type, and every rule is a rail drilled for the services it supplies.</p>
+    <div class="sheet" data-sheet>
+      <div class="sheet-head">
+        <div class="readout">
+          <div class="ro-rest">
+            <p class="hint" data-hint><span class="hint-pointer">Drag <code class="t-ident">deploy</code> onto the pull-request rail, or press Space on it and use the arrow keys.</span><span class="hint-touch">Tap <code class="t-ident">deploy</code>, then tap the pull-request rail.</span></p>
+            <p class="hint" data-hint-back hidden><code class="t-ident">deploy</code> stands on its grant bit. <span class="hint-pointer">Drag it back, or press Space on it and use the arrow keys.</span><span class="hint-touch">Tap it, then tap the push rail.</span></p>
+            <p class="hint ro-more"><span class="hint-pointer">Point at a part, a socket or a line of code to read its type.</span><span class="hint-touch">A part you tap shows its type here.</span></p>
+          </div>
+          <div class="ro-live" aria-hidden="true">
+            <p class="ro-type" data-ro-type></p>
+            <p class="ro-say" data-ro-say></p>
+          </div>
+        </div>
+        <button class="text-button reset" type="button" data-reset hidden>Put the example back</button>
+      </div>
+      <div class="sheet-dwg" id="hero-dwg" role="group" aria-label="The steps of ci.ts as parts on two rails"></div>
+      <div class="sheet-foot">
+        <div class="key">
+          <span class="tb-k" id="key-label">Key</span>
+          <ul class="legend" data-legend aria-labelledby="key-label"></ul>
+        </div>
+        <div class="titleblock" data-titleblock>
+          <div class="tb-row"><span class="tb-k">Drawn from</span><span class="tb-v"><code>.calder/ci.ts</code></span></div>
+          <div class="tb-row" data-checked><span class="tb-k">Checked by</span><span class="tb-v"><code>tsc -p .calder --noEmit</code> <span class="tb-result" data-tsc>no errors</span><span class="tb-why" data-why hidden></span></span></div>
+          <div class="tb-row tb-events"><span class="tb-k" id="events-label">Plan for</span>
+            <div class="tb-v seg" role="radiogroup" aria-labelledby="events-label" data-events>
+              <button type="button" role="radio" data-event="pr" aria-checked="true">Pull request #7</button>
+              <button type="button" role="radio" data-event="push" aria-checked="false">Push to main</button>
+              <button type="button" role="radio" data-event="check" aria-checked="false">Before pushing</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="visually-hidden" id="dwg-help">Press Space to pick the part up. Left and right arrow keys choose a rail, Space puts it down, Escape cancels.</p>
+      <p class="visually-hidden" aria-live="polite" data-live></p>
+    </div>
+    <div class="notes">
+      <pre class="out" id="hero-out" role="status" aria-live="polite" aria-label="Output of calder plan"></pre>
+    </div>
+  </div>
+</section>
+
+<section class="sec wrap" id="types" aria-labelledby="types-h">
+  <div class="sec-text">
+    <h2 id="types-h">Steps are typed values</h2>
+    <div class="prose">
+      <p>The compiler infers a type for every step, <code>Step&lt;A, E, R, O, G&gt;</code>: <code>A</code> is the value it returns, <code>E</code> its typed failure, <code>R</code> the services it needs, <code>O</code> its named outputs and <code>G</code> the grants it declares. Three of them decide where a step fits, so the drawing cuts them into the part. <code>E</code> and <code>O</code> go on its data plate.</p>
+      <p><code class="t-ident">site</code> is a Nix build, and its value is the store path. <code class="t-ident">deploy</code> names it in <code>needs</code>, so its body gets that <code class="t-val">StorePath</code> and hands it to <code>publish</code> in <code>deploy.ts</code>. It ships the exact build that the checks in <code>after: [typecheck, test]</code> gated.</p>
+    </div>
+    <div class="pane emit">
+      <div class="pane-head"><span class="pane-title">ci.d.ts</span><span class="pane-note">what tsc infers</span></div>
+      <div class="code" data-emit></div>
+    </div>
+  </div>
+  <div class="sec-fig">
+    <figure class="fig" id="exploded">
+      <div class="fig-dwg" data-exploded></div>
+      <figcaption class="view-title"><code>deploy</code> at 2:1, taken apart from <code>site</code>. Its features are numbered as in the parts list.</figcaption>
+    </figure>
+    <table class="parts-list" data-parts>
+      <thead><tr><th scope="col">No.</th><th scope="col">Feature</th><th scope="col">In <code>ci.ts</code></th><th scope="col">Type</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="sec wrap" id="fits" aria-labelledby="fits-h">
+  <div class="sec-text">
+    <h2 id="fits-h">Every fit is a compiler check</h2>
+    <div class="prose">
+      <p>Each place where two parts meet in the drawing is a check <code>tsc</code> makes on <code>ci.ts</code>. Below are the five, each with an edit to the example you can make, the section where the fit is decided, and what the compiler says.</p>
+    </div>
+  </div>
+  <div class="fits" data-fits></div>
+</section>
+
+<section class="sec wrap" id="plan" aria-labelledby="plan-h">
+  <div class="sec-text">
+    <h2 id="plan-h">A plan is a function</h2>
+    <div class="prose">
+      <p><code>Calder.plan(project, event)</code> returns the steps an event runs, without running any of them. The rule that matches the event is the live rail; the parts its steps need come along, pulled in.</p>
+      <p>So a pipeline can have tests, like any other code. This one plans pull request #7 and checks that <code class="t-ident">deploy</code> isn't in it.</p>
+    </div>
+    <div class="pane test-pane"><div class="pane-head"><span class="pane-title">A test with @effect/vitest</span></div><div data-test></div></div>
+  </div>
+  <div class="sec-fig views" data-views></div>
+</section>
+
+<section class="sec wrap" id="reuse" aria-labelledby="reuse-h">
+  <div class="sec-text">
+    <h2 id="reuse-h">Calder keeps every result by what it read</h2>
+    <div class="prose">
+      <p>Calder reads the program, so it knows what each step reads. A task's key is the git tree ids of its <code>inputs</code>, the key of the setup it starts from, its dev shell and its command, plus its env, outputs and the values it interpolates. Git has hashed every file already, so a key needs no pass over the files.</p>
+      <p>When a key already has a passed result, from main, a pull request or a check before pushing, the step settles at once and says where the result came from. <code>Vitest.files</code> gives each test file a key of its own, from what it imports plus the root manifests and the lockfile. Calder reuses a Nix build when its derivation hasn't changed.</p>
+    </div>
+  </div>
+  <div class="sec-fig">
+    <table class="edits" data-edits>
+      <caption>What a pull request runs after main ran everything, for an edit to one file. Pick the file.</caption>
+      <thead><tr><th scope="col">Edited file</th><th scope="col">install</th><th scope="col">typecheck</th><th scope="col">test <span class="th-note">of 2 files</span></th><th scope="col">site</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <figure class="fig">
+      <div class="fig-dwg" data-reuse></div>
+      <figcaption class="view-title" data-reuse-caption></figcaption>
+    </figure>
+    <ul class="why" data-why aria-live="polite"></ul>
+    <p class="fig-note">When the same key gives a different outcome than before, Calder flags it, because either the key misses an input or the test is flaky. A test that passes only on a retry counts as flaky, not failed.</p>
+  </div>
+</section>
+
+<section class="sec wrap" id="check" aria-labelledby="check-h">
+  <div class="sec-text">
+    <h2 id="check-h">It runs before you push</h2>
+    <div class="prose">
+      <p><code>calder check</code> runs the working copy, in jj or git, like a pull request. <code>calder watch &lt;dirs&gt;</code> does the same in the background for every jj workspace below those directories, once a workspace's snapshot has stayed the same for a while, 120 seconds by default. That suits several agents working at once.</p>
+      <p>Calder keeps their results by key like any other, so the pull request that follows finds them, and so does main after the merge.</p>
+    </div>
+  </div>
+  <div class="sec-fig">
+    <pre class="out" data-check-out></pre>
+    <figure class="fig">
+      <div class="handoff" data-handoff></div>
+      <figcaption class="view-title">One result of <code>typecheck</code>, kept by its key. The check runs it, then the pull request and main reuse it.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="sec wrap" id="libraries" aria-labelledby="libraries-h">
+  <div class="sec-text">
+    <h2 id="libraries-h">Libraries are functions</h2>
+    <div class="prose">
+      <p><code>Pnpm.install</code>, <code>Bun.install</code>, <code>Vitest.files</code> and <code>Project.standard</code>, the whole standard pipeline in one call, come from <code>@calder-ci/std</code>. They are ordinary functions that return steps. Your own modules work the same way, like the example's deploy from <code>.calder/deploy.ts</code>.</p>
+      <p>Actions are Effect code with typed failures. <code>Step.retry</code> and <code>Step.timeout</code> are policies you pipe a step through, as in <code>.pipe(Step.retry({ times: 2 }))</code> on <code class="t-ident">deploy</code>.</p>
+    </div>
+  </div>
+  <div class="sec-fig">
+    <div class="catalogue" data-catalogue></div>
+  </div>
+</section>
+
+<section class="limits wrap" id="limits" aria-label="Limits">
+  <p>Calder is an experiment. It runs my own projects; there is no release, the API changes most weeks, it needs a Nix flake, and for now it only works with Gitea.</p>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap foot">
+    <p>I build Calder. More from me at <a href="https://schnau.dev">schnau.dev</a>.</p>
+    <a href="https://schnau.dev/en/legal-notice/">Legal notice</a>
+  </div>
+</footer>
+</body>
+</html>

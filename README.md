@@ -232,7 +232,7 @@ run every time, and the package installs `kiln` as a link to `calder`. `calder g
 | `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
 | `sdk` | What `.calder/node_modules` links to, so ci.ts and the worker share one copy of Effect, and the tsconfig `.calder/tsconfig.json` extends |
-| `site` | The website (Astro, `packages.site` of the flake) that the proxy serves at `/` of https://calder.schnau.dev, with a lockfile of its own so its dependencies stay out of Calder's package |
+| `site` | The website, plain HTML, CSS and JavaScript that the flake packages as `packages.site` and the proxy serves at `/` of https://calder.schnau.dev |
 
 ```
 pnpm install
