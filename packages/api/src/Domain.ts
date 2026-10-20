@@ -143,6 +143,11 @@ export const StepRun = Schema.Struct({
   shards: Schema.NullOr(Schema.Number),
   value: Schema.NullOr(Value),
   error: Schema.NullOr(StepError),
+  /**
+   * Why a build's output could not go to the binary cache. The run goes on without it, and hosts that
+   * would have fetched the output build it themselves.
+   */
+  publishError: Schema.NullOr(Schema.String),
   cpuSeconds: Schema.NullOr(Schema.Number),
   memoryPeakBytes: Schema.NullOr(Schema.Number),
   spanId: Schema.NullOr(Schema.String),
