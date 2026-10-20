@@ -24,6 +24,23 @@ describe("Project.standard", () => {
       expect(plan.get("apple")?.after).toEqual(["promote"])
     }))
 
+  it.effect("main deploys the placement after the checks and promotes after it", () =>
+    Effect.gen(function*() {
+      const shell = flake.devShells.ci
+      const placement = {
+        shell,
+        setup: Pnpm.install({ shell }),
+        env: "cloudflare",
+        secrets: { FLEET_TOKEN_FILE: "placement-token" },
+      }
+      const project = Project.standard({ flake, checks: [qa], placement })
+      const plan = yield* Calder.plan(project, Event.push("main"))
+      expect(plan.get("placement")?.after).toEqual(["artifact", "projectRelease", "qa"])
+      expect(plan.get("promote")?.after).toEqual(["artifact", "projectRelease", "qa", "placement"])
+      const pr = yield* Calder.plan(project, Event.pullRequest({ number: 1 }))
+      expect(pr.get("placement")).toBeUndefined()
+    }))
+
   it.effect("a nightly run checks everything again and deploys nothing", () =>
     Effect.gen(function*() {
       const plan = yield* Calder.plan(Project.standard({ flake, checks: [qa], nightly: "0 3 * * *" }), Event.schedule("0 3 * * *"))
