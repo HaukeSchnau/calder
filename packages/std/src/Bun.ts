@@ -31,7 +31,7 @@ export const install = (options: InstallOptions = {}) => {
       Files.glob(inDir("**/package.json")),
       Files.optional(Files.glob(...["bun.lock", "bun.lockb", "bunfig.toml", ".npmrc", "patches/**/*.patch"].map(inDir))),
     ),
-    run: dir === "." ? cmd`bun install --frozen-lockfile ${args}` : cmd`bun --cwd ${dir} install --frozen-lockfile ${args}`,
+    run: dir === "." ? cmd`bun install --frozen-lockfile ${args}` : cmd`bun --cwd=${dir} install --frozen-lockfile ${args}`,
     keep: ["node_modules", "*.tsbuildinfo", ...(options.keep ?? [])],
     path: [inDir("node_modules/.bin")],
   })

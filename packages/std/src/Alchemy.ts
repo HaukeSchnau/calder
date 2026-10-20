@@ -42,7 +42,7 @@ const shellOf = (stack: Stack<unknown>) => ({
 })
 const configOf = (stack: Stack<unknown>) => (stack.config === undefined ? [] : ["--config", stack.config])
 const cliOf = (stack: Stack<unknown>) => {
-  const at = stack.dir === undefined ? [] : stack.runner === "bun" ? ["--cwd", stack.dir] : ["--dir", stack.dir]
+  const at = stack.dir === undefined ? [] : stack.runner === "bun" ? [`--cwd=${stack.dir}`] : ["--dir", stack.dir]
   return stack.runner === "bun" ? ["bun", ...at, "alchemy"] : ["pnpm", ...at, "exec", "alchemy"]
 }
 
