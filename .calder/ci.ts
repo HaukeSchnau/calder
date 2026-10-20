@@ -21,14 +21,5 @@ const test = Vitest.files({
   shards: 2,
 })
 
-/** The website has a lockfile of its own, so that Astro stays out of Calder's package. */
-const siteInstall = Pnpm.install({ name: "site-install", shell, dir: "site" })
-const siteCheck = Task.make("site-check", {
-  shell,
-  setup: siteInstall,
-  inputs: Files.of("site", ".calder/ci.ts"),
-  run: cmd`pnpm --dir site check`,
-})
-
 /** The flake's checks build the package and the website, which infra deploys with the controller. */
-export default Project.standard({ flake, checks: [check, test, siteCheck] })
+export default Project.standard({ flake, checks: [check, test] })
