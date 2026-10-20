@@ -19,7 +19,7 @@ export function HostSlots({ ov, compact = false }: { readonly ov: Domain.Overvie
   return (
     <span className={compact ? "hslots compact" : "hslots"}>
       <span className="hsl">
-        <b>srv-2</b>
+        <b>{ov.host}</b>
         <span>tasks</span>{compact ? null : <Meter used={slots.tasks} max={slots.tasksMax} />}<span className="n">{slots.tasks}/{slots.tasksMax}</span>
         <span>builds</span>{compact ? null : <Meter used={slots.builds} max={slots.buildsMax} />}<span className="n">{slots.builds}/{slots.buildsMax}</span>
       </span>

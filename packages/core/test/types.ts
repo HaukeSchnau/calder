@@ -29,7 +29,7 @@ export type _data = Expect<Equal<Step.Success<typeof data>, { readonly url: stri
 
 // Only Calder.Failure errors stay typed.
 const failing = Action.make("failing", {}, function*() {
-  yield* new Busy({ target: "srv-2" })
+  yield* new Busy({ target: "host-a" })
   yield* Effect.fail(new Error("plain"))
 })
 export type _failing = Expect<Equal<Step.Error<typeof failing>, Busy>>

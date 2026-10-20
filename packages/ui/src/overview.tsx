@@ -21,9 +21,10 @@ export function OverviewPage() {
   )
 }
 
-export const hostsOf = (projects: ReadonlyArray<Domain.Project>) => {
+/** The hosts the projects deploy to, the controller's own first. */
+export const hostsOf = (projects: ReadonlyArray<Domain.Project>, controller: string) => {
   const hosts = [...new Set(projects.flatMap((p) => p.deployments.map((d) => d.host)))]
-  return hosts.sort((a, b) => (a === "srv-2" ? -1 : b === "srv-2" ? 1 : a.localeCompare(b)))
+  return hosts.sort((a, b) => (a === controller ? -1 : b === controller ? 1 : a.localeCompare(b)))
 }
 
 function Overview({ ov }: { readonly ov: Domain.Overview }) {
@@ -190,7 +191,7 @@ export function StepStrip({ steps }: { readonly steps: ReadonlyArray<Domain.Step
 /* Board                                                               */
 
 function Board({ ov }: { readonly ov: Domain.Overview }) {
-  const hosts = hostsOf(ov.projects)
+  const hosts = hostsOf(ov.projects, ov.host)
   const cols = `minmax(250px, 1.5fr) 128px 140px 64px 52px ${hosts.map(() => "minmax(170px, 0.8fr)").join(" ")}`
   return (
     <section className="board" aria-label="Projects" style={{ "--ocols": cols }}>

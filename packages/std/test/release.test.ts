@@ -37,13 +37,13 @@ describe("Release.promote", () => {
   it.effect("deploys nowhere while a host that might run the app can't be reached", () =>
     Effect.gen(function*() {
       const touched: Array<string> = []
-      const srv2 = {
-        host: "srv-2",
+      const hostA = {
+        host: "host-a",
         preflight: () => Effect.sync(() => touched.push("preflight")),
         deploy: () => Effect.sync(() => touched.push("deploy")),
       }
-      const error = yield* Effect.flip(promoting({ _tag: "Held", fence: 1, targets: [srv2], unreachable: ["srv-1"] }))
-      expect(error).toEqual(new Release.Unreachable({ project: "calder", hosts: ["srv-1"] }))
+      const error = yield* Effect.flip(promoting({ _tag: "Held", fence: 1, targets: [hostA], unreachable: ["host-b"] }))
+      expect(error).toEqual(new Release.Unreachable({ project: "calder", hosts: ["host-b"] }))
       expect(touched).toEqual([])
     }))
 })

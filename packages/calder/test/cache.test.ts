@@ -9,8 +9,8 @@ describe("cache", () => {
   })
 
   it("needs the cache only for releases that leave the controller's host", () => {
-    expect(leavesHost(["http://srv-2:18100"], "srv-2")).toBe(false)
-    expect(leavesHost(["http://srv-1:18100", "http://srv-2:18100"], "srv-2")).toBe(true)
-    expect(leavesHost([], "srv-2")).toBe(false)
+    expect(leavesHost(["http://host-a:18100"], "host-a")).toBe(false)
+    expect(leavesHost(["http://host-b:18100", "http://host-a:18100"], "host-a")).toBe(true)
+    expect(leavesHost([], "host-a")).toBe(false)
   })
 })
