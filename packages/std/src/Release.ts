@@ -1,4 +1,4 @@
-import { Cache, CurrentRun, Fleet, Git, Calder, type StorePath } from "@calder-ci/core"
+import { Cache, CurrentRun, Fleet, Git, Calder, type Rejected, type StorePath, type Target } from "@calder-ci/core"
 import { Effect, Schedule, Schema, type Duration } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/http"
 
@@ -39,6 +39,17 @@ export class Unreachable extends Calder.Failure<Unreachable>("@calder-ci/std/Rel
 const every = (interval: Duration.Input, deadline: Duration.Input) =>
   Schedule.spaced(interval).pipe(Schedule.upTo({ duration: deadline }))
 
+/**
+ * Whether a host refuses the release only because its compiled configuration doesn't have the
+ * release's topology yet: infra adopts it with a lock bump and a switch, which follow the push.
+ */
+const awaitsSwitch = (e: Rejected) =>
+  e.status === 409 &&
+  e.reason.split("; ").every((reason) =>
+    reason === "Release topology differs from the host-compatible contract" ||
+    reason.startsWith("host-managed maintenance job is not declared by the candidate")
+  )
+
 const Readiness = Schema.Struct({ revision: Schema.optional(Schema.String) })
 
 /** Polls a readiness URL until its JSON reports `revision`. */
@@ -63,6 +74,9 @@ export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function*(url:
  * preflights every host, puts the release in the binary cache for hosts other than the controller's,
  * checks before each host that the branch still points at this revision, and deploys with the lease's
  * fencing token.
+ *
+ * A host that refuses the release only for its topology is waiting for infra's lock bump, so the
+ * promotion asks again every 30 seconds for an hour, until a newer push supersedes it.
  */
 export const promote = Effect.fn("Release.promote")(
   function*(release: StorePath, options: { readonly readiness?: string } = {}) {
@@ -76,7 +90,15 @@ export const promote = Effect.fn("Release.promote")(
     if (lease.targets.length === 0) return yield* new NoHosts({ project: run.project })
 
     const descriptor = yield* run.descriptor
-    yield* Effect.forEach(lease.targets, (target) => target.preflight(descriptor), { concurrency: "unbounded", discard: true })
+    const current = Effect.map(Git.head(branch), (head) => head === run.revision)
+    const preflight = (target: Target) =>
+      Effect.gen(function*() {
+        if (!(yield* current)) return false
+        yield* target.preflight(descriptor)
+        return true
+      }).pipe(Effect.retry({ while: awaitsSwitch, schedule: every("30 seconds", "1 hour") }))
+    const preflighted = yield* Effect.forEach(lease.targets, preflight, { concurrency: "unbounded" })
+    if (preflighted.includes(false)) return new Skipped({ reason: "Superseded" })
     yield* Cache.publish(release)
 
     for (const target of lease.targets) {
