@@ -41,10 +41,10 @@ describe("Alchemy.deploy", () => {
     const bun = Alchemy.deploy({ shell, setup: bunInstall, runner: "bun", dir: "site", env: "cloudflare" }, { stage: "prod" })
     const rest = ["deploy", "--stage", "prod", "--yes", "--env-file", "/secrets/cloudflare"]
     expect(argv(pnpm)).toEqual(["pnpm", "--dir", "site", "exec", "alchemy", ...rest])
-    expect(argv(bun)).toEqual(["bun", "--cwd", "site", "alchemy", ...rest])
+    expect(argv(bun)).toEqual(["bun", "--cwd=site", "alchemy", ...rest])
     if (pnpmInstall.def._tag !== "Setup" || bunInstall.def._tag !== "Setup") throw new Error("not a setup")
     expect(Cmd.render(pnpmInstall.def.run, {})).toEqual(["pnpm", "--dir", "site", "install", "--frozen-lockfile"])
-    expect(Cmd.render(bunInstall.def.run, {})).toEqual(["bun", "--cwd", "site", "install", "--frozen-lockfile"])
+    expect(Cmd.render(bunInstall.def.run, {})).toEqual(["bun", "--cwd=site", "install", "--frozen-lockfile"])
     expect(pnpmInstall.def.path).toEqual(["site/node_modules/.bin"])
     expect(pnpmInstall.def.inputs).toEqual(
       Files.union(
