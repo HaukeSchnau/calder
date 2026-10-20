@@ -7,7 +7,7 @@ describe("Fleet", () => {
     Effect.gen(function*() {
       const answers: Array<Effect.Effect<ReadonlyArray<string>, string>> = [Effect.fail("connection refused"), Effect.succeed(["calder"])]
       const appsOf = remembered(() => answers.shift()!)
-      expect(yield* appsOf("http://srv-1:18100")).toBeNull()
-      expect(yield* appsOf("http://srv-1:18100")).toEqual(["calder"])
+      expect(yield* appsOf("http://host-b:18100")).toBeNull()
+      expect(yield* appsOf("http://host-b:18100")).toEqual(["calder"])
     }))
 })

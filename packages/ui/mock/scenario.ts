@@ -115,24 +115,27 @@ const rng = (seed: string) => {
 /* Projects and pipelines                                              */
 
 export const PROJECTS = [
-  "t3code", "studienbuch", "portfolio", "hopwatch", "igs", "merkbeet", "anna-fotoalbum", "ralfs-audio-finder",
+  "t3code", "studienbuch", "homepage", "hopwatch", "school-site", "merkbeet", "photo-album", "audio-finder",
 ] as const
 
+/** The controller's host, where every project deploys; t3code also deploys to a second one. */
+export const CONTROLLER = "host-a"
+
 export const HOSTS_OF: Readonly<Record<string, ReadonlyArray<string>>> = {
-  t3code: ["srv-2", "srv-1"],
+  t3code: [CONTROLLER, "host-b"],
 }
-export const hostsOf = (project: string) => HOSTS_OF[project] ?? ["srv-2"]
+export const hostsOf = (project: string) => HOSTS_OF[project] ?? [CONTROLLER]
 
 const URLS: Readonly<Record<string, string>> = {
   t3code: "https://t3code.schnau.dev",
   studienbuch: "https://beta.studienbuch.app",
-  portfolio: "https://schnau.dev",
-  igs: "https://igs-lilienthal.de",
+  homepage: "https://example.org",
+  "school-site": "https://school.example.org",
 }
 export const urlOf = (project: string) => URLS[project] ?? `https://${project}.schnau.dev`
 
 const NUMBER_BASE: Readonly<Record<string, number>> = {
-  t3code: 590, studienbuch: 371, portfolio: 142, hopwatch: 88, igs: 61, merkbeet: 47, "anna-fotoalbum": 23, "ralfs-audio-finder": 35,
+  t3code: 590, studienbuch: 371, homepage: 142, hopwatch: 88, "school-site": 61, merkbeet: 47, "photo-album": 23, "audio-finder": 35,
 }
 
 const release = (project: string): StepPlan => ({
@@ -191,23 +194,23 @@ const TITLES: Readonly<Record<string, ReadonlyArray<string>>> = {
   t3code: [
     "Group tool calls by turn in the sidebar", "Persist thread scroll position", "Show model and effort per turn",
     "Retry provider requests after a 529", "Render diffs with word highlights", "Keyboard shortcut for new thread",
-    "Fix desktop notarization on m1", "Cache git status per worktree", "Collapse long tool output", "Upgrade to Effect 4",
+    "Fix desktop notarization", "Cache git status per worktree", "Collapse long tool output", "Upgrade to Effect 4",
   ],
   studienbuch: [
     "Validate module codes on import", "Show ECTS per semester", "Fix timezone of exam reminders", "Add Moodle sync status",
     "Paginate the grade table", "Rename study plans", "Store calendar tokens hashed",
   ],
-  portfolio: ["Bump nixpkgs", "New post on Nix deploys", "Compress hero images", "Fix RSS dates"],
+  homepage: ["Bump nixpkgs", "New post on Nix deploys", "Compress hero images", "Fix RSS dates"],
   hopwatch: ["Show brewery on check-ins", "Cache Untappd avatars", "Weekly digest mail", "Fix duplicate badges"],
-  igs: ["Update Vertretungsplan import", "New school year dates", "Fix menu on Safari", "Add Elternbrief archive"],
+  "school-site": ["Update Vertretungsplan import", "New school year dates", "Fix menu on Safari", "Add Elternbrief archive"],
   merkbeet: ["Watering reminders per bed", "Seed calendar for Northern Germany", "Fix photo upload on iOS"],
-  "anna-fotoalbum": ["Guest upload limit", "Sort albums by date", "Slideshow mode"],
-  "ralfs-audio-finder": ["Search by BPM range", "Index FLAC metadata", "Fix waveform rendering"],
+  "photo-album": ["Guest upload limit", "Sort albums by date", "Slideshow mode"],
+  "audio-finder": ["Search by BPM range", "Index FLAC metadata", "Fix waveform rendering"],
 }
 
 const SPACING: Readonly<Record<string, number>> = {
-  t3code: 3 * 3600, studienbuch: 8 * 3600, portfolio: 26 * 3600, hopwatch: 20 * 3600, igs: 30 * 3600,
-  merkbeet: 40 * 3600, "anna-fotoalbum": 52 * 3600, "ralfs-audio-finder": 46 * 3600,
+  t3code: 3 * 3600, studienbuch: 8 * 3600, homepage: 26 * 3600, hopwatch: 20 * 3600, "school-site": 30 * 3600,
+  merkbeet: 40 * 3600, "photo-album": 52 * 3600, "audio-finder": 46 * 3600,
 }
 
 const push: Event = { _tag: "Push", branch: "main" }
@@ -311,11 +314,11 @@ const SCRIPTED: ReadonlyArray<Spec> = [
     outcomes: { "flake check": "failed" },
   },
   {
-    key: "pf:main-nixpkgs", project: "portfolio", at: -56 * 60, event: push, title: null,
+    key: "pf:main-nixpkgs", project: "homepage", at: -56 * 60, event: push, title: null,
     commit: { title: "Bump nixpkgs to 26.05", author: "hauke", changeId: null },
   },
   {
-    key: "igs:manual", project: "igs", at: -5 * 3600, event: { _tag: "Manual", inputs: { reason: "redeploy after cert renewal" } }, title: null,
+    key: "school-site:manual", project: "school-site", at: -5 * 3600, event: { _tag: "Manual", inputs: { reason: "redeploy after cert renewal" } }, title: null,
     commit: { title: "New school year dates", author: "hauke", changeId: null },
     error: "plan failed: .calder/ci.ts: step \"promote\" needs \"projectRelease\", which On.manual doesn't target",
   },
@@ -339,7 +342,7 @@ interface Memory {
 const median = (xs: ReadonlyArray<number>) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
 
 /**
- * With m1 gone (`CALDER_MOCK_M1=offline`), it left six minutes before the server started: the deploying
+ * With the Mac agent gone (`CALDER_MOCK_MAC=offline`), it left six minutes before the server started: the deploying
  * main run's desktop package finished just before, so its testflight waits for an agent ever since.
  */
 const OFFLINE_DURATIONS: Readonly<Record<string, Readonly<Record<string, number>>>> = { "t3:main-merge": { "desktop-package": 100 } }
@@ -437,7 +440,7 @@ export class World {
   private readonly memory = { built: this.bySpec, stableKeys: new Map<string, { key: string; run: string }>(), durations: new Map<string, Array<number>>() }
   private readonly numbers = new Map<string, number>()
 
-  /** When the m1 agent disconnected, or null while it is connected. */
+  /** When the Mac agent disconnected, or null while it is connected. */
   readonly agentGoneAt: number | null
 
   constructor(readonly t0: number, agents: "online" | "offline" = "online") {
@@ -727,8 +730,8 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
     const lines: Array<Line> = [
       cmd,
       [0.01, "debug", "calder", `evaluating ${s.plan.detail} at ${sha}`],
-      [0.04, "info", "stderr", `copying ${12 + (fnv(p) % 300)} paths from http://srv-1:5080`],
-      [0.12, "info", "stderr", `building '${drv}' on srv-2`],
+      [0.04, "info", "stderr", `copying ${12 + (fnv(p) % 300)} paths from http://host-b:5080`],
+      [0.12, "info", "stderr", `building '${drv}' on host-a`],
     ]
     if (s.plan.name === "flake check") {
       lines.push([0.3, "info", "stderr", "checking derivation checks.aarch64-linux.lint"], [0.45, "info", "stderr", "checking derivation checks.aarch64-linux.vitest"])
@@ -750,7 +753,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
     }
     if (s.plan.name === "projectRelease" && run.project === "t3code") lines.push(...transforms(0.2, 0.54))
     if (s.plan.name === "projectRelease") lines.push([0.55, "info", "stdout", "vite v8.3.2 building for production..."], [0.7, "info", "stdout", `${900 + (fnv(p) % 1500)} modules transformed.`], [0.8, "warn", "stderr", "(!) Some chunks are larger than 500 kB after minification."])
-    if (s.plan.name === "releaseGate") lines.push([0.5, "info", "stdout", "migrations reversible, 0 pending"], [0.8, "info", "stdout", "bindings compatible with srv-2"])
+    if (s.plan.name === "releaseGate") lines.push([0.5, "info", "stdout", "migrations reversible, 0 pending"], [0.8, "info", "stdout", "bindings compatible with host-a"])
     if (s.plan.name === "pnpmDeps") lines.push([0.5, "info", "stderr", "pnpm install --offline --frozen-lockfile"], [0.8, "info", "stderr", "Packages: +1412"])
     lines.push([0.99, "info", "stdout", s.plan.name === "projectRelease" ? storePathOf(run) : drv.replace(/\.drv$/, "")])
     return lines
@@ -799,13 +802,13 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
       }
       case "desktop-package":
         return [
-          cmd, [0.002, "info", "calder", "running on m1 (aarch64-darwin)"], ws,
+          cmd, [0.002, "info", "calder", "running on mac-a (aarch64-darwin)"], ws,
           ...files(["electron-vite build: main, preload, renderer", "electron-builder --mac --arm64", "packaging T3 Code.app for darwin arm64", "signing with Developer ID Application: Hauke Schnau", "notarizing T3 Code.app with notarytool", "notarytool: status Accepted", "stapling the notarization ticket"], 0.05, 0.92),
           [0.97, "info", "stdout", "dist/T3 Code-0.9.4-arm64.dmg (148.2 MB)"], [0.99, "info", "calder", "exit 0"],
         ]
       case "testflight":
         return [
-          cmd, [0.002, "info", "calder", "running on m1 (aarch64-darwin)"], ws,
+          cmd, [0.002, "info", "calder", "running on mac-a (aarch64-darwin)"], ws,
           [0.1, "info", "stdout", "xcodebuild archive -scheme T3Mobile -configuration Release"], [0.55, "info", "stdout", "** ARCHIVE SUCCEEDED **"],
           [0.6, "info", "stdout", "xcrun altool --upload-app -f T3Mobile.ipa"], [0.97, "info", "stdout", "uploaded build 0.9.4 (412) to TestFlight"], [0.99, "info", "calder", "exit 0"],
         ]
@@ -999,12 +1002,12 @@ export function deployments(world: World, now: number): Array<Domain.Deployment>
       }
     }
   }
-  const ralfs = state.get("ralfs-audio-finder|srv-2")
-  if (ralfs) ralfs.healthy = false
-  const merkbeet = state.get("merkbeet|srv-2")
+  const audioFinder = state.get("audio-finder|host-a")
+  if (audioFinder) audioFinder.healthy = false
+  const merkbeet = state.get("merkbeet|host-a")
   if (merkbeet) merkbeet.healthy = null
-  const anna = state.get("anna-fotoalbum|srv-2")
-  if (anna) anna.pending = hex("sha:anna-fotoalbum:incompatible", 40)
+  const photoAlbum = state.get("photo-album|host-a")
+  if (photoAlbum) photoAlbum.pending = hex("sha:photo-album:incompatible", 40)
   return [...state.values()]
 }
 

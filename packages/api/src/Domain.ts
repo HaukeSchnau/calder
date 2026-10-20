@@ -280,6 +280,8 @@ export type Project = typeof Project.Type
 export const Overview = Schema.Struct({
   /** The last change included; apply only changes with a higher seq. */
   seq: Schema.Number,
+  /** The controller's host, as its deployments name it. */
+  host: Schema.String,
   projects: Schema.Array(Project),
   /** Runs that are queued, planning or running. */
   active: Schema.Array(Run),

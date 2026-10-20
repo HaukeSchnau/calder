@@ -211,6 +211,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         const running = jobs.active()
         return {
           seq,
+          host: config.host,
           projects,
           active: yield* db(Rows.runsWithCounts(active)),
           recent: yield* db(Rows.runsWithCounts(recent)),

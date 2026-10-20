@@ -3,14 +3,14 @@ import { Effect, Fiber, Stream } from "effect"
 import * as Agents from "../src/controller/Agents.ts"
 import type { AgentOrder } from "../src/Protocol.ts"
 
-const auth = { token: "secret", name: "m1" }
+const auth = { token: "secret", name: "mac-a" }
 
 /** Lets forked fibers and streams catch up. */
 const ticks = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }))
 
 const connect = (
   agents: Agents.Agents["Service"],
-  { running = [], compatibility = 1, name = "m1", slots = 1 }: { running?: ReadonlyArray<string>; compatibility?: number; name?: string; slots?: number } = {},
+  { running = [], compatibility = 1, name = "mac-a", slots = 1 }: { running?: ReadonlyArray<string>; compatibility?: number; name?: string; slots?: number } = {},
 ) =>
   Effect.gen(function*() {
     const orders: Array<AgentOrder> = []
@@ -29,17 +29,17 @@ describe("Agents", () => {
       const first = yield* Effect.forkChild(agents.run({ id: "a", token: "ta" }, "aarch64-darwin"))
       const second = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-darwin"))
       yield* ticks
-      const m1 = yield* connect(agents)
-      expect(m1.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
+      const mac = yield* connect(agents)
+      expect(mac.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
 
       yield* agents.exited(auth, "a", 0)
       expect(yield* Fiber.join(first)).toBe(0)
       yield* ticks
-      expect(m1.orders.at(-1)).toEqual({ _tag: "Start", job: "b", token: "tb" })
+      expect(mac.orders.at(-1)).toEqual({ _tag: "Start", job: "b", token: "tb" })
 
       yield* agents.stop("b")
       yield* ticks
-      expect(m1.orders.at(-1)).toEqual({ _tag: "Stop", job: "b" })
+      expect(mac.orders.at(-1)).toEqual({ _tag: "Stop", job: "b" })
       yield* agents.exited(auth, "b", 143)
       expect(yield* Fiber.join(second)).toBe(143)
     }))
@@ -53,7 +53,7 @@ describe("Agents", () => {
       yield* Fiber.interrupt(before.fiber)
 
       yield* connect(agents, { running: ["a"] })
-      expect(agents.usage()).toEqual([{ name: "m1", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true }])
+      expect(agents.usage()).toEqual([{ name: "mac-a", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true }])
 
       const again = yield* connect(agents)
       expect(yield* Fiber.join(kept)).toBe(-1)
@@ -82,13 +82,13 @@ describe("Agents", () => {
       const agents = Agents.make("secret", 1)
       const job = yield* Effect.forkChild(agents.run({ id: "new", token: "tn" }, "aarch64-darwin"))
       yield* ticks
-      const m1 = yield* connect(agents, { running: ["old"], slots: 2 })
-      expect(m1.orders).toEqual([{ _tag: "Stop", job: "old" }])
+      const mac = yield* connect(agents, { running: ["old"], slots: 2 })
+      expect(mac.orders).toEqual([{ _tag: "Stop", job: "old" }])
       expect(agents.usage()[0]?.running).toBe(1)
 
       yield* agents.exited(auth, "old", 143)
       yield* ticks
-      expect(m1.orders.at(-1)).toEqual({ _tag: "Start", job: "new", token: "tn" })
+      expect(mac.orders.at(-1)).toEqual({ _tag: "Start", job: "new", token: "tn" })
       yield* agents.exited(auth, "new", 0)
       expect(yield* Fiber.join(job)).toBe(0)
     }))
@@ -115,17 +115,17 @@ describe("Agents", () => {
   it.effect("an agent takes jobs as it offers slots", () =>
     Effect.gen(function*() {
       const agents = Agents.make("secret", 1)
-      const m1 = yield* connect(agents)
+      const mac = yield* connect(agents)
       yield* agents.offer(auth, 0)
       const offloaded = yield* agents.run({ id: "a", token: "ta" }, "aarch64-darwin", { wait: false })
       expect(offloaded).toBe(-2)
 
       const waiting = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-darwin"))
       yield* ticks
-      expect(m1.orders).toEqual([])
+      expect(mac.orders).toEqual([])
       yield* agents.offer(auth, 2)
       yield* ticks
-      expect(m1.orders).toEqual([{ _tag: "Start", job: "b", token: "tb" }])
+      expect(mac.orders).toEqual([{ _tag: "Start", job: "b", token: "tb" }])
       expect(agents.usage()[0]).toMatchObject({ slots: 2, running: 1 })
       yield* agents.exited(auth, "b", 0)
       expect(yield* Fiber.join(waiting)).toBe(0)
@@ -149,7 +149,7 @@ describe("Agents", () => {
 
   it.effect("agents need the secret", () =>
     Effect.gen(function*() {
-      const refused = yield* Agents.make("secret").connect({ token: "wrong", name: "m1" }, { platform: "aarch64-darwin", slots: 1, running: [], build: "b1", compatibility: 1 }).pipe(
+      const refused = yield* Agents.make("secret").connect({ token: "wrong", name: "mac-a" }, { platform: "aarch64-darwin", slots: 1, running: [], build: "b1", compatibility: 1 }).pipe(
         Stream.runDrain,
         Effect.flip,
       )

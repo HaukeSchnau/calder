@@ -29,7 +29,7 @@ export function ProjectPage({ name }: { readonly name: string }) {
         <h1>{name}</h1>
         {project ? <span className="dim">{project.repo}, default branch {project.defaultBranch}</span> : null}
         <span className="grow" />
-        {project ? <Deployments project={project} /> : null}
+        {project && AsyncResult.isSuccess(ov) ? <Deployments project={project} controller={ov.value.host} /> : null}
         <button type="button" className="btn" onClick={() => trigger(name)}>Run {project?.defaultBranch ?? "main"}</button>
       </header>
       <div className="proj-body">
@@ -43,11 +43,11 @@ export function ProjectPage({ name }: { readonly name: string }) {
   )
 }
 
-function Deployments({ project }: { readonly project: Domain.Project }) {
+function Deployments({ project, controller }: { readonly project: Domain.Project; readonly controller: string }) {
   const now = useNow()
   return (
     <span className="pdeps">
-      {hostsOf([project]).map((h) => {
+      {hostsOf([project], controller).map((h) => {
         const d = project.deployments.find((x) => x.host === h)
         if (!d) return null
         return (

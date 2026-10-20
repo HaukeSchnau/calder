@@ -2,7 +2,7 @@
 // real controller uses, on deterministic fake data from ./scenario.ts.
 //
 //   bun mock/server.ts                       listens on 127.0.0.1:8791 (CALDER_MOCK_PORT overrides)
-//   CALDER_MOCK_M1=offline bun mock/server.ts  the m1 agent is gone and t3code's testflight waits for it
+//   CALDER_MOCK_MAC=offline bun mock/server.ts  the Mac agent is gone and t3code's testflight waits for it
 
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { type Domain, NotFound, Refused, UiRpcs } from "@calder-ci/api"
@@ -10,12 +10,12 @@ import { Effect, Layer, PubSub, Stream } from "effect"
 import { HttpRouter } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import {
-  DARWIN, PROJECTS, World, deployRecords, deployments, logLines, metrics, runStatus, stepState, testResults, toRun, toStep, trace,
+  CONTROLLER, DARWIN, PROJECTS, World, deployRecords, deployments, logLines, metrics, runStatus, stepState, testResults, toRun, toStep, trace,
   type SimRun, type SimStep,
 } from "./scenario.ts"
 
 const port = Number(process.env["CALDER_MOCK_PORT"] ?? 8791)
-const m1 = process.env["CALDER_MOCK_M1"] === "offline" ? "offline" : "online"
+const mac = process.env["CALDER_MOCK_MAC"] === "offline" ? "offline" : "online"
 
 const terminal = new Set<Domain.StepStatus>(["passed", "reused", "failed", "died", "blocked", "cancelled"])
 const isActive = (status: Domain.RunStatus) => status === "queued" || status === "planning" || status === "running"
@@ -26,6 +26,7 @@ function overview(world: World, now: number, seq: number): Domain.Overview {
   const running = visible.flatMap((r) => r.steps.filter((s) => stepState(r, s, now).status === "running"))
   return {
     seq,
+    host: CONTROLLER,
     projects: PROJECTS.map((name) => {
       const mains = visible.filter((r) => r.project === name && r.event._tag === "Push")
       const main = mains.at(-1)
@@ -49,7 +50,7 @@ function overview(world: World, now: number, seq: number): Domain.Overview {
       builds: running.filter((s) => s.plan.kind === "build").length,
       buildsMax: 3,
     },
-    agents: [{ name: "m1", platform: DARWIN, slots: 2, running: running.filter((s) => s.plan.platform === DARWIN).length, connected: world.agentGoneAt === null, build: "dev", compatibility: 1, current: true }],
+    agents: [{ name: "mac-a", platform: DARWIN, slots: 2, running: running.filter((s) => s.plan.platform === DARWIN).length, connected: world.agentGoneAt === null, build: "dev", compatibility: 1, current: true }],
   }
 }
 
@@ -101,7 +102,7 @@ function follow(run: SimRun, steps: ReadonlyArray<SimStep>, sent: number): Strea
 }
 
 const Handlers = UiRpcs.toLayer(Effect.gen(function*() {
-  const world = new World(Date.now(), m1)
+  const world = new World(Date.now(), mac)
   const changes = yield* PubSub.unbounded<Domain.Change>()
   const seen = new Map<string, string>()
   const recorded = new Set<string>()
