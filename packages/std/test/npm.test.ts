@@ -18,7 +18,7 @@ interface Registry {
 /**
  * Runs a publish step in a scratch repository against stand-ins for npm and pnpm. `npm view` and
  * `npm stage list` answer from `registry`, `npm stage publish` records its arguments and the user
- * config it was given and answers with a stage id, and `pnpm pack` writes a tarball.
+ * config it was given and stages the version as `stg-42`, and `pnpm pack` writes a tarball.
  */
 const run = (step: ReturnType<typeof Npm.publish>, options: { version: string; registry?: Registry; dir?: string }) => {
   const repo = mkdtempSync(join(tmpdir(), "npm-publish-"))
@@ -40,7 +40,10 @@ case "$1 $2" in
   "view "*) wanted=\${2##*@}; grep -qx "$wanted" ${join(repo, "published")} && echo "$wanted"; true ;;
   "stage list") cat ${join(repo, "staged.json")} ;;
   "stage publish") echo "$PWD $*" >> ${join(repo, "calls")}; cat "$NPM_CONFIG_USERCONFIG" >> ${join(repo, "userconfig")}
-    echo '{"id":"@scope/pkg@x","stageId":"stg-42"}' ;;
+    node -e 'const fs = require("fs"); const list = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+      list.push({ id: "stg-42", packageName: "@scope/pkg", version: require(process.cwd() + "/package.json").version, status: "pending" })
+      fs.writeFileSync(process.argv[1], JSON.stringify(list))' ${join(repo, "staged.json")}
+    echo "+ @scope/pkg (staged)" ;;
   *) exit 2 ;;
 esac
 `,
@@ -71,7 +74,7 @@ describe("Npm.publish", () => {
   it("stages a new version from pnpm's tarball, with the token in a user config of its own", () => {
     const result = run(step, { version: "1.2.0", registry: { published: ["1.1.0"] } })
     expect(result.calls).toMatch(
-      new RegExp(`^${result.repo} stage publish /\\S+/scope-pkg\\.tgz --tag latest --access public --registry https://registry\\.npmjs\\.org/ --json$`),
+      new RegExp(`^${result.repo} stage publish /\\S+/scope-pkg\\.tgz --tag latest --access public --registry https://registry\\.npmjs\\.org/$`),
     )
     expect(result.userconfig).toBe("//registry.npmjs.org/:_authToken=npm_s3cret")
     expect(result.value).toEqual({ name: "@scope/pkg", version: "1.2.0", state: "staged", stage: "stg-42", staged: true })

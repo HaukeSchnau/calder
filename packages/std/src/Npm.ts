@@ -58,21 +58,26 @@ if [ "$(npm view "$name@$version" version --registry "$registry" 2>/dev/null)" =
   release published null false
   exit 0
 fi
-stage=$(npm stage list "$name" --json --registry "$registry" | VERSION="$version" node -e '
-  const items = JSON.parse(require("fs").readFileSync(0, "utf8"))
-  const item = items.find((item) => item.version === process.env.VERSION && item.status !== "rejected")
-  process.stdout.write(item ? String(item.id) : "")')
+staged() {
+  npm stage list "$name" --json --registry "$registry" | VERSION="$version" node -e '
+    const items = JSON.parse(require("fs").readFileSync(0, "utf8"))
+    const item = items.find((item) => item.version === process.env.VERSION && item.status !== "rejected")
+    process.stdout.write(item ? String(item.id) : "")'
+}
+# The stage id as JSON, or null when the registry didn't list it.
+json() { if [ -n "$1" ]; then printf '"%s"' "$1"; else printf null; fi; }
+stage=$(staged)
 if [ -n "$stage" ]; then
   echo "$name@$version is staged as $stage and waits for approval: npm stage approve $stage"
-  release staged "\\"$stage\\"" false
+  release staged "$(json "$stage")" false
   exit 0
 fi
 case "$version" in *-*) tag=next ;; *) tag=latest ;; esac
 pnpm pack --pack-destination "$pack"
-stage=$(npm stage publish "$pack"/*.tgz --tag "$tag" --access "$4" --registry "$registry" --json |
-  node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0, "utf8")).stageId))')
+npm stage publish "$pack"/*.tgz --tag "$tag" --access "$4" --registry "$registry"
+stage=$(staged)
 echo "Staged $name@$version as $stage. Approve it with 2FA: npm stage approve $stage"
-release staged "\\"$stage\\"" true`
+release staged "$(json "$stage")" true`
 
 /**
  * Stages the package's version for a maintainer to approve with 2FA, unless the registry already has
