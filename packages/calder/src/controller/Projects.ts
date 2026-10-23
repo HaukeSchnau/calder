@@ -1,6 +1,5 @@
 import { Context, Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
-import * as Pipeline from "../Pipeline.ts"
 import { Config } from "./Config.ts"
 import { Gitea } from "./Gitea.ts"
 
@@ -46,8 +45,7 @@ export const layer = Layer.effect(Projects)(Effect.gen(function*() {
     add({ name, repo: p.repo, defaultBranch: p.defaultBranch ?? "main", targets: p.targets ?? null, secrets: p.secrets ?? {} })
   }
 
-  const hasPipeline = (repo: string, ref: string) =>
-    Pipeline.at((file) => gitea.hasFile(repo, ref, file)).pipe(Effect.map((dir) => dir !== undefined))
+  const hasPipeline = (repo: string, ref: string) => gitea.hasFile(repo, ref, ".calder/ci.ts")
 
   const find = (repo: string) => [...projects.values()].find((p) => p.repo.toLowerCase() === repo.toLowerCase())
 

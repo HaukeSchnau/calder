@@ -5,8 +5,6 @@ export * as Event from "./Event.ts"
 export * as Files from "./Files.ts"
 export * as Flake from "./Flake.ts"
 export * as Calder from "./Calder.ts"
-/** The name before Calder, for pipelines still in `.kiln/`. Remove once none imports it. */
-export * as Kiln from "./Calder.ts"
 export { Sha, StorePath } from "./Calder.ts"
 export * as Nix from "./Nix.ts"
 export * as On from "./On.ts"

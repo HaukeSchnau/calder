@@ -33,10 +33,6 @@ export const gen = (repo: string, system: string) =>
   Effect.gen(function*() {
     const dir = resolve(repo)
     const calder = join(dir, ".calder")
-    // A standard pipeline in .calder/ would take the place of the repository's own one in .kiln/.
-    if (existsSync(join(dir, ".kiln", "ci.ts")) && !existsSync(join(calder, "ci.ts"))) {
-      return yield* Effect.fail(new Error("the pipeline is in .kiln/: move it to .calder/ and its @kiln/ imports to @calder-ci/ first"))
-    }
     mkdirSync(calder, { recursive: true })
     const [packages, checks, devShells] = yield* Effect.all(
       [names(dir, "packages", system), names(dir, "checks", system), names(dir, "devShells", system)],

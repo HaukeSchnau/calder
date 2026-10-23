@@ -65,8 +65,6 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     makeWrapper ${lib.getExe bun} $out/bin/calder \
       --add-flags $out/lib/calder/packages/calder/src/main.ts \
       --prefix PATH : ${lib.makeBinPath [ git gnutar bash coreutils ]}
-    # The name before the rename, for scripts and habits; remove once nothing calls `kiln`.
-    ln -s calder $out/bin/kiln
     runHook postInstall
   '';
 

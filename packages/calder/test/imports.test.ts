@@ -25,7 +25,6 @@ const fixture = memoryRepo({
   "apps/server/src/plugin.ts": `export const load = (name: string) => import(name)`,
   "apps/server/src/plugin.test.ts": `// calder: always\nimport { load } from "./plugin"`,
   "apps/server/src/quoted.test.ts": `const marker = "// calder: always"`,
-  "apps/server/src/legacy.test.ts": `// kiln: always\nexport {}`,
   "apps/server/README.md": "docs",
   "apps/web/package.json": JSON.stringify({ name: "web" }),
   "apps/web/src/app.test.tsx": `import { x } from "~/lib/x"`,
@@ -63,8 +62,6 @@ describe("Imports", () => {
       expect(graph.always("apps/server/src/git.test.ts")).toBe(false)
       yield* graph.closure(["apps/server/src/quoted.test.ts"], { aliases: {}, types: false })
       expect(graph.always("apps/server/src/quoted.test.ts")).toBe(false)
-      yield* graph.closure(["apps/server/src/legacy.test.ts"], { aliases: {}, types: false })
-      expect(graph.always("apps/server/src/legacy.test.ts")).toBe(true)
     }))
 
   it.effect("finds a package's data files, without code or docs", () =>
@@ -74,7 +71,6 @@ describe("Imports", () => {
       expect(graph.data("apps/server")).toEqual(["apps/server/package.json", "apps/server/src/fixtures/repo/HEAD"])
       expect(graph.match(["apps/server/**/*.test.ts"])).toEqual([
         "apps/server/src/git.test.ts",
-        "apps/server/src/legacy.test.ts",
         "apps/server/src/plugin.test.ts",
         "apps/server/src/quoted.test.ts",
       ])
