@@ -117,6 +117,19 @@ export default Project.alchemy({
 })
 ```
 
+`Npm.publish` from `@calder-ci/std` publishes a package to npm, or the `registry` given, unless the registry
+already has its version, so it can run on every push and a release is a commit that raises the version. A
+prerelease version (`1.2.0-beta.1`) goes to the `next` tag, every other to `latest`. The token comes from the
+project's secret `token` through a user config of its own, never the command line, and the step holds the deploy
+lease. Its value says what it did: `{ name, version, published }`. It publishes with `pnpm publish`, so the setup
+is a `Pnpm.install`, and `dir` names a package that isn't at the root.
+
+```ts
+const publish = Npm.publish({ shell, setup: install, token: "npm", after: checks })
+
+export default Calder.project({ rules: [On.pullRequest(checks), On.push("main", [publish])] })
+```
+
 `ci.ts` runs on the worker's Bun. `.calder/tsconfig.json` extends `@calder-ci/tsconfig` from the SDK, which gives it Bun's
 types, so an action can use `fetch`, `node:crypto` or `Bun.file` and still type-check. `.calder/node_modules` links
 through the profile that put Calder on PATH (`/run/current-system/sw/lib/calder/...`), so it follows upgrades; `calder plan`
@@ -218,7 +231,7 @@ them, so Nix's garbage collector leaves them alone; reuse skips a result whose o
 | Path | What |
 | --- | --- |
 | `packages/core` | `@calder-ci/core`: the API and the plan engine (`Calder.plan` is pure and testable) |
-| `packages/std` | `@calder-ci/std`: `Project.standard`, `Project.alchemy` and `Alchemy`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
+| `packages/std` | `@calder-ci/std`: `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
