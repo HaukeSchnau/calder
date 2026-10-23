@@ -117,12 +117,14 @@ export default Project.alchemy({
 })
 ```
 
-`Npm.publish` from `@calder-ci/std` publishes a package to npm, or the `registry` given, unless the registry
-already has its version, so it can run on every push and a release is a commit that raises the version. A
-prerelease version (`1.2.0-beta.1`) goes to the `next` tag, every other to `latest`. The token comes from the
-project's secret `token` through a user config of its own, never the command line, and the step holds the deploy
-lease. Its value says what it did: `{ name, version, published }`. It publishes with `pnpm publish`, so the setup
-is a `Pnpm.install`, and `dir` names a package that isn't at the root.
+`Npm.publish` from `@calder-ci/std` stages a package's version on npm, or the `registry` given, for a maintainer to
+approve with 2FA (`npm stage approve <id>`, or Staged Packages on npmjs.com). It leaves a version that is already
+published or staged alone, so it can run on every push and a release is a commit that raises the version. Staging
+needs only a granular token without 2FA bypass, ideally "Read and write (stage only)": npm retires direct publishing
+with bypass tokens around January 2027, and its trusted publishing accepts only GitHub Actions, GitLab and CircleCI. The
+token comes from the project's secret `token` through a user config of its own, never the command line. `pnpm pack`
+packs the package, so `workspace:` versions resolve, and a prerelease (`1.2.0-beta.1`) is tagged `next`. The step
+holds the deploy lease, and its value says where the version stands: `{ name, version, state, stage, staged }`.
 
 ```ts
 const publish = Npm.publish({ shell, setup: install, token: "npm", after: checks })
