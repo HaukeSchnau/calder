@@ -5,7 +5,6 @@ import { rm } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link } from "../Gen.ts"
-import * as Pipeline from "../Pipeline.ts"
 import { Config } from "./Config.ts"
 import { Projects } from "./Projects.ts"
 
@@ -53,7 +52,7 @@ const groupReadable = (dir: string) => {
   }
 }
 
-const extracted = (root: string) => Pipeline.find(root) !== undefined
+const extracted = (root: string) => existsSync(join(root, ".calder", "ci.ts"))
 
 /**
  * Makes `root` hold a revision's `.calder/`: `fill` writes it into a scratch directory next to `root`,
@@ -101,8 +100,8 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
   const git = (project: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
     Exec.run(["git", "--git-dir", path(project), ...args], { env }).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
 
-  const has = (project: string, sha: string) => (file: string) =>
-    git(project, ["cat-file", "-e", `${sha}:${file}`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
+  const hasPipeline = (project: string, sha: string) =>
+    git(project, ["cat-file", "-e", `${sha}:.calder/ci.ts`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
 
   const ensure = (project: string) =>
     Effect.gen(function*() {
@@ -186,23 +185,22 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
   return {
     path,
     fetch,
-    hasPipeline: (project, sha) => Pipeline.at(has(project, sha)).pipe(Effect.map((dir) => dir !== undefined)),
+    hasPipeline,
     commit,
     pipelineDir: (project, sha) =>
       Effect.gen(function*() {
         const root = join(config.stateDir, "revs", project, sha)
         if (!extracted(root)) {
-          const pipeline = yield* Pipeline.at(has(project, sha))
-          if (pipeline === undefined) return yield* new NoPipeline({ revision: sha })
+          if (!(yield* hasPipeline(project, sha))) return yield* new NoPipeline({ revision: sha })
           yield* extract(root, (scratch) =>
-            Exec.run(["bash", "-c", `git --git-dir "$1" archive "$2" "$4" | tar -x -C "$3"`, "calder", path(project), sha, scratch, pipeline]).pipe(
+            Exec.run(["bash", "-c", `git --git-dir "$1" archive "$2" .calder | tar -x -C "$3"`, "calder", path(project), sha, scratch]).pipe(
               Effect.provideService(Exec.SpawnerTag, spawner),
               Effect.andThen(Effect.sync(() => groupReadable(scratch))),
             ))
         }
         const now = new Date()
         utimesSync(root, now, now)
-        const dir = Pipeline.find(root) ?? join(root, ".calder")
+        const dir = join(root, ".calder")
         // A revision extracted before a deploy still links the SDK of the Calder that planned it then.
         link(join(dir, "node_modules"), config.sdk)
         return dir

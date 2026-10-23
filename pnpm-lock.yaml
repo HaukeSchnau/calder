@@ -117,15 +117,6 @@ importers:
       '@calder-ci/tsconfig':
         specifier: link:./tsconfig
         version: link:tsconfig
-      '@kiln/core':
-        specifier: workspace:@calder-ci/core@*
-        version: link:../packages/core
-      '@kiln/std':
-        specifier: workspace:@calder-ci/std@*
-        version: link:../packages/std
-      '@kiln/tsconfig':
-        specifier: link:./tsconfig
-        version: link:tsconfig
       '@types/bun':
         specifier: 1.4.2
         version: 1.4.2

@@ -213,15 +213,6 @@ planned run stays whole. Extracted `.calder/` directories go after a day without
 `gcroots/` under the controller's state directory while a step of a run inside the window or a passed result names
 them, so Nix's garbage collector leaves them alone; reuse skips a result whose outputs left the store anyway.
 
-## The name Kiln
-
-Calder was called Kiln until October 2026. Until no branch needs it, the old names keep working:
-a repository may keep its pipeline in `.kiln/` (`.calder/` wins when both exist), `@kiln/core`,
-`@kiln/std` and `@kiln/tsconfig` resolve to the same packages, core also exports `Calder` as `Kiln`,
-tasks get every `CALDER_*` variable as `KILN_*` too, a test file's `kiln: always` comment still makes it
-run every time, and the package installs `kiln` as a link to `calder`. `calder gen` refuses a repository whose pipeline is still in `.kiln/`. Commit statuses are
-`calder/<step>` only, so branch protection needs those contexts.
-
 ## Layout
 
 | Path | What |

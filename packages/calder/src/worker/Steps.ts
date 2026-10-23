@@ -8,7 +8,6 @@ import { tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link, sdkPath } from "../Gen.ts"
-import * as Pipeline from "../Pipeline.ts"
 import type { Job as JobSpec, JobResult, Outcome, RunInfo } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 import { fetching, gitEnv, Job, reconnecting } from "./Client.ts"
@@ -59,15 +58,15 @@ const toResult = <A>(exit: Exit.Exit<A, unknown>, extra: { readonly outputs?: Re
 // Gitea's host runners gave jobs the system profile (curl, ssh, ...) and pipelines rely on it.
 const hostPath = existsSync("/run/current-system/sw/bin") ? ":/run/current-system/sw/bin" : ""
 
-/** What a task learns about its run, also under the `KILN_` names scripts used before the rename. */
-const runEnv = (values: Record<string, string>) =>
-  Object.fromEntries(Object.entries(values).flatMap(([name, value]) => [[`CALDER${name}`, value], [`KILN${name}`, value]]))
-
 const env = (run: RunInfo, step: string, extra: Record<string, string> = {}): Record<string, string | undefined> => ({
   ...process.env,
   PATH: `${process.env.PATH ?? ""}${hostPath}`,
   CI: "true",
-  ...runEnv({ "": "1", _RUN: run.id, _PROJECT: run.project, _STEP: step, _REVISION: run.revision }),
+  CALDER: "1",
+  CALDER_RUN: run.id,
+  CALDER_PROJECT: run.project,
+  CALDER_STEP: step,
+  CALDER_REVISION: run.revision,
   CI_PROJECT_ID: run.project,
   NIX_CONFIG: "experimental-features = nix-command flakes",
   ...extra,
@@ -144,7 +143,7 @@ const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
     yield* git(["-c", "advice.detachedHead=false", "checkout", "-q", "-f", "--detach", job.run.revision])
     yield* git(["clean", "-q", "-ffdx", ...keep.flatMap((p) => ["-e", p])])
     // What `calder gen` sets up locally, so the repository's own tools (type-aware lint) resolve ci.ts too.
-    for (const dir of Pipeline.dirs) if (existsSync(join(src, dir))) link(join(src, dir, "node_modules"), sdkPath)
+    if (existsSync(join(src, ".calder"))) link(join(src, ".calder", "node_modules"), sdkPath)
     yield* log("calder", `checked out ${job.run.revision.slice(0, 12)} in ${Date.now() - started} ms`)
   })
 
@@ -320,7 +319,8 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     const taskEnv = env(job.run, step.name, {
       ...goMemLimit(),
       ...extraEnv,
-      ...runEnv({ _SHARD_INDEX: String(shard.index), _SHARD_COUNT: String(shard.count) }),
+      CALDER_SHARD_INDEX: String(shard.index),
+      CALDER_SHARD_COUNT: String(shard.count),
       ...def.env,
       ...secretEnv,
     })

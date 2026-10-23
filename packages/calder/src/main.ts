@@ -11,7 +11,6 @@ import * as Check from "./Check.ts"
 import * as Cli from "./Cli.ts"
 import * as Controller from "./controller/Main.ts"
 import * as Gen from "./Gen.ts"
-import * as Pipeline from "./Pipeline.ts"
 import * as Remote from "./Remote.ts"
 import * as Watch from "./Watch.ts"
 import * as Load from "./worker/Load.ts"
@@ -95,7 +94,7 @@ const plan = Command.make("plan", {
 }, ({ dir, event, required, json }) =>
   Effect.gen(function*() {
     const parsed = yield* Cli.parseEvent(event)
-    const pipelineDir = Pipeline.find(resolve(dir)) ?? resolve(dir, ".calder")
+    const pipelineDir = resolve(dir, ".calder")
     // A link from an older `calder gen` may point at a Calder that is gone; planning repairs it.
     if (existsSync(pipelineDir)) Gen.linkCheckout(pipelineDir)
     const project = yield* Load.project(pipelineDir)

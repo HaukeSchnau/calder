@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link, sdkPath } from "../Gen.ts"
-import * as Pipeline from "../Pipeline.ts"
 import type { Job as JobSpec, JobResult } from "../Protocol.ts"
 import * as Client from "./Client.ts"
 import * as Egress from "./Egress.ts"
@@ -31,29 +30,25 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
     }),
   )
 
-/** An agent's worker extracts the revision's pipeline directory itself, once per revision. */
+/** An agent's worker extracts the revision's `.calder/` itself, once per revision. */
 const pipelineDir = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
   Effect.gen(function*() {
     const job = yield* Client.Job
     if (job.remote === null) return spec.run.pipelineDir
     const root = join(job.remote.workspaces, ".revs", spec.run.project, spec.run.revision)
-    const extracted = Pipeline.find(root)
-    if (extracted !== undefined) return extracted
+    if (existsSync(join(root, ".calder", "ci.ts"))) return join(root, ".calder")
     const scratch = `${root}.${job.id}`
     mkdirSync(scratch, { recursive: true })
     const git = (args: ReadonlyArray<string>) => Exec.run(["git", "--git-dir", join(scratch, "git"), ...args], { env: Client.gitEnv(job) })
     yield* git(["init", "-q", "--bare"])
     yield* Client.fetching(git(["fetch", "-q", "--no-tags", "--depth=1", spec.run.mirror, spec.run.revision]))
-    const dir = (yield* Pipeline.at((path) =>
-      git(["cat-file", "-e", `${spec.run.revision}:${path}`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
-    )) ?? ".calder"
-    yield* git(["archive", `--output=${join(scratch, "pipeline.tar")}`, spec.run.revision, dir])
+    yield* git(["archive", `--output=${join(scratch, "pipeline.tar")}`, spec.run.revision, ".calder"])
     yield* Exec.run(["tar", "-x", "-C", scratch, "-f", join(scratch, "pipeline.tar")])
     rmSync(join(scratch, "git"), { recursive: true, force: true })
-    link(join(scratch, dir, "node_modules"), sdkPath)
+    link(join(scratch, ".calder", "node_modules"), sdkPath)
     if (existsSync(root)) rmSync(scratch, { recursive: true, force: true })
     else renameSync(scratch, root)
-    return join(root, dir)
+    return join(root, ".calder")
   })
 
 const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
