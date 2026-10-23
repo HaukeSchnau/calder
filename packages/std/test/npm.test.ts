@@ -10,12 +10,17 @@ import * as Pnpm from "../src/Pnpm.ts"
 
 const shell = Flake.make({ packages: [], checks: [], devShells: ["ci"] }).devShells.ci
 
+interface Registry {
+  readonly published?: ReadonlyArray<string>
+  readonly staged?: ReadonlyArray<{ readonly id: string; readonly version: string; readonly status: string }>
+}
+
 /**
- * Runs a publish step in a scratch repository whose registry already holds `published` versions.
- * `npm` and `pnpm` are stand-ins: `npm view` answers from that list, and `pnpm publish` records its
- * arguments and the user config it was given.
+ * Runs a publish step in a scratch repository against stand-ins for npm and pnpm. `npm view` and
+ * `npm stage list` answer from `registry`, `npm stage publish` records its arguments and the user
+ * config it was given and answers with a stage id, and `pnpm pack` writes a tarball.
  */
-const run = (step: ReturnType<typeof Npm.publish>, options: { version: string; published?: ReadonlyArray<string>; dir?: string }) => {
+const run = (step: ReturnType<typeof Npm.publish>, options: { version: string; registry?: Registry; dir?: string }) => {
   const repo = mkdtempSync(join(tmpdir(), "npm-publish-"))
   const bin = join(repo, ".bin")
   mkdirSync(bin)
@@ -23,17 +28,27 @@ const run = (step: ReturnType<typeof Npm.publish>, options: { version: string; p
   mkdirSync(pkg, { recursive: true })
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@scope/pkg", version: options.version }))
   writeFileSync(join(repo, "token"), "npm_s3cret\n")
-  writeFileSync(join(repo, "published"), (options.published ?? []).join("\n"))
+  writeFileSync(join(repo, "published"), (options.registry?.published ?? []).join("\n"))
+  writeFileSync(
+    join(repo, "staged.json"),
+    JSON.stringify((options.registry?.staged ?? []).map((item) => ({ ...item, packageName: "@scope/pkg" }))),
+  )
   writeFileSync(
     join(bin, "npm"),
-    `#!/usr/bin/env bash\n[ "$1" = view ] || exit 2\nwanted=\${2##*@}\ngrep -qx "$wanted" ${join(repo, "published")} && echo "$wanted"\ntrue\n`,
+    `#!/usr/bin/env bash
+case "$1 $2" in
+  "view "*) wanted=\${2##*@}; grep -qx "$wanted" ${join(repo, "published")} && echo "$wanted"; true ;;
+  "stage list") cat ${join(repo, "staged.json")} ;;
+  "stage publish") echo "$PWD $*" >> ${join(repo, "calls")}; cat "$NPM_CONFIG_USERCONFIG" >> ${join(repo, "userconfig")}
+    echo '{"id":"@scope/pkg@x","stageId":"stg-42"}' ;;
+  *) exit 2 ;;
+esac
+`,
     { mode: 0o755 },
   )
-  writeFileSync(
-    join(bin, "pnpm"),
-    `#!/usr/bin/env bash\necho "$PWD $*" >> ${join(repo, "calls")}\ncat "$NPM_CONFIG_USERCONFIG" >> ${join(repo, "userconfig")}\n`,
-    { mode: 0o755 },
-  )
+  writeFileSync(join(bin, "pnpm"), `#!/usr/bin/env bash\n[ "$1 $2" = "pack --pack-destination" ] || exit 2\ntouch "$3/scope-pkg.tgz"\n`, {
+    mode: 0o755,
+  })
   if (step.def._tag !== "Task" || typeof step.def.run === "function" || step.def.value === undefined) {
     throw new Error("not a task with one command and a value")
   }
@@ -45,43 +60,52 @@ const run = (step: ReturnType<typeof Npm.publish>, options: { version: string; p
     repo,
     calls: read("calls"),
     userconfig: read("userconfig"),
-    value: Schema.decodeUnknownSync(step.def.value.schema)(JSON.parse(read(step.def.value.path)!)),
+    value: Schema.decodeUnknownSync(Npm.Release)(JSON.parse(read(step.def.value.path)!)),
   }
 }
 
 describe("Npm.publish", () => {
   const setup = Pnpm.install({ shell })
+  const step = Npm.publish({ shell, setup, token: "npm" })
 
-  it("publishes a version the registry doesn't have, with the token in a user config of its own", () => {
-    const result = run(Npm.publish({ shell, setup, token: "npm" }), { version: "1.2.0", published: ["1.1.0"] })
-    expect(result.calls).toBe(`${result.repo} publish --no-git-checks --access public --tag latest --registry https://registry.npmjs.org/`)
+  it("stages a new version from pnpm's tarball, with the token in a user config of its own", () => {
+    const result = run(step, { version: "1.2.0", registry: { published: ["1.1.0"] } })
+    expect(result.calls).toMatch(
+      new RegExp(`^${result.repo} stage publish /\\S+/scope-pkg\\.tgz --tag latest --access public --registry https://registry\\.npmjs\\.org/ --json$`),
+    )
     expect(result.userconfig).toBe("//registry.npmjs.org/:_authToken=npm_s3cret")
-    expect(result.value).toEqual({ name: "@scope/pkg", version: "1.2.0", published: true })
+    expect(result.value).toEqual({ name: "@scope/pkg", version: "1.2.0", state: "staged", stage: "stg-42", staged: true })
   })
 
-  it("leaves a version the registry has alone, so every push can run it", () => {
-    const result = run(Npm.publish({ shell, setup, token: "npm" }), { version: "1.2.0", published: ["1.1.0", "1.2.0"] })
+  it("leaves a published version alone, so every push can run it", () => {
+    const result = run(step, { version: "1.2.0", registry: { published: ["1.1.0", "1.2.0"] } })
     expect(result.calls).toBeUndefined()
-    expect(result.value).toEqual({ name: "@scope/pkg", version: "1.2.0", published: false })
+    expect(result.value).toEqual({ name: "@scope/pkg", version: "1.2.0", state: "published", stage: null, staged: false })
   })
 
-  it("publishes a prerelease to the next tag", () => {
-    const result = run(Npm.publish({ shell, setup, token: "npm" }), { version: "2.0.0-beta.1" })
-    expect(result.calls).toContain("--tag next")
+  it("leaves a version that waits for approval alone, and stages one again after a rejection", () => {
+    const waiting = run(step, { version: "1.2.0", registry: { staged: [{ id: "stg-7", version: "1.2.0", status: "pending" }] } })
+    expect(waiting.calls).toBeUndefined()
+    expect(waiting.value).toEqual({ name: "@scope/pkg", version: "1.2.0", state: "staged", stage: "stg-7", staged: false })
+
+    const rejected = run(step, { version: "1.2.0", registry: { staged: [{ id: "stg-7", version: "1.2.0", status: "rejected" }] } })
+    expect(rejected.value.staged).toBe(true)
   })
 
-  it("publishes the package in its directory to the given registry", () => {
-    const step = Npm.publish({ shell, setup, token: "npm", dir: "packages/lib", registry: "https://npm.example/", access: "restricted" })
-    const result = run(step, { version: "0.1.0", dir: "packages/lib" })
-    expect(result.calls).toBe(`${result.repo}/packages/lib publish --no-git-checks --access restricted --tag latest --registry https://npm.example/`)
+  it("stages a prerelease for the next tag", () => {
+    expect(run(step, { version: "2.0.0-beta.1" }).calls).toContain("--tag next")
+  })
+
+  it("stages the package in its directory for the given registry", () => {
+    const other = Npm.publish({ shell, setup, token: "npm", dir: "packages/lib", registry: "https://npm.example/", access: "restricted" })
+    const result = run(other, { version: "0.1.0", dir: "packages/lib" })
+    expect(result.calls).toMatch(new RegExp(`^${result.repo}/packages/lib stage publish \\S+ --tag latest --access restricted --registry https://npm\\.example/`))
     expect(result.userconfig).toBe("//npm.example/:_authToken=npm_s3cret")
   })
 
-  it("holds the deploy lease and reads the token from the project's secret", () => {
-    const step = Npm.publish({ shell, setup, token: "npm-token" })
-    if (step.def._tag !== "Task" || typeof step.def.run === "function") throw new Error("not a task")
+  it("holds the deploy lease and runs on every push", () => {
+    if (step.def._tag !== "Task") throw new Error("not a task")
     expect(step.def.lease).toBe(true)
     expect(step.def.reuse).toBe("never")
-    expect(Cmd.render(step.def.run, {}, { secrets: { "npm-token": "/secrets/npm" } })).toContain("/secrets/npm")
   })
 })
