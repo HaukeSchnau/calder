@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core"
@@ -228,23 +228,40 @@ export interface Derivation {
  * a schedule that plans an unchanged head evaluated infra's hosts again each hour, 6.5 GB for four
  * minutes. `cacheDir` keeps one file per repository with the derivations of its last planned revision.
  * A plan of that revision whose attributes it holds, such as a schedule's subset of a push's, reuses
- * them while they are still in the store.
+ * them while they are still in the store. Plans of one repository take turns: on srv-2 a push and a
+ * schedule of the same head once evaluated infra side by side and swapped the host into a stall.
  */
 export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>, cacheDir = join(homedir(), ".cache", "calder")) =>
   Effect.gen(function*() {
     if (attrs.length === 0) return new Map<string, Derivation | null>()
-    const locked = /[?&]rev=/.test(run.flake)
+    if (!/[?&]rev=/.test(run.flake)) return yield* evaluate(run, attrs)
+    mkdirSync(cacheDir, { recursive: true })
     const file = join(cacheDir, `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`)
-    const cached = locked && existsSync(file)
-      ? JSON.parse(readFileSync(file, "utf8")) as { flake: string; derivations: Record<string, Derivation | null> }
-      : undefined
-    const known = cached?.flake === run.flake ? cached.derivations : {}
-    if (attrs.every((attr) => attr in known)) {
-      const drvs = attrs.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
-      if ((yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
-        return new Map(attrs.map((attr) => [attr, known[attr] ?? null]))
-      }
-    }
+    return yield* Effect.acquireUseRelease(
+      lock(`${file}.lock`),
+      () =>
+        Effect.gen(function*() {
+          const cached = existsSync(file)
+            ? JSON.parse(readFileSync(file, "utf8")) as { flake: string; derivations: Record<string, Derivation | null> }
+            : undefined
+          const known = cached?.flake === run.flake ? cached.derivations : {}
+          if (attrs.every((attr) => attr in known)) {
+            const drvs = attrs.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
+            if ((yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
+              return new Map(attrs.map((attr) => [attr, known[attr] ?? null]))
+            }
+          }
+          const result = yield* evaluate(run, attrs)
+          writeFileSync(`${file}.tmp`, JSON.stringify({ flake: run.flake, derivations: { ...known, ...Object.fromEntries(result) } }))
+          renameSync(`${file}.tmp`, file)
+          return result
+        }),
+      (path) => Effect.sync(() => rmSync(path, { force: true })),
+    )
+  })
+
+const evaluate = (run: RunInfo, attrs: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
     const body = attrs.map((attr, i) => `a${i} = one f.${attr};`).join(" ")
     const expr = `let f = builtins.getFlake ${JSON.stringify(run.flake)};
       one = x: let t = builtins.tryEval (builtins.seq x.drvPath x); in
@@ -253,13 +270,33 @@ export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>, cacheDir
     const out = yield* Exec.run(["nix", "eval", "--json", "--expr", expr]).pipe(
       Effect.map((json) => JSON.parse(json) as Record<string, Derivation | null>),
     )
-    const result = new Map(attrs.map((attr, i) => [attr, out[`a${i}`] ?? null]))
-    if (locked) {
-      mkdirSync(cacheDir, { recursive: true })
-      writeFileSync(`${file}.tmp`, JSON.stringify({ flake: run.flake, derivations: { ...known, ...Object.fromEntries(result) } }))
-      renameSync(`${file}.tmp`, file)
+    return new Map(attrs.map((attr, i) => [attr, out[`a${i}`] ?? null]))
+  })
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+/** Creates `path` holding this process's id, waiting while a live process holds it. A dead holder's lock is taken over. */
+const lock = (path: string) =>
+  Effect.gen(function*() {
+    while (true) {
+      try {
+        writeFileSync(path, String(process.pid), { flag: "wx" })
+        return path
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      }
+      // The holder can release between our create and this read.
+      const holder = existsSync(path) ? Number(readFileSync(path, "utf8")) : 0
+      if (holder > 0 && !alive(holder)) rmSync(path, { force: true })
+      else if (holder > 0) yield* Effect.sleep("2 seconds")
     }
-    return result
   })
 
 const describeCmd = (run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unknown>), count: number) =>
