@@ -50,11 +50,17 @@ describe("derivations", () => {
       expect(first).toEqual(new Map([["a", drv("a")], ["b", null]]))
       expect(calls).toEqual(["nix eval", "nix-store --check-validity"])
 
+      // Another revision replaces the repository's entry; a subset of it is a hit.
       yield* plan("git+file:///mirror?rev=2")
+      const subset = yield* derivations(run("git+file:///mirror?rev=2"), ["a"], dir).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      expect(subset).toEqual(new Map([["a", drv("a")]]))
+      expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first)
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(3)
+
       valid = false
-      yield* plan("git+file:///mirror?rev=2")
+      yield* plan("git+file:///mirror?rev=1")
       yield* plan("git+file:///mirror")
       yield* plan("git+file:///mirror")
-      expect(calls.filter((c) => c === "nix eval")).toHaveLength(5)
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(6)
     }))
 })

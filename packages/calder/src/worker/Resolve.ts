@@ -226,19 +226,23 @@ export interface Derivation {
  *
  * A revision evaluates to the same derivations every time, and `--expr` bypasses Nix's eval cache:
  * a schedule that plans an unchanged head evaluated infra's hosts again each hour, 6.5 GB for four
- * minutes. The last result per attribute list is kept in `cacheDir` and reused for the same revision
- * while its derivations are still in the store.
+ * minutes. `cacheDir` keeps one file per repository with the derivations of its last planned revision.
+ * A plan of that revision whose attributes it holds, such as a schedule's subset of a push's, reuses
+ * them while they are still in the store.
  */
 export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>, cacheDir = join(homedir(), ".cache", "calder")) =>
   Effect.gen(function*() {
     if (attrs.length === 0) return new Map<string, Derivation | null>()
     const locked = /[?&]rev=/.test(run.flake)
-    const file = join(cacheDir, `derivations-${sha256(attrs)}.json`)
-    if (locked && existsSync(file)) {
-      const cached = JSON.parse(readFileSync(file, "utf8")) as { flake: string; derivations: ReadonlyArray<Derivation | null> }
-      const drvs = cached.derivations.flatMap((d) => (d === null ? [] : [d.drv]))
-      if (cached.flake === run.flake && (yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
-        return new Map(attrs.map((attr, i) => [attr, cached.derivations[i] ?? null]))
+    const file = join(cacheDir, `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`)
+    const cached = locked && existsSync(file)
+      ? JSON.parse(readFileSync(file, "utf8")) as { flake: string; derivations: Record<string, Derivation | null> }
+      : undefined
+    const known = cached?.flake === run.flake ? cached.derivations : {}
+    if (attrs.every((attr) => attr in known)) {
+      const drvs = attrs.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
+      if ((yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
+        return new Map(attrs.map((attr) => [attr, known[attr] ?? null]))
       }
     }
     const body = attrs.map((attr, i) => `a${i} = one f.${attr};`).join(" ")
@@ -249,13 +253,13 @@ export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>, cacheDir
     const out = yield* Exec.run(["nix", "eval", "--json", "--expr", expr]).pipe(
       Effect.map((json) => JSON.parse(json) as Record<string, Derivation | null>),
     )
-    const result = attrs.map((_, i) => out[`a${i}`] ?? null)
+    const result = new Map(attrs.map((attr, i) => [attr, out[`a${i}`] ?? null]))
     if (locked) {
       mkdirSync(cacheDir, { recursive: true })
-      writeFileSync(`${file}.tmp`, JSON.stringify({ flake: run.flake, derivations: result }))
+      writeFileSync(`${file}.tmp`, JSON.stringify({ flake: run.flake, derivations: { ...known, ...Object.fromEntries(result) } }))
       renameSync(`${file}.tmp`, file)
     }
-    return new Map(attrs.map((attr, i) => [attr, result[i]!]))
+    return result
   })
 
 const describeCmd = (run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unknown>), count: number) =>
