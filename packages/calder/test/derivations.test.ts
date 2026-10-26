@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "@effect/vitest"
@@ -11,17 +11,18 @@ const run = (flake: string) => ({ flake }) as RunInfo
 const drv = (name: string) => ({ drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}` })
 
 /** Answers `nix eval` with a derivation per attribute and `nix-store --check-validity` with `valid`. */
-const nix = (valid: () => boolean) => {
+const nix = (valid: () => boolean, evaluating = Effect.void) => {
   const calls: Array<string> = []
   const spawner = ChildProcessSpawner.make((command) =>
-    Effect.sync(() => {
+    Effect.gen(function*() {
       const argv = ChildProcess.isStandardCommand(command) ? [command.command, ...command.args] : []
       calls.push(argv.slice(0, 2).join(" "))
-      const evaluating = argv[1] === "eval"
-      const stdout = evaluating ? JSON.stringify({ a0: drv("a"), a1: null }) : ""
+      const evaluates = argv[1] === "eval"
+      if (evaluates) yield* evaluating
+      const stdout = evaluates ? JSON.stringify({ a0: drv("a"), a1: null }) : ""
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(1),
-        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(evaluating || valid() ? 0 : 1)),
+        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(evaluates || valid() ? 0 : 1)),
         isRunning: Effect.succeed(false),
         kill: () => Effect.void,
         stdin: Sink.drain,
@@ -62,5 +63,29 @@ describe("derivations", () => {
       yield* plan("git+file:///mirror")
       yield* plan("git+file:///mirror")
       expect(calls.filter((c) => c === "nix eval")).toHaveLength(6)
+    }))
+
+  it.live("evaluates a revision once when two plans of it start together", () =>
+    Effect.gen(function*() {
+      const { calls, spawner } = nix(() => true, Effect.sleep("50 millis"))
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
+      const plan = derivations(run("git+file:///mirror?rev=1"), ["a", "b"], dir).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      const [push, schedule] = yield* Effect.all([plan, plan], { concurrency: 2 })
+      expect(schedule).toEqual(push)
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(1)
+    }))
+
+  it.effect("takes over the lock of a worker that died holding it", () =>
+    Effect.gen(function*() {
+      const { calls, spawner } = nix(() => true)
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
+      const plan = derivations(run("git+file:///mirror?rev=1"), ["a"], dir).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      yield* plan
+      // No process has this id: Linux caps them at 2^22.
+      for (const name of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+        writeFileSync(join(dir, `${name}.lock`), String(2 ** 23))
+      }
+      yield* plan
+      expect(calls).toEqual(["nix eval", "nix-store --check-validity"])
     }))
 })
