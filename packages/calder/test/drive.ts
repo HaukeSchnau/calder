@@ -42,6 +42,8 @@ export interface Drive {
   readonly cache?: Cache["Service"]
   /** The value a step's job passes with. */
   readonly value?: (step: string) => unknown
+  /** What a step's job does once it started, before it passes. */
+  readonly work?: (step: string) => Effect.Effect<void>
   /** Keeps reading the steps after the run ended until this holds, for work the run doesn't wait for. */
   readonly settled?: (steps: ReadonlyMap<string, Domain.StepRun>) => boolean
 }
@@ -55,6 +57,7 @@ export const drive = ({
   passed = [],
   cache = { has: () => Effect.succeed(false), publish: unused },
   value = () => null,
+  work = () => Effect.void,
   settled = () => true,
 }: Drive) =>
   Effect.gen(function*() {
@@ -115,6 +118,7 @@ export const drive = ({
           Effect.gen(function*() {
             if (job._tag === "Step") jobs.push(job.step)
             yield* options.onStart ?? Effect.void
+            if (job._tag === "Step") yield* work(job.step)
             return {
               result: { _tag: "Passed", value: job._tag === "Step" ? value(job.step) : null, outputs: {}, key: null },
               usage: { cpuSeconds: null, memoryPeakBytes: null },

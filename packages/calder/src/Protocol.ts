@@ -21,8 +21,13 @@ export const PlannedStep = Schema.Struct({
   neverReuse: Schema.Boolean,
   /** What it runs, for people: the attribute, the command or the action. */
   detail: Schema.String,
-  /** The derivation and output, when the plan could evaluate them. */
-  build: Schema.NullOr(Schema.Struct({ attr: Schema.String, drv: Schema.NullOr(Schema.String), out: Schema.NullOr(Schema.String) })),
+  /** The derivation, its output and the system it builds for, when the plan could evaluate them. */
+  build: Schema.NullOr(Schema.Struct({
+    attr: Schema.String,
+    drv: Schema.NullOr(Schema.String),
+    out: Schema.NullOr(Schema.String),
+    system: Schema.NullOr(Schema.String),
+  })),
   /** A setup: the key its prepared workspace is kept under, and where it runs. */
   setup: Schema.NullOr(Schema.Struct({ deps: Schema.String, platform: Schema.NullOr(Schema.String) })),
   task: Schema.NullOr(Schema.Struct({

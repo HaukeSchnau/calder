@@ -30,6 +30,8 @@ once every check passed. With `placement`, an Alchemy stack with the release's `
 that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci/std` `Project.ts`).
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.
+  Builds for another system than the controller's, which Nix sends to remote builders, take build
+  slots of their own per system, so a remote builder that admits nothing stalls only its system's builds.
   Flake inputs that name another project's repository (`git+ssh` or `git+https` on the forge) come
   from Calder's mirror of it, in plans, builds and tasks alike, so a flake with private inputs
   evaluates without credentials, also in a pull request's sandbox. Agents fetch inputs themselves.

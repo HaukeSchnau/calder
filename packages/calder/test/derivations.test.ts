@@ -8,7 +8,7 @@ import type { RunInfo } from "../src/Protocol.ts"
 import { derivations } from "../src/worker/Resolve.ts"
 
 const run = (flake: string) => ({ flake }) as RunInfo
-const drv = (name: string) => ({ drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}` })
+const drv = (name: string) => ({ drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}`, system: "x86_64-linux" })
 
 /** Answers `nix eval` with a derivation per attribute and `nix-store --check-validity` with `valid`. */
 const nix = (valid: () => boolean, evaluating = Effect.void) => {

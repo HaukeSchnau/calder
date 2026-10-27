@@ -14,7 +14,7 @@ const app: PlannedStep = {
   kind: "build",
   needs: [],
   detail: "packages.x86_64-linux.app",
-  build: { attr: "packages.x86_64-linux.app", drv: "/nix/store/1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d-app.drv", out },
+  build: { attr: "packages.x86_64-linux.app", drv: "/nix/store/1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d-app.drv", out, system: "x86_64-linux" },
 }
 
 const rejected = new CommandFailed({
