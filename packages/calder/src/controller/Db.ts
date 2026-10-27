@@ -207,6 +207,12 @@ export const migrations = {
     // A build whose output the binary cache didn't take says so on its step.
     yield* sql`alter table steps add column publish_error text`
   }),
+  "0015_leases": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // The newest run each deploy step held the lease in, and the holder, so a restart forgets neither (Leases).
+    yield* sql`create table lease_steps (project text not null, step text not null, run integer not null, primary key (project, step))`
+    yield* sql`create table lease_holders (project text primary key, job text not null, run integer not null, step text not null, fence integer not null)`
+  }),
 }
 
 /**

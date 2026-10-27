@@ -112,6 +112,8 @@ export function StepMark({ status }: { readonly status: Domain.StepStatus }) {
       return <Dash label="blocked" />
     case "cancelled":
       return <Stopped />
+    case "skipped":
+      return <Dash label="skipped" />
     case "passed":
     case "reused":
       return null

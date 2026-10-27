@@ -2,7 +2,7 @@ import { Context, Effect, Layer, Schedule, Schema } from "effect"
 import { HttpClient, type HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Config } from "./Config.ts"
 
-export type StatusState = "pending" | "success" | "error" | "failure"
+export type StatusState = "pending" | "success" | "error" | "failure" | "warning"
 
 const Protection = Schema.Struct({
   rule_name: Schema.optional(Schema.String),

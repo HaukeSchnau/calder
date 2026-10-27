@@ -75,7 +75,8 @@ export interface StepRow {
 }
 
 export const terminal = (status: Domain.StepStatus) =>
-  status === "passed" || status === "reused" || status === "failed" || status === "died" || status === "blocked" || status === "cancelled"
+  status === "passed" || status === "reused" || status === "failed" || status === "died" || status === "blocked" || status === "cancelled" ||
+  status === "skipped"
 
 export const succeeded = (status: Domain.StepStatus) => status === "passed" || status === "reused"
 

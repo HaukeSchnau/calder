@@ -128,6 +128,7 @@ export type Def =
     readonly reuse: "never" | undefined
     readonly offload: false | undefined
     readonly lease: true | undefined
+    readonly skipCode: number | undefined
   }
   | {
     readonly _tag: "Action"

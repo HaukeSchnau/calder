@@ -9,7 +9,7 @@ import { BarChart, LineChart } from "./charts.tsx"
 import { Calder } from "./client.ts"
 import { LOG_PAGE, earlierLogs, isActive, isTerminal, logsAtom, metricsAtom, traceAtom } from "./data.ts"
 import { bytes, clockS, dur, spanDur, stepDuration } from "./format.ts"
-import { Check, Fail, Kbd, Loaded, Ring, useNow } from "./ui.tsx"
+import { Check, Dash, Fail, Kbd, Loaded, Ring, useNow } from "./ui.tsx"
 
 export type Tab = "logs" | "trace" | "metrics" | "tests" | "value"
 export const TABS: ReadonlyArray<Tab> = ["logs", "trace", "metrics", "tests", "value"]
@@ -575,7 +575,9 @@ function ValueTab({ step }: { readonly step: Domain.StepRun }) {
   if (step.error) {
     return (
       <div className="pbody vbody">
-        <p className="vhead"><Fail /><b className="bad">{step.error.tag}</b><span>{step.error.message}</span></p>
+        {step.status === "skipped"
+          ? <p className="vhead"><Dash label="skipped" /><b>Skipped</b><span>{step.error.message}</span></p>
+          : <p className="vhead"><Fail /><b className="bad">{step.error.tag}</b><span>{step.error.message}</span></p>}
         {step.error.excerpt ? <pre className="excerpt">{step.error.excerpt}</pre> : null}
       </div>
     )
