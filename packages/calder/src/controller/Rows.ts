@@ -80,14 +80,21 @@ export const terminal = (status: Domain.StepStatus) =>
 export const succeeded = (status: Domain.StepStatus) => status === "passed" || status === "reused"
 
 type Task = NonNullable<PlannedStep["task"]>
+type Build = NonNullable<PlannedStep["build"]>
 
 /** Steps planned before setups or per-file tasks existed lack those fields. */
 export const spec = (row: StepRow): PlannedStep => {
-  const planned = JSON.parse(row.spec) as Omit<PlannedStep, "setup" | "task"> & {
+  const planned = JSON.parse(row.spec) as Omit<PlannedStep, "setup" | "task" | "build"> & {
     readonly setup?: PlannedStep["setup"]
     readonly task: (Omit<Task, "each"> & { readonly each?: Task["each"] }) | null
+    readonly build: (Omit<Build, "system"> & { readonly system?: Build["system"] }) | null
   }
-  return { ...planned, setup: planned.setup ?? null, task: planned.task === null ? null : { ...planned.task, each: planned.task.each ?? null } }
+  return {
+    ...planned,
+    setup: planned.setup ?? null,
+    task: planned.task === null ? null : { ...planned.task, each: planned.task.each ?? null },
+    build: planned.build === null ? null : { ...planned.build, system: planned.build.system ?? null },
+  }
 }
 
 /**

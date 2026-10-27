@@ -74,6 +74,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const slots = {
     plans: Slots.make({ capacity: config.jobs.slots.plans }),
     builds: Slots.make({ capacity: config.jobs.slots.builds }),
+    // Each other system's builds wait for its remote builders apart, so one that is unavailable stalls only its own.
+    remoteBuilds: new Map<string, Slots.Slots>(),
     // One project's shards may not take every task slot, so other projects can always start.
     tasks: Slots.make({ capacity: config.jobs.slots.tasks, perProject: Math.max(1, config.jobs.slots.tasks - 1) }),
     actions: Slots.make({ capacity: config.jobs.slots.actions }),
@@ -114,6 +116,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   /** Opens when a task that starts from the setup runs. */
   const wanted = latches()
 
+  const buildSlots = (system: string | null) => {
+    if (system === null || system === config.system) return slots.builds
+    const pool = slots.remoteBuilds.get(system) ?? Slots.make({ capacity: config.jobs.slots.builds })
+    slots.remoteBuilds.set(system, pool)
+    return pool
+  }
+
   const { flying, landing, has: inFlight } = InFlight.make()
   const workspaces = new Map<string, Set<number>>()
   // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
@@ -127,7 +136,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index))
     }
     // Taken before any run is driven again, or the run would claim the same slots for new jobs.
-    const release = (spec.derivation === null ? slots.tasks : slots.builds).reserve(spec.run.project)
+    const row = spec.derivation === null ? undefined : yield* Rows.loadStep(spec.run.id, spec.step).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+    const system = row === undefined ? null : Rows.spec(row).build?.system ?? null
+    const release = (spec.derivation === null ? slots.tasks : buildSlots(system)).reserve(spec.run.project)
     yield* jobs.settled(adopted.id).pipe(
       Effect.ensuring(release),
       Effect.ensuring(Effect.sync(() => index !== null && workspaces.get(key)?.delete(index))),
@@ -784,8 +795,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       if (spec.build !== null) {
-        const { drv } = spec.build
-        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: slots.builds, expected, action: false, shard: null, workspace: false }, collect)
+        const { drv, system } = spec.build
+        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: buildSlots(system), expected, action: false, shard: null, workspace: false }, collect)
         if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
         if (r.result._tag === "Passed" && typeof r.result.value === "string") yield* share(run, name, r.result.value)
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))

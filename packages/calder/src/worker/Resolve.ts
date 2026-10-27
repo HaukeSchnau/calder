@@ -217,6 +217,7 @@ const dependencyFiles = [
 export interface Derivation {
   readonly drv: string
   readonly out: string
+  readonly system: string
 }
 
 /**
@@ -245,7 +246,8 @@ export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>, cacheDir
             ? JSON.parse(readFileSync(file, "utf8")) as { flake: string; derivations: Record<string, Derivation | null> }
             : undefined
           const known = cached?.flake === run.flake ? cached.derivations : {}
-          if (attrs.every((attr) => attr in known)) {
+          // Entries cached before derivations carried their system don't count.
+          if (attrs.every((attr) => attr in known && (known[attr] === null || known[attr]?.system !== undefined))) {
             const drvs = attrs.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
             if ((yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
               return new Map(attrs.map((attr) => [attr, known[attr] ?? null]))
@@ -265,7 +267,7 @@ const evaluate = (run: RunInfo, attrs: ReadonlyArray<string>) =>
     const body = attrs.map((attr, i) => `a${i} = one f.${attr};`).join(" ")
     const expr = `let f = builtins.getFlake ${JSON.stringify(run.flake)};
       one = x: let t = builtins.tryEval (builtins.seq x.drvPath x); in
-        if t.success then { drv = t.value.drvPath; out = t.value.outPath; } else null;
+        if t.success then { drv = t.value.drvPath; out = t.value.outPath; system = t.value.system; } else null;
       in { ${body} }`
     const out = yield* Exec.run(["nix", "eval", "--json", "--expr", expr]).pipe(
       Effect.map((json) => JSON.parse(json) as Record<string, Derivation | null>),
@@ -404,7 +406,7 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
           case "Build": {
             const attr = Flake.attrPath(def.ref, run.system)
             const derivation = evaluated.get(attr) ?? null
-            return { ...base, detail: attr, build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null } }
+            return { ...base, detail: attr, build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null, system: derivation?.system ?? null } }
           }
           case "Setup":
             return {
