@@ -309,8 +309,9 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
         () => Effect.orDie(reconnecting(self.client.fleetRelease(auth))),
       )
       if (lease._tag === "Replaced") {
-        yield* log("calder", "a newer run took the deploy lease, so this one doesn't run")
-        return toResult(Exit.succeed(undefined))
+        const reason = `#${lease.by} took ${step.name}'s deploy lease, so this older run doesn't deploy`
+        yield* log("calder", reason)
+        return { _tag: "Skipped", reason } satisfies JobResult
       }
       yield* log("calder", `holding the deploy lease, fence ${lease.fence}`)
     }
@@ -326,6 +327,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     })
 
     let attempt = 0
+    let skipped: string | undefined
     const once = Effect.gen(function*() {
       attempt += 1
       if (attempt > 1) yield* emit({ _tag: "Attempt", attempt, reason: "retry" })
@@ -333,7 +335,15 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       if (def.report !== undefined) rmSync(join(workspace, def.report.path), { force: true })
       if (def.value !== undefined) rmSync(join(workspace, def.value.path), { force: true })
       yield* log("calder", `$ ${argv.join(" ")}`)
-      const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) => log(stream, line))
+      let last = ""
+      const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) => {
+        if (line.trim() !== "") last = line.trim()
+        return log(stream, line)
+      })
+      if (def.skipCode !== undefined && exitCode === def.skipCode) {
+        skipped = last === "" ? `exited with ${exitCode}` : last
+        return undefined
+      }
       let failures: ReadonlyArray<Calder.TestFailure> = []
       if (def.report !== undefined) {
         const path = join(workspace, def.report.path)
@@ -357,6 +367,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       return def.value === undefined ? undefined : yield* readValue(workspace, def.value)
     })
     const exit = yield* Effect.exit(withPolicies(once, step.policies))
+    if (skipped !== undefined && Exit.isSuccess(exit)) return { _tag: "Skipped", reason: skipped } satisfies JobResult
     const passed = Exit.isSuccess(exit)
 
     const outputs: Record<string, string> = {}

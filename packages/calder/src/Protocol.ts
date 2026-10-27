@@ -186,6 +186,8 @@ export const JobResult = Schema.Union([
     outputs: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   }),
   Schema.TaggedStruct("Died", { message: Schema.String }),
+  /** A task that didn't do its work: a newer run's same step took the deploy lease, or it exited with its `skipCode`. */
+  Schema.TaggedStruct("Skipped", { reason: Schema.String }),
   /** The controller's own: an agent lost the job or none took it, so it may run again elsewhere. */
   Schema.TaggedStruct("Lost", { message: Schema.String }),
 ])
@@ -225,7 +227,8 @@ export class WorkerRpcs extends RpcGroup.make(
     payload: { ...auth, project: Schema.String },
     success: Schema.Union([
       Schema.TaggedStruct("Held", { fence: Schema.Number, targets: Schema.Array(Schema.String), unreachable: Schema.Array(Schema.String) }),
-      Schema.TaggedStruct("Replaced", {}),
+      /** `by`: the newer run whose same step took the lease. */
+      Schema.TaggedStruct("Replaced", { by: Schema.Number }),
     ]),
     error: Unauthorized,
   }),

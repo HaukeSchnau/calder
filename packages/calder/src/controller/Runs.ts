@@ -383,6 +383,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return ["error", s.error?.message.split("\n")[0] ?? "died"]
       case "blocked":
         return ["failure", "blocked by a failed step"]
+      case "skipped":
+        return ["warning", `skipped: ${s.error?.message.split("\n")[0] ?? ""}`]
       default:
         return ["error", s.status]
     }
@@ -498,6 +500,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       case "Died":
       case "Lost":
         return { status: "died", error: { tag: "Died", message: result.message, json: null }, usage, ...extra }
+      case "Skipped":
+        return { status: "skipped", error: { tag: "Skipped", message: result.reason, json: null }, usage, ...extra }
       default:
         return { status: "died", error: { tag: "Died", message: `unexpected ${result._tag}`, json: null }, usage, ...extra }
     }
@@ -754,8 +758,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const all = yield* db(Rows.loadSteps(runId))
       const byName = new Map(all.map((s) => [s.name, s]))
       const setups = Rows.setupsOf(spec, (n) => byName.get(n)?.kind)
-      if ([...spec.needs, ...spec.after].some((n) => !setups.includes(n) && !Rows.succeeded(byName.get(n)?.status ?? "blocked"))) {
-        return yield* settle(run, row, { status: "blocked" })
+      const deps = [...spec.needs, ...spec.after].filter((n) => !setups.includes(n)).map((n) => byName.get(n)?.status ?? "blocked")
+      if (deps.some((status) => !Rows.succeeded(status) && status !== "skipped")) return yield* settle(run, row, { status: "blocked" })
+      const skippedDep = [...spec.needs, ...spec.after].find((n) => byName.get(n)?.status === "skipped")
+      if (skippedDep !== undefined) {
+        return yield* settle(run, row, { status: "skipped", error: { tag: "Skipped", message: `${skippedDep} was skipped`, json: null } })
       }
       if (spec.setup !== null && !(yield* asked(run, name, all))) {
         const cancelled = (yield* db(Rows.loadRun(runId)))?.status === "cancelled"

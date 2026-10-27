@@ -77,7 +77,8 @@ function poll<A, E>(load: Effect.Effect<A, E | RpcClientError, Calder>, every: D
 
 export const isActive = (status: Domain.RunStatus) => status === "queued" || status === "planning" || status === "running"
 export const isTerminal = (status: Domain.StepStatus) =>
-  status === "passed" || status === "reused" || status === "failed" || status === "died" || status === "blocked" || status === "cancelled"
+  status === "passed" || status === "reused" || status === "failed" || status === "died" || status === "blocked" || status === "cancelled" ||
+  status === "skipped"
 
 const durationOf = (run: Domain.Run) => (run.startedAt !== null && run.finishedAt !== null ? run.finishedAt - run.startedAt : null)
 

@@ -15,7 +15,7 @@ import { layerCore } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
-import type { PlannedStep, PlanSpec } from "../src/Protocol.ts"
+import type { JobResult, PlannedStep, PlanSpec } from "../src/Protocol.ts"
 import { config } from "./config.ts"
 import { insertRun, layer as sqlite } from "./sqlite.ts"
 
@@ -44,6 +44,8 @@ export interface Drive {
   readonly value?: (step: string) => unknown
   /** What a step's job does once it started, before it passes. */
   readonly work?: (step: string) => Effect.Effect<void>
+  /** How a step's job ends instead of passing with its `value`. */
+  readonly result?: (step: string) => JobResult | undefined
   /** Keeps reading the steps after the run ended until this holds, for work the run doesn't wait for. */
   readonly settled?: (steps: ReadonlyMap<string, Domain.StepRun>) => boolean
 }
@@ -58,6 +60,7 @@ export const drive = ({
   cache = { has: () => Effect.succeed(false), publish: unused },
   value = () => null,
   work = () => Effect.void,
+  result = () => undefined,
   settled = () => true,
 }: Drive) =>
   Effect.gen(function*() {
@@ -120,7 +123,8 @@ export const drive = ({
             yield* options.onStart ?? Effect.void
             if (job._tag === "Step") yield* work(job.step)
             return {
-              result: { _tag: "Passed", value: job._tag === "Step" ? value(job.step) : null, outputs: {}, key: null },
+              result: (job._tag === "Step" ? result(job.step) : undefined) ??
+                { _tag: "Passed", value: job._tag === "Step" ? value(job.step) : null, outputs: {}, key: null },
               usage: { cpuSeconds: null, memoryPeakBytes: null },
               id: `job-${jobs.length}`,
             }

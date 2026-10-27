@@ -88,8 +88,8 @@ export type Lease =
     /** Hosts whose `/health` couldn't be read, which might run the app; a deploy must not go on without them. */
     readonly unreachable: ReadonlyArray<string>
   }
-  /** A newer run of the same project asked for the lease, so this one should stop. */
-  | { readonly _tag: "Replaced" }
+  /** The same step of a newer run, `by`, took the lease, so this one should stop. */
+  | { readonly _tag: "Replaced"; readonly by: number }
 
 /** Only actions with `grants: { deploy: true }` get Fleet. */
 export class Fleet extends Context.Service<Fleet, {

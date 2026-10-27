@@ -56,9 +56,15 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
   readonly offload?: false
   /**
    * `true`: the task holds the project's deploy lease while its command runs, like `Release.promote`.
-   * One deploy at a time, and a run that a newer one replaced passes without running. Trusted runs only.
+   * One deploy at a time, and once the same task of a newer run held the lease, this one is skipped
+   * instead of running. Trusted runs only.
    */
   readonly lease?: true
+  /**
+   * An exit code that means the task didn't do its work and that's no failure, such as a deploy to a
+   * host that is offline. The step ends as skipped, with the last line the command printed as the reason.
+   */
+  readonly skipCode?: number
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
@@ -93,4 +99,5 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     reuse: options.reuse,
     offload: options.offload,
     lease: options.lease,
+    skipCode: options.skipCode,
   }) as Step<A, TaskFailed, R, O>

@@ -163,7 +163,7 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
   const { run } = detail
   const d = runDuration(run, now)
   const total = totalSteps(run.counts)
-  const finished = count(run.counts, "passed", "reused", "failed", "died", "blocked", "cancelled")
+  const finished = count(run.counts, "passed", "reused", "failed", "died", "blocked", "cancelled", "skipped")
   const deploys = detail.steps.some((s) => s.deploys)
   const statusWord = run.status === "passed" ? `passed in ${dur(d ?? 0)}`
     : run.status === "failed" ? `failed after ${dur(d ?? 0)}`
@@ -348,7 +348,7 @@ function Inspector({ detail, step, onSelect, onTab }: {
           step.attempts > 1 && ["attempts", <span className="heat">{step.attempts}</span>],
           step.shards !== null && ["shards", String(step.shards)],
           step.value !== null && [step.value.label ?? "value", step.value.render === "link" ? <a className="lnk" href={step.value.text} target="_blank" rel="noreferrer">{step.value.text}</a> : <code className="wrap">{step.value.text}</code>],
-          step.error !== null && ["error", <span className="bad">{step.error.tag}</span>],
+          step.error !== null && (step.status === "skipped" ? ["skipped", <span>{step.error.message}</span>] : ["error", <span className="bad">{step.error.tag}</span>]),
         ]} />
       </section>
       {step.outputs.length > 0 ? (

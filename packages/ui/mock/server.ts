@@ -17,7 +17,7 @@ import {
 const port = Number(process.env["CALDER_MOCK_PORT"] ?? 8791)
 const mac = process.env["CALDER_MOCK_MAC"] === "offline" ? "offline" : "online"
 
-const terminal = new Set<Domain.StepStatus>(["passed", "reused", "failed", "died", "blocked", "cancelled"])
+const terminal = new Set<Domain.StepStatus>(["passed", "reused", "failed", "died", "blocked", "cancelled", "skipped"])
 const isActive = (status: Domain.RunStatus) => status === "queued" || status === "planning" || status === "running"
 
 function overview(world: World, now: number, seq: number): Domain.Overview {

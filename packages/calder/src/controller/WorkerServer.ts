@@ -118,10 +118,11 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
     fleetAcquire: ({ job, token, project }) =>
       Effect.gen(function*() {
         const active = yield* deployer(job, token)
-        const run = runOf(active)
+        if (active.spec._tag !== "Step") return yield* refuse("not a step")
+        const { run, step } = active.spec
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
         const grant = yield* Effect.uninterruptibleMask((restore) =>
-          restore(leases.acquire(project, { job: active.id, run: run.number })).pipe(
+          restore(leases.acquire(project, { job: active.id, run: run.number, step })).pipe(
             // Released when the job ends, however it ends, and at once if it already has.
             Effect.tap((grant) => grant._tag === "Held" ? Scope.addFinalizer(active.scope, leases.release(project, active.id)) : Effect.void),
           )

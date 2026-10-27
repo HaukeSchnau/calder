@@ -76,7 +76,7 @@ function Rollout({ detail, step, deployments }: { readonly detail: Domain.RunDet
     : <span className="big dim">{step.status}</span>
   const under = step.status === "running" ? `deploying since ${clockS(step.startedAt ?? now)}`
     : step.status === "passed" ? `took ${dur(elapsed ?? 0)}, done at ${clock(step.finishedAt ?? now)}`
-    : step.status === "failed" || step.status === "died" ? (step.error?.message ?? "")
+    : step.status === "failed" || step.status === "died" || step.status === "skipped" ? (step.error?.message ?? "")
     : waitsFor.length ? `waits for ${waitsFor.join(", ")}` : ""
   return (
     <>

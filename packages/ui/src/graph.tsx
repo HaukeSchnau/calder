@@ -64,6 +64,8 @@ export function Meta({ step, steps, short = false }: { readonly step: Domain.Ste
     }
     case "cancelled":
       return <span className="dim">cancelled</span>
+    case "skipped":
+      return <span className="dim">{short ? "skipped" : `skipped: ${step.error?.message ?? ""}`}</span>
   }
 }
 
@@ -107,7 +109,7 @@ export function Graph({ steps, selected, onSelect }: Props) {
             {[...shape.edges].sort((a, b) => Number(a.kind === "needs" || a.kind === "exit") - Number(b.kind === "needs" || b.kind === "exit")).map((e) => {
               const from = statusOf(e.from)
               const to = statusOf(e.to)
-              const state = to === "blocked" || to === "cancelled" ? "off" : to === "running" && done(from) ? "live" : !done(from) && from !== "running" ? "pending" : ""
+              const state = to === "blocked" || to === "cancelled" || to === "skipped" ? "off" : to === "running" && done(from) ? "live" : !done(from) && from !== "running" ? "pending" : ""
               const hot = selectedPort !== null && (e.from === selectedPort || e.to === selectedPort)
               return <path key={`${e.from}>${e.to}:${e.kind}`} className={`${e.kind} ${state}${hot ? " hot" : ""}`} d={e.d} markerEnd={e.kind === "exit" ? "url(#exit-end)" : undefined} />
             })}

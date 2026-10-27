@@ -78,8 +78,15 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
   secret the project doesn't configure dies saying so. ``cmd`... ${Cmd.pullRequest}` `` passes the
   run's pull-request number. `lease: true` makes a trusted task hold the project's deploy lease while
-  it runs, like `Release.promote`: one deploy at a time, and a run a newer one replaced passes without
-  running. Deploys of the same run take the lease in turn.
+  it runs, like `Release.promote`: one deploy at a time, and latest wins per step. Once the same step of a
+  newer run held the lease, an older run's step is skipped instead of running; another step of a newer run,
+  or the same step still waiting for its turn, replaces nothing, so a deploy that waits for a slow build
+  still happens when its turn comes. Deploys of the same run take the lease in turn. Who holds the lease
+  and the newest run of each step survive a restart of the controller. `skipCode: n` marks the exit code
+  with which a task says it didn't do its work and that's no failure, such as a deploy to a host that is
+  offline: the step is skipped, with the last line the command printed as the reason. A skipped step
+  doesn't fail its run, but it isn't green either: its commit status is a warning, and the steps after it
+  are skipped too.
 - **action** (`Action.make`): Effect code with side effects. `needs` are the steps whose values the
   body reads, `after` the steps that must pass first, `grants` what it may do (`deploy`, `secrets`).
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch

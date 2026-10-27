@@ -24,6 +24,11 @@ export const StepStatus = Schema.Literals([
   /** A step it depends on didn't pass. */
   "blocked",
   "cancelled",
+  /**
+   * Ended without doing its work, and its `error` says why: a newer run's same step took the deploy
+   * lease, the task exited with its `skipCode`, or a step it depends on was skipped.
+   */
+  "skipped",
 ])
 export type StepStatus = typeof StepStatus.Type
 
@@ -142,6 +147,7 @@ export const StepRun = Schema.Struct({
   attempts: Schema.Number,
   shards: Schema.NullOr(Schema.Number),
   value: Schema.NullOr(Value),
+  /** Why the step failed, died or, with the tag `Skipped`, was skipped. */
   error: Schema.NullOr(StepError),
   /**
    * Why a build's output could not go to the binary cache. The run goes on without it, and hosts that
