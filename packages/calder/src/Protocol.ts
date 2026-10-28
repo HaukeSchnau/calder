@@ -54,8 +54,11 @@ export const PlannedStep = Schema.Struct({
     offload: Schema.optional(Schema.Boolean),
     /** A preview rule's task that reads secrets; same-repo pull requests grant them. Older plans lack it. */
     preview: Schema.optional(Schema.Boolean),
-    /** Holds the project's deploy lease while it runs. Older plans lack it. */
-    lease: Schema.optional(Schema.Boolean),
+    /**
+     * Holds a deploy lease while it runs: `true` the project's, a name the project's lease of that name.
+     * Older plans lack it.
+     */
+    lease: Schema.optional(Schema.Union([Schema.Boolean, Schema.String])),
   })),
   action: Schema.NullOr(Schema.Struct({
     deploy: Schema.Boolean,
@@ -287,7 +290,7 @@ export class WorkerRpcs extends RpcGroup.make(
  * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
  * newer SDK, need no bump: failed steps are not reused.
  */
-export const compatibility = 4
+export const compatibility = 5
 
 /** What the controller tells an agent: start a worker for a job, or stop one. */
 export const AgentOrder = Schema.Union([

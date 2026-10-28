@@ -49,7 +49,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   `.vite`). Build output such as `dist` doesn't belong in `keep`, because a task would read what another
   revision built. `Pnpm.install` and `Bun.install` name their step `install`; a second install, say
   with another shell, needs its own `name`. With `dir` they install a directory with its own lockfile
-  instead of the root, and put its `node_modules/.bin` on PATH.
+  instead of the root, and put its `node_modules/.bin` on PATH. A setup and its tasks run on one platform, so tasks for
+  another platform's agents name an install with that `platform` (`Pnpm.install({ platform: "x86_64-linux", name: ... })`).
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
   setup keeps. A task is reused
@@ -85,7 +86,9 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   step's newest. A check Gitea can't answer within 10 s counts as current. The task gets the lease's
   fencing token as `FLEET_FENCE` for whatever it deploys to. In a pull request's run and when it closes,
   the lease is the pull request's own, so its previews and their removal take turns beside the project's
-  deploys, and a preview deploys only while the pull request is open at the run's revision. `artifacts: { ENV: step }` names store paths a task
+  deploys, and a preview deploys only while the pull request is open at the run's revision. `lease: "<name>"`
+  holds the project's lease of that name instead, `<project>#<name>`, with the same rules, for a deploy that
+  neither waits for the project's others nor holds them up, such as an app store build. `artifacts: { ENV: step }` names store paths a task
   deploys: it waits for those steps, gets each path in its variable, and holding the lease publishes them
   to the binary cache first, outside a pull request each pinned as `<project>-<step>-<variable>`, and
   looks at the head once more. Once the same step of a
@@ -202,6 +205,41 @@ const publish = Npm.publish({ shell, setup: install, token: "npm", after: checks
 export default Calder.project({ rules: [On.pullRequest(checks), On.push("main", [publish])] })
 ```
 
+`Expo` from `@calder-ci/std` releases an Expo app whose runtime version policy is `fingerprint`.
+`Expo.runtimeVersion("ios", ...)` and `("android", ...)` are tasks whose value is the app's runtime version on
+that platform, Expo's hash of its native code. `Expo.testflight` and `Expo.playInternal` interpolate it and read no
+other files, so a push that changes only JavaScript reuses the last store builds. They install the app themselves,
+so a lockfile change alone doesn't build again, and stamp a build number the app config reads:
+`IOS_BUILD_NUMBER` (the UTC minute as `YYYYMMDDHHMM`) and `ANDROID_VERSION_CODE` (minutes since 1970). Each
+fails before uploading when the build embeds another runtime version than CI computed. `Expo.testflight` runs on
+a Mac agent and is the only step that receives the App Store Connect key; `Expo.playInternal` runs on an
+x86_64 agent by default, whose host provides the Android SDK, a JDK, `unzip` and `gplay`. `Expo.exportUpdate`
+exports the JavaScript for both platforms into its output `update`, on an x86_64 Linux agent by default or a
+Mac, where React Native's Hermes compiler runs, and `Expo.publishUpdate` publishes that export to an EAS Update
+channel with the app's own `eas` (eas-cli in its devDependencies, so the lockfile pins it) on every run, after
+checking that its host resolves the runtime versions CI did. Only eas gets the Expo token. The publish warns
+when a reverted native change sends the update to an older runtime version, which builds of the newer one never
+load. Its value is each platform's update.
+
+The publish and the store builds hold deploy leases of their own, `<project>#ota`, `#testflight` and `#play`:
+each runs one at a time, a newer run's replaces an older one's that still waits, and a run whose branch moved on
+skips it, so an older commit never ships last. None of them waits for the project's environment deploys or holds
+them up. Give every step of an app the same `env`, such as `EXPO_PUBLIC_API_URL`:
+the runtime versions, the export, the publish and the store builds all evaluate the app config, and a variable
+one of them lacks can change its runtime version or bundle.
+
+```ts
+const tower = { platform: "x86_64-linux", shell } as const
+const ios = Expo.runtimeVersion("ios", { shell, setup: install })
+const android = Expo.runtimeVersion("android", { shell, setup: install })
+const update = Expo.exportUpdate({ shell, setup: Pnpm.install({ ...tower, name: "install-tower" }), after: checks })
+const ota = Expo.publishUpdate({ shell, setup: install, update, channel: "production", token: "expo-token", runtimes: { ios, android } })
+const testflight = Expo.testflight({ runtime: ios, appId: "6818526671", appStoreConnect: { key: "app-store-connect", keyId, issuerId }, after: checks })
+const play = Expo.playInternal({ shell, runtime: android, keystore: "play-upload-keystore", password: "play-upload-password", serviceAccount: "play-service-account", after: checks })
+
+export default Calder.project({ rules: [On.pullRequest(checks), On.push("main", [ota, testflight, play])] })
+```
+
 `ci.ts` runs on the worker's Bun. `.calder/tsconfig.json` extends `@calder-ci/tsconfig` from the SDK, which gives it Bun's
 types, so an action can use `fetch`, `node:crypto` or `Bun.file` and still type-check. `.calder/node_modules` links
 through the profile that put Calder on PATH (`/run/current-system/sw/lib/calder/...`), so it follows upgrades; `calder plan`
@@ -313,7 +351,7 @@ them, so Nix's garbage collector leaves them alone; reuse skips a result whose o
 | Path | What |
 | --- | --- |
 | `packages/core` | `@calder-ci/core`: the API and the plan engine (`Calder.plan` is pure and testable) |
-| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
+| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Expo` (runtime versions, EAS updates, TestFlight, Play internal), `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |

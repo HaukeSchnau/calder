@@ -355,7 +355,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       ...(pullRequest === undefined ? {} : { pullRequest }),
     })
 
-    const leased = def.lease === true ? yield* deploying(self, job, step.name, def, values) : undefined
+    const leased = def.lease !== undefined ? yield* deploying(self, job, step.name, def, values) : undefined
     if (leased?._tag === "Ended") return leased.result
 
     const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-task", ...argv])

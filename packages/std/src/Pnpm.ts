@@ -1,10 +1,12 @@
-import { cmd, Files, type Flake, Setup } from "@calder-ci/core"
+import { cmd, Files, type Flake, Setup, type Step } from "@calder-ci/core"
 
 export interface InstallOptions {
   /** The step's name, `install` by default. Name a second install that needs another shell or `keep`. */
   readonly name?: string
   /** The dev shell with node and pnpm. */
   readonly shell?: Flake.FlakeRef<"devShells">
+  /** The agents' platform, for tasks that run there: a setup and its tasks share one. The controller's by default. */
+  readonly platform?: Step.Platform
   /**
    * The directory with its own lockfile, relative to the repository root, such as a website that keeps
    * its dependencies out of the root's workspace. The root by default.
@@ -30,6 +32,7 @@ export const install = (options: InstallOptions = {}) => {
   const args = [...(options.args ?? [])]
   return Setup.make(options.name ?? "install", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
+    ...(options.platform === undefined ? {} : { platform: options.platform }),
     inputs: Files.union(
       Files.glob(inDir("**/package.json"), inDir("pnpm-lock.yaml")),
       Files.optional(

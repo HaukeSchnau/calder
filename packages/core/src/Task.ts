@@ -65,8 +65,11 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
    * or in a pull request's run the pull request's own, so its previews and their removal take turns.
    * One deploy at a time, and once the same task of a newer run held the lease, this one is skipped
    * instead of running. Trusted runs only.
+   *
+   * A name holds a lease of the project's own instead, `<project>#<name>`, with the same rules, for
+   * deploys that neither wait for the project's others nor hold them up, such as an app store build.
    */
-  readonly lease?: true
+  readonly lease?: true | string
   /**
    * An exit code that means the task didn't do its work and that's no failure, such as a deploy to a
    * host that is offline. The step ends as skipped, with the last line the command printed as the reason.
