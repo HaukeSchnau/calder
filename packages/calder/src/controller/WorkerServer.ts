@@ -67,14 +67,14 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
       return active
     })
 
-  /** An action of a trusted run that declared `grants: { deploy: true }`, or a task with `lease: true`. */
+  /** An action of a trusted run that declared `grants: { deploy: true }`, or a task that holds a lease. */
   const deployer = (job: string, token: string) =>
     Effect.gen(function*() {
       const active = yield* trusted(job, token)
       if (active.spec._tag !== "Step") return yield* refuse("not a step")
       const row = yield* db(Rows.loadStep(active.spec.run.id, active.spec.step))
       const spec = row === undefined ? undefined : Rows.spec(row)
-      if (spec?.action?.deploy !== true && spec?.task?.lease !== true) return yield* refuse(`${active.spec.step} has no deploy grant`)
+      if (spec?.action?.deploy !== true && !Rows.leased(spec?.task)) return yield* refuse(`${active.spec.step} has no deploy grant`)
       return active
     })
 
@@ -155,7 +155,7 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
         const row = yield* db(Rows.loadStep(run.id, step))
         const lease = row === undefined ? undefined : Rows.spec(row).task?.lease
-        const task = lease !== undefined && lease !== false
+        const task = Rows.leased(row === undefined ? undefined : Rows.spec(row).task)
         const { key, current } = leaseOf(run, lease)
         const repo = projects.get(project)!.repo
         // Why the run no longer deploys what it was for; Leases treats a slow or failing Gitea as current.
