@@ -85,7 +85,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
   const lane = 1
   const slots = {
-    plans: Slots.make({ capacity: config.jobs.slots.plans }),
+    // Plans of one repository take turns anyway (Resolve's lock), and one waiting there or evaluating a
+    // large flake must leave the other slots to other projects: three of infra's pull requests once held
+    // every plan slot for an hour while every other project's runs stayed in planning.
+    plans: Slots.make({ capacity: config.jobs.slots.plans, maxPerProject: 1 }),
     builds: Slots.make({ capacity: config.jobs.slots.builds, lane }),
     // Each other system's builds wait for its remote builders apart, so one that is unavailable stalls only its own.
     remoteBuilds: new Map<string, Slots.Slots>(),
