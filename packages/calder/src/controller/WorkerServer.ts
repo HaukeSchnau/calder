@@ -21,17 +21,20 @@ import * as Rows from "./Rows.ts"
  * Which lease a deploy takes, and what its run must still be current against when its turn comes. A
  * task deploys its branch's head, so a run of another revision gives way, a rerun of an older one
  * included; a manual or scheduled run's branch is the default branch, so `calder trigger` of another
- * branch's head deploys nothing. A pull request's previews and their removal take the pull request's
- * own lease, so they take turns without waiting for the project's deploys; a preview deploys only while
- * the pull request is open and its head is the run's revision, so none follows the stage's removal, and
- * removing it checks nothing. Actions (`Release.promote`) check the head themselves.
+ * branch's head deploys nothing. A task with a named lease (`lease: "testflight"`) takes the project's
+ * lease of that name, so it neither waits for the project's other deploys nor holds them up. A pull
+ * request's previews and their removal take the pull request's own lease, so they take turns without
+ * waiting for the project's deploys; a preview deploys only while the pull request is open and its head
+ * is the run's revision, so none follows the stage's removal, and removing it checks nothing. Actions
+ * (`Release.promote`) check the head themselves.
  */
-export const leaseOf = (run: RunInfo, task: boolean) => {
+export const leaseOf = (run: RunInfo, lease: boolean | string | undefined) => {
   const event = run.event
-  if (!task) return { key: run.project, current: null }
+  if (lease === undefined || lease === false) return { key: run.project, current: null }
   if (event._tag === "PullRequest") return { key: `${run.project}#pr-${event.number}`, current: { pullRequest: event.number } }
   if (event._tag === "PullRequestClosed") return { key: `${run.project}#pr-${event.number}`, current: null }
-  return { key: run.project, current: run.branch === null ? null : { branch: run.branch } }
+  const key = lease === true ? run.project : `${run.project}#${lease}`
+  return { key, current: run.branch === null ? null : { branch: run.branch } }
 }
 
 /** Why a preview of `revision` no longer deploys: its pull request closed, or moved on to another head. */
@@ -151,8 +154,9 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const { run, step } = active.spec
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
         const row = yield* db(Rows.loadStep(run.id, step))
-        const task = row !== undefined && Rows.spec(row).task?.lease === true
-        const { key, current } = leaseOf(run, task)
+        const lease = row === undefined ? undefined : Rows.spec(row).task?.lease
+        const task = lease !== undefined && lease !== false
+        const { key, current } = leaseOf(run, lease)
         const repo = projects.get(project)!.repo
         // Why the run no longer deploys what it was for; Leases treats a slow or failing Gitea as current.
         const stale = current === null ? undefined

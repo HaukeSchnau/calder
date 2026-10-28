@@ -222,7 +222,7 @@ export const withReasons = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray
 
 /** Whether a step deploys: holds the lease, has a deploy grant, or is a preview's. */
 const deploys = (step: PlannedStep) =>
-  step.task?.lease === true || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
+  (step.task?.lease ?? false) !== false || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
 
 /**
  * Marks the steps that deploy, and those whose values they read, as `critical`: they take the latency

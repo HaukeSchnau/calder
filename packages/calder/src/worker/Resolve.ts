@@ -590,7 +590,7 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
                 platform: def.platform ?? null,
                 offload: def.offload !== false,
                 preview: p.preview,
-                lease: def.lease === true,
+                lease: def.lease ?? false,
               },
             }
           }

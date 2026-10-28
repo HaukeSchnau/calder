@@ -75,7 +75,7 @@ const matches = (rule: Rule<any, any>, event: Event): boolean => {
 
 const hasGrants = (step: Step.Any) =>
   (step.def._tag === "Action" && (step.def.grants.deploy === true || (step.def.grants.secrets?.length ?? 0) > 0)) ||
-  (step.def._tag === "Task" && (taskSecrets(step.def).length > 0 || step.def.lease === true))
+  (step.def._tag === "Task" && (taskSecrets(step.def).length > 0 || step.def.lease !== undefined))
 
 /** What a preview may hold: a task's secrets, and the pull request's own deploy lease. */
 const previewable = (step: Step.Any) => step.def._tag === "Task"

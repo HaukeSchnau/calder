@@ -127,7 +127,7 @@ export type Def =
     readonly platform: Platform | undefined
     readonly reuse: "never" | undefined
     readonly offload: false | undefined
-    readonly lease: true | undefined
+    readonly lease: true | string | undefined
     readonly artifacts: { readonly [env: string]: Step.Any }
     readonly skipCode: number | undefined
   }
