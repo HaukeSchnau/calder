@@ -79,10 +79,15 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
   secret the project doesn't configure dies saying so. ``cmd`... ${Cmd.pullRequest}` `` passes the
   run's pull-request number. `lease: true` makes a trusted task hold the project's deploy lease while
-  it runs, like `Release.promote`: one deploy at a time, and latest wins per step. Holding it, the task
-  doesn't run on a push once the branch moved past the run's revision (it is skipped), publishes the store
-  paths its command interpolates to the binary cache, each pinned as that step's release, and gets the
-  lease's fencing token as `FLEET_FENCE` for whatever it deploys to. Once the same step of a
+  it runs, like `Release.promote`: one deploy at a time, and latest wins per step. The controller grants it
+  only while the run's revision is its branch's head (a manual or scheduled run's branch is the default
+  branch); a run of another revision, a rerun of an older one included, is skipped without counting as the
+  step's newest. The task gets the lease's fencing token as `FLEET_FENCE` for whatever it deploys to. In a
+  pull request's run and when it closes, the lease is the pull request's own, so its previews and their
+  removal take turns beside the project's deploys. `artifacts: { ENV: step }` names store paths a task
+  deploys: it waits for those steps, gets each path in its variable, and holding the lease publishes them
+  to the binary cache first, outside a pull request each pinned as `<project>-<step>-<variable>`, and
+  looks at the head once more. Once the same step of a
   newer run held the lease, an older run's step is skipped instead of running; another step of a newer run,
   or the same step still waiting for its turn, replaces nothing, so a deploy that waits for a slow build
   still happens when its turn comes. Deploys of the same run take the lease in turn. Who holds the lease
@@ -98,27 +103,30 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
 
 Steps wait for a slot of their kind: plans, builds, tasks and actions each have a number the controller's
 `jobs.slots` sets. A step that deploys (a task with `lease`, an action with a deploy grant, a preview's
-task or action) and every step it depends on is on the critical path: it goes before other steps waiting
-for the same kind of slot, and may take one slot beyond the number, so a preview never queues behind a
-long check. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
+task or action) and every step whose value it reads, such as the build it deploys, is on the critical
+path; the controller marks it, and a fork's run has none. Among the projects under their share of slots,
+critical steps go first, and they may take one slot beyond the number, so a preview never queues behind a
+long check. Checks a deploy only waits for (`after`) take their turn like any other. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
 comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
 
 A plan evaluates the flake once per revision. A commit with the same root tree as the last one planned,
 such as the merge of a pull request that was up to date, reuses its derivations unless they mention that
-commit (`self.rev`, `self.shortRev`, `self.lastModified` or `self.lastModifiedDate`), so its plan
-evaluates nothing. Put the revision into what a deploy hands the service rather than into a build, and a
+commit (`self.rev`, `self.shortRev`, `self.lastModified`, `self.lastModifiedDate` or its day) or the flake's
+sources read `revCount`, so its plan evaluates nothing. Only a trusted run's or a same-repo pull request's
+plan counts. Put the revision into what a deploy hands the service rather than into a build, and a
 merge reuses the pull request's builds too.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch
 is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
 and home, and so does a preview's action, such as one that waits for the preview to be ready on the
-private network; it keeps the pull request's services. Actions with grants and tasks with `lease` stay
-refused.
+private network; it keeps the pull request's services. A task with `lease` holds the pull request's own
+lease. Actions with grants stay refused.
 
 What steps of a pull request's run say with `PullRequest.comment`, such as a preview's URL, goes into
-Calder's one comment on the pull request, with how long after the push each said it. Once a pull request
-has that comment, Calder keeps it up to date with its newest run: each step's status, what a waiting step
+Calder's one comment on the pull request, with how long after the push each said it; a run a newer one
+replaced says nothing there. Once a pull request has that comment, Calder edits it, a few seconds after
+the state of its newest run changed: each step's status, what a waiting step
 waits for, how long each waited for a slot and ran, how long the run planned, and how long the steps on the
 critical path queued. `On.pullRequestClosed` rules run when
 a pull request is merged or closed, as a trusted run of the base branch's head that knows the pull
@@ -156,7 +164,7 @@ the checks passed, and previews after the checks. The project's
 secret `env` is a dotenv file of the providers' credentials, which the CLI reads with `--env-file`.
 The CLI is the installed `node_modules/.bin/alchemy`, not `pnpm exec alchemy`, which checks the install
 again first; a Bun repository sets `runner: "bun"` and installs with `Bun.install`, and its steps run
-`bun alchemy`. Tasks keep Node's compile cache in their workspace slot (`NODE_COMPILE_CACHE`), so the
+`bun alchemy`. Trusted tasks keep Node's compile cache in their workspace slot (`NODE_COMPILE_CACHE`), so the
 CLI doesn't compile itself from scratch on every deploy. A stack whose package has its own lockfile in a
 directory, such as a website in `site/`, sets `dir` on the stack and on its install, and the CLI runs
 there.

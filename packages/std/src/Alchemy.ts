@@ -37,11 +37,23 @@ export interface Stack<A = void> {
 
 /**
  * Store paths a deploy hands the stack, by the environment variable that gets each path, such as
- * `{ CALDER_BUNDLE: bundle }`. They are the deploy's only inputs from the run, so a deploy waits for
- * them and nothing else unless told to. A deploy that holds the lease publishes them to the binary
- * cache first, for a host that substitutes them.
+ * `{ CALDER_BUNDLE: bundle }` (`Task`'s `artifacts`). They are the deploy's only inputs from the run, so
+ * a deploy waits for them and nothing else unless told to, and it publishes them to the binary cache
+ * first, for a host that substitutes them.
  */
 export type Artifacts = { readonly [env: string]: Step.Step<string, any, any, any, never> }
+
+/**
+ * A stage name: one word, since the CLI gets it as an argument, and not `pr-<number>`, the stages of
+ * pull requests' previews. A pipeline with another name fails to load, like a `cmd` it can't parse.
+ */
+export const stageName = (stage: string) => {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(stage)) {
+    throw new Error(`Alchemy stage "${stage}": use letters, digits, ".", "_" and "-", starting with a letter or digit`)
+  }
+  if (/^pr-\d+$/.test(stage)) throw new Error(`Alchemy stage "${stage}" is a pull request's preview stage; pick another name`)
+  return stage
+}
 
 /** Where a deploy writes the stack's outputs for the task's value; `git clean` removes it before the next task. */
 const outputsFile = ".calder-alchemy-outputs.json"
@@ -96,15 +108,8 @@ const command = (parts: ReadonlyArray<Part>) => {
   return cmd(Object.assign(strings, { raw: strings }) as unknown as TemplateStringsArray, ...values)
 }
 
-/** `env NAME=<path> ...`, so the stack reads each artifact's store path from its variable. */
-const withArtifacts = (artifacts: Artifacts | undefined): ReadonlyArray<Part> =>
-  artifacts === undefined || Object.keys(artifacts).length === 0
-    ? []
-    : [{ text: "env " }, ...Object.entries(artifacts).flatMap(([env, step]): ReadonlyArray<Part> => [{ text: `${env}=` }, step, { text: " " }])]
-
-const run = <A>(stack: Stack<A>, verb: "deploy" | "destroy", stage: ReadonlyArray<Part>, artifacts?: Artifacts) =>
+const run = <A>(stack: Stack<A>, verb: "deploy" | "destroy", stage: ReadonlyArray<Part>) =>
   command([
-    ...withArtifacts(artifacts),
     { text: "bash -c " },
     script(stack, verb),
     { text: " calder-alchemy " },
@@ -139,7 +144,8 @@ export const deploy = <A = void>(
     after: options.after ?? [],
     lease: true,
     reuse: "never",
-    run: run(stack, "deploy", [{ text: options.stage }], options.artifacts),
+    run: run(stack, "deploy", [{ text: stageName(options.stage) }]),
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...valueOf(stack),
   })
 
@@ -158,8 +164,8 @@ export const ready = <A>(
   })
 
 /**
- * A pull request's own stage, `pr-<number>`, for `On.preview`: deployed on every update, then linked
- * from Calder's comment on the pull request. `url` gets the stack's `outputs` too, such as a preview's
+ * A pull request's own stage, `pr-<number>`, for `On.preview`: deployed on every update, holding the
+ * pull request's lease so its deploys take turns, then linked from Calder's comment on the pull request. `url` gets the stack's `outputs` too, such as a preview's
  * URL. With `readiness`, the link waits until the preview reports the pull request's revision.
  */
 export const preview = <A = void>(
@@ -175,8 +181,10 @@ export const preview = <A = void>(
     ...shellOf(stack),
     setup: stack.setup,
     after: options.after ?? [],
+    lease: true,
     reuse: "never",
-    run: run(stack, "deploy", [{ text: "pr-" }, Cmd.pullRequest], options.artifacts),
+    run: run(stack, "deploy", [{ text: "pr-" }, Cmd.pullRequest]),
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...valueOf(stack),
   })
   const link = Action.make("preview-url", { needs: { outputs: upload } }, function*({ outputs }) {
@@ -189,11 +197,12 @@ export const preview = <A = void>(
   return [upload, link] as const
 }
 
-/** Removes a closed pull request's stage, for `On.pullRequestClosed`. */
+/** Removes a closed pull request's stage, for `On.pullRequestClosed`, holding the pull request's lease like its previews. */
 export const destroy = <A>(stack: Stack<A>) =>
   Task.make("destroy-preview", {
     ...shellOf(stack),
     setup: stack.setup,
+    lease: true,
     reuse: "never",
     run: run(stack, "destroy", [{ text: "pr-" }, Cmd.pullRequest]),
   })

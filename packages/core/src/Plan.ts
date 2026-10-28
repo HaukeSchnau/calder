@@ -77,8 +77,8 @@ const hasGrants = (step: Step.Any) =>
   (step.def._tag === "Action" && (step.def.grants.deploy === true || (step.def.grants.secrets?.length ?? 0) > 0)) ||
   (step.def._tag === "Task" && (taskSecrets(step.def).length > 0 || step.def.lease === true))
 
-/** What a preview may hold: a task's secrets, but not the deploy lease. */
-const previewable = (step: Step.Any) => step.def._tag === "Task" && step.def.lease !== true
+/** What a preview may hold: a task's secrets, and the pull request's own deploy lease. */
+const previewable = (step: Step.Any) => step.def._tag === "Task"
 
 const sameBuild = (a: Step.Any, b: Step.Any) =>
   a.def._tag === "Build" && b.def._tag === "Build" && a.def.ref.output === b.def.ref.output &&
@@ -156,7 +156,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       if (trust === "pr" && hasGrants(step) && !(preview && previewable(step))) {
         return fail(
           preview
-            ? `previews don't run actions with grants or tasks that hold the deploy lease, but "${step.name}" is one`
+            ? `previews don't run actions with grants, but "${step.name}" is one`
             : `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them`,
         )
       }

@@ -193,8 +193,9 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
       TMPDIR: tmp,
       CI_CACHE_ROOT: slot.cache,
       // Node keeps compiled code under TMPDIR by default, which each task starts without. Every task of
-      // the slot sharing one cache took a cold Alchemy deploy on srv-2 from 9 s to 6 s before its first request.
-      NODE_COMPILE_CACHE: join(slot.cache, "node-compile-cache"),
+      // the slot sharing one cache took a cold Alchemy deploy on srv-2 from 9 s to 6 s before its first
+      // request. Only trusted jobs share it: a fork's task could plant code that a later task would run.
+      ...(job.run.trust === "trusted" ? { NODE_COMPILE_CACHE: join(slot.cache, "node-compile-cache") } : {}),
       CI_WORKSPACE_SLOT: job.workspace.split("/").at(-1) ?? "",
     }
     const command = setup === undefined
@@ -276,13 +277,23 @@ const readValue = (workspace: string, value: { readonly path: string; readonly s
     Effect.catch((error) => Effect.die(new Error(`the task's value at ${value.path} is missing or invalid: ${error}`))),
   )
 
+type TaskDef = Extract<Step.Any["def"], { readonly _tag: "Task" }>
+
+/** A task's artifacts as the store paths its environment variables get. */
+const artifactPaths = (def: TaskDef, values: Record<string, unknown>) =>
+  Object.entries(def.artifacts).flatMap(([env, s]) => {
+    const value = values[s.name]
+    return typeof value === "string" ? [[env, value] as const] : []
+  })
+
 /**
- * What Calder adds to a task that holds the deploy lease: the lease (latest wins per step), on a push
- * the check that the branch still points at the run's revision, and the store paths the command
- * interpolates, its artifacts, in the binary cache. Returns the lease's fencing token for the command,
- * or how the task ends without running: skipped, or died when an artifact can't reach the cache.
+ * What Calder adds to a task that holds the deploy lease: the lease, which the controller grants only
+ * while the run's revision is its branch's head (latest wins per step), and the artifacts the task
+ * declares in the binary cache. Publishing takes a while, so the head is looked at once more after it.
+ * Returns the lease's fencing token for the command, or how the task ends without running: skipped, or
+ * died when an artifact can't reach the cache.
  */
-export const deploying = (self: Job["Service"], job: StepJob, name: string, command: Cmd.Cmd<unknown>, values: Record<string, unknown>) =>
+export const deploying = (self: Job["Service"], job: StepJob, name: string, def: TaskDef, values: Record<string, unknown>) =>
   Effect.gen(function*() {
     const { log } = self
     const auth = { job: self.id, token: self.token }
@@ -292,22 +303,24 @@ export const deploying = (self: Job["Service"], job: StepJob, name: string, comm
     )
     const end = (result: JobResult) => ({ _tag: "Ended", result } as const)
     const skip = (reason: string) => log("calder", reason).pipe(Effect.as(end({ _tag: "Skipped", reason })))
+    const moved = (head: string) => skip(`${job.run.branch} moved on to ${head.slice(0, 12)}, so this run doesn't deploy`)
     if (lease._tag === "Replaced") return yield* skip(`#${lease.by} took ${name}'s deploy lease, so this older run doesn't deploy`)
+    if (lease._tag === "Stale") return yield* moved(lease.head)
     yield* log("calder", `holding the deploy lease, fence ${lease.fence}`)
-    const branch = job.run.event._tag === "Push" ? job.run.event.branch : null
-    if (branch !== null) {
-      const head = yield* Effect.orDie(reconnecting(self.client.gitHead({ ...auth, branch })))
-      if (head !== job.run.revision) return yield* skip(`${branch} moved on to ${head.slice(0, 12)}, so this run doesn't deploy`)
-    }
-    const artifacts = command.steps.map((s) => values[s.name]).filter((v): v is string => typeof v === "string" && storePath.test(v))
-    for (const path of artifacts) {
+    const artifacts = artifactPaths(def, values).filter(([, path]) => storePath.test(path))
+    for (const [artifact, path] of artifacts) {
       const started = Date.now()
-      const published = yield* Effect.exit(reconnecting(self.client.cachePublish({ ...auth, path })))
+      const published = yield* Effect.exit(reconnecting(self.client.cachePublish({ ...auth, path, artifact })))
       if (Exit.isFailure(published)) {
         const message = Cause.squash(published.cause)
         return end({ _tag: "Died", message: message instanceof Error ? message.message : String(message) })
       }
-      yield* log("calder", `${path} is in the binary cache (${Date.now() - started} ms)`)
+      yield* log("calder", `${artifact}: ${path} is in the binary cache (${Date.now() - started} ms)`)
+    }
+    const branch = job.run.event._tag === "PullRequestClosed" ? null : job.run.branch
+    if (artifacts.length > 0 && branch !== null) {
+      const head = yield* Effect.orDie(reconnecting(self.client.gitHead({ ...auth, branch })))
+      if (head !== job.run.revision) return yield* moved(head)
     }
     return { _tag: "Held", fence: lease.fence } as const
   })
@@ -341,7 +354,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       ...(pullRequest === undefined ? {} : { pullRequest }),
     })
 
-    const leased = def.lease === true ? yield* deploying(self, job, step.name, command, values) : undefined
+    const leased = def.lease === true ? yield* deploying(self, job, step.name, def, values) : undefined
     if (leased?._tag === "Ended") return leased.result
 
     const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-task", ...argv])
@@ -350,6 +363,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       ...extraEnv,
       CALDER_SHARD_INDEX: String(shard.index),
       CALDER_SHARD_COUNT: String(shard.count),
+      ...Object.fromEntries(artifactPaths(def, values)),
       ...(leased === undefined ? {} : { FLEET_FENCE: String(leased.fence) }),
       ...def.env,
       ...secretEnv,
@@ -578,8 +592,9 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
           Effect.acquireRelease(
             rpc(client.fleetAcquire({ ...auth, project: projectName })),
             () => rpc(client.fleetRelease(auth)),
-          ).pipe(Effect.map((lease) =>
-            lease._tag === "Replaced" ? lease : {
+          ).pipe(Effect.flatMap((lease) =>
+            lease._tag === "Stale" ? Effect.die(new Error("the controller called an action's lease stale, which only tasks get"))
+            : Effect.succeed(lease._tag === "Replaced" ? lease : {
               _tag: "Held" as const,
               fence: lease.fence,
               unreachable: lease.unreachable,
@@ -599,7 +614,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
                     Effect.catchTag("RpcClientError", (e) => Effect.die(e)),
                   ),
               })),
-            }
+            })
           )),
       }))
     }

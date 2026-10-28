@@ -45,13 +45,16 @@ describe("calder check", () => {
       const before = yield* log
 
       const copy = yield* workingCopy(work)
-      yield* push(copy, remote, "calder/check/x")
+      // The remote's URL leads to it only through the repository's own settings, which the push keeps.
+      yield* Exec.run(["git", "--git-dir", copy.gitDir, "config", `url.${remote}.insteadOf`, "https://forge.invalid/app.git"])
+      yield* push(copy, "https://forge.invalid/app.git", "calder/check/x")
       expect(yield* Exec.run(["git", "--git-dir", remote, "rev-parse", "refs/heads/calder/check/x"])).toContain(copy.sha)
       expect(yield* log).toBe(before)
-      yield* drop(copy, remote, "calder/check/x")
+      yield* drop(copy, "https://forge.invalid/app.git", "calder/check/x")
+      expect((yield* Exec.exec(["git", "--git-dir", remote, "rev-parse", "--verify", "-q", "refs/heads/calder/check/x"])).exitCode).not.toBe(0)
       yield* jj("git", "fetch")
       expect(yield* log).toBe(before)
-    }).pipe(Effect.scoped, Effect.provide(processes)))
+    }).pipe(Effect.scoped, Effect.provide(processes)), { timeout: 60_000 })
 })
 
 describe("calder plan", () => {

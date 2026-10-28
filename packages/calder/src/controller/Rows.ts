@@ -220,6 +220,28 @@ export const withReasons = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray
   })
 }
 
+/** Whether a step deploys: holds the lease, has a deploy grant, or is a preview's. */
+const deploys = (step: PlannedStep) =>
+  step.task?.lease === true || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
+
+/**
+ * Marks the steps that deploy, and those whose values they read, as `critical`: they take the latency
+ * lane. Checks a deploy only waits for (`after`) are not, or a push's every check would be. The
+ * controller decides this rather than taking the plan's word, and a fork's run has no critical steps.
+ */
+export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): ReadonlyArray<PlannedStep> => {
+  const byName = new Map(steps.map((s) => [s.name, s]))
+  const critical = new Set<string>()
+  const visit = (name: string) => {
+    const step = byName.get(name)
+    if (step === undefined || critical.has(name)) return
+    critical.add(name)
+    for (const dep of step.needs) visit(dep)
+  }
+  if (!fork) for (const step of steps) if (deploys(step)) visit(step.name)
+  return steps.map((step) => ({ ...step, critical: critical.has(step.name) }))
+}
+
 /**
  * The newest plan of another commit with the run's tree, from runs whose results it may reuse: trusted
  * ones and those of same-repo pull requests, which the same people push. A fork's plan never counts,

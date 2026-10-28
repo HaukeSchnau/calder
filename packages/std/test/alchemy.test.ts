@@ -90,12 +90,21 @@ describe("Alchemy.deploy", () => {
     expect(Schema.decodeUnknownSync(step.def.value.schema)(written)).toEqual({ url: "https://site.example" })
   })
 
-  it("hands the stack each artifact's store path, and waits for those builds", () => {
+  it("declares its artifacts, which the worker hands the stack by variable and publishes, and waits for those builds", () => {
     const flake = Flake.make({ packages: ["bundle"], checks: [], devShells: ["ci"] })
     const bundle = Nix.build(flake.packages.bundle, { name: "bundle" })
     const step = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod", artifacts: { CALDER_BUNDLE: bundle } })
-    expect(execute(step, { values: { bundle: "/nix/store/abc-bundle" } }).calls).toEqual([`alchemy <root> ${rest} /nix/store/abc-bundle`])
+    if (step.def._tag !== "Task") throw new Error("not a task")
+    expect(step.def.artifacts).toEqual({ CALDER_BUNDLE: bundle })
+    expect(execute(step).calls).toEqual([`alchemy <root> ${rest}`])
     expect(Step.dependencies(step).map((d) => [d.step.name, d.via])).toContainEqual(["bundle", "needs"])
+  })
+
+  it("holds the lease for a pull request's preview and its removal, which then take turns", () => {
+    const stack = { shell, setup: Pnpm.install({ shell }), env: "cloudflare" }
+    const [preview] = Alchemy.preview(stack, { url: () => "https://pr.example" })
+    const destroy = Alchemy.destroy(stack)
+    expect([preview.def, destroy.def].map((def) => def._tag === "Task" && def.lease)).toEqual([true, true])
   })
 
   it("deploys and destroys a pull request's own stage", () => {

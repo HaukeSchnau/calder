@@ -106,4 +106,24 @@ describe("Leases", () => {
       yield* after.release("p", "m1@12")
       expect((yield* Fiber.join(waiting))._tag).toBe("Held")
     }))
+
+  it.effect("a rerun of an older revision gives way when its turn comes, without keeping the head's run from deploying", () =>
+    Effect.gen(function*() {
+      const leases = Leases.make(memory().store)
+      const stale = Effect.succeed("head-sha")
+      yield* leases.acquire("p", { job: "a", run: 10, step: "deploy" })
+      const head = yield* Effect.forkChild(leases.acquire("p", { job: "b", run: 11, step: "deploy" }))
+      yield* Effect.yieldNow
+      const rerun = yield* Effect.forkChild(leases.acquire("p", { job: "c", run: 12, step: "deploy", stale }))
+      yield* Effect.yieldNow
+
+      yield* leases.release("p", "a")
+      expect(yield* Fiber.join(rerun)).toEqual({ _tag: "Stale", head: "head-sha" })
+      expect((yield* Fiber.join(head))._tag).toBe("Held")
+      yield* leases.release("p", "b")
+
+      // A stale run never counts as the step's newest, so the head's next deploy still gets the lease.
+      expect(yield* leases.acquire("p", { job: "d", run: 13, step: "deploy", stale })).toEqual({ _tag: "Stale", head: "head-sha" })
+      expect((yield* leases.acquire("p", { job: "e", run: 12, step: "deploy" }))._tag).toBe("Held")
+    }))
 })

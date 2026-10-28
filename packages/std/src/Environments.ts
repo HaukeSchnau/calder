@@ -96,7 +96,8 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
       On.pullRequestClosed([Alchemy.destroy(options.stack)]),
     ]
   })()
-  const environments = Object.entries(options.environments).map(([stage, environment]) => {
+  const environments = Object.entries(options.environments).map(([name, environment]) => {
+    const stage = Alchemy.stageName(name)
     const { deployed, ready, last } = deploy(options, stage, environment)
     return ruleOf(environment.on, [deployed, ...(ready === undefined ? [] : [ready]), ...(environment.then?.(last) ?? [])])
   })

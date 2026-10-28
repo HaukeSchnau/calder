@@ -28,6 +28,7 @@ interface Waiter extends Claim {
 interface Holder {
   readonly project: string
   readonly label: string
+  readonly critical: boolean
 }
 
 /**
@@ -56,8 +57,8 @@ export const make = (options: {
 
   const fits = (project: string) => options.perProject === undefined || (byProject.get(project) ?? 0) < options.perProject
 
-  const take = (claim: { readonly project: string; readonly label?: string | undefined }) => {
-    const holder: Holder = { project: claim.project, label: claim.label ?? claim.project }
+  const take = (claim: { readonly project: string; readonly label?: string | undefined; readonly critical?: boolean | undefined }) => {
+    const holder: Holder = { project: claim.project, label: claim.label ?? claim.project, critical: claim.critical === true }
     holders.push(holder)
     byProject.set(claim.project, (byProject.get(claim.project) ?? 0) + 1)
     return holder
@@ -65,26 +66,35 @@ export const make = (options: {
 
   const inRunOrder = (a: Waiter, b: Waiter) => a.run - b.run || a.expected - b.expected || a.seq - b.seq
 
-  /** Whether a claim may have a slot now: background work leaves one free and yields to the rest, critical work has the lane. */
+  /**
+   * Whether a claim may have a slot now: background work leaves one free and yields to the rest, critical
+   * work has the lane. Critical work fills the lane first, so the lane never counts against other work.
+   */
   const eligible = (w: Claim) => {
     const running = holders.length
+    const regular = running - Math.min(lane, holders.filter((h) => h.critical).length)
     if (w.critical === true) return running < options.capacity + lane
-    if (w.background === true) return running < options.capacity - 1 && !waiters.some((o) => o.background !== true)
-    return running < options.capacity
+    if (w.background === true) return regular < options.capacity - 1 && !waiters.some((o) => o.background !== true)
+    return regular < options.capacity
   }
 
   const grant = () => {
     while (true) {
       const ready = waiters.filter(eligible)
       if (ready.length === 0) return
-      const critical = ready.filter((w) => w.critical === true)
+      // Each project's front is its critical work first, then its oldest run's shortest step.
       const fronts = new Map<string, Waiter>()
-      for (const waiter of critical.length > 0 ? critical : ready) {
+      for (const waiter of ready) {
         const front = fronts.get(waiter.project)
-        if (front === undefined || inRunOrder(waiter, front) < 0) fronts.set(waiter.project, waiter)
+        const before = front === undefined ||
+          (waiter.critical === true) !== (front.critical === true) ? waiter.critical === true : inRunOrder(waiter, front) < 0
+        if (front === undefined || before) fronts.set(waiter.project, waiter)
       }
+      // A project over its share goes only when no other project's front fits; critical work goes first among those that do.
       const fitting = [...fronts.values()].filter((w) => fits(w.project))
-      const candidates = fitting.length > 0 ? fitting : [...fronts.values()]
+      const pool = fitting.length > 0 ? fitting : [...fronts.values()]
+      const critical = pool.filter((w) => w.critical === true)
+      const candidates = critical.length > 0 ? critical : pool
       const at = now()
       const score = (w: Waiter) => w.expected - (at - w.since)
       const next = candidates.reduce((best, w) => (score(w) < score(best) || (score(w) === score(best) && w.seq < best.seq) ? w : best))
@@ -151,7 +161,10 @@ export const make = (options: {
       if (eligible(claim) && fits(claim.project) && waiters.length === 0) return null
       const ahead = waiters.filter((w) => claim.critical === true ? w.critical === true : true).length
       const busy = `${holders.length} of ${options.capacity}${claim.critical === true && lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
-      const who = holders.slice(0, 4).map((h) => h.label).join(", ") + (holders.length > 4 ? ", ..." : "")
+      // Reasons reach pull requests' comments, so other projects' steps stay nameless.
+      const others = holders.filter((h) => h.project !== claim.project).length
+      const own = holders.filter((h) => h.project === claim.project).map((h) => h.label)
+      const who = [...own.slice(0, 4), ...(own.length > 4 ? ["..."] : []), ...(others === 0 ? [] : [`${others} of other projects`])].join(", ")
       return `${busy}${who === "" ? "" : `: ${who}`}${ahead > 0 ? `; ${ahead} ahead` : ""}`
     },
   }

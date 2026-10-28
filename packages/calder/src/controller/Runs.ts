@@ -304,7 +304,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return yield* unplanned(run, result._tag === "PlanFailed" ? result.message : result._tag === "Died" ? result.message : "planning failed")
       }
 
-      const spec = result.plan
+      const spec = { ...result.plan, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
       const event = JSON.parse(run.event) as Domain.Event
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {

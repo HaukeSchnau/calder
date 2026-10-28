@@ -83,15 +83,25 @@ export const layer = Layer.effect(Comments)(Effect.gen(function*() {
   const projects = yield* Projects
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) => effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
+  const newestOf = (project: string, pr: number) =>
+    Effect.map(db(sql<Rows.RunRow>`select * from runs where project = ${project} and pr = ${pr} order by created_at desc limit 1`), (rows) => rows[0])
+
+  /** What the comment last showed, per pull request: an edit goes to Gitea only when it changed. */
+  const shown = new Map<string, string>()
+
   const update = (project: string, pr: number) =>
     Effect.gen(function*() {
-      const [newest] = yield* db(sql<Rows.RunRow>`select * from runs where project = ${project} and pr = ${pr} order by created_at desc limit 1`)
+      const newest = yield* newestOf(project, pr)
       const repo = projects.get(project)?.repo
       if (newest === undefined || repo === undefined) return
       const [run] = yield* db(Rows.runsWithCounts([newest]))
       const steps = (yield* db(Rows.loadSteps(newest.id))).map((s) => Rows.step(s))
       const notes = yield* db(sql<{ step: string; run_id: string; markdown: string; at: number }>`select step, run_id, markdown, at from pr_notes
         where project = ${project} and pr = ${pr} order by at`)
+      // Times that only count up don't make an edit; a step's status, reason or a note do.
+      const state = JSON.stringify([run!.id, run!.status, steps.map((s) => [s.name, s.status, s.waiting ?? null]), notes])
+      const key = `${project}#${pr}`
+      if (shown.get(key) === state) return
       const body = render({
         run: run!,
         steps,
@@ -103,6 +113,7 @@ export const layer = Layer.effect(Comments)(Effect.gen(function*() {
       const id = yield* gitea.comment(repo, pr, body, existing[0]?.comment_id ?? null)
       yield* db(sql`insert into comments (project, pr, step, comment_id) values (${project}, ${pr}, ${own}, ${id})
         on conflict (project, pr, step) do update set comment_id = ${id}`)
+      shown.set(key, state)
     }).pipe(Effect.catchCause((cause) => Effect.logWarning(`updating the comment on ${project} #${pr} failed`, cause)))
 
   // Steps change in bursts; one update a few seconds after the first change covers the burst.
@@ -127,9 +138,11 @@ export const layer = Layer.effect(Comments)(Effect.gen(function*() {
       Effect.gen(function*() {
         const at = yield* pullRequestOf(runId)
         if (at === undefined) return
+        // A run a newer one replaced keeps its say to itself, such as the URL of a preview it no longer deploys.
+        if ((yield* newestOf(at.project, at.pr))?.id !== runId) return
         yield* db(sql`insert into pr_notes (project, pr, step, run_id, markdown, at) values (${at.project}, ${at.pr}, ${step}, ${runId}, ${markdown}, ${Date.now()})
           on conflict (project, pr, step) do update set run_id = ${runId}, markdown = ${markdown}, at = ${Date.now()}`)
-        yield* update(at.project, at.pr)
+        yield* schedule(at.project, at.pr)
       }),
     touch: (runId) =>
       Effect.gen(function*() {

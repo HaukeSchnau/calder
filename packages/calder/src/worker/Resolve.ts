@@ -222,9 +222,15 @@ export interface Derivation {
   readonly system: string
 }
 
-/** How a flake reads a commit: `self.rev`, `self.shortRev`, `self.lastModified` and `self.lastModifiedDate`. */
-export const marksOf = (revision: string, committed: number) =>
-  [revision, revision.slice(0, 7), String(committed), new Date(committed * 1000).toISOString().replace(/[-:T]/g, "").slice(0, 14)]
+/**
+ * How a flake reads a commit: `self.rev`, `self.shortRev`, `self.lastModified`, `self.lastModifiedDate`
+ * and its day, the usual substring of it. `self.revCount` is a small number, found in any closure by
+ * chance, so `fromEarlier` looks for its name in the flake's sources instead.
+ */
+export const marksOf = (revision: string, committed: number) => {
+  const date = new Date(committed * 1000).toISOString().replace(/[-:T]/g, "").slice(0, 14)
+  return [revision, revision.slice(0, 7), String(committed), date, date.slice(0, 8)]
+}
 
 /** The repository's cache file: the derivations of its last planned revision and the app its flake declares. */
 interface Cached {
@@ -257,9 +263,25 @@ const readsCommit = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) 
  * mention that commit. A merge of a pull request that was up to date then evaluates nothing: t3code
  * planned its merges in two minutes, mostly evaluating.
  */
-export const fromEarlier = (earlier: Earlier, attrs: ReadonlyArray<string>, committed: number, log: Log = () => Effect.void) =>
+export const fromEarlier = (
+  earlier: Earlier,
+  attrs: ReadonlyArray<string>,
+  revision: {
+    /** When the earlier commit was committed, or None when that couldn't be read. */
+    readonly committed: Option.Option<number>
+    /** The flake's Nix sources at this revision, by path. */
+    readonly nix: ReadonlyMap<string, string>
+  },
+  log: Log = () => Effect.void,
+) =>
   Effect.gen(function*() {
-    if (!attrs.every((attr) => attr in earlier.derivations)) return undefined
+    if (!attrs.every((attr) => attr in earlier.derivations) || Option.isNone(revision.committed)) return undefined
+    const counting = [...revision.nix].find(([, text]) => text.includes("revCount"))
+    if (counting !== undefined) {
+      yield* log(`${counting[0]} reads revCount, which differs for every commit, so the flake is evaluated again`)
+      return undefined
+    }
+    const committed = revision.committed.value
     const drvs = attrs.flatMap((attr) => (earlier.derivations[attr] ? [earlier.derivations[attr].drv] : []))
     if (drvs.length > 0 && (yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode !== 0) return undefined
     const short = earlier.revision.slice(0, 12)
@@ -434,7 +456,10 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
     const job = Option.getOrUndefined(yield* Effect.serviceOption(Job))
     const log: Log = (text) => job === undefined ? Effect.void : job.log("calder", text)
     const attrs = [...new Set([...builds, ...shells])]
-    const reused = earlier === undefined ? undefined : yield* fromEarlier(earlier, attrs, yield* (yield* Repo.make(run.mirror, earlier.revision)).committed, log)
+    const reused = earlier === undefined ? undefined : yield* fromEarlier(earlier, attrs, {
+      committed: yield* Repo.make(run.mirror, earlier.revision).pipe(Effect.flatMap((at) => at.committed), Effect.option),
+      nix: yield* Effect.flatMap(repo.files, (files) => repo.read(files.filter((f) => f.endsWith(".nix")))),
+    }, log)
     // When the batch fails, builds evaluate on their own when they run, but keys need the dev shells now.
     const evaluated = reused !== undefined ? reused : yield* derivations(run, attrs, undefined, log).pipe(
       Effect.catch(() => derivations(run, shells, undefined, log).pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("2 seconds") }))),
@@ -542,6 +567,8 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
               // Two pull requests with the same trees must not share a preview's result. Absent otherwise,
               // so the keys of tasks that don't read it stay what they were.
               ...(command.pullRequest ? { pullRequest: Event.pullRequestNumber(run.event) ?? null } : {}),
+              // Absent without artifacts, so the keys of tasks without them stay what they were.
+              ...(Object.keys(def.artifacts).length === 0 ? {} : { artifacts: Object.entries(def.artifacts).map(([env, s]) => [env, s.name]).sort() }),
               report: def.report ?? null,
               outputs: Object.entries(def.outputs).sort(),
               shards: def.shards?.count ?? null,
@@ -554,7 +581,7 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
                 shell,
                 keyBase,
                 inputs,
-                interpolates: command.steps.map((s) => s.name),
+                interpolates: [...new Set([...command.steps, ...Object.values(def.artifacts)].map((s) => s.name))],
                 shards: def.shards?.count ?? null,
                 each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
                 deps: setup ?? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
@@ -577,26 +604,8 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
       trust: plan.trust,
       reuse: plan.reuse,
       schedules: plan.schedules,
-      steps: criticalPath(steps),
+      steps,
       derivations: Object.fromEntries(evaluated),
     }
     return spec
   })
-
-/** Whether a step deploys: holds the lease, has a deploy grant, or is a preview's. */
-const deploys = (step: PlannedStep) =>
-  step.task?.lease === true || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
-
-/** Marks the deploying steps and everything they depend on as `critical`. */
-export const criticalPath = (steps: ReadonlyArray<PlannedStep>): ReadonlyArray<PlannedStep> => {
-  const byName = new Map(steps.map((s) => [s.name, s]))
-  const critical = new Set<string>()
-  const visit = (name: string) => {
-    const step = byName.get(name)
-    if (step === undefined || critical.has(name)) return
-    critical.add(name)
-    for (const dep of [...step.needs, ...step.exits, ...step.after]) visit(dep)
-  }
-  for (const step of steps) if (deploys(step)) visit(step.name)
-  return steps.map((step) => ({ ...step, critical: critical.has(step.name) }))
-}

@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Sink, Stream } from "effect"
+import { Effect, Option, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { RunInfo } from "../src/Protocol.ts"
 import { derivations, fromEarlier } from "../src/worker/Resolve.ts"
@@ -101,18 +101,25 @@ describe("derivations", () => {
       const pr = "1".repeat(40)
       const committed = 1_761_609_600
       const earlier = { revision: pr, derivations: { a: drv("a"), b: null }, app: "app" }
-      const take = (attrs: ReadonlyArray<string>) =>
-        fromEarlier(earlier, attrs, committed).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      const flake = new Map([["flake.nix", "{ outputs = { self, nixpkgs }: { packages.x86_64-linux.bundle = 1; }; }"]])
+      const take = (attrs: ReadonlyArray<string>, revision: Partial<Parameters<typeof fromEarlier>[2]> = {}) =>
+        fromEarlier(earlier, attrs, { committed: Option.some(committed), nix: flake, ...revision })
+          .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
 
       writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`)
       expect(yield* take(["a", "b"])).toEqual(new Map([["a", drv("a")], ["b", null]]))
       // A derivation that embeds the commit, such as a version from `self.shortRev` or `self.lastModified`, doesn't carry over.
-      for (const mark of [pr.slice(0, 7), String(committed), "20251028000000"]) {
+      for (const mark of [pr.slice(0, 7), String(committed), "20251028000000", "20251028"]) {
         writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1-${mark}")])`)
         expect(yield* take(["a", "b"])).toBeUndefined()
       }
-      // Nor does a plan that didn't evaluate every attribute this one needs.
+      // Nor does a plan that didn't evaluate every attribute this one needs, nor one of a flake that reads
+      // revCount, nor one whose commit can't be read.
+      writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`)
       expect(yield* take(["a", "c"])).toBeUndefined()
+      expect(yield* take(["a", "b"], { nix: new Map([["nix/version.nix", "self: \"0.${toString self.revCount}\""]]) })).toBeUndefined()
+      expect(yield* take(["a", "b"], { committed: Option.none() })).toBeUndefined()
+      expect(yield* take(["a", "b"])).toBeDefined()
       expect(calls.filter((c) => c === "nix eval")).toHaveLength(0)
     }))
 })

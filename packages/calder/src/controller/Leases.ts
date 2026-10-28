@@ -1,15 +1,25 @@
-import { Context, Deferred, Effect, Layer, Scope } from "effect"
+import { Context, Deferred, Effect, Layer, Scope, Semaphore } from "effect"
 import { SqlClient } from "effect/sql"
 import * as Counters from "./Counters.ts"
 import { Jobs } from "./Jobs.ts"
 
-export type Grant = { readonly _tag: "Held"; readonly fence: number } | { readonly _tag: "Replaced"; readonly by: number }
+export type Grant =
+  | { readonly _tag: "Held"; readonly fence: number }
+  | { readonly _tag: "Replaced"; readonly by: number }
+  /** The run no longer deploys its branch's head, `head`; it neither held the lease nor counts as the step's newest run. */
+  | { readonly _tag: "Stale"; readonly head: string }
 
 export interface Holder {
   readonly job: string
   readonly run: number
   /** The step asking: what it deploys, such as one host, which only the same step of a newer run replaces. */
   readonly step: string
+  /**
+   * Asked when the lease would go to this holder: the branch's head when the run's revision isn't it any
+   * more. A stale run gives way without counting as the step's newest, so a rerun of an older revision
+   * doesn't keep the head's run from deploying.
+   */
+  readonly stale?: Effect.Effect<string | undefined>
 }
 interface Waiter extends Holder {
   readonly granted: Deferred.Deferred<Grant>
@@ -79,21 +89,41 @@ export const make = (store: Store, saved: Saved = { newest: [], holders: [] }): 
       return { _tag: "Held", fence } satisfies Grant
     })
 
+  // Who gets the lease is decided one call at a time: a staleness check waits for Gitea in between.
+  const decisions = Semaphore.makeUnsafe(1)
+  const decide = decisions.withPermits(1)
+
+  /** The head a stale holder's run no longer deploys, or undefined while it is current. */
+  const staleness = (holder: Holder) => holder.stale ?? Effect.succeed(undefined)
+
   /**
-   * Hands the free lease to the step that asked first, in the newest run waiting with that step, and
-   * tells the older runs waiting with it that they were replaced. Deploys of the same run take it in turn.
+   * Hands the free lease to the step that asked first, in the newest run waiting with that step that still
+   * deploys its branch's head, and tells the older runs waiting with it that they were replaced. Deploys of
+   * the same run take it in turn.
    */
   const next = (project: string): Effect.Effect<void> =>
     Effect.gen(function*() {
       const s = state(project)
       const first = s.waiters[0]
       if (s.holder !== undefined || first === undefined) return
-      const same = s.waiters.filter((waiter) => waiter.step === first.step)
-      const chosen = same.reduce((a, b) => (b.run > a.run ? b : a))
-      const by = Math.max(chosen.run, newestOf(project, first.step))
-      const replaced = same.filter((waiter) => waiter.run < by)
-      s.waiters = s.waiters.filter((waiter) => waiter !== chosen && !replaced.includes(waiter))
-      if (chosen.run === by) yield* Deferred.succeed(chosen.granted, yield* grant(project, chosen))
+      const same = s.waiters.filter((waiter) => waiter.step === first.step).sort((a, b) => b.run - a.run)
+      const floor = newestOf(project, first.step)
+      const stale: Array<{ readonly waiter: Waiter; readonly head: string }> = []
+      let chosen: Waiter | undefined
+      for (const waiter of same) {
+        if (waiter.run < floor) break
+        const head = yield* staleness(waiter)
+        if (head === undefined) {
+          chosen = waiter
+          break
+        }
+        stale.push({ waiter, head })
+      }
+      const by = Math.max(chosen?.run ?? 0, floor)
+      const replaced = same.filter((waiter) => waiter !== chosen && waiter.run < by && !stale.some((x) => x.waiter === waiter))
+      s.waiters = s.waiters.filter((waiter) => waiter !== chosen && !replaced.includes(waiter) && !stale.some((x) => x.waiter === waiter))
+      if (chosen !== undefined) yield* Deferred.succeed(chosen.granted, yield* grant(project, chosen))
+      yield* Effect.forEach(stale, ({ waiter, head }) => Deferred.succeed(waiter.granted, { _tag: "Stale", head }), { discard: true })
       yield* Effect.forEach(replaced, (waiter) => Deferred.succeed(waiter.granted, { _tag: "Replaced", by }), { discard: true })
       yield* next(project)
     })
@@ -105,7 +135,7 @@ export const make = (store: Store, saved: Saved = { newest: [], holders: [] }): 
       if (s.holder?.job !== job) return
       fences.delete(`${project}/${job}`)
       s.holder = undefined
-      yield* next(project)
+      yield* decide(next(project))
       yield* store.released(project, job)
     })
 
@@ -118,9 +148,9 @@ export const make = (store: Store, saved: Saved = { newest: [], holders: [] }): 
         if (s.holder?.job === holder.job && held !== undefined) return { _tag: "Held", fence: held } satisfies Grant
         const by = newestOf(project, holder.step)
         if (holder.run < by) return { _tag: "Replaced", by } satisfies Grant
-        if (s.holder === undefined) return yield* grant(project, holder)
         const granted = yield* Deferred.make<Grant>()
         s.waiters.push({ ...holder, granted })
+        yield* decide(next(project))
         return yield* Deferred.await(granted).pipe(Effect.onInterrupt(() => release(project, holder.job)))
       }),
     release,

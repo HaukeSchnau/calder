@@ -75,11 +75,15 @@ export const checkFiles = (dir: string, project: Calder.Project) =>
     yield* Resolve.checkFiles(project, yield* Repo.make(copy.gitDir, copy.sha))
   })
 
+/** The repository's settings a push from elsewhere still needs: how it authenticates and where its URLs lead. */
+const pushSettings = /^(credential\..*|url\..*|http\..*|core\.sshcommand)$/i
+
 /**
- * Runs `git push` from a scratch git directory that borrows the repository's objects. Pushing from the
- * repository itself to its remote's URL updated `refs/remotes/<remote>/<ref>` there, which jj imported
- * as a bookmark and then, once the check deleted the ref, as a conflict; an agent lost unbookmarked
- * commits that way. The scratch directory has no remotes and its refs go with it.
+ * Runs `git push` from a scratch git directory that borrows the repository's objects and the settings
+ * a push needs. Pushing from the repository itself to its remote's URL updated
+ * `refs/remotes/<remote>/<ref>` there, which jj imported as a bookmark and then, once the check deleted
+ * the ref, as a conflict; an agent lost unbookmarked commits that way. The scratch directory has no
+ * remotes and its refs go with it.
  */
 const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
   Effect.acquireUseRelease(
@@ -88,6 +92,12 @@ const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
       Effect.gen(function*() {
         yield* Exec.run(["git", "init", "-q", "--bare", scratch])
         writeFileSync(join(scratch, "objects", "info", "alternates"), `${join(copy.gitDir, "objects")}\n`)
+        const local = yield* Exec.exec(["git", "--git-dir", copy.gitDir, "config", "--local", "--null", "--list"])
+        const settings = local.exitCode !== 0 ? [] : local.stdout.split("\0").flatMap((entry) => {
+          const at = entry.indexOf("\n")
+          return at < 0 || !pushSettings.test(entry.slice(0, at)) ? [] : [[entry.slice(0, at), entry.slice(at + 1)] as const]
+        })
+        for (const [name, value] of settings) yield* Exec.run(["git", "--git-dir", scratch, "config", "--add", name, value])
         yield* Exec.run(["git", "--git-dir", scratch, "push", "-q", ...args])
       }),
     (scratch) => Effect.sync(() => rmSync(scratch, { recursive: true, force: true })),

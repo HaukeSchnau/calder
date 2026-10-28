@@ -7,8 +7,8 @@ import { hostOf } from "./Fleet.ts"
 /** The hash a store path's narinfo is named after. */
 export const hashOf = (path: string) => /^\/nix\/store\/([a-z0-9]{32})-[^/]+$/.exec(path)?.[1]
 
-/** A store path's name without its hash, such as `studienbuch-bundle`. */
-export const nameOf = (path: string) => /^\/nix\/store\/[a-z0-9]{32}-([^/]+)$/.exec(path)?.[1] ?? "path"
+/** A pin name the cache accepts (`^[a-z0-9][a-z0-9._-]*$`) from any text, such as `studienbuch-deploy-beta-CALDER_BUNDLE`. */
+export const pinName = (text: string) => text.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "") || "pin"
 
 /** Whether a release for these promotion endpoints goes to a host other than `host`. */
 export const leavesHost = (targets: ReadonlyArray<string>, host: string) => targets.some((t) => hostOf(t) !== host)

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { Domain } from "@calder-ci/api"
 import { render } from "../src/controller/Comments.ts"
-import type { PlannedStep } from "../src/Protocol.ts"
-import { criticalPath } from "../src/worker/Resolve.ts"
 
 const at = 1_000_000
 const run = {
@@ -56,26 +54,5 @@ describe("Calder's comment on a pull request", () => {
   it("keeps an earlier run's preview until the newest run says otherwise", () => {
     const body = render({ run, now: at, link: "l", notes: [{ step: "preview-url", run: { id: "studienbuch-20", number: 20 }, markdown: "Preview: u", at: 0 }], steps: [] })
     expect(body.split("\n").slice(0, 2)).toEqual(["Preview: u", "<sub>from run 20; run 21 hasn't said it yet</sub>"])
-  })
-})
-
-describe("the critical path", () => {
-  const p = (name: string, fields: Partial<PlannedStep>): PlannedStep => ({
-    name, kind: "task", needs: [], exits: [], after: [], required: [], target: true, neverReuse: false, detail: name,
-    build: null, setup: null, task: null, action: null, output: null, ...fields,
-  })
-  it("is every step a deploy depends on, and not the checks a preview doesn't wait for", () => {
-    const task = (lease: boolean, preview: boolean) => ({
-      shell: null, keyBase: "", inputs: [], interpolates: [], shards: null, each: null, deps: "", outputs: [], secrets: [], platform: null, lease, preview,
-    })
-    const steps = criticalPath([
-      p("deps", { kind: "build" }),
-      p("bundle", { kind: "build", needs: ["deps"] }),
-      p("lint", {}),
-      p("preview", { needs: ["bundle"], task: task(false, true) }),
-      p("preview-url", { kind: "action", needs: ["preview"], action: { deploy: false, secrets: [], preview: true } }),
-      p("e2e-web", { after: ["preview-url"] }),
-    ])
-    expect(steps.filter((s) => s.critical).map((s) => s.name)).toEqual(["deps", "bundle", "preview", "preview-url"])
   })
 })

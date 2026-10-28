@@ -247,7 +247,15 @@ export class WorkerRpcs extends RpcGroup.make(
     },
     error: Unauthorized,
   }),
-  Rpc.make("cachePublish", { payload: { ...auth, path: Schema.String }, error: Unauthorized }),
+  Rpc.make("cachePublish", {
+    payload: {
+      ...auth,
+      path: Schema.String,
+      /** The task's artifact the path is, by its environment variable: the deploy keeps it as that artifact's release. */
+      artifact: Schema.optional(Schema.String),
+    },
+    error: Unauthorized,
+  }),
   Rpc.make("pullRequestComment", { payload: { ...auth, markdown: Schema.String }, error: Unauthorized }),
   Rpc.make("fleetAcquire", {
     payload: { ...auth, project: Schema.String },
@@ -255,6 +263,8 @@ export class WorkerRpcs extends RpcGroup.make(
       Schema.TaggedStruct("Held", { fence: Schema.Number, targets: Schema.Array(Schema.String), unreachable: Schema.Array(Schema.String) }),
       /** `by`: the newer run whose same step took the lease. */
       Schema.TaggedStruct("Replaced", { by: Schema.Number }),
+      /** The run's revision is no longer its branch's head, `head`, so it doesn't deploy. Only tasks get it. */
+      Schema.TaggedStruct("Stale", { head: Schema.String }),
     ]),
     error: Unauthorized,
   }),
