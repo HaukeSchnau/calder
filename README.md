@@ -82,9 +82,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   it runs, like `Release.promote`: one deploy at a time, and latest wins per step. The controller grants it
   only while the run's revision is its branch's head (a manual or scheduled run's branch is the default
   branch); a run of another revision, a rerun of an older one included, is skipped without counting as the
-  step's newest. The task gets the lease's fencing token as `FLEET_FENCE` for whatever it deploys to. In a
-  pull request's run and when it closes, the lease is the pull request's own, so its previews and their
-  removal take turns beside the project's deploys. `artifacts: { ENV: step }` names store paths a task
+  step's newest. A check Gitea can't answer within 10 s counts as current. The task gets the lease's
+  fencing token as `FLEET_FENCE` for whatever it deploys to. In a pull request's run and when it closes,
+  the lease is the pull request's own, so its previews and their removal take turns beside the project's
+  deploys, and a preview deploys only while the pull request is open at the run's revision. `artifacts: { ENV: step }` names store paths a task
   deploys: it waits for those steps, gets each path in its variable, and holding the lease publishes them
   to the binary cache first, outside a pull request each pinned as `<project>-<step>-<variable>`, and
   looks at the head once more. Once the same step of a

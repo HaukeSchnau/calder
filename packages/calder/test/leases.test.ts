@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Fiber } from "effect"
+import { Deferred, Effect, Fiber } from "effect"
+import { TestClock } from "effect/testing"
 import * as Leases from "../src/controller/Leases.ts"
 
 /** A store in memory; `saved` is what a restarted controller reads, with every holder's worker adopted. */
@@ -110,7 +111,7 @@ describe("Leases", () => {
   it.effect("a rerun of an older revision gives way when its turn comes, without keeping the head's run from deploying", () =>
     Effect.gen(function*() {
       const leases = Leases.make(memory().store)
-      const stale = Effect.succeed("head-sha")
+      const stale = Effect.succeed("main moved on to head-sha")
       yield* leases.acquire("p", { job: "a", run: 10, step: "deploy" })
       const head = yield* Effect.forkChild(leases.acquire("p", { job: "b", run: 11, step: "deploy" }))
       yield* Effect.yieldNow
@@ -118,12 +119,44 @@ describe("Leases", () => {
       yield* Effect.yieldNow
 
       yield* leases.release("p", "a")
-      expect(yield* Fiber.join(rerun)).toEqual({ _tag: "Stale", head: "head-sha" })
+      expect(yield* Fiber.join(rerun)).toEqual({ _tag: "Stale", reason: "main moved on to head-sha" })
       expect((yield* Fiber.join(head))._tag).toBe("Held")
       yield* leases.release("p", "b")
 
       // A stale run never counts as the step's newest, so the head's next deploy still gets the lease.
-      expect(yield* leases.acquire("p", { job: "d", run: 13, step: "deploy", stale })).toEqual({ _tag: "Stale", head: "head-sha" })
+      expect(yield* leases.acquire("p", { job: "d", run: 13, step: "deploy", stale })).toEqual({ _tag: "Stale", reason: "main moved on to head-sha" })
       expect((yield* leases.acquire("p", { job: "e", run: 12, step: "deploy" }))._tag).toBe("Held")
+    }))
+
+  it.effect("a deploy that gives up while the decision waits on another's staleness leaves nothing behind to be granted", () =>
+    Effect.gen(function*() {
+      const leases = Leases.make(memory().store)
+      const gate = yield* Deferred.make<void>()
+      yield* leases.acquire("p", { job: "a", run: 10, step: "deploy" })
+      // b's staleness check holds the decision until the gate opens.
+      const b = yield* Effect.forkChild(leases.acquire("p", { job: "b", run: 11, step: "deploy", stale: Deferred.await(gate).pipe(Effect.as(undefined)) }))
+      yield* Effect.yieldNow
+      const releasing = yield* Effect.forkChild(leases.release("p", "a"))
+      yield* Effect.yieldNow
+      // c queues behind the decision in progress, then its worker goes away.
+      const c = yield* Effect.forkChild(leases.acquire("p", { job: "c", run: 12, step: "other" }))
+      yield* Effect.yieldNow
+      yield* Fiber.interrupt(c)
+      yield* Deferred.succeed(gate, undefined)
+      yield* Fiber.join(releasing)
+      expect((yield* Fiber.join(b))._tag).toBe("Held")
+      yield* leases.release("p", "b")
+      expect(leases.holder("p")).toBeUndefined()
+      expect((yield* leases.acquire("p", { job: "d", run: 13, step: "other" }))._tag).toBe("Held")
+    }))
+
+  it.effect("counts a run as current when its staleness can't be told in time, and other leases don't wait for it", () =>
+    Effect.gen(function*() {
+      const leases = Leases.make(memory().store)
+      const slow = yield* Effect.forkChild(leases.acquire("p", { job: "a", run: 10, step: "deploy", stale: Effect.never }))
+      yield* Effect.yieldNow
+      expect((yield* leases.acquire("q", { job: "b", run: 1, step: "deploy" }))._tag).toBe("Held")
+      yield* TestClock.adjust(Leases.staleAfter)
+      expect((yield* Fiber.join(slow))._tag).toBe("Held")
     }))
 })

@@ -263,8 +263,8 @@ export class WorkerRpcs extends RpcGroup.make(
       Schema.TaggedStruct("Held", { fence: Schema.Number, targets: Schema.Array(Schema.String), unreachable: Schema.Array(Schema.String) }),
       /** `by`: the newer run whose same step took the lease. */
       Schema.TaggedStruct("Replaced", { by: Schema.Number }),
-      /** The run's revision is no longer its branch's head, `head`, so it doesn't deploy. Only tasks get it. */
-      Schema.TaggedStruct("Stale", { head: Schema.String }),
+      /** The run no longer deploys what it was for, such as its branch's head, as `reason` says. Only tasks get it. */
+      Schema.TaggedStruct("Stale", { reason: Schema.String }),
     ]),
     error: Unauthorized,
   }),

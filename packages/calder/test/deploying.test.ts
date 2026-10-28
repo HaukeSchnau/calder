@@ -14,16 +14,23 @@ const def = deploy.def._tag === "Task" ? deploy.def : undefined!
 const path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-bundle"
 const revision = "a".repeat(40)
 
-type Lease = { _tag: "Held"; fence: number } | { _tag: "Replaced"; by: number } | { _tag: "Stale"; head: string }
+type Lease = { _tag: "Held"; fence: number } | { _tag: "Replaced"; by: number } | { _tag: "Stale"; reason: string }
 
 /** A job of a push of `revision` to main, whose controller answers with `lease` and then the branch's `heads`, in turn. */
-const harness = (options: { readonly heads?: ReadonlyArray<string>; readonly lease: Lease; readonly publish?: Effect.Effect<void> }) => {
+const harness = (options: {
+  readonly heads?: ReadonlyArray<string>
+  readonly lease: Lease
+  readonly publish?: Effect.Effect<void>
+  /** How the controller answers a head request instead, such as with a defect when Gitea is down. */
+  readonly head?: Effect.Effect<string>
+}) => {
   const calls: Array<string> = []
   const heads = [...(options.heads ?? [revision])]
   const client = {
     fleetAcquire: () => Effect.sync(() => calls.push("acquire")).pipe(Effect.as({ ...options.lease, targets: [], unreachable: [] })),
     fleetRelease: () => Effect.sync(() => void calls.push("release")),
-    gitHead: ({ branch }: { readonly branch: string }) => Effect.sync(() => (calls.push(`head ${branch}`), heads.shift() ?? revision)),
+    gitHead: ({ branch }: { readonly branch: string }) =>
+      Effect.sync(() => calls.push(`head ${branch}`)).pipe(Effect.andThen(options.head ?? Effect.sync(() => heads.shift() ?? revision))),
     cachePublish: ({ path, artifact }: { readonly path: string; readonly artifact?: string }) =>
       Effect.sync(() => void calls.push(`publish ${artifact} ${path}`)).pipe(Effect.andThen(options.publish ?? Effect.void)),
   }
@@ -42,7 +49,7 @@ describe("a task that holds the deploy lease", () => {
 
   it.effect("doesn't deploy when the controller finds its revision is no longer the branch's head", () =>
     Effect.gen(function*() {
-      const { calls, run } = harness({ lease: { _tag: "Stale", head: "b".repeat(40) } })
+      const { calls, run } = harness({ lease: { _tag: "Stale", reason: "main moved on to bbbbbbbbbbbb" } })
       expect(yield* run).toEqual({ _tag: "Ended", result: { _tag: "Skipped", reason: "main moved on to bbbbbbbbbbbb, so this run doesn't deploy" } })
       expect(calls).toEqual(["acquire", "release"])
     }))
@@ -64,5 +71,12 @@ describe("a task that holds the deploy lease", () => {
     Effect.gen(function*() {
       const { run } = harness({ lease: { _tag: "Held", fence: 7 }, publish: Effect.die(new Error(`${path} is not in the binary cache after publishing`)) })
       expect(yield* run).toEqual({ _tag: "Ended", result: { _tag: "Died", message: `${path} is not in the binary cache after publishing` } })
+    }))
+
+  it.effect("deploys what it published when Gitea can't tell the head again, as the controller does", () =>
+    Effect.gen(function*() {
+      const { calls, run } = harness({ lease: { _tag: "Held", fence: 7 }, head: Effect.die(new Error("Gitea answered 502")) })
+      expect(yield* run).toEqual({ _tag: "Held", fence: 7 })
+      expect(calls).toEqual(["acquire", `publish CALDER_BUNDLE ${path}`, "head main", "release"])
     }))
 })

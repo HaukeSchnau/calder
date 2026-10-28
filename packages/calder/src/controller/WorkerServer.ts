@@ -18,21 +18,27 @@ import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 
 /**
- * Which lease a deploy takes, and which branch's head its run must still be. A task deploys its
- * branch's head, so a run of another revision gives way when its turn comes, a rerun of an older one
+ * Which lease a deploy takes, and what its run must still be current against when its turn comes. A
+ * task deploys its branch's head, so a run of another revision gives way, a rerun of an older one
  * included; a manual or scheduled run's branch is the default branch, so `calder trigger` of another
- * branch's head deploys nothing. A pull request's previews and their removal take the pull request's own
- * lease, so they take turns without waiting for the project's deploys, and removing one deploys nothing.
- * Actions (`Release.promote`) check the head themselves.
+ * branch's head deploys nothing. A pull request's previews and their removal take the pull request's
+ * own lease, so they take turns without waiting for the project's deploys; a preview deploys only while
+ * the pull request is open and its head is the run's revision, so none follows the stage's removal, and
+ * removing it checks nothing. Actions (`Release.promote`) check the head themselves.
  */
 export const leaseOf = (run: RunInfo, task: boolean) => {
   const event = run.event
-  const pr = task && (event._tag === "PullRequest" || event._tag === "PullRequestClosed") ? event.number : undefined
-  return {
-    key: pr === undefined ? run.project : `${run.project}#pr-${pr}`,
-    branch: task && event._tag !== "PullRequestClosed" ? run.branch : null,
-  }
+  if (!task) return { key: run.project, current: null }
+  if (event._tag === "PullRequest") return { key: `${run.project}#pr-${event.number}`, current: { pullRequest: event.number } }
+  if (event._tag === "PullRequestClosed") return { key: `${run.project}#pr-${event.number}`, current: null }
+  return { key: run.project, current: run.branch === null ? null : { branch: run.branch } }
 }
+
+/** Why a preview of `revision` no longer deploys: its pull request closed, or moved on to another head. */
+export const pullRequestStale = (number: number, pull: { readonly open: boolean; readonly merged: boolean; readonly sha: string }, revision: string) =>
+  !pull.open ? `pull request #${number} is ${pull.merged ? "merged" : "closed"}`
+  : pull.sha !== revision ? `pull request #${number} moved on to ${pull.sha.slice(0, 12)}`
+  : undefined
 
 export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const config = yield* Config
@@ -146,12 +152,15 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
         const row = yield* db(Rows.loadStep(run.id, step))
         const task = row !== undefined && Rows.spec(row).task?.lease === true
-        const { key, branch } = leaseOf(run, task)
-        const stale = branch === null ? undefined : gitea.head(projects.get(project)!.repo, branch).pipe(
-          Effect.map((head) => (head === run.revision ? undefined : head)),
-          // Gitea not answering doesn't stop deploys; the worker looks at the head again before it runs.
-          Effect.catchCause(() => Effect.succeed(undefined)),
-        )
+        const { key, current } = leaseOf(run, task)
+        const repo = projects.get(project)!.repo
+        // Why the run no longer deploys what it was for; Leases treats a slow or failing Gitea as current.
+        const stale = current === null ? undefined
+          : "branch" in current
+          ? gitea.head(repo, current.branch).pipe(
+            Effect.map((head) => (head === run.revision ? undefined : `${current.branch} moved on to ${head.slice(0, 12)}`)),
+          )
+          : gitea.pull(repo, current.pullRequest).pipe(Effect.map((pull) => pullRequestStale(current.pullRequest, pull, run.revision)))
         const holder = leases.holder(key)
         const reason = holder === undefined || holder.job === active.id ? null : `the deploy lease, which #${holder.run} ${holder.step} holds`
         const waits = (text: string | null) => db(sql`update steps set waiting = ${text} where run_id = ${run.id} and name = ${step}`)

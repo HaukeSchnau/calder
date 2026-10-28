@@ -303,9 +303,8 @@ export const deploying = (self: Job["Service"], job: StepJob, name: string, def:
     )
     const end = (result: JobResult) => ({ _tag: "Ended", result } as const)
     const skip = (reason: string) => log("calder", reason).pipe(Effect.as(end({ _tag: "Skipped", reason })))
-    const moved = (head: string) => skip(`${job.run.branch} moved on to ${head.slice(0, 12)}, so this run doesn't deploy`)
     if (lease._tag === "Replaced") return yield* skip(`#${lease.by} took ${name}'s deploy lease, so this older run doesn't deploy`)
-    if (lease._tag === "Stale") return yield* moved(lease.head)
+    if (lease._tag === "Stale") return yield* skip(`${lease.reason}, so this run doesn't deploy`)
     yield* log("calder", `holding the deploy lease, fence ${lease.fence}`)
     const artifacts = artifactPaths(def, values).filter(([, path]) => storePath.test(path))
     for (const [artifact, path] of artifacts) {
@@ -317,10 +316,12 @@ export const deploying = (self: Job["Service"], job: StepJob, name: string, def:
       }
       yield* log("calder", `${artifact}: ${path} is in the binary cache (${Date.now() - started} ms)`)
     }
+    // Like the controller's check, Gitea not answering in time doesn't stop the deploy.
     const branch = job.run.event._tag === "PullRequestClosed" ? null : job.run.branch
     if (artifacts.length > 0 && branch !== null) {
-      const head = yield* Effect.orDie(reconnecting(self.client.gitHead({ ...auth, branch })))
-      if (head !== job.run.revision) return yield* moved(head)
+      const head = yield* Effect.exit(reconnecting(self.client.gitHead({ ...auth, branch })).pipe(Effect.timeout("10 seconds")))
+      if (Exit.isFailure(head)) yield* log("calder", `could not look at ${branch}'s head again, so this run deploys: ${Cause.pretty(head.cause).split("\n")[0]}`)
+      else if (head.value !== job.run.revision) return yield* skip(`${branch} moved on to ${head.value.slice(0, 12)}, so this run doesn't deploy`)
     }
     return { _tag: "Held", fence: lease.fence } as const
   })

@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Schedule, Schema } from "effect"
-import { HttpClient, type HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Config } from "./Config.ts"
 
 export type StatusState = "pending" | "success" | "error" | "failure" | "warning"
@@ -139,9 +139,12 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
     comment: (repo, number, body, existing) => {
       const id = (request: ReturnType<typeof send>) => request.pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(Comment)), Effect.map((c) => c.id))
       const post = id(send("post", `/repos/${repo}/issues/${number}/comments`, { body }))
-      // A comment someone deleted can't be edited; a new one takes its place.
-      return (existing === null ? post : id(send("patch", `/repos/${repo}/issues/comments/${existing}`, { body })).pipe(Effect.catch(() => post)))
-        .pipe(Effect.orDie)
+      // A comment someone deleted can't be edited; a new one takes its place. Other refusals stay errors.
+      const gone = (error: unknown) =>
+        HttpClientError.isHttpClientError(error) && error.reason._tag === "StatusCodeError" && error.reason.response.status === 404
+      return (existing === null ? post : id(send("patch", `/repos/${repo}/issues/comments/${existing}`, { body })).pipe(
+        Effect.catchIf(gone, () => post),
+      )).pipe(Effect.orDie)
     },
     dispatch: (repo, workflow, ref, inputs) =>
       send("post", `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs }).pipe(
