@@ -159,4 +159,23 @@ describe("Leases", () => {
       yield* TestClock.adjust(Leases.staleAfter)
       expect((yield* Fiber.join(slow))._tag).toBe("Held")
     }))
+
+  it.effect("a release whose caller goes away mid-decision still hands the lease to the next deploy", () =>
+    Effect.gen(function*() {
+      const leases = Leases.make(memory().store)
+      const gate = yield* Deferred.make<void>()
+      yield* leases.acquire("p", { job: "a", run: 10, step: "deploy" })
+      // b's staleness check holds the decision until the gate opens.
+      const b = yield* Effect.forkChild(leases.acquire("p", { job: "b", run: 11, step: "deploy", stale: Deferred.await(gate).pipe(Effect.as(undefined)) }))
+      yield* Effect.yieldNow
+      // fleetRelease's handler, whose worker disconnects while the decision waits.
+      const releasing = yield* Effect.forkChild(leases.release("p", "a"))
+      yield* Effect.yieldNow
+      const interrupted = yield* Effect.forkChild(Fiber.interrupt(releasing))
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(gate, undefined)
+      yield* Fiber.join(interrupted)
+      expect((yield* Fiber.join(b))._tag).toBe("Held")
+      expect(leases.holder("p")?.job).toBe("b")
+    }))
 })

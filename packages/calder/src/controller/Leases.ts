@@ -158,7 +158,10 @@ export const make = (store: Store, saved: Saved = { newest: [], holders: [] }): 
       if (s.holder?.job !== job) return
       fences.delete(`${project}/${job}`)
       s.holder = undefined
-      yield* decide(project)(next(project))
+      // Once the holder is cleared, a later release finds nothing to do, so the handover to the next
+      // waiter must finish even if this caller's worker goes away. Staleness checks are capped at
+      // `staleAfter`, so this can't hang.
+      yield* Effect.uninterruptible(decide(project)(next(project)))
       yield* store.released(project, job)
     })
 
