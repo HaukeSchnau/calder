@@ -59,13 +59,16 @@ export const exec = (argv: ReadonlyArray<string>, options: Options = {}) =>
   }))
 
 /**
- * Runs a command and hands each line of stdout and stderr to `onLine` as it arrives. The command is
- * killed with its process group when the effect is interrupted.
+ * Runs a command and hands each line of stdout and stderr to `onLine` as it arrives. `watch` gets its
+ * process id before any line arrives and runs beside it, such as to sample its memory. The command is
+ * killed with its process group when the effect is interrupted, or when `onLine` or `watch` fails, which
+ * is then the result.
  */
-export const stream = (
+export const stream = <E = never>(
   argv: ReadonlyArray<string>,
   options: Options,
-  onLine: (stream: "stdout" | "stderr", line: string) => Effect.Effect<void>,
+  onLine: (stream: "stdout" | "stderr", line: string) => Effect.Effect<void, E>,
+  watch: (pid: number) => Effect.Effect<void, E> = () => Effect.void,
 ) =>
   Effect.scoped(Effect.gen(function*() {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -80,10 +83,13 @@ export const stream = (
     )
     const lines = (s: Stream.Stream<Uint8Array, PlatformError.PlatformError>, name: "stdout" | "stderr") =>
       s.pipe(Stream.decodeText, Stream.splitLines, Stream.runForEach((line) => onLine(name, line)))
-    const [, , exitCode] = yield* Effect.all([
-      lines(handle.stdout, "stdout"),
-      lines(handle.stderr, "stderr"),
-      handle.exitCode,
-    ], { concurrency: "unbounded" })
+    const [, , exitCode] = yield* Effect.raceFirst(
+      Effect.all([
+        lines(handle.stdout, "stdout"),
+        lines(handle.stderr, "stderr"),
+        handle.exitCode,
+      ], { concurrency: "unbounded" }),
+      Effect.andThen(watch(handle.pid), Effect.never),
+    )
     return exitCode as number
   }))
