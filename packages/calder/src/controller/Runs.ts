@@ -689,7 +689,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const pool = options.pool ?? poolOf(run)
       const running = Effect.scoped(Effect.gen(function*() {
         const ws = options.workspace ? (yield* workspace(pool, run.project, options.remote === true)).path : null
-        if (options.remote === true) yield* waiting(run.id, row.name, `an agent of ${options.platform ?? config.system} to take it`)
         const done = yield* jobs.run(job(ws), {
           pool,
           onEvent,
@@ -703,6 +702,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           agent: options.remote === true,
           offload: options.offload === true,
           adoptable: !options.action,
+          onWaiting: (reason) => waiting(run.id, row.name, reason),
         })
         return { ...done, startedAt }
       }))
