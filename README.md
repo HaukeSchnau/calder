@@ -212,19 +212,28 @@ so a lockfile change alone doesn't build again, and stamp a build number the app
 fails before uploading when the build embeds another runtime version than CI computed. `Expo.testflight` runs on
 a Mac agent and is the only step that receives the App Store Connect key; `Expo.playInternal` runs on an
 x86_64 agent by default, whose host provides the Android SDK, a JDK, `unzip` and `gplay`. `Expo.exportUpdate`
-exports the JavaScript for both platforms into its output `update`, on x86_64 Linux or a Mac, where React
-Native's Hermes compiler runs, and `Expo.publishUpdate` publishes that export to an EAS Update channel with
-`eas update --skip-bundler` on every run, after checking that its host resolves the runtime versions CI did.
-Its value is each platform's update.
+exports the JavaScript for both platforms into its output `update`, on an x86_64 Linux agent by default or a
+Mac, where React Native's Hermes compiler runs, and `Expo.publishUpdate` publishes that export to an EAS Update
+channel with the app's own `eas` (eas-cli in its devDependencies, so the lockfile pins it) on every run, after
+checking that its host resolves the runtime versions CI did. Only eas gets the Expo token. The publish warns
+when a reverted native change sends the update to an older runtime version, which builds of the newer one never
+load. Its value is each platform's update.
+
+The publish and the store builds hold the project's deploy lease: they run one at a time, a newer run's replaces
+an older one's that still waits, and a run whose branch moved on skips them, so an older commit never ships last.
+A store build holds the lease while it builds, which delays the project's other deploys meanwhile; store builds
+run only when the native app changed. Give every step of an app the same `env`, such as `EXPO_PUBLIC_API_URL`:
+the runtime versions, the export, the publish and the store builds all evaluate the app config, and a variable
+one of them lacks can change its runtime version or bundle.
 
 ```ts
 const tower = { platform: "x86_64-linux", shell } as const
 const ios = Expo.runtimeVersion("ios", { shell, setup: install })
 const android = Expo.runtimeVersion("android", { shell, setup: install })
-const update = Expo.exportUpdate({ ...tower, setup: Pnpm.install({ ...tower, name: "install-tower" }), after: checks })
+const update = Expo.exportUpdate({ shell, setup: Pnpm.install({ ...tower, name: "install-tower" }), after: checks })
 const ota = Expo.publishUpdate({ shell, setup: install, update, channel: "production", token: "expo-token", runtimes: { ios, android } })
-const testflight = Expo.testflight({ runtime: ios, appId: "6818526671", appStoreConnect: { key: "asc-key", keyId, issuerId }, after: checks })
-const play = Expo.playInternal({ ...tower, runtime: android, keystore: "play-upload-keystore", password: "play-upload-password", serviceAccount: "play-service-account", after: checks })
+const testflight = Expo.testflight({ runtime: ios, appId: "6818526671", appStoreConnect: { key: "app-store-connect", keyId, issuerId }, after: checks })
+const play = Expo.playInternal({ shell, runtime: android, keystore: "play-upload-keystore", password: "play-upload-password", serviceAccount: "play-service-account", after: checks })
 
 export default Calder.project({ rules: [On.pullRequest(checks), On.push("main", [ota, testflight, play])] })
 ```

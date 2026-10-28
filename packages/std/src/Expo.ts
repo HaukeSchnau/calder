@@ -8,10 +8,10 @@ import { Schema } from "effect"
  * ```ts
  * const ios = Expo.runtimeVersion("ios", { shell, setup: install })
  * const android = Expo.runtimeVersion("android", { shell, setup: install })
- * const update = Expo.exportUpdate({ platform: "x86_64-linux", shell, setup: towerInstall, after: checks })
+ * const update = Expo.exportUpdate({ shell, setup: towerInstall, after: checks })
  * const ota = Expo.publishUpdate({ shell, setup: install, update, channel: "production", token: "expo-token", runtimes: { ios, android } })
- * const testflight = Expo.testflight({ platform: "aarch64-darwin", runtime: ios, appId: "6818526671", appStoreConnect })
- * const play = Expo.playInternal({ platform: "x86_64-linux", shell, runtime: android, keystore, password, serviceAccount })
+ * const testflight = Expo.testflight({ runtime: ios, appId: "6818526671", appStoreConnect })
+ * const play = Expo.playInternal({ shell, runtime: android, keystore, password, serviceAccount })
  * ```
  *
  * The app's runtime version policy is `fingerprint`: Expo's hash of its native code, which store
@@ -26,8 +26,15 @@ import { Schema } from "effect"
  * android: { ...config.android, versionCode: Number(process.env.ANDROID_VERSION_CODE) || config.android?.versionCode },
  * ```
  *
- * Updates export on x86_64, where React Native's hermesc runs on Linux too, or on a Mac. The steps
- * install with pnpm.
+ * Updates export on x86_64 Linux by default, where React Native's hermesc runs, or on a Mac. The
+ * steps install with pnpm, and eas-cli comes from the app's devDependencies, so its lockfile pins it.
+ * Give every step of an app the same `env`: the runtime versions, the export, the publish and the
+ * store builds evaluate the app config, and a variable one of them lacks can change what it computes.
+ *
+ * The publish and the store builds hold the project's deploy lease, so they run one at a time, a
+ * newer run's replaces an older one's that still waits, and a run whose branch moved on skips them.
+ * A store build holds it while it builds, which delays the project's other deploys then, but store
+ * builds run only when the native app changed.
  */
 
 /** Where a step runs: an agent of `platform`, the controller's by default, in the dev shell `shell`. */
@@ -46,7 +53,7 @@ export interface AppOptions extends Host {
   readonly after?: ReadonlyArray<Step.Any>
   /**
    * Plain environment variables the app config or the JavaScript reads, such as `EXPO_PUBLIC_API_URL`.
-   * Give an update's export and its store builds the same ones.
+   * The same for every step of the app, since each of them evaluates the app config.
    */
   readonly env?: { readonly [name: string]: string }
 }
@@ -58,9 +65,6 @@ export interface InstalledOptions extends AppOptions {
 
 /** A runtime version: the value of `runtimeVersion`, which the release steps interpolate. */
 export type Runtime = Step.Step<string, unknown, never, unknown, unknown>
-
-/** eas-cli, pinned so that a new release can't change how updates publish. */
-const easCli = "eas-cli@25.3.0"
 
 const hostOf = (options: Host) => ({
   ...(options.platform === undefined ? {} : { platform: options.platform }),
@@ -152,12 +156,14 @@ find "$2" -name '*.map' -delete`
 /**
  * This commit's JavaScript and assets for both platforms, as `eas update` would export them, named
  * `ota-export`. Its output `update` goes to the Nix store, where `publishUpdate` takes it from. The
- * Hermes bytecode compiler ships for macOS and x86_64 Linux only, so the export runs on an agent of
- * one of those (`platform`). It is reused for a tree it exported before, such as after a revert.
+ * Hermes bytecode compiler ships for macOS and x86_64 Linux only, so the export runs on an x86_64 Linux
+ * agent, or a Mac with `platform: "aarch64-darwin"`, from an install of that platform. It is reused for
+ * a tree it exported before, such as after a revert.
  */
 export const exportUpdate = (options: InstalledOptions) => {
   const dir = options.dir ?? "."
   return Task.make(options.name ?? "ota-export", {
+    platform: "x86_64-linux",
     ...hostOf(options),
     setup: options.setup,
     after: options.after ?? [],
@@ -192,33 +198,63 @@ export interface PublishOptions extends InstalledOptions {
 const updatesFile = ".calder-expo-updates.json"
 
 /**
+ * `node -e <script> <platform> <runtime> <branch>`, which bash quotes in single quotes, so it has none.
+ * It reads `eas update:list --json` and warns when this
+ * update goes to a runtime version that updates went to before, but not the newest one did: a native
+ * change was reverted, and builds of the newer runtime version never load this update.
+ */
+const revertWarning = `
+const [platform, runtime, branch] = process.argv.slice(1)
+const groups = JSON.parse(require("fs").readFileSync(0, "utf8")).currentPage ?? []
+const newest = groups[0]?.runtimeVersion
+if (newest !== undefined && newest !== runtime && groups.some((group) => group.runtimeVersion === runtime)) {
+  console.log("warning: this " + platform + " update goes to runtime version " + runtime + ", which " + branch +
+    " had updates for before, but its newest update went to " + newest + ". A native change was reverted, and builds of " +
+    newest + " keep their JavaScript until store builds of " + runtime + " replace them.")
+}`
+
+/**
  * `$1` is the app's directory, `$2` the export, `$3` the channel, `$4` and `$5` the iOS and Android
- * runtime versions, `$6` the value's file relative to the repository and `$7` eas-cli. eas fails on a
- * dirty working tree, so its output goes to the value's file only once it is done.
+ * runtime versions and `$6` the value's file relative to the repository. The Expo token goes to eas
+ * alone. eas records in each update whether the working tree was dirty, and refuses a dirty one when
+ * eas.json sets `cli.requireCommit`, so its output reaches the value's file only once it is done. The
+ * channel's branch has the channel's name, as EAS makes it.
  */
 const publishScript = `set -euo pipefail
 value=$PWD/$6
 ${enter}
 ${runtimeFunction}
 ${sameRuntimeFunction}
+if ! command -v eas >/dev/null; then
+  echo "eas is missing: add eas-cli to the app's devDependencies" >&2
+  exit 1
+fi
+token=$(<"$EXPO_TOKEN_FILE")
 # eas resolves the runtime versions it publishes to on this host; the store builds were keyed by CI's.
 ios=$(runtime ios)
 android=$(runtime android)
 same_runtime "iOS on this host" "$ios" "$4"
 same_runtime "Android on this host" "$android" "$5"
-EXPO_TOKEN=$(<"$EXPO_TOKEN_FILE")
-export EXPO_TOKEN
+for platform in ios android; do
+  if [ "$platform" = ios ]; then target=$ios; else target=$android; fi
+  if groups=$(EXPO_TOKEN=$token eas update:list --branch "$3" --platform "$platform" --json --non-interactive); then
+    node -e '${revertWarning}' "$platform" "$target" "$3" <<<"$groups" >&2 || true
+  else
+    echo "warning: eas listed no updates of $3, so this step can't tell whether it goes back to an older runtime version" >&2
+  fi
+done
 published=$(mktemp)
-pnpm dlx "$7" update --skip-bundler --input-dir "$2" --channel "$3" --platform all \\
+EXPO_TOKEN=$token eas update --skip-bundler --input-dir "$2" --channel "$3" --platform all \\
   --message "$(git log -1 --format=%s)" --non-interactive --json >"$published"
 cat "$published"
 mv "$published" "$value"`
 
 /**
  * Publishes an exported update to the EAS Update channel `channel`, named `ota-<channel>`, for the
- * installed builds whose runtime version matches. It runs every time its rule does, since a revert
- * has to ship too, although an update with its files went out before. Its value is the update of each
- * platform.
+ * installed builds whose runtime version matches. It holds the deploy lease, and runs every time its
+ * rule does, since a revert has to ship too, although an update with its files went out before. It
+ * warns when a reverted native change makes it go to an older runtime version. Its value is the update
+ * of each platform.
  */
 export const publishUpdate = (options: PublishOptions) => {
   const dir = options.dir ?? "."
@@ -226,11 +262,12 @@ export const publishUpdate = (options: PublishOptions) => {
     ...hostOf(options),
     setup: options.setup,
     after: options.after ?? [],
+    lease: true,
     reuse: "never",
     // eas wants --environment only for the variables it bundles with, and the export is bundled already.
     env: { EAS_UPDATE_SKIP_ENVIRONMENT_CHECK: "1", ...options.env },
     secrets: { EXPO_TOKEN_FILE: Secret.file(options.token) },
-    run: cmd`bash -c ${publishScript} calder-expo ${dir} ${options.update.outputs.update} ${options.channel} ${options.runtimes.ios} ${options.runtimes.android} ${updatesFile} ${easCli}`,
+    run: cmd`bash -c ${publishScript} calder-expo ${dir} ${options.update.outputs.update} ${options.channel} ${options.runtimes.ios} ${options.runtimes.android} ${updatesFile}`,
     value: { path: updatesFile, schema: Schema.Array(Update) },
   })
 }
@@ -245,11 +282,15 @@ export interface StoreBuildOptions extends AppOptions {
   readonly inputs?: Files.Files
 }
 
-/** A store build's toolchain and key: it installs itself, so that a lockfile change alone doesn't build again. */
+/**
+ * A store build's toolchain, key and lease: it installs itself, so that a lockfile change alone doesn't
+ * build again, and holds the deploy lease, so that uploads happen in the order of their runs.
+ */
 const storeBuild = (options: StoreBuildOptions) => ({
   ...hostOf(options),
   after: options.after ?? [],
   inputs: options.inputs ?? Files.of(),
+  lease: true as const,
 })
 
 export interface AppStoreConnectKey {
@@ -259,7 +300,8 @@ export interface AppStoreConnectKey {
   readonly issuerId: string
 }
 
-export interface TestflightOptions extends StoreBuildOptions {
+/** TestFlight builds run on a Mac agent, the only platform with Xcode. */
+export interface TestflightOptions extends Omit<StoreBuildOptions, "platform"> {
   /** The iOS runtime version: `runtimeVersion("ios", ...)`. */
   readonly runtime: Runtime
   /** The app's Apple ID in App Store Connect. */
@@ -283,10 +325,16 @@ ${sameRuntimeFunction}
 version=$(field version)
 team=$(field ios.appleTeamId)
 
-# App Store Connect takes no new builds of a version once it passed review; fail now rather than at the upload.
-approved=$(asc versions list --app "$app" --platform IOS --version "$version" --output json \\
-  --state READY_FOR_SALE,PENDING_DEVELOPER_RELEASE,PENDING_APPLE_RELEASE,PROCESSING_FOR_APP_STORE,REPLACED_WITH_NEW_VERSION,REMOVED_FROM_SALE,DEVELOPER_REMOVED_FROM_SALE |
-  node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).data.length')
+# App Store Connect takes no new builds of a version once it passed review; fail now rather than at the
+# upload. Apple reports a version's state as appVersionState, and as the deprecated appStoreState.
+approved=$(asc versions list --app "$app" --platform IOS --version "$version" --output json | node -e '
+  const passed = new Set([
+    "ACCEPTED", "PENDING_APPLE_RELEASE", "PENDING_DEVELOPER_RELEASE", "PROCESSING_FOR_DISTRIBUTION",
+    "READY_FOR_DISTRIBUTION", "REPLACED_WITH_NEW_VERSION", "READY_FOR_SALE", "PROCESSING_FOR_APP_STORE",
+    "PREORDER_READY_FOR_SALE", "REMOVED_FROM_SALE", "DEVELOPER_REMOVED_FROM_SALE",
+  ])
+  const { data } = JSON.parse(require("fs").readFileSync(0, "utf8"))
+  console.log(data.filter(({ attributes }) => passed.has(attributes.appVersionState) || passed.has(attributes.appStoreState)).length)')
 if [ "$approved" != 0 ]; then
   echo "$version already passed App Store review; raise the version for new builds" >&2
   exit 1
@@ -343,7 +391,7 @@ cat >"$options" <<PLIST
 </plist>
 PLIST
 xcodebuild -exportArchive -quiet -archivePath "$archive" -exportPath ios/build/upload -exportOptionsPlist "$options" "\${auth[@]}"
-asc builds wait --app "$app" --build-number "$IOS_BUILD_NUMBER" --platform IOS --timeout 45m --fail-on-invalid`
+asc builds wait --app "$app" --version "$version" --build-number "$IOS_BUILD_NUMBER" --platform IOS --timeout 45m --fail-on-invalid`
 
 /**
  * Archives a Release build with a fresh build number, uploads it to App Store Connect and waits until
@@ -354,8 +402,8 @@ asc builds wait --app "$app" --build-number "$IOS_BUILD_NUMBER" --platform IOS -
  */
 export const testflight = (options: TestflightOptions) =>
   Task.make(options.name ?? "testflight", {
-    platform: "aarch64-darwin",
     ...storeBuild(options),
+    platform: "aarch64-darwin",
     env: {
       // CocoaPods fails without a UTF-8 locale, and launchd starts agents without one.
       LANG: "en_US.UTF-8",
