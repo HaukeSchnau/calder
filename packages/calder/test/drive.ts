@@ -5,6 +5,7 @@ import { ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"
 import { Agents, make as makeAgents } from "../src/controller/Agents.ts"
 import { Cache } from "../src/controller/Cache.ts"
+import { Comments } from "../src/controller/Comments.ts"
 import { Gitea } from "../src/controller/Gitea.ts"
 import { Jobs } from "../src/controller/Jobs.ts"
 import * as Live from "../src/controller/Live.ts"
@@ -48,6 +49,8 @@ export interface Drive {
   readonly result?: (step: string) => JobResult | undefined
   /** Keeps reading the steps after the run ended until this holds, for work the run doesn't wait for. */
   readonly settled?: (steps: ReadonlyMap<string, Domain.StepRun>) => boolean
+  /** The run's event, a push to main by default. */
+  readonly event?: Domain.Event
 }
 
 /**
@@ -62,18 +65,21 @@ export const drive = ({
   work = () => Effect.void,
   result = () => undefined,
   settled = () => true,
+  event = { _tag: "Push", branch: "main" },
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    const plan: PlanSpec = { version: 1, app: null, trust: "trusted", reuse: "all", schedules: [], steps: [...planned] }
+    const trust = event._tag === "PullRequest" ? "pr" : "trusted"
+    const pr = event._tag === "PullRequest" ? event.number : null
+    const plan: PlanSpec = { version: 1, app: null, trust, reuse: "all", schedules: [], steps: [...planned] }
     yield* insertRun("app-1", { at: 1 })
     for (const name of passed) {
       yield* sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
         values (${taskKey(name, {}, null)}, 'app-1', ${name}, 'trusted', 'null', '{}', 1, 'passed')`
     }
-    yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
+    yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, plan)
-      values ('app-2', 'app', 2, '{"_tag":"Push","branch":"main"}', 'sha', 'main', 'title', 'hauke', 2, 'trusted', 'running', 2, 2, 't', 's',
+      values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, 'running', 2, 2, 't', 's',
         ${JSON.stringify(plan)})`
     for (const [position, s] of plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
@@ -81,6 +87,8 @@ export const drive = ({
     }
 
     const jobs: Array<string> = []
+    /** The pool each step's job ran in. */
+    const pools = new Map<string, string>()
     const statuses = new Map<string, string>()
     const project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {} }
     const services = Layer.mergeAll(
@@ -88,6 +96,7 @@ export const drive = ({
       Live.layer,
       Layer.succeed(Agents)(makeAgents(null)),
       Layer.succeed(Cache)(cache),
+      Layer.succeed(Comments)({ note: unused, touch: () => Effect.void }),
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
         ChildProcessSpawner.make(() => Effect.fail(PlatformError.systemError({ _tag: "NotFound", module: "test", method: "spawn" }))),
       ),
@@ -120,6 +129,7 @@ export const drive = ({
         run: (job, options) =>
           Effect.gen(function*() {
             if (job._tag === "Step") jobs.push(job.step)
+            if (job._tag === "Step") pools.set(job.step, options.pool)
             yield* options.onStart ?? Effect.void
             if (job._tag === "Step") yield* work(job.step)
             return {
@@ -145,5 +155,5 @@ export const drive = ({
     const status = yield* ended.pipe(Effect.provide(Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provide(services))))
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
-    return { status, jobs, statuses, steps }
+    return { status, jobs, statuses, steps, pools }
   }).pipe(Effect.provide(sqlite))

@@ -19,6 +19,11 @@ export const PlannedStep = Schema.Struct({
   required: Schema.Array(Schema.String),
   target: Schema.Boolean,
   neverReuse: Schema.Boolean,
+  /**
+   * On the critical path of a deploy or a preview: the step deploys, or one that does depends on it. Such
+   * steps take the latency lane, ahead of checks nobody waits on. Older plans lack it.
+   */
+  critical: Schema.optional(Schema.Boolean),
   /** What it runs, for people: the attribute, the command or the action. */
   detail: Schema.String,
   /** The derivation, its output and the system it builds for, when the plan could evaluate them. */
@@ -52,10 +57,17 @@ export const PlannedStep = Schema.Struct({
     /** Holds the project's deploy lease while it runs. Older plans lack it. */
     lease: Schema.optional(Schema.Boolean),
   })),
-  action: Schema.NullOr(Schema.Struct({ deploy: Schema.Boolean, secrets: Schema.Array(Schema.String) })),
+  action: Schema.NullOr(Schema.Struct({
+    deploy: Schema.Boolean,
+    secrets: Schema.Array(Schema.String),
+    /** A preview rule's action, which same-repo pull requests run as a trusted job. Older plans lack it. */
+    preview: Schema.optional(Schema.Boolean),
+  })),
   output: Schema.NullOr(Schema.Struct({ task: Schema.String, output: Schema.String })),
 })
 export type PlannedStep = typeof PlannedStep.Type
+
+const Derivation = Schema.Struct({ drv: Schema.String, out: Schema.String, system: Schema.String })
 
 export const PlanSpec = Schema.Struct({
   version: Schema.Literal(1),
@@ -65,6 +77,11 @@ export const PlanSpec = Schema.Struct({
   reuse: Reuse,
   schedules: Schema.Array(Schema.String),
   steps: Schema.Array(PlannedStep),
+  /**
+   * What the plan evaluated, by attribute: the builds' and dev shells' derivations, which a later plan
+   * of the same tree may reuse. Older plans lack it.
+   */
+  derivations: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Derivation))),
 })
 export type PlanSpec = typeof PlanSpec.Type
 
@@ -104,6 +121,15 @@ export type Outcome = typeof Outcome.Type
 export const PlanJob = Schema.TaggedStruct("Plan", {
   run: RunInfo,
   requiredChecks: Schema.Array(Schema.String),
+  /**
+   * The newest plan of another commit with the same root tree, from a run this one may reuse (a trusted
+   * run or a same-repo pull request's), whose derivations the plan takes unless they mention that commit.
+   */
+  earlier: Schema.optional(Schema.NullOr(Schema.Struct({
+    revision: Schema.String,
+    derivations: Schema.Record(Schema.String, Schema.NullOr(Derivation)),
+    app: Schema.NullOr(Schema.String),
+  }))),
 })
 
 export const StepJob = Schema.TaggedStruct("Step", {
@@ -221,7 +247,15 @@ export class WorkerRpcs extends RpcGroup.make(
     },
     error: Unauthorized,
   }),
-  Rpc.make("cachePublish", { payload: { ...auth, path: Schema.String }, error: Unauthorized }),
+  Rpc.make("cachePublish", {
+    payload: {
+      ...auth,
+      path: Schema.String,
+      /** The task's artifact the path is, by its environment variable: the deploy keeps it as that artifact's release. */
+      artifact: Schema.optional(Schema.String),
+    },
+    error: Unauthorized,
+  }),
   Rpc.make("pullRequestComment", { payload: { ...auth, markdown: Schema.String }, error: Unauthorized }),
   Rpc.make("fleetAcquire", {
     payload: { ...auth, project: Schema.String },
@@ -229,6 +263,8 @@ export class WorkerRpcs extends RpcGroup.make(
       Schema.TaggedStruct("Held", { fence: Schema.Number, targets: Schema.Array(Schema.String), unreachable: Schema.Array(Schema.String) }),
       /** `by`: the newer run whose same step took the lease. */
       Schema.TaggedStruct("Replaced", { by: Schema.Number }),
+      /** The run no longer deploys what it was for, such as its branch's head, as `reason` says. Only tasks get it. */
+      Schema.TaggedStruct("Stale", { reason: Schema.String }),
     ]),
     error: Unauthorized,
   }),
@@ -251,7 +287,7 @@ export class WorkerRpcs extends RpcGroup.make(
  * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
  * newer SDK, need no bump: failed steps are not reused.
  */
-export const compatibility = 3
+export const compatibility = 4
 
 /** What the controller tells an agent: start a worker for a job, or stop one. */
 export const AgentOrder = Schema.Union([

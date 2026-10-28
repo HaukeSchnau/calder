@@ -9,6 +9,7 @@ import { placementToken, sha256, taskKey } from "../Keys.ts"
 import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Cache } from "./Cache.ts"
+import { Comments } from "./Comments.ts"
 import { Config } from "./Config.ts"
 import * as Each from "./Each.ts"
 import * as Estimates from "./Estimates.ts"
@@ -29,6 +30,14 @@ const activeStatuses = ["queued", "planning", "running"] as const
 const short = (sha: string) => sha.slice(0, 12)
 
 const duration = (ms: number) => Duration.format(Duration.millis(Math.round(ms / 1000) * 1000))
+
+/** The remote builders of Nix's machines file (`/etc/nix/machines`): each one's address and systems. */
+export const buildersOf = (machines: string) =>
+  machines.split("\n").map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#") && !line.startsWith("@"))
+    .map((line) => {
+      const [uri = "", systems = ""] = line.split(/\s+/)
+      return { uri, systems: systems.split(",") }
+    })
 
 /**
  * What the run workflow's activities do: plan a revision, execute one step, finish the run. Each reads
@@ -70,15 +79,19 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const projects = yield* Projects
   const spawner = yield* Exec.SpawnerTag
   const cache = yield* Cache
+  const comments = yield* Comments
   const estimates = yield* Estimates.Estimates
+  // Steps a deploy or a preview waits for take one slot of each pool beyond its capacity, so they never
+  // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
+  const lane = 1
   const slots = {
     plans: Slots.make({ capacity: config.jobs.slots.plans }),
-    builds: Slots.make({ capacity: config.jobs.slots.builds }),
+    builds: Slots.make({ capacity: config.jobs.slots.builds, lane }),
     // Each other system's builds wait for its remote builders apart, so one that is unavailable stalls only its own.
     remoteBuilds: new Map<string, Slots.Slots>(),
     // One project's shards may not take every task slot, so other projects can always start.
-    tasks: Slots.make({ capacity: config.jobs.slots.tasks, perProject: Math.max(1, config.jobs.slots.tasks - 1) }),
-    actions: Slots.make({ capacity: config.jobs.slots.actions }),
+    tasks: Slots.make({ capacity: config.jobs.slots.tasks, perProject: Math.max(1, config.jobs.slots.tasks - 1), lane }),
+    actions: Slots.make({ capacity: config.jobs.slots.actions, lane }),
     // Agents limit themselves; this only orders their jobs.
     agents: Slots.make({ capacity: 64 }),
   }
@@ -116,9 +129,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   /** Opens when a task that starts from the setup runs. */
   const wanted = latches()
 
+  /** Each builder host of another system gets as many build slots as this host. */
+  const builders = buildersOf(existsSync("/etc/nix/machines") ? readFileSync("/etc/nix/machines", "utf8") : "")
   const buildSlots = (system: string | null) => {
     if (system === null || system === config.system) return slots.builds
-    const pool = slots.remoteBuilds.get(system) ?? Slots.make({ capacity: config.jobs.slots.builds })
+    const hosts = Math.max(1, builders.filter((b) => b.systems.includes(system)).length)
+    const pool = slots.remoteBuilds.get(system) ?? Slots.make({ capacity: config.jobs.slots.builds * hosts, lane })
     slots.remoteBuilds.set(system, pool)
     return pool
   }
@@ -165,6 +181,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
+  /** Records what a step waits for, or that it no longer waits (null). */
+  const waiting = (runId: string, name: string, reason: string | null) =>
+    db(sql`update steps set waiting = ${reason} where run_id = ${runId} and name = ${name}`).pipe(
+      Effect.andThen(publishStep(runId, name)),
+    )
+
   const repoOf = (project: string) => projects.get(project)!.repo
   const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`
   const poolOf = (run: Rows.RunRow): Pool => (run.trust === "pr" ? "pr" : "trusted")
@@ -185,6 +207,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const estimate = (yield* estimates.steps(run.project)).get(name) ?? null
       const failingTests = row.status === "failed" ? yield* db(Rows.failingTests(runId, name)) : []
       yield* live.publish({ _tag: "StepChanged", step: Rows.step(row, estimate), failingTests })
+      yield* comments.touch(runId)
     })
 
   const status = (run: Rows.RunRow, context: string, state: StatusState, description: string) =>
@@ -266,7 +289,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (pipelineDir.dir === null) return yield* unplanned(run, pipelineDir.error ?? "could not read the revision")
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
-      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required }
+      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run)) }
       const planned = yield* Effect.raceFirst(
         slots.plans.with(
           { project: run.project, expected: 0, run: run.created_at },
@@ -281,7 +304,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return yield* unplanned(run, result._tag === "PlanFailed" ? result.message : result._tag === "Died" ? result.message : "planning failed")
       }
 
-      const spec = result.plan
+      const spec = { ...result.plan, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
       const event = JSON.parse(run.event) as Domain.Event
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
@@ -302,7 +325,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
       // A cancel that came in while the plan job ran wins.
       const stored = yield* db(sql.withTransaction(Effect.gen(function*() {
-        const updated = yield* sql`update runs set plan = ${JSON.stringify(spec)}, status = 'running'
+        const updated = yield* sql`update runs set plan = ${JSON.stringify(spec)}, status = 'running', planned_at = ${Date.now()}
           where id = ${runId} and status = 'planning' returning id`
         if (updated.length === 0) return false
         for (const [position, step] of spec.steps.entries()) {
@@ -608,6 +631,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     job: (workspace: string | null) => Job,
     options: {
       readonly slots: Slots.Slots
+      /** What the slots are, for the reason a step waits, such as `a task slot`. */
+      readonly what: string
       /** Expected run time in ms, which orders the slot's queue. */
       readonly expected: number
       readonly action: boolean
@@ -645,8 +670,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           }
         })
       const started = Effect.gen(function*() {
-        yield* db(sql`update steps set status = 'running', started_at = coalesce(started_at, ${Date.now()}), attempts = max(attempts, 1)
-          where run_id = ${run.id} and name = ${row.name}`)
+        yield* db(sql`update steps set status = 'running', started_at = coalesce(started_at, ${Date.now()}), attempts = max(attempts, 1),
+          waiting = null where run_id = ${run.id} and name = ${row.name}`)
         yield* publishStep(run.id, row.name)
         yield* status(run, `calder/${row.name}`, "pending", "running")
       })
@@ -664,6 +689,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const pool = options.pool ?? poolOf(run)
       const running = Effect.scoped(Effect.gen(function*() {
         const ws = options.workspace ? (yield* workspace(pool, run.project, options.remote === true)).path : null
+        if (options.remote === true) yield* waiting(run.id, row.name, `an agent of ${options.platform ?? config.system} to take it`)
         const done = yield* jobs.run(job(ws), {
           pool,
           onEvent,
@@ -682,7 +708,17 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }))
       const event = JSON.parse(run.event) as Domain.Event
       const background = event._tag === "Check" && event.background === true
-      const work = reattached ?? options.slots.with({ project: run.project, expected: options.expected, run: run.created_at, background }, running)
+      const claim = {
+        project: run.project,
+        expected: options.expected,
+        run: run.created_at,
+        background,
+        critical: Rows.spec(row).critical === true,
+        label: `${run.id} ${row.name}`,
+      }
+      const busy = reattached === undefined ? options.slots.waitsFor(claim) : null
+      if (busy !== null) yield* waiting(run.id, row.name, `${options.what}: ${busy}`)
+      const work = reattached ?? options.slots.with(claim, running)
       if (options.action) return yield* work
       const none = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
@@ -728,12 +764,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       // A task whose setup still runs isn't waiting for a slot yet, so its queue time starts after.
       const waits = (yield* db(Rows.loadSteps(run.id))).some((s) => setups.includes(s.name) && !Rows.terminal(s.status))
       if (waits) {
-        yield* db(sql`update steps set status = 'pending' where run_id = ${run.id} and name = ${row.name}`)
+        yield* db(sql`update steps set status = 'pending', waiting = ${`setup ${setups.join(", ")}`} where run_id = ${run.id} and name = ${row.name}`)
         yield* publishStep(run.id, row.name)
       }
       yield* Effect.forEach(setups, (s) => Deferred.await(stepped.get(run.id, s)), { discard: true })
       if (waits) {
-        yield* db(sql`update steps set status = 'queued', queued_at = ${Date.now()} where run_id = ${run.id} and name = ${row.name}`)
+        yield* db(sql`update steps set status = 'queued', queued_at = ${Date.now()}, waiting = null where run_id = ${run.id} and name = ${row.name}`)
         yield* publishStep(run.id, row.name)
       }
       const cancelled = (yield* db(Rows.loadRun(run.id)))?.status === "cancelled"
@@ -803,7 +839,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       if (spec.build !== null) {
         const { drv, system } = spec.build
-        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: buildSlots(system), expected, action: false, shard: null, workspace: false }, collect)
+        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: buildSlots(system), what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`, expected, action: false, shard: null, workspace: false }, collect)
         if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
         if (r.result._tag === "Passed" && typeof r.result.value === "string") yield* share(run, name, r.result.value)
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
@@ -817,6 +853,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             `${p.remote ? "agent" : "local"}/${poolOf(run)}/${run.project}/${p.platform ?? config.system}/${deps}`,
             execute(run, row, (ws) => stepJob({ run: p.where, workspace: ws, deps }), {
               slots: p.remote ? slots.agents : slots.tasks,
+              what: p.remote ? "an agent's slot" : "a task slot",
               // Every task of the run waits for it.
               expected: 0,
               action: false,
@@ -837,7 +874,19 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       if (spec.action !== null) {
         const secrets = run.trust === "trusted" ? readSecrets(run.project, spec.action.secrets) : {}
-        const r = yield* execute(run, row, () => stepJob({ secrets }), { slots: slots.actions, expected, action: true, shard: null, workspace: false }, collect)
+        // A same-repo pull request's preview action, such as one that waits for the preview's readiness,
+        // runs as a trusted job for the network, but keeps the pull request's trust and services.
+        const event = JSON.parse(run.event) as Domain.Event
+        const preview = spec.action.preview === true && run.trust === "pr" && run.fork === 0 && event._tag === "PullRequest" && event.fork === false
+        const r = yield* execute(run, row, () => stepJob({ secrets }), {
+          slots: slots.actions,
+          what: "an action slot",
+          expected,
+          action: true,
+          shard: null,
+          workspace: false,
+          ...(preview ? { pool: "trusted" as const } : {}),
+        }, collect)
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
       }
 
@@ -914,6 +963,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 }),
               {
                 slots: p.remote ? slots.agents : slots.tasks,
+                what: p.remote ? "an agent's slot" : "a task slot",
                 expected: perShard,
                 ...(preview ? { pool: "trusted" as const } : {}),
                 action: false,
@@ -1063,6 +1113,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
               (ws) => context.stepJob({ run: p.where, workspace: ws, secrets, shard: { index, count: total }, deps: task.deps, files }),
               {
                 slots: p.remote ? slots.agents : slots.tasks,
+                what: p.remote ? "an agent's slot" : "a task slot",
                 expected: ms,
                 action: false,
                 shard: index,
@@ -1200,6 +1251,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       stepped.drop(runId)
       wanted.drop(runId)
       yield* publishRun(runId)
+      yield* comments.touch(runId)
     }).pipe(Effect.catchCause((cause) => Effect.logError("finish failed", cause)))
 
   const cancel = (runId: string, reason: string) =>

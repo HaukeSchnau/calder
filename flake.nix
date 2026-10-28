@@ -27,6 +27,8 @@
             pkgs.nodejs_24
             pkgs.pnpm_11
             pkgs.git
+            # calder check's tests run it against a jj workspace.
+            pkgs.jujutsu
           ];
         };
       });

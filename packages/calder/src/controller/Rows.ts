@@ -38,6 +38,9 @@ export interface RunRow {
   readonly span_id: string
   readonly plan: string | null
   readonly fork: number
+  /** Absent in rows read before migration 0016. */
+  readonly planned_at?: number | null
+  readonly tree?: string | null
 }
 
 export interface StepRow {
@@ -72,6 +75,8 @@ export interface StepRow {
   readonly files_total?: number | null
   readonly files_ran?: number | null
   readonly files_flaky?: number | null
+  /** Absent in rows read before migration 0016. */
+  readonly waiting?: string | null
 }
 
 export const terminal = (status: Domain.StepStatus) =>
@@ -134,6 +139,7 @@ export const run = (row: RunRow, counts: Record<string, number> = {}): Domain.Ru
   status: row.status,
   createdAt: row.created_at,
   startedAt: row.started_at,
+  plannedAt: row.planned_at ?? null,
   finishedAt: row.finished_at,
   error: row.error,
   traceId: row.trace_id,
@@ -193,8 +199,67 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
       : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0, flaky: row.tests_flaky ?? 0 },
     files: row.files_total == null ? null : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
     outputs: Object.entries(JSON.parse(row.outputs ?? "{}") as Record<string, string>).map(([name, path]) => ({ name, path })),
+    waiting: terminal(row.status) ? null : row.waiting ?? null,
+    critical: s.critical ?? false,
   }
 }
+
+/**
+ * Fills in what pending steps wait for, the steps they depend on that haven't settled, where the journal
+ * holds no reason of its own.
+ */
+export const withReasons = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray<Domain.StepRun> => {
+  const byName = new Map(steps.map((s) => [s.name, s]))
+  return steps.map((step) => {
+    if (step.status !== "pending" || (step.waiting ?? null) !== null) return step
+    const open = [...step.needs, ...step.exits, ...step.after].filter((name) => {
+      const dep = byName.get(name)
+      return dep !== undefined && !terminal(dep.status) && dep.kind !== "setup"
+    })
+    return open.length === 0 ? step : { ...step, waiting: `${open.join(", ")} to pass` }
+  })
+}
+
+/** Whether a step deploys: holds the lease, has a deploy grant, or is a preview's. */
+const deploys = (step: PlannedStep) =>
+  step.task?.lease === true || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
+
+/**
+ * Marks the steps that deploy, and those whose values they read, as `critical`: they take the latency
+ * lane. Checks a deploy only waits for (`after`) are not, or a push's every check would be. The
+ * controller decides this rather than taking the plan's word, and a fork's run has no critical steps.
+ */
+export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): ReadonlyArray<PlannedStep> => {
+  const byName = new Map(steps.map((s) => [s.name, s]))
+  const critical = new Set<string>()
+  const visit = (name: string) => {
+    const step = byName.get(name)
+    if (step === undefined || critical.has(name)) return
+    critical.add(name)
+    for (const dep of step.needs) visit(dep)
+  }
+  if (!fork) for (const step of steps) if (deploys(step)) visit(step.name)
+  return steps.map((step) => ({ ...step, critical: critical.has(step.name) }))
+}
+
+/**
+ * The newest plan of another commit with the run's tree, from runs whose results it may reuse: trusted
+ * ones and those of same-repo pull requests, which the same people push. A fork's plan never counts,
+ * since its sandbox could have written what it likes.
+ */
+export const earlierPlan = (run: RunRow) =>
+  Effect.gen(function*() {
+    if (run.tree == null) return null
+    const sql = yield* SqlClient.SqlClient
+    const rows = yield* sql<{ sha: string; plan: string }>`select sha, plan from runs
+      where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha} and plan is not null and (trust = 'trusted' or fork = 0)
+      order by created_at desc limit 5`
+    for (const row of rows) {
+      const spec = JSON.parse(row.plan) as PlanSpec
+      if (spec.derivations !== undefined) return { revision: row.sha, derivations: spec.derivations, app: spec.app }
+    }
+    return null
+  }).pipe(Effect.orDie)
 
 export const loadRun = (id: string) =>
   Effect.gen(function*() {

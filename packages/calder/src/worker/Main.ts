@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { link, sdkPath } from "../Gen.ts"
-import type { Job as JobSpec, JobResult } from "../Protocol.ts"
+import type { Job as JobSpec, JobResult, PlanSpec } from "../Protocol.ts"
 import * as Client from "./Client.ts"
 import * as Egress from "./Egress.ts"
 import * as Load from "./Load.ts"
@@ -18,11 +18,11 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
     const planned = yield* Calder.plan(project, spec.run.event, { requiredChecks: spec.requiredChecks })
     // Nothing to run (a push to a branch no rule names): skip evaluating the flake.
     if (planned.steps.length === 0) {
-      const empty = { version: 1, app: null, trust: planned.trust, reuse: planned.reuse, schedules: planned.schedules, steps: [] } as const
+      const empty: PlanSpec = { version: 1, app: null, trust: planned.trust, reuse: planned.reuse, schedules: planned.schedules, steps: [] }
       return { _tag: "Planned", plan: empty } satisfies JobResult
     }
     const repo = yield* Repo.make(spec.run.mirror, spec.run.revision)
-    return { _tag: "Planned", plan: yield* resolve(planned, project, spec.run, repo) } satisfies JobResult
+    return { _tag: "Planned", plan: yield* resolve(planned, project, spec.run, repo, spec.earlier ?? undefined) } satisfies JobResult
   }).pipe(
     Effect.catchTags({
       LoadFailed: (e) => Effect.succeed({ _tag: "PlanFailed", message: e.message } satisfies JobResult),

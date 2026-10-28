@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Schedule, Schema } from "effect"
-import { HttpClient, type HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Config } from "./Config.ts"
 
 export type StatusState = "pending" | "success" | "error" | "failure" | "warning"
@@ -55,6 +55,7 @@ export class Gitea extends Context.Service<Gitea, {
   readonly requiredChecks: (repo: string, branch: string) => Effect.Effect<ReadonlyArray<string>>
   readonly head: (repo: string, branch: string) => Effect.Effect<string>
   readonly pullTitle: (repo: string, number: number) => Effect.Effect<string | null>
+  /** Posts a comment, or edits `existing`, or posts a new one when `existing` is gone. Returns its id. */
   readonly comment: (repo: string, number: number, body: string, existing: number | null) => Effect.Effect<number>
   readonly dispatch: (repo: string, workflow: string, ref: string, inputs: Record<string, string>) => Effect.Effect<void>
   /** The owner's repositories the bot can see, without archived or empty ones. */
@@ -135,11 +136,16 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
       get(`/repos/${repo}/branches/${encodeURIComponent(branch)}`, Branch).pipe(Effect.map((b) => b.commit.id), Effect.orDie),
     pullTitle: (repo, number) =>
       get(`/repos/${repo}/pulls/${number}`, Pull).pipe(Effect.map((p) => p.title), Effect.orElseSucceed(() => null)),
-    comment: (repo, number, body, existing) =>
-      (existing === null
-        ? send("post", `/repos/${repo}/issues/${number}/comments`, { body })
-        : send("patch", `/repos/${repo}/issues/comments/${existing}`, { body })
-      ).pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(Comment)), Effect.map((c) => c.id), Effect.orDie),
+    comment: (repo, number, body, existing) => {
+      const id = (request: ReturnType<typeof send>) => request.pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(Comment)), Effect.map((c) => c.id))
+      const post = id(send("post", `/repos/${repo}/issues/${number}/comments`, { body }))
+      // A comment someone deleted can't be edited; a new one takes its place. Other refusals stay errors.
+      const gone = (error: unknown) =>
+        HttpClientError.isHttpClientError(error) && error.reason._tag === "StatusCodeError" && error.reason.response.status === 404
+      return (existing === null ? post : id(send("patch", `/repos/${repo}/issues/comments/${existing}`, { body })).pipe(
+        Effect.catchIf(gone, () => post),
+      )).pipe(Effect.orDie)
+    },
     dispatch: (repo, workflow, ref, inputs) =>
       send("post", `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs }).pipe(
         Effect.asVoid,

@@ -2,18 +2,20 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core"
-import { Effect, Schedule } from "effect"
+import { Effect, Option, Schedule } from "effect"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import type { PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
+import { Job } from "./Client.ts"
 import * as Imports from "./Imports.ts"
-import type { Repo } from "./Repo.ts"
+import * as Repo from "./Repo.ts"
+import type { Repo as RepoAt } from "./Repo.ts"
 
 /**
  * What every workspace package reads at the root: the files there except docs (manifests, lockfiles,
  * shared configs such as `tsconfig.base.json`) and the fleet's `.ci/` contract.
  */
-const rootFiles = (repo: Repo) => Effect.map(repo.files, (all) => [...all.filter((f) => !f.includes("/") && !/\.mdx?$/i.test(f)), ".ci"])
+const rootFiles = (repo: RepoAt) => Effect.map(repo.files, (all) => [...all.filter((f) => !f.includes("/") && !/\.mdx?$/i.test(f)), ".ci"])
 
 interface Manifest {
   readonly dir: string
@@ -21,7 +23,7 @@ interface Manifest {
   readonly deps: ReadonlyArray<string>
 }
 
-const workspaceGlobs = (repo: Repo) =>
+const workspaceGlobs = (repo: RepoAt) =>
   Effect.gen(function*() {
     const yaml = yield* repo.show("pnpm-workspace.yaml")
     if (yaml !== undefined) {
@@ -41,7 +43,7 @@ const workspaceGlobs = (repo: Repo) =>
     return Array.isArray(ws) ? ws : (ws as { packages?: ReadonlyArray<string> } | undefined)?.packages ?? []
   })
 
-const manifests = (repo: Repo) =>
+const manifests = (repo: RepoAt) =>
   Effect.gen(function*() {
     const globs = (yield* workspaceGlobs(repo)).filter((g) => !g.startsWith("!"))
     const files = yield* repo.files
@@ -60,9 +62,9 @@ const manifests = (repo: Repo) =>
     return out
   })
 
-const graphs = new WeakMap<Repo, Imports.Graph>()
+const graphs = new WeakMap<RepoAt, Imports.Graph>()
 /** One import graph per revision, however many tasks ask. */
-const graphOf = (repo: Repo) =>
+const graphOf = (repo: RepoAt) =>
   Effect.suspend(() => {
     const known = graphs.get(repo)
     if (known !== undefined) return Effect.succeed(known)
@@ -73,7 +75,7 @@ const graphOf = (repo: Repo) =>
   })
 
 /** Concrete paths for a `Files` value at the revision. Directories stay directories. */
-export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
+export const paths = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
   Effect.gen(function*() {
     switch (files._tag) {
       case "All":
@@ -118,7 +120,7 @@ export const paths = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArr
   })
 
 /** The paths and patterns of `files` that match nothing at the revision, except `optional` ones. */
-const unmatched = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
+const unmatched = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
   Effect.gen(function*() {
     switch (files._tag) {
       case "All":
@@ -148,7 +150,7 @@ const unmatched = (repo: Repo, files: Files.Files): Effect.Effect<ReadonlyArray<
  * Fails the plan when a path or pattern the project wrote matches no file: its key would never change.
  * Every task's and setup's files count, also those of steps this event doesn't run.
  */
-export const checkFiles = (project: Calder.Project, repo: Repo) =>
+export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
   Effect.gen(function*() {
     const universe = yield* Calder.universe(project)
     const written = [
@@ -178,7 +180,7 @@ export const checkFiles = (project: Calder.Project, repo: Repo) =>
  * A key for every file of a task's `each`: the task's own key base (with its setup's key), the file,
  * everything it imports and its package's data files.
  */
-const eachKeys = (repo: Repo, each: Files.Files, keyBase: string) =>
+const eachKeys = (repo: RepoAt, each: Files.Files, keyBase: string) =>
   Effect.gen(function*() {
     const graph = yield* graphOf(repo)
     const entries = each._tag === "Imports" || each._tag === "Glob" ? graph.match(each.patterns) : [...new Set(yield* paths(repo, each))].sort()
@@ -221,6 +223,84 @@ export interface Derivation {
 }
 
 /**
+ * How a flake reads a commit: `self.rev`, `self.shortRev`, `self.lastModified`, `self.lastModifiedDate`
+ * and its day, the usual substring of it. `self.revCount` is a small number, found in any closure by
+ * chance, so `fromEarlier` looks for its name in the flake's sources instead.
+ */
+export const marksOf = (revision: string, committed: number) => {
+  const date = new Date(committed * 1000).toISOString().replace(/[-:T]/g, "").slice(0, 14)
+  return [revision, revision.slice(0, 7), String(committed), date, date.slice(0, 8)]
+}
+
+/** The repository's cache file: the derivations of its last planned revision and the app its flake declares. */
+interface Cached {
+  readonly flake: string
+  readonly derivations: Record<string, Derivation | null>
+  /** `lib.project.project`, once a plan of this revision read it. */
+  readonly app?: string | null
+}
+
+/**
+ * Whether any derivation in the closure of `drvs` mentions one of `marks`, so the flake read the commit
+ * and another commit of the same tree evaluates to other derivations. A mark that turns up by chance,
+ * or a closure that can't be read, only costs an evaluation.
+ */
+const readsCommit = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    if (drvs.length === 0) return false
+    const closure = (yield* Exec.run(["nix-store", "--query", "--requisites", ...drvs])).split("\n").filter((p) => p.endsWith(".drv"))
+    return yield* Effect.try(() =>
+      closure.some((drv) => {
+        const text = readFileSync(drv, "utf8")
+        return marks.some((mark) => text.includes(mark))
+      })
+    )
+  }).pipe(Effect.orElseSucceed(() => true))
+
+/**
+ * The derivations an earlier commit with the same root tree evaluated to (`Earlier`, which the controller
+ * hands a plan from runs this run may reuse), when they cover `attrs`, are still in the store, and don't
+ * mention that commit. A merge of a pull request that was up to date then evaluates nothing: t3code
+ * planned its merges in two minutes, mostly evaluating.
+ */
+export const fromEarlier = (
+  earlier: Earlier,
+  attrs: ReadonlyArray<string>,
+  revision: {
+    /** When the earlier commit was committed, or None when that couldn't be read. */
+    readonly committed: Option.Option<number>
+    /** The flake's Nix sources at this revision, by path. */
+    readonly nix: ReadonlyMap<string, string>
+  },
+  log: Log = () => Effect.void,
+) =>
+  Effect.gen(function*() {
+    if (!attrs.every((attr) => attr in earlier.derivations) || Option.isNone(revision.committed)) return undefined
+    const counting = [...revision.nix].find(([, text]) => text.includes("revCount"))
+    if (counting !== undefined) {
+      yield* log(`${counting[0]} reads revCount, which differs for every commit, so the flake is evaluated again`)
+      return undefined
+    }
+    const committed = revision.committed.value
+    const drvs = attrs.flatMap((attr) => (earlier.derivations[attr] ? [earlier.derivations[attr].drv] : []))
+    if (drvs.length > 0 && (yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode !== 0) return undefined
+    const short = earlier.revision.slice(0, 12)
+    if (yield* readsCommit(drvs, marksOf(earlier.revision, committed))) {
+      yield* log(`${short} has the same tree, but its derivations mention that commit, so the flake is evaluated again`)
+      return undefined
+    }
+    yield* log(`${short} has the same tree, and its derivations don't mention that commit, so this plan reuses them`)
+    return new Map(attrs.map((attr) => [attr, earlier.derivations[attr] ?? null]))
+  })
+
+/** What an earlier plan of the same tree evaluated, from a run this one may reuse. */
+export interface Earlier {
+  readonly revision: string
+  readonly derivations: Readonly<Record<string, Derivation | null>>
+  readonly app: string | null
+}
+
+/**
  * Evaluates every attribute's derivation in one evaluator, so nixpkgs is instantiated once per plan.
  * Attributes that throw come back as null. A missing attribute isn't catchable and fails the whole
  * evaluation.
@@ -232,30 +312,62 @@ export interface Derivation {
  * them while they are still in the store. Plans of one repository take turns: on srv-2 a push and a
  * schedule of the same head once evaluated infra side by side and swapped the host into a stall.
  */
-export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>, cacheDir = join(homedir(), ".cache", "calder")) =>
+export const derivations = (run: RunInfo, attrs: ReadonlyArray<string>, cacheDir = defaultCacheDir, log: Log = () => Effect.void) =>
+  attrs.length === 0 ? Effect.succeed(new Map<string, Derivation | null>()) : cached(run, cacheDir, (entry) =>
+    Effect.gen(function*() {
+      const known = entry?.derivations ?? {}
+      // Entries cached before derivations carried their system don't count.
+      if (attrs.every((attr) => attr in known && (known[attr] === null || known[attr]?.system !== undefined))) {
+        const drvs = attrs.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
+        if (drvs.length === 0 || (yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
+          return { result: new Map(attrs.map((attr) => [attr, known[attr] ?? null])), entry: {} }
+        }
+      }
+      const started = Date.now()
+      const result = yield* evaluate(run, attrs)
+      yield* log(`evaluated ${attrs.length} attributes of the flake in ${Date.now() - started} ms`)
+      return { result, entry: { derivations: { ...known, ...Object.fromEntries(result) } } }
+    }))
+
+/** Where the plan says what it reused or evaluated: the plan job's log. */
+type Log = (text: string) => Effect.Effect<void>
+
+/** The app the flake's `lib.project` declares, or null; cached like the derivations. */
+export const appOf = (run: RunInfo, cacheDir = defaultCacheDir) =>
+  cached(run, cacheDir, (entry) =>
+    Effect.gen(function*() {
+      if (entry?.app !== undefined) return { result: entry.app, entry: {} }
+      const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`]).pipe(
+        Effect.map((name) => name.trim() || null),
+        Effect.orElseSucceed(() => null),
+      )
+      return { result: app, entry: { app } }
+    }))
+
+const defaultCacheDir = join(homedir(), ".cache", "calder")
+
+/** Hands `use` what the repository's cache file holds for this revision, under the repository's lock, and writes back what it adds. */
+const cached = <A, E, R>(
+  run: RunInfo,
+  cacheDir: string,
+  use: (entry: Cached | undefined) => Effect.Effect<{ readonly result: A; readonly entry: Partial<Cached> }, E, R>,
+) =>
   Effect.gen(function*() {
-    if (attrs.length === 0) return new Map<string, Derivation | null>()
-    if (!/[?&]rev=/.test(run.flake)) return yield* evaluate(run, attrs)
+    if (!/[?&]rev=/.test(run.flake)) return (yield* use(undefined)).result
     mkdirSync(cacheDir, { recursive: true })
     const file = join(cacheDir, `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`)
     return yield* Effect.acquireUseRelease(
       lock(`${file}.lock`),
       () =>
         Effect.gen(function*() {
-          const cached = existsSync(file)
-            ? JSON.parse(readFileSync(file, "utf8")) as { flake: string; derivations: Record<string, Derivation | null> }
-            : undefined
-          const known = cached?.flake === run.flake ? cached.derivations : {}
-          // Entries cached before derivations carried their system don't count.
-          if (attrs.every((attr) => attr in known && (known[attr] === null || known[attr]?.system !== undefined))) {
-            const drvs = attrs.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
-            if ((yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
-              return new Map(attrs.map((attr) => [attr, known[attr] ?? null]))
-            }
+          const stored = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as Cached : undefined
+          const entry = stored?.flake === run.flake ? stored : undefined
+          const { result, entry: added } = yield* use(entry)
+          if (Object.keys(added).length > 0) {
+            const next: Cached = { ...(entry ?? { derivations: {} }), ...added, flake: run.flake }
+            writeFileSync(`${file}.tmp`, JSON.stringify(next))
+            renameSync(`${file}.tmp`, file)
           }
-          const result = yield* evaluate(run, attrs)
-          writeFileSync(`${file}.tmp`, JSON.stringify({ flake: run.flake, derivations: { ...known, ...Object.fromEntries(result) } }))
-          renameSync(`${file}.tmp`, file)
           return result
         }),
       (path) => Effect.sync(() => rmSync(path, { force: true })),
@@ -332,7 +444,7 @@ const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv:
       ), { concurrency: 4 }).pipe(Effect.map((closures) => directUses(builds, new Map(closures))))
 
 /** Turns a plan into the wire format, resolving tree ids, dev shells and task keys at the revision. */
-export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo, repo: Repo) =>
+export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo, repo: RepoAt, earlier?: Earlier) =>
   Effect.gen(function*() {
     yield* checkFiles(project, repo)
     const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared)
@@ -341,9 +453,16 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
       const def = p.step.def
       return (def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined ? [Flake.attrPath(def.shell, run.system)] : []
     }))]
+    const job = Option.getOrUndefined(yield* Effect.serviceOption(Job))
+    const log: Log = (text) => job === undefined ? Effect.void : job.log("calder", text)
+    const attrs = [...new Set([...builds, ...shells])]
+    const reused = earlier === undefined ? undefined : yield* fromEarlier(earlier, attrs, {
+      committed: yield* Repo.make(run.mirror, earlier.revision).pipe(Effect.flatMap((at) => at.committed), Effect.option),
+      nix: yield* Effect.flatMap(repo.files, (files) => repo.read(files.filter((f) => f.endsWith(".nix")))),
+    }, log)
     // When the batch fails, builds evaluate on their own when they run, but keys need the dev shells now.
-    const evaluated = yield* derivations(run, [...new Set([...builds, ...shells])]).pipe(
-      Effect.catch(() => derivations(run, shells).pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("2 seconds") }))),
+    const evaluated = reused !== undefined ? reused : yield* derivations(run, attrs, undefined, log).pipe(
+      Effect.catch(() => derivations(run, shells, undefined, log).pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("2 seconds") }))),
       Effect.mapError((e) =>
         new Calder.PlanError({
           message: `Nix could not evaluate the dev shells ${shells.join(", ")}, which task keys include: ${
@@ -424,7 +543,7 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
             return {
               ...base,
               detail: p.name,
-              action: { deploy: def.grants.deploy === true, secrets: [...(def.grants.secrets ?? [])] },
+              action: { deploy: def.grants.deploy === true, secrets: [...(def.grants.secrets ?? [])], preview: p.preview },
             }
           case "Task": {
             const inputs = [...new Set([...(yield* paths(repo, def.inputs)), ...shared])].sort()
@@ -448,6 +567,8 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
               // Two pull requests with the same trees must not share a preview's result. Absent otherwise,
               // so the keys of tasks that don't read it stay what they were.
               ...(command.pullRequest ? { pullRequest: Event.pullRequestNumber(run.event) ?? null } : {}),
+              // Absent without artifacts, so the keys of tasks without them stay what they were.
+              ...(Object.keys(def.artifacts).length === 0 ? {} : { artifacts: Object.entries(def.artifacts).map(([env, s]) => [env, s.name]).sort() }),
               report: def.report ?? null,
               outputs: Object.entries(def.outputs).sort(),
               shards: def.shards?.count ?? null,
@@ -460,7 +581,7 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
                 shell,
                 keyBase,
                 inputs,
-                interpolates: command.steps.map((s) => s.name),
+                interpolates: [...new Set([...command.steps, ...Object.values(def.artifacts)].map((s) => s.name))],
                 shards: def.shards?.count ?? null,
                 each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
                 deps: setup ?? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
@@ -476,10 +597,15 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
         }
       }), { concurrency: 4 })
 
-    const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`]).pipe(
-      Effect.map((name) => name.trim() || null),
-      Effect.orElseSucceed(() => null),
-    )
-    const spec: PlanSpec = { version: 1, app, trust: plan.trust, reuse: plan.reuse, schedules: plan.schedules, steps }
+    const app = reused !== undefined && earlier !== undefined ? earlier.app : yield* appOf(run)
+    const spec: PlanSpec = {
+      version: 1,
+      app,
+      trust: plan.trust,
+      reuse: plan.reuse,
+      schedules: plan.schedules,
+      steps,
+      derivations: Object.fromEntries(evaluated),
+    }
     return spec
   })

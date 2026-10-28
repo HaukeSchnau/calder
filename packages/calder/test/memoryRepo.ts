@@ -17,5 +17,6 @@ export const memoryRepo = (tree: Record<string, string>): Repo => {
     show: (path) => Effect.succeed(tree[path]),
     objectIds: (paths) => Effect.succeed(new Map(paths.flatMap(id))),
     read: (paths) => Effect.succeed(new Map(paths.flatMap((p) => (tree[p] === undefined ? [] : [[p, tree[p]] as const])))),
+    committed: Effect.succeed(1_761_609_600),
   }
 }

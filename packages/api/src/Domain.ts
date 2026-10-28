@@ -84,6 +84,8 @@ export const Run = Schema.Struct({
   status: RunStatus,
   createdAt: Schema.Number,
   startedAt: Schema.NullOr(Schema.Number),
+  /** When its plan was ready and its steps could start. Absent from controllers before it was added. */
+  plannedAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   finishedAt: Schema.NullOr(Schema.Number),
   /** Why the run errored before its steps could run, such as a plan error. */
   error: Schema.NullOr(Schema.String),
@@ -163,6 +165,13 @@ export const StepRun = Schema.Struct({
   files: Schema.NullOr(Schema.Struct({ total: Schema.Number, ran: Schema.Number, flaky: Schema.Number })),
   /** A task's outputs, also those a failed task wrote, at the store path the controller serves at `outputPath`. */
   outputs: Schema.Array(Schema.Struct({ name: Schema.String, path: Schema.String })),
+  /**
+   * What a step that hasn't started waits for: steps it depends on, a slot and who holds them, a setup,
+   * an agent or the deploy lease. Absent from controllers before it was added.
+   */
+  waiting: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  /** On a deploy's or a preview's critical path, so it takes the latency lane. */
+  critical: Schema.optionalKey(Schema.Boolean),
 })
 export type StepRun = typeof StepRun.Type
 

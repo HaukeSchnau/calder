@@ -104,9 +104,12 @@ describe("Calder.plan", () => {
       const both = Calder.project({ rules: [On.preview([secret]), On.pullRequest([secret])] })
       const exit = yield* Effect.exit(Calder.plan(both, Event.pullRequest({ number: 4 })))
       expect(String(exit)).toContain("don't run steps with grants")
+      // A preview's deploy holds the pull request's own lease; a plain pull-request rule's may not hold any.
       const leased = Task.make("deploy", { lease: true, run: cmd`deploy` })
-      const leaseExit = yield* Effect.exit(Calder.plan(Calder.project({ rules: [On.preview([leased])] }), Event.pullRequest({ number: 4 })))
-      expect(String(leaseExit)).toContain("deploy lease")
+      const preview = yield* Calder.plan(Calder.project({ rules: [On.preview([leased])] }), Event.pullRequest({ number: 4 }))
+      expect(preview.get("deploy")?.preview).toBe(true)
+      const plain = yield* Effect.exit(Calder.plan(Calder.project({ rules: [On.pullRequest([leased])] }), Event.pullRequest({ number: 4 })))
+      expect(String(plain)).toContain("don't run steps with grants")
     }))
 
   it.effect("a closed pull request runs its own rules as a trusted run", () =>

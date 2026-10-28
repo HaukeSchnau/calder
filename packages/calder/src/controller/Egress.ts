@@ -1,10 +1,11 @@
 import type { Socket } from "bun"
 import { Effect, Layer } from "effect"
-import { chmodSync, chownSync, existsSync, readFileSync, rmSync } from "node:fs"
+import { chmodSync, chownSync, existsSync, rmSync } from "node:fs"
 import { isIP } from "node:net"
 import { join } from "node:path"
 import * as Tunnel from "../Tunnel.ts"
 import { Config } from "./Config.ts"
+import { workersGroup } from "./Jobs.ts"
 
 const v4 = (address: string) => address.split(".").reduce((n, part) => n * 256 + Number(part), 0)
 
@@ -109,6 +110,6 @@ export const layer = Layer.effectDiscard(Effect.gen(function*() {
   })
   yield* Effect.addFinalizer(() => Effect.sync(() => server.stop(true)))
   chmodSync(path, 0o660)
-  const group = readFileSync("/etc/group", "utf8").split("\n").find((l) => l.startsWith("calder-workers:"))
-  if (group !== undefined) chownSync(path, process.getuid!(), Number(group.split(":")[2]))
+  const group = workersGroup(config.jobs.mode)
+  if (group !== undefined) chownSync(path, process.getuid!(), group)
 }))

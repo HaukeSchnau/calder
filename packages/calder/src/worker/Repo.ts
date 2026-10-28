@@ -82,7 +82,9 @@ export const make = (mirror: string, revision: string) =>
         })
         child.stdin.end(paths.map((p) => `${revision}:${p}\n`).join(""))
       }).pipe(Effect.orDie)
-    return { files, entries, show, objectIds, read }
+    /** When the revision was committed, in seconds since the epoch: a flake's `self.lastModified`. */
+    const committed = Effect.cached(git(["show", "-s", "--format=%ct", revision]).pipe(Effect.map((out) => Number(out.trim()))))
+    return { files, entries, show, objectIds, read, committed: yield* committed }
   })
 
 export type Repo = Effect.Success<ReturnType<typeof make>>

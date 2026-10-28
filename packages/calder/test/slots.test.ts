@@ -129,4 +129,73 @@ describe("Slots", () => {
       expect(order).toEqual(["busy"])
       expect(slots.usage().running).toBe(0)
     }))
+
+  it.effect("starts a deploy's critical step in the lane while long checks hold every slot, and says why others wait", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 2, perProject: 1, lane: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      yield* job("test-server", { project: "t3code", expected: minutes(20), run: 0, label: "t3code-452 test-server" })
+      yield* job("lint", { project: "studienbuch", expected: minutes(1), run: 0, label: "studienbuch-21 lint" })
+      yield* Effect.yieldNow
+      const check = { project: "studienbuch", expected: minutes(1), run: 0 }
+      // Reasons reach pull requests' comments, so another project's steps go unnamed.
+      expect(slots.waitsFor(check)).toBe("2 of 2 busy: studienbuch-21 lint, 1 of other projects")
+      yield* job("test-web", check)
+      yield* job("deploy-pr", { project: "studienbuch", expected: minutes(1), run: 0, critical: true, label: "studienbuch-21 preview" })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["test-server", "lint", "deploy-pr"])
+      // The lane is full now, so the next critical step waits, ahead of the check.
+      expect(slots.waitsFor({ ...check, critical: true })).toBe("3 of 2 (+1 for deploys) busy: studienbuch-21 lint, studienbuch-21 preview, 1 of other projects")
+      yield* job("ready-pr", { project: "studienbuch", expected: minutes(1), run: 0, critical: true })
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(hold, undefined)
+      yield* Effect.yieldNow
+      expect(order.slice(3)).toEqual(["ready-pr", "test-web"])
+    }))
+
+  it.effect("keeps a project at its share while another project's step fits, critical or not", () =>
+    Effect.gen(function*() {
+      // Production sizes: three task slots, two per project, one more for deploys.
+      const slots = Slots.make({ capacity: 3, perProject: 2, lane: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      const deploy = (host: string) => ({ project: "infra", expected: minutes(1), run: 0, critical: true, label: `infra deploy-${host}` })
+      yield* job("infra-1", deploy("srv-1"))
+      yield* job("infra-2", deploy("srv-2"))
+      yield* job("t3code-1", { project: "t3code", expected: minutes(20), run: 0 })
+      yield* Effect.yieldNow
+      yield* job("infra-3", deploy("tower"))
+      yield* job("t3code-2", { project: "t3code", expected: minutes(5), run: 0 })
+      yield* Effect.yieldNow
+      // The lane takes infra's third deploy only because t3code's next step doesn't fit the capacity, which the lane is beyond.
+      expect(order).toEqual(["infra-1", "infra-2", "t3code-1", "infra-3"])
+      expect(slots.waitsFor({ project: "t3code", expected: 0, run: 0 })).toContain("4 of 3 busy")
+      yield* Deferred.succeed(hold, undefined)
+    }))
+
+  it.effect("gives a freed slot to another project's step before a deploy of a project at its share", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 3, perProject: 2, lane: 1 })
+      const order: Array<string> = []
+      const holds = new Map<string, Deferred.Deferred<void>>()
+      const job = (name: string, claim: Slots.Claim) =>
+        Effect.gen(function*() {
+          const hold = yield* Deferred.make<void>()
+          holds.set(name, hold)
+          return yield* Effect.forkChild(slots.with(claim, Effect.sync(() => order.push(name)).pipe(Effect.andThen(Deferred.await(hold)))))
+        })
+      const deploy = (host: string) => ({ project: "infra", expected: minutes(1), run: 0, critical: true })
+      yield* job("infra-1", deploy("srv-1"))
+      yield* job("infra-2", deploy("srv-2"))
+      yield* job("t3code-1", { project: "t3code", expected: minutes(20), run: 0 })
+      yield* job("infra-lane", deploy("m1"))
+      yield* Effect.yieldNow
+      yield* job("infra-3", deploy("tower"))
+      yield* job("t3code-2", { project: "t3code", expected: minutes(5), run: 0 })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["infra-1", "infra-2", "t3code-1", "infra-lane"])
+      yield* Deferred.succeed(holds.get("infra-1")!, undefined)
+      yield* Effect.yieldNow
+      expect(order.slice(4)).toEqual(["t3code-2"])
+      for (const hold of holds.values()) yield* Deferred.succeed(hold, undefined)
+    }))
 })

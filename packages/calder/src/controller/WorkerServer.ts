@@ -3,18 +3,42 @@ import type { Domain } from "@calder-ci/api"
 import { Deferred, Effect, Layer, References, Scope } from "effect"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { SqlClient } from "effect/sql"
-import { chmodSync, chownSync, existsSync, readFileSync, rmSync } from "node:fs"
+import { chmodSync, chownSync, existsSync, rmSync } from "node:fs"
 import { join } from "node:path"
-import { FleetRejected, Unauthorized, WorkerRpcs } from "../Protocol.ts"
+import { FleetRejected, type RunInfo, Unauthorized, WorkerRpcs } from "../Protocol.ts"
 import * as Cache from "./Cache.ts"
+import { Comments } from "./Comments.ts"
 import { Config } from "./Config.ts"
 import * as Fleet from "./Fleet.ts"
 import { Gitea } from "./Gitea.ts"
-import { type ActiveJob, Jobs } from "./Jobs.ts"
+import { type ActiveJob, Jobs, workersGroup } from "./Jobs.ts"
 import { Leases } from "./Leases.ts"
 import { Live } from "./Live.ts"
 import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
+
+/**
+ * Which lease a deploy takes, and what its run must still be current against when its turn comes. A
+ * task deploys its branch's head, so a run of another revision gives way, a rerun of an older one
+ * included; a manual or scheduled run's branch is the default branch, so `calder trigger` of another
+ * branch's head deploys nothing. A pull request's previews and their removal take the pull request's
+ * own lease, so they take turns without waiting for the project's deploys; a preview deploys only while
+ * the pull request is open and its head is the run's revision, so none follows the stage's removal, and
+ * removing it checks nothing. Actions (`Release.promote`) check the head themselves.
+ */
+export const leaseOf = (run: RunInfo, task: boolean) => {
+  const event = run.event
+  if (!task) return { key: run.project, current: null }
+  if (event._tag === "PullRequest") return { key: `${run.project}#pr-${event.number}`, current: { pullRequest: event.number } }
+  if (event._tag === "PullRequestClosed") return { key: `${run.project}#pr-${event.number}`, current: null }
+  return { key: run.project, current: run.branch === null ? null : { branch: run.branch } }
+}
+
+/** Why a preview of `revision` no longer deploys: its pull request closed, or moved on to another head. */
+export const pullRequestStale = (number: number, pull: { readonly open: boolean; readonly merged: boolean; readonly sha: string }, revision: string) =>
+  !pull.open ? `pull request #${number} is ${pull.merged ? "merged" : "closed"}`
+  : pull.sha !== revision ? `pull request #${number} moved on to ${pull.sha.slice(0, 12)}`
+  : undefined
 
 export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const config = yield* Config
@@ -26,6 +50,7 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient
   const projects = yield* Projects
   const cache = yield* Cache.Cache
+  const comments = yield* Comments
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
@@ -52,10 +77,12 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
 
   const runOf = (active: ActiveJob) => active.spec.run
 
-  const holding = (active: ActiveJob) =>
-    active.lease === undefined
-      ? refuse("deploy calls need the project's lease (Fleet.deploying)")
-      : Effect.succeed({ ...active.lease, fence: leases.fenceOf(active.lease.project, active.id) })
+  const holding = (active: ActiveJob) => {
+    const lease = active.lease
+    if (lease === undefined) return refuse("deploy calls need the project's lease (Fleet.deploying)")
+    if (lease.targets === null) return refuse("a task's lease has no promotion endpoints")
+    return Effect.succeed({ ...lease, targets: lease.targets, fence: leases.fenceOf(lease.project, active.id) })
+  }
 
   const targetUrl = (targets: ReadonlyArray<string>, host: string) => targets.find((t) => Fleet.hostOf(t) === host)
 
@@ -87,14 +114,22 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const project = projects.get(run.project)!
         yield* gitea.dispatch(project.repo, workflow, ref ?? run.branch ?? project.defaultBranch, inputs)
       }),
-    cachePublish: ({ job, token, path }) =>
+    cachePublish: ({ job, token, path, artifact }) =>
       Effect.gen(function*() {
         const active = yield* trusted(job, token)
         if (Cache.hashOf(path) === undefined) return yield* Effect.die(new Error(`not a store path: ${path}`))
-        // A host other than this one substitutes the release; this one has it already.
         const lease = active.lease
-        if (lease === undefined || !Cache.leavesHost(lease.targets, config.host)) return
-        yield* cache.publish(path, { pin: lease.project }).pipe(
+        if (lease === undefined || active.spec._tag !== "Step") return
+        // A task's stack decides where it deploys, so the artifacts it declares always go to the cache,
+        // each kept as that artifact's release of the step; a pull request's previews keep none. A
+        // promotion's targets say whether a host other than this one substitutes the release.
+        const task = lease.targets === null
+        if (!task && !Cache.leavesHost(lease.targets!, config.host)) return
+        const project = active.spec.run.project
+        const pin = !task ? project
+          : lease.project === project && artifact !== undefined ? Cache.pinName(`${project}-${active.spec.step}-${artifact}`)
+          : undefined
+        yield* cache.publish(path, { ...(pin === undefined ? {} : { pin }), urgent: task }).pipe(
           Effect.mapError((e) => new Error(`publishing ${path} to the binary cache failed: ${e.message}`)),
           Effect.orDie,
         )
@@ -107,13 +142,7 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const run = runOf(active)
         const event = run.event as Domain.Event
         if (event._tag !== "PullRequest") return yield* refuse("not a pull-request run")
-        const step = active.spec.step
-        const existing = yield* db(sql<{ comment_id: number }>`select comment_id from comments
-          where project = ${run.project} and pr = ${event.number} and step = ${step}`)
-        const body = `${markdown}\n\n<sub>Calder · ${step} · [run ${run.number}](${config.publicUrl.replace(/\/$/, "")}/#/run/${run.id})</sub>`
-        const id = yield* gitea.comment(projects.get(run.project)!.repo, event.number, body, existing[0]?.comment_id ?? null)
-        yield* db(sql`insert into comments (project, pr, step, comment_id) values (${run.project}, ${event.number}, ${step}, ${id})
-          on conflict (project, pr, step) do update set comment_id = ${id}`)
+        yield* comments.note(run.id, active.spec.step, markdown)
       }),
     fleetAcquire: ({ job, token, project }) =>
       Effect.gen(function*() {
@@ -121,13 +150,35 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         if (active.spec._tag !== "Step") return yield* refuse("not a step")
         const { run, step } = active.spec
         if (project !== run.project) return yield* refuse(`a run of ${run.project} can't deploy ${project}`)
+        const row = yield* db(Rows.loadStep(run.id, step))
+        const task = row !== undefined && Rows.spec(row).task?.lease === true
+        const { key, current } = leaseOf(run, task)
+        const repo = projects.get(project)!.repo
+        // Why the run no longer deploys what it was for; Leases treats a slow or failing Gitea as current.
+        const stale = current === null ? undefined
+          : "branch" in current
+          ? gitea.head(repo, current.branch).pipe(
+            Effect.map((head) => (head === run.revision ? undefined : `${current.branch} moved on to ${head.slice(0, 12)}`)),
+          )
+          : gitea.pull(repo, current.pullRequest).pipe(Effect.map((pull) => pullRequestStale(current.pullRequest, pull, run.revision)))
+        const holder = leases.holder(key)
+        const reason = holder === undefined || holder.job === active.id ? null : `the deploy lease, which #${holder.run} ${holder.step} holds`
+        const waits = (text: string | null) => db(sql`update steps set waiting = ${text} where run_id = ${run.id} and name = ${step}`)
+        if (reason !== null) yield* waits(reason)
         const grant = yield* Effect.uninterruptibleMask((restore) =>
-          restore(leases.acquire(project, { job: active.id, run: run.number, step })).pipe(
+          restore(leases.acquire(key, { job: active.id, run: run.number, step, ...(stale === undefined ? {} : { stale }) })).pipe(
             // Released when the job ends, however it ends, and at once if it already has.
-            Effect.tap((grant) => grant._tag === "Held" ? Scope.addFinalizer(active.scope, leases.release(project, active.id)) : Effect.void),
+            Effect.tap((grant) => grant._tag === "Held" ? Scope.addFinalizer(active.scope, leases.release(key, active.id)) : Effect.void),
           )
         )
-        if (grant._tag === "Replaced") return grant
+        if (reason !== null) yield* waits(null)
+        if (grant._tag !== "Held") return grant
+        // A task deploys through its own tool, such as an Alchemy stack, so the promotion endpoints don't
+        // matter to it: asking them would wait up to a minute for one that doesn't answer.
+        if (task) {
+          active.lease = { project: key, app: project, targets: null }
+          return { _tag: "Held" as const, fence: grant.fence, targets: [], unreachable: [] }
+        }
         const app = yield* appOf(run.id, project)
         const { targets, unreachable } = yield* fleet.deployTargets(projects.get(project)!, app)
         active.lease = { project, app, targets }
@@ -181,8 +232,8 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
   if (existsSync(path)) rmSync(path)
   const permissions = Layer.effectDiscard(Effect.sync(() => {
     chmodSync(path, 0o660)
-    const group = readFileSync("/etc/group", "utf8").split("\n").find((l) => l.startsWith("calder-workers:"))
-    if (group !== undefined) chownSync(path, process.getuid!(), Number(group.split(":")[2]))
+    const group = workersGroup(config.jobs.mode)
+    if (group !== undefined) chownSync(path, process.getuid!(), group)
   }))
   const server = RpcServer.layer(WorkerRpcs).pipe(
     Layer.provide(handlers),

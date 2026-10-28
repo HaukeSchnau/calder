@@ -24,7 +24,11 @@ export interface PlannedStep {
   readonly target: boolean
   /** Downstream of an action, so its result is never reused. */
   readonly neverReuse: boolean
-  /** A task of a preview rule that reads secrets: a same-repo pull request's run grants them. */
+  /**
+   * A step only a preview rule reaches that a same-repo pull request runs as a trusted job: a task that
+   * reads secrets, which the run grants, or an action, such as one that waits for the preview's readiness
+   * on the private network.
+   */
   readonly preview: boolean
 }
 
@@ -73,8 +77,8 @@ const hasGrants = (step: Step.Any) =>
   (step.def._tag === "Action" && (step.def.grants.deploy === true || (step.def.grants.secrets?.length ?? 0) > 0)) ||
   (step.def._tag === "Task" && (taskSecrets(step.def).length > 0 || step.def.lease === true))
 
-/** What a preview may hold: a task's secrets, but not the deploy lease. */
-const previewable = (step: Step.Any) => step.def._tag === "Task" && step.def.lease !== true
+/** What a preview may hold: a task's secrets, and the pull request's own deploy lease. */
+const previewable = (step: Step.Any) => step.def._tag === "Task"
 
 const sameBuild = (a: Step.Any, b: Step.Any) =>
   a.def._tag === "Build" && b.def._tag === "Build" && a.def.ref.output === b.def.ref.output &&
@@ -152,7 +156,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       if (trust === "pr" && hasGrants(step) && !(preview && previewable(step))) {
         return fail(
           preview
-            ? `previews don't run actions with grants or tasks that hold the deploy lease, but "${step.name}" is one`
+            ? `previews don't run actions with grants, but "${step.name}" is one`
             : `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them`,
         )
       }
@@ -206,7 +210,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
         required: unique(implicit),
         target: targets.has(step.name),
         neverReuse: step.kind === "action" || upstream.some((p) => p.kind === "action" || p.neverReuse),
-        preview: trust === "pr" && preview && hasGrants(step),
+        preview: trust === "pr" && preview && (hasGrants(step) || step.kind === "action"),
       })
       state.set(step.name, "done")
       order.push(step.name)

@@ -7,6 +7,9 @@ import { hostOf } from "./Fleet.ts"
 /** The hash a store path's narinfo is named after. */
 export const hashOf = (path: string) => /^\/nix\/store\/([a-z0-9]{32})-[^/]+$/.exec(path)?.[1]
 
+/** A pin name the cache accepts (`^[a-z0-9][a-z0-9._-]*$`) from any text, such as `studienbuch-deploy-beta-CALDER_BUNDLE`. */
+export const pinName = (text: string) => text.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "") || "pin"
+
 /** Whether a release for these promotion endpoints goes to a host other than `host`. */
 export const leavesHost = (targets: ReadonlyArray<string>, host: string) => targets.some((t) => hostOf(t) !== host)
 
@@ -16,10 +19,10 @@ export class Cache extends Context.Service<Cache, {
   readonly has: (path: string) => Effect.Effect<boolean>
   /**
    * Copies the path's closure into the cache, which keeps it for its retention. With `pin`, the cache also keeps
-   * it as that name's release until the next pin. One publish runs at a time. Without a publish command, nothing
-   * happens.
+   * it as that name's release until the next pin. One publish runs at a time, except `urgent` ones, such as a
+   * deploy's, which don't wait behind builds sharing their output. Without a publish command, nothing happens.
    */
-  readonly publish: (path: string, options?: { readonly pin?: string }) => Effect.Effect<void, Exec.ExecError>
+  readonly publish: (path: string, options?: { readonly pin?: string; readonly urgent?: boolean }) => Effect.Effect<void, Exec.ExecError>
 }>()("calder/controller/Cache") {}
 
 export const layer = Layer.effect(Cache)(Effect.gen(function*() {
@@ -44,7 +47,8 @@ export const layer = Layer.effect(Cache)(Effect.gen(function*() {
     publish: (path, options = {}) => {
       if (command === null) return Effect.void
       const argv = [...command, ...(options.pin === undefined ? [] : ["--pin", options.pin]), path]
-      return one.withPermits(1)(
+      const queue = options.urgent === true ? <A, E, R>(effect: Effect.Effect<A, E, R>) => effect : one.withPermits(1)
+      return queue(
         Exec.run(argv).pipe(
           Effect.provideService(Exec.SpawnerTag, spawner),
           Effect.timeoutOrElse({

@@ -128,6 +128,7 @@ export type Def =
     readonly reuse: "never" | undefined
     readonly offload: false | undefined
     readonly lease: true | undefined
+    readonly artifacts: { readonly [env: string]: Step.Any }
     readonly skipCode: number | undefined
   }
   | {
@@ -207,6 +208,7 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
       return [
         ...(def.setup === undefined ? [] : [{ step: def.setup, via: "needs" } satisfies Dependency]),
         ...run.steps.map((s): Dependency => ({ step: s, via: "needs" })),
+        ...Object.values(def.artifacts ?? {}).map((s): Dependency => ({ step: s, via: "needs" })),
         ...def.after.map((s): Dependency => ({ step: s, via: "after" })),
       ]
     }

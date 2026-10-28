@@ -213,6 +213,19 @@ export const migrations = {
     yield* sql`create table lease_steps (project text not null, step text not null, run integer not null, primary key (project, step))`
     yield* sql`create table lease_holders (project text primary key, job text not null, run integer not null, step text not null, fence integer not null)`
   }),
+  "0016_waiting_and_notes": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // What a step that hasn't started waits for, while it waits.
+    yield* sql`alter table steps add column waiting text`
+    // When the plan was stored, which ends a run's planning.
+    yield* sql`alter table runs add column planned_at integer`
+    // The commit's root tree: a plan of another commit with the same tree reuses its derivations.
+    yield* sql`alter table runs add column tree text`
+    yield* sql`create index runs_tree on runs (project, tree)`
+    // What steps of a pull request's runs said for its comment (PullRequest.comment), newest per step.
+    yield* sql`create table pr_notes (project text not null, pr integer not null, step text not null, run_id text not null,
+      markdown text not null, at integer not null, primary key (project, pr, step))`
+  }),
 }
 
 /**
