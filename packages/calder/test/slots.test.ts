@@ -52,20 +52,26 @@ describe("Slots", () => {
 
   it.effect("keeps one project's stuck plans from holding every slot, even while nobody else waits", () =>
     Effect.gen(function*() {
+      // Plans claim per project and pool, as Runs does.
       const slots = Slots.make({ capacity: 4, maxPerProject: 1 })
       const { order, hold, job } = yield* harness(slots)
-      for (const pr of [2, 3, 4]) yield* job(`infra-pr-${pr}`, { project: "infra", expected: 0, run: pr })
+      for (const pr of [2, 3, 4]) yield* job(`infra-pr-${pr}`, { project: "infra/pr", expected: 0, run: pr })
       yield* Effect.yieldNow
       expect(order).toEqual(["infra-pr-2"])
-      yield* job("t3code", { project: "t3code", expected: 0, run: 5 })
-      yield* job("studienbuch", { project: "studienbuch", expected: 0, run: 6 })
+      expect(slots.waitsFor({ project: "infra/pr", expected: 0, run: 7 })).toContain("infra/pr")
+      // A schedule came first, but the default branch's push goes before it within its project and pool.
+      yield* job("infra-schedule", { project: "infra/trusted", expected: 0, run: 5 })
       yield* Effect.yieldNow
-      expect(order).toEqual(["infra-pr-2", "t3code", "studienbuch"])
-      expect(slots.waitsFor({ project: "infra", expected: 0, run: 7 })).not.toBeNull()
-      expect(slots.waitsFor({ project: "hopwatch", expected: 0, run: 7 })).toBeNull()
+      yield* job("infra-branch", { project: "infra/trusted", expected: 0, run: 4 })
+      yield* job("infra-main", { project: "infra/trusted", expected: 0, run: 6, critical: true })
+      yield* job("t3code", { project: "t3code/pr", expected: 0, run: 6 })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["infra-pr-2", "infra-schedule", "t3code"])
+      expect(slots.waitsFor({ project: "hopwatch/pr", expected: 0, run: 7 })).toBeNull()
       yield* Deferred.succeed(hold, undefined)
       yield* Effect.yieldNow
-      expect(order.slice(3)).toEqual(["infra-pr-3", "infra-pr-4"])
+      expect(order.slice(3).sort()).toEqual(["infra-branch", "infra-main", "infra-pr-3", "infra-pr-4"])
+      expect(order.indexOf("infra-main")).toBeLessThan(order.indexOf("infra-branch"))
     }))
 
   it.effect("runs a project's older runs first, shortest first within a run", () =>

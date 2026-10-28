@@ -32,6 +32,8 @@ const nix = (
     readonly hang?: number
     /** The flake itself fails to load, such as an input that can't be fetched. */
     readonly broken?: boolean
+    /** Nix succeeds without reporting any attribute, as a Nix whose trace output changed would. */
+    readonly silent?: boolean
   } = {},
 ) => {
   const calls: Array<string> = []
@@ -55,7 +57,7 @@ const nix = (
           Stream.make(line(options.broken ? "error: cannot fetch input 'nixpkgs'" : "trace: calder-flake")),
         ]
         if (options.broken) exit = Effect.succeed(1)
-        for (const [i, name] of options.broken ? [] : asked.entries()) {
+        for (const [i, name] of options.broken || options.silent ? [] : asked.entries()) {
           const attr = options.attrs?.[name] ?? {}
           const value = attr.value === undefined ? (name === "b" ? null : drv(name)) : attr.value
           const grow = Stream.fromEffect(Effect.sync(() => held.set(pid, held.get(pid)! + (attr.bytes ?? 0)))).pipe(Stream.drain)
@@ -101,7 +103,7 @@ describe("derivations", () => {
       let valid = true
       const { calls, spawner } = nix(() => valid)
       const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
-      const plan = (flake: string) => derivations(run(flake), ["a", "b"], dir, undefined, unlimited).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      const plan = (flake: string) => derivations(run(flake), ["a", "b"], dir, undefined, unlimited).pipe(Effect.map((e) => e.derivations), Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
 
       const first = yield* plan("git+file:///mirror?rev=1")
       expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first)
@@ -110,7 +112,7 @@ describe("derivations", () => {
 
       // Another revision replaces the repository's entry; a subset of it is a hit.
       yield* plan("git+file:///mirror?rev=2")
-      const subset = yield* derivations(run("git+file:///mirror?rev=2"), ["a"], dir, undefined, unlimited).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      const subset = yield* derivations(run("git+file:///mirror?rev=2"), ["a"], dir, undefined, unlimited).pipe(Effect.map((e) => e.derivations), Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
       expect(subset).toEqual(new Map([["a", drv("a")]]))
       expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first)
       expect(calls.filter((c) => c === "nix eval")).toHaveLength(3)
@@ -183,9 +185,9 @@ describe("evaluating within the job's memory", () => {
     Effect.gen(function*() {
       const logged: Array<string> = []
       const log = (text: string) => Effect.sync(() => void logged.push(text))
-      const result = yield* derivations(run("git+file:///mirror"), attrs, undefined, log, fake.memory(budget))
+      const { derivations: result, errors } = yield* derivations(run("git+file:///mirror"), attrs, undefined, log, fake.memory(budget))
         .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      return { result, logged }
+      return { result, errors, logged }
     })
 
   it.live("shares one evaluator while the attributes fit", () =>
@@ -216,12 +218,33 @@ describe("evaluating within the job's memory", () => {
       expect(fake.evaluated).toEqual([["a", "huge", "c"], ["huge", "c"]])
     }))
 
-  it.live("makes an attribute Nix can't evaluate null, not the whole plan", () =>
+  it.live("tries an attribute Nix can't evaluate once more, then leaves it out with Nix's reason, uncached", () =>
     Effect.gen(function*() {
       const fake = nix(() => true, { attrs: { gone: { value: "missing" } } })
-      const { result, logged } = yield* evaluate(fake, ["a", "gone", "c"], null)
-      expect(result).toEqual(new Map([["a", drv("a")], ["gone", null], ["c", drv("c")]]))
+      const { result, errors, logged } = yield* evaluate(fake, ["a", "gone", "c"], null)
+      expect(result).toEqual(new Map([["a", drv("a")], ["c", drv("c")]]))
+      expect(errors).toEqual(new Map([["gone", "attribute 'gone' missing"]]))
+      expect(fake.evaluated).toEqual([["a", "gone", "c"], ["gone", "c"], ["c"]])
       expect(logged).toContain("gone did not evaluate: attribute 'gone' missing")
+    }))
+
+  it.live("doesn't cache an attribute whose evaluation failed, so the next plan tries it again", () =>
+    Effect.gen(function*() {
+      let flaky = true
+      const fake = nix(() => true, { attrs: { get shell() { return flaky ? { value: "missing" as const } : {} } } })
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
+      const plan = derivations(run("git+file:///mirror?rev=1"), ["shell"], dir, undefined, unlimited)
+        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
+      expect((yield* plan).derivations).toEqual(new Map())
+      flaky = false
+      expect((yield* plan).derivations).toEqual(new Map([["shell", drv("shell")]]))
+    }))
+
+  it.live("fails without caching when Nix's reports don't match the expression", () =>
+    Effect.gen(function*() {
+      const fake = nix(() => true, { silent: true })
+      const error = yield* Effect.flip(evaluate(fake, ["a", "b"], null))
+      expect(error._tag === "CommandFailed" && error.stderr).toContain("2 attributes went unreported")
     }))
 
   it.live("fails when the flake itself doesn't load", () =>

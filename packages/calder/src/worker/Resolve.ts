@@ -300,9 +300,15 @@ export interface Earlier {
   readonly app: string | null
 }
 
+/** What a plan evaluated: each attribute's derivation, null for one that throws, and Nix's reason for those that failed. */
+export interface Evaluated {
+  readonly derivations: ReadonlyMap<string, Derivation | null>
+  readonly errors: ReadonlyMap<string, string>
+}
+
 /**
  * Evaluates every attribute's derivation, sharing one evaluator while it fits the job's memory (see
- * `evaluate`). Attributes that fail to evaluate come back as null.
+ * `evaluate`).
  *
  * A revision evaluates to the same derivations every time, and `--expr` bypasses Nix's eval cache:
  * a schedule that plans an unchanged head evaluated infra's hosts again each hour, 6.5 GB for four
@@ -318,18 +324,19 @@ export const derivations = (
   log: Log = () => Effect.void,
   memory: Memory = jobMemory(),
 ) =>
-  attrs.length === 0 ? Effect.succeed(new Map<string, Derivation | null>()) : cached(run, cacheDir, (entry) =>
+  attrs.length === 0 ? Effect.succeed<Evaluated>({ derivations: new Map(), errors: new Map() }) : cached(run, cacheDir, (entry) =>
     Effect.gen(function*() {
       const known = entry?.derivations ?? {}
       // Entries cached before derivations carried their system don't count.
       if (attrs.every((attr) => attr in known && (known[attr] === null || known[attr]?.system !== undefined))) {
         const drvs = attrs.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
         if (drvs.length === 0 || (yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode === 0) {
-          return { result: new Map(attrs.map((attr) => [attr, known[attr] ?? null])), entry: {} }
+          const result: Evaluated = { derivations: new Map(attrs.map((attr) => [attr, known[attr] ?? null])), errors: new Map() }
+          return { result, entry: {} }
         }
       }
       const result = yield* evaluate(run.flake, attrs, memory, log)
-      return { result, entry: { derivations: { ...known, ...Object.fromEntries(result) } } }
+      return { result, entry: { derivations: { ...known, ...Object.fromEntries(result.derivations) } } }
     }))
 
 /** Where the plan says what it reused or evaluated: the plan job's log. */
@@ -381,7 +388,7 @@ const cached = <A, E, R>(
 export interface Memory {
   /** Bytes, or null when nothing limits the job. */
   readonly budget: number | null
-  /** The resident memory of a process, in bytes. */
+  /** The anonymous resident memory of a process, in bytes. */
   readonly resident: (pid: number) => number
   /** How often a running evaluator is checked against the budget. */
   readonly every: Duration.Input
@@ -415,9 +422,10 @@ export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): 
   }
   return {
     budget: Number.isFinite(limit) ? Math.floor((limit - process.memoryUsage().rss) * 0.8) : null,
+    // Anonymous memory only: what the evaluator allocated, not the files it has mapped.
     resident: (pid) => {
       try {
-        const kb = /^VmRSS:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1]
+        const kb = /^RssAnon:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1]
         return kb === undefined ? 0 : Number(kb) * 1024
       } catch {
         return 0
@@ -436,10 +444,12 @@ class Stopped extends Schema.TaggedError<Stopped>("calder/Stopped")("Stopped", {
  * One `nix eval` that evaluates `attrs` in order and reports each derivation on stderr as it gets it, so
  * what it got counts even when it stops before the end. `largest` is the most an attribute added to an
  * evaluator so far, also in earlier ones. `error` is Nix's when it failed on the attribute after those it
- * got.
+ * got. Reports out of order, or missing although Nix succeeded, mean the expression no longer works with
+ * this Nix: that fails like a flake that doesn't load, so nothing is cached.
  */
 const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, largest: number) =>
   Effect.gen(function*() {
+    const unexpected = (what: string) => new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: 0, stderr: `nix eval gave ${what}` })
     const reports = attrs.map((attr, i) => `(report ${i} f.${attr})`).join(" ")
     const expr = `let f = builtins.getFlake ${JSON.stringify(flake)};
       one = x: let t = builtins.tryEval (builtins.seq x.drvPath x); in
@@ -470,7 +480,12 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
           held = resident()
           return
         }
-        got.push((JSON.parse(report[2]!) as [number, Derivation | null])[1])
+        const [index, derivation] = yield* Effect.try({
+          try: () => JSON.parse(report[2]!) as [number, Derivation | null],
+          catch: () => unexpected(`a report it can't read: ${line}`),
+        })
+        if (index !== got.length) return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`)
+        got.push(derivation)
         const now = resident()
         largest = Math.max(largest, now - held)
         held = now
@@ -489,6 +504,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     if (exit !== 0 && exit !== "full" && exit !== "over" && !loaded) {
       return yield* new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: exit, stderr: stderr.join("\n") })
     }
+    if (exit === 0 && got.length < attrs.length) return yield* unexpected(`${attrs.length - got.length} attributes went unreported`)
     const stop = exit === "full" || exit === "over" ? exit : got.length === attrs.length ? "done" as const : "failed" as const
     // The attribute it stopped in had added at least this much.
     if (stop === "over" && memory.budget !== null) largest = Math.max(largest, memory.budget - held)
@@ -516,31 +532,42 @@ export class TooLarge extends Schema.TaggedError<TooLarge>("calder/TooLarge")("T
  * attributes once the next, if it grows as much as the largest so far, might not fit the budget, and at
  * once when it outgrows it; a new one goes on where it stopped. An attribute that outgrows the budget in
  * an evaluator of its own fails the evaluation (`TooLarge`), since its build would swap as much. One that
- * fails in a way Nix can't catch, such as a missing attribute, is null, like one that throws.
+ * fails in a way Nix can't catch, such as a missing attribute or an input that couldn't be fetched, gets one
+ * more try in a fresh evaluator; failing again, it is left out of `derivations`, so nothing caches it, and
+ * `errors` has Nix's reason. One that throws, which `tryEval` catches, is null.
  */
 const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, log: Log) =>
   Effect.gen(function*() {
     const started = Date.now()
-    const result = new Map<string, Derivation | null>()
+    const derivations = new Map<string, Derivation | null>()
+    const errors = new Map<string, string>()
+    const retried = new Set<string>()
+    let done = 0
     let evaluators = 0
     let peak = 0
     let largest = 0
-    while (result.size < attrs.length) {
-      const rest = attrs.slice(result.size)
+    while (done < attrs.length) {
+      const rest = attrs.slice(done)
       const pass = yield* evaluator(flake, rest, memory, largest)
       evaluators++
       peak = Math.max(peak, pass.peak)
       largest = pass.largest
-      pass.got.forEach((derivation, i) => result.set(rest[i]!, derivation))
+      pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation))
+      done += pass.got.length
       const next = rest[pass.got.length]
       if (next === undefined || pass.stop === "full" || (pass.stop === "over" && pass.got.length > 0)) continue
       if (pass.stop === "over") return yield* new TooLarge({ attr: next, budget: memory.budget ?? 0 })
-      result.set(next, null)
+      if (!retried.has(next)) {
+        retried.add(next)
+        continue
+      }
+      errors.set(next, pass.error)
+      done++
       yield* log(`${next} did not evaluate: ${pass.error}`)
     }
     const budget = memory.budget === null ? "" : ` of ${gib(memory.budget)}`
     yield* log(`evaluated ${attrs.length} attributes of the flake in ${Date.now() - started} ms with ${evaluators} evaluators, holding at most ${gib(peak)}${budget}`)
-    return result
+    return { derivations, errors } as Evaluated
   })
 
 const alive = (pid: number) => {
@@ -618,7 +645,7 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
     }, log)
     // When the flake fails to load, builds evaluate on their own when they run, but keys need the dev
     // shells now. An attribute too large to evaluate would swap as much in its build.
-    const evaluated = reused !== undefined ? reused : yield* derivations(run, attrs, undefined, log).pipe(
+    const result = reused !== undefined ? { derivations: reused, errors: new Map<string, string>() } : yield* derivations(run, attrs, undefined, log).pipe(
       Effect.catchIf(
         (e) => e._tag !== "TooLarge",
         () =>
@@ -634,9 +661,11 @@ export const resolve = (plan: Calder.Plan, project: Calder.Project, run: RunInfo
         })
       ),
     )
+    const evaluated = result.derivations
     const broken = shells.filter((shell) => !evaluated.get(shell))
     if (broken.length > 0) {
-      return yield* new Calder.PlanError({ message: `The dev shell ${broken.join(", ")} did not evaluate, and task keys include it` })
+      const why = broken.map((shell) => `${shell}: ${result.errors.get(shell) ?? "it threw"}`).join("; ")
+      return yield* new Calder.PlanError({ message: `A dev shell did not evaluate, and task keys include it. ${why}` })
     }
     const toolchainOf = (shell: string | null) => (shell === null ? null : evaluated.get(shell)!.drv)
     const dependencies = (yield* repo.entries).filter((e) => dependencyFiles.some((re) => re.test(e.path)))
