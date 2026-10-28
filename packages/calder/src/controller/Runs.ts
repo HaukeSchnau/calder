@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { placementToken, sha256, taskKey } from "../Keys.ts"
-import type { Job, JobEvent, JobResult, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
+import type { Job, JobEvent, JobResult, Mismatch, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Cache } from "./Cache.ts"
 import { Comments } from "./Comments.ts"
@@ -45,6 +45,8 @@ export const buildersOf = (machines: string) =>
  */
 export class RunsCore extends Context.Service<RunsCore, {
   readonly plan: (runId: string) => Effect.Effect<PlanSpec | null>
+  /** Audits a project's footprint records against a fresh evaluation of its default branch's head. */
+  readonly audit: (project: string) => Effect.Effect<ReadonlyArray<Mismatch>>
   readonly step: (runId: string, name: string) => Effect.Effect<Domain.StepStatus>
   /** A build whose output already exists settles at once, without waiting for the builds it uses. */
   readonly built: (runId: string, name: string) => Effect.Effect<boolean>
@@ -301,7 +303,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (pipelineDir.dir === null) return yield* unplanned(run, pipelineDir.error ?? "could not read the revision")
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
-      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run)) }
+      const job: Job = {
+        _tag: "Plan",
+        run: runInfo(run, pipelineDir.dir),
+        requiredChecks: required,
+        earlier: yield* db(Rows.earlierPlan(run)),
+        records: yield* db(Rows.records(run.project, run.fork === 1)),
+      }
       const event = JSON.parse(run.event) as Domain.Event
       const claim: Slots.Claim = {
         project: run.project,
@@ -328,7 +336,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return yield* unplanned(run, result._tag === "PlanFailed" ? result.message : result._tag === "Died" ? result.message : "planning failed")
       }
 
-      const spec = { ...result.plan, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
+      // Footprints go to their own tables, not into the stored plan.
+      const { recorded, mismatches: _, ...planned_ } = result.plan
+      if (recorded !== undefined) yield* db(Rows.keepRecords(run, recorded))
+      const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
         yield* db(sql.withTransaction(Effect.gen(function*() {
@@ -1302,6 +1313,69 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       return build !== null && build.out !== null && (yield* available(build.out))
     })
 
-  return { plan, step, built, finish, cancel, supersede }
+  /**
+   * Plans the default branch's head of `project` afresh, ignoring its footprint records, and drops each
+   * record the fresh evaluation contradicts: an attribute whose record held there but evaluated to another
+   * derivation. Each mismatch is logged with what the fresh evaluation read that the record didn't, and
+   * kept for the UI. The fresh evaluation's own records are kept like a push's.
+   */
+  const audit = (project: string) =>
+    Effect.gen(function*() {
+      const p = projects.get(project)
+      if (p === undefined) return []
+      const branch = p.defaultBranch
+      const sha = yield* gitea.head(p.repo, branch)
+      yield* mirror.fetch(project)
+      const dir = yield* mirror.pipelineDir(project, sha)
+      const info: RunInfo = {
+        id: `${project}-audit`,
+        project,
+        number: 0,
+        revision: sha,
+        branch,
+        trust: "trusted",
+        event: { _tag: "Push", branch },
+        flake: mirror.flake(project, sha),
+        mirror: mirror.path(project),
+        mirrors: mirror.byUrl(),
+        pipelineDir: dir,
+        system: config.system,
+      }
+      const job: Job = { _tag: "Plan", run: info, requiredChecks: [], earlier: null, records: yield* db(Rows.records(project, false)), audit: true }
+      const claim: Slots.Claim = { project, expected: 0, run: Date.now(), label: `${project}'s audit` }
+      const { result } = yield* slots.plans.with(claim, jobs.run(job, { pool: "trusted", onEvent: () => Effect.void }))
+      if (result._tag !== "Planned") {
+        yield* Effect.logWarning(`the audit of ${project} could not plan: ${"message" in result ? result.message : result._tag}`)
+        return []
+      }
+      const mismatches = result.plan.mismatches ?? []
+      for (const m of mismatches) {
+        yield* db(sql`delete from evaluations where project = ${project} and attr = ${m.attr}`)
+        yield* db(sql`insert into audit_mismatches (project, attr, revision, detail, at)
+          values (${project}, ${m.attr}, ${sha}, ${JSON.stringify(m)}, ${Date.now()})`)
+        yield* Effect.logWarning(
+          `audit of ${project}@${sha.slice(0, 12)}: ${m.attr} evaluated to ${m.evaluated?.drv ?? "nothing"} where its record said ` +
+            `${m.recorded?.drv ?? "nothing"}; the fresh evaluation also read ${m.missed.join(", ") || "nothing the record didn't"}`,
+        )
+      }
+      if (result.plan.recorded !== undefined) yield* db(Rows.keepRecords({ project, fork: 0, trust: "trusted", id: info.id }, result.plan.recorded))
+      yield* Effect.logInfo(`audited ${project}@${sha.slice(0, 12)}: ${mismatches.length} records contradicted`)
+      return mismatches
+    }).pipe(Effect.catchCause((cause) => Effect.logWarning(`the audit of ${project} failed`, cause).pipe(Effect.as([]))))
+
+  // Every night, each project's default branch head is audited, one project at a time.
+  const nextNight = () => {
+    const at = new Date()
+    at.setHours(3, 30, 0, 0)
+    if (at.getTime() <= Date.now()) at.setDate(at.getDate() + 1)
+    return at.getTime() - Date.now()
+  }
+  yield* Effect.suspend(() => Effect.sleep(nextNight())).pipe(
+    Effect.andThen(Effect.forEach(projects.all(), (p) => audit(p.name), { discard: true })),
+    Effect.forever,
+    Effect.forkScoped,
+  )
+
+  return { plan, step, built, finish, cancel, supersede, audit }
 })).pipe(Layer.provideMerge(Estimates.layer))
 

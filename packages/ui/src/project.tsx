@@ -32,6 +32,12 @@ export function ProjectPage({ name }: { readonly name: string }) {
         {project && AsyncResult.isSuccess(ov) ? <Deployments project={project} controller={ov.value.host} /> : null}
         <button type="button" className="btn" onClick={() => trigger(name)}>Run {project?.defaultBranch ?? "main"}</button>
       </header>
+      {project?.audits?.length ? (
+        <p className="audit-warn">
+          The footprint audit found {project.audits.length === 1 ? "a wrong record" : `${project.audits.length} wrong records`} in the last two weeks
+          ({[...new Set(project.audits.map((a) => a.attr))].join(", ")}) and dropped them. Plans evaluate those attributes again.
+        </p>
+      ) : null}
       <div className="proj-body">
         <Runs project={name} />
         <aside className="proj-steps">

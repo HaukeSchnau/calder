@@ -28,13 +28,14 @@ export const make = (mirror: string, revision: string) =>
     const files = yield* Effect.cached(
       git(["ls-tree", "-r", "-z", "--name-only", revision]).pipe(Effect.map((out) => out.split("\0").filter(Boolean))),
     )
-    /** Every file of the revision with its blob id. */
+    /** Every file of the revision with its blob id and mode (`100644`, `100755`, `120000` for a symlink). */
     const entries = yield* Effect.cached(
       git(["ls-tree", "-r", "-z", revision]).pipe(
         Effect.map((out) =>
           out.split("\0").filter(Boolean).map((entry) => {
             const [meta, path] = entry.split("\t")
-            return { path: path!, oid: meta!.split(" ")[2]! }
+            const [mode, , oid] = meta!.split(" ")
+            return { path: path!, oid: oid!, mode: mode! }
           })
         ),
       ),

@@ -226,6 +226,21 @@ export const migrations = {
     yield* sql`create table pr_notes (project text not null, pr integer not null, step text not null, run_id text not null,
       markdown text not null, at integer not null, primary key (project, pr, step))`
   }),
+  "0017_footprints": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // What plans' evaluations read of a flake's source (worker/Footprint.ts): one row per evaluator, whose
+    // attributes' footprints are prefixes of its entries.
+    yield* sql`create table footprints (id integer primary key autoincrement, project text not null, revision text not null,
+      entries text not null, created_at integer not null)`
+    // What each attribute evaluated to, with its footprint's prefix and digest. Forks write none.
+    yield* sql`create table evaluations (id integer primary key autoincrement, project text not null, attr text not null,
+      footprint integer not null, count integer not null, digest text not null, derivation text, app text, trust text not null,
+      run_id text not null, created_at integer not null)`
+    yield* sql`create index evaluations_attr on evaluations (project, attr, created_at desc)`
+    // Records an audit found wrong: a fresh evaluation of the default branch's head disagreed with them.
+    yield* sql`create table audit_mismatches (id integer primary key autoincrement, project text not null, attr text not null,
+      revision text not null, detail text not null, at integer not null)`
+  }),
 }
 
 /**

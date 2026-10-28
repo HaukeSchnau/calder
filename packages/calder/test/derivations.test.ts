@@ -5,6 +5,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Option, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { RunInfo } from "../src/Protocol.ts"
+import * as Footprint from "../src/worker/Footprint.ts"
 import { type Derivation, derivations, fromEarlier, jobMemory, type Memory } from "../src/worker/Resolve.ts"
 
 const run = (flake: string) => ({ flake }) as RunInfo
@@ -266,6 +267,28 @@ describe("evaluating within the job's memory", () => {
       expect((yield* twice).derivations).toEqual(new Map([["a", drv("a")], ["shell", drv("shell")]]))
       expect(fake.evaluated.at(-1)).toEqual(["shell"])
       expect((yield* plan).derivations).toEqual(new Map([["shell", drv("shell")]]))
+    }))
+
+  it.live("evaluates as before, recording nothing, when recording what Nix read fails", () =>
+    Effect.gen(function*() {
+      const fake = nix(() => true)
+      const recorder = {
+        source: "/nix/store/x-source",
+        url: "path:/nix/store/x-source?rev=1",
+        revision: "1",
+        at: Footprint.tree([]),
+        marks: [],
+        read: () => Effect.succeed(new Map<string, string>()),
+      }
+      const logged: Array<string> = []
+      const log = (text: string) => Effect.sync(() => void logged.push(text))
+      const result = yield* derivations(run("git+file:///mirror"), ["a"], undefined, log, unlimited, { recorder })
+        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
+      expect(result.derivations).toEqual(new Map([["a", drv("a")]]))
+      expect(result.recorded).toBeUndefined()
+      // strace ran nothing that reported (as without ptrace), then nix ran alone.
+      expect(fake.calls.filter((c) => c === "strace -f" || c === "nix eval")).toEqual(["strace -f", "nix eval"])
+      expect(logged.some((l) => l.startsWith("recording what Nix read failed"))).toBe(true)
     }))
 
   it.live("fails without caching when Nix's reports don't match the expression", () =>

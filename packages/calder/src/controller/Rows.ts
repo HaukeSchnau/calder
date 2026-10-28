@@ -2,7 +2,7 @@ import type { Domain } from "@calder-ci/api"
 import { Array as Arr, Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import { Calder } from "@calder-ci/core"
-import type { PlannedStep, PlanSpec } from "../Protocol.ts"
+import type { PlannedStep, PlanSpec, Records } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 
 /**
@@ -262,6 +262,68 @@ export const earlierPlan = (run: RunRow) =>
       if (spec.derivations !== undefined) return { revision: row.sha, derivations: spec.derivations, app: spec.app }
     }
     return null
+  }).pipe(Effect.orDie)
+
+/**
+ * The newest footprint record per attribute that `run` may trust, with their footprints. Records follow
+ * the trust rules of results: a fork's run takes trusted runs' records only; other runs also take those of
+ * same-repo pull requests, which are the only other runs that write any.
+ */
+export const records = (project: string, forkOnly: boolean) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const rows = yield* sql<{ attr: string; footprint: number; count: number; digest: string; derivation: string | null; app: string | null }>`
+      select e.attr, e.footprint, e.count, e.digest, e.derivation, e.app from evaluations e
+      where e.project = ${project} and (${forkOnly ? 0 : 1} = 1 or e.trust = 'trusted')
+        and e.id = (select e2.id from evaluations e2 where e2.project = e.project and e2.attr = e.attr
+          and (${forkOnly ? 0 : 1} = 1 or e2.trust = 'trusted') order by e2.created_at desc, e2.id desc limit 1)`
+    if (rows.length === 0) return undefined
+    const ids = [...new Set(rows.map((r) => r.footprint))]
+    const footprints = yield* sql<{ id: number; revision: string; entries: string }>`select id, revision, entries from footprints
+      where ${sql.in("id", ids)}`
+    return {
+      footprints: footprints.map((f) => ({ id: String(f.id), revision: f.revision, entries: JSON.parse(f.entries) })),
+      evaluations: rows.map((r) => ({
+        attr: r.attr,
+        footprint: String(r.footprint),
+        count: r.count,
+        digest: r.digest,
+        derivation: r.derivation === null ? null : JSON.parse(r.derivation),
+        ...(r.app === null ? {} : { app: JSON.parse(r.app) as string | null }),
+      })),
+    } as Records
+  }).pipe(Effect.orDie)
+
+/**
+ * Keeps what a plan recorded, unless its run is a fork's, and the newest three records per attribute of
+ * the project with them.
+ */
+export const keepRecords = (run: Pick<RunRow, "project" | "fork" | "trust" | "id">, recorded: Records) =>
+  Effect.gen(function*() {
+    if (run.fork === 1 || recorded.evaluations.length === 0) return
+    const sql = yield* SqlClient.SqlClient
+    const now = Date.now()
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const ids = new Map<string, number>()
+      for (const footprint of recorded.footprints) {
+        const [row] = yield* sql<{ id: number }>`insert into footprints (project, revision, entries, created_at)
+          values (${run.project}, ${footprint.revision}, ${JSON.stringify(footprint.entries)}, ${now}) returning id`
+        ids.set(footprint.id, row!.id)
+      }
+      for (const e of recorded.evaluations) {
+        const footprint = ids.get(e.footprint)
+        if (footprint === undefined) continue
+        yield* sql`insert into evaluations (project, attr, footprint, count, digest, derivation, app, trust, run_id, created_at)
+          values (${run.project}, ${e.attr}, ${footprint}, ${e.count}, ${e.digest},
+            ${e.derivation === null ? null : JSON.stringify(e.derivation)}, ${e.app === undefined ? null : JSON.stringify(e.app)},
+            ${run.trust}, ${run.id}, ${now})`
+      }
+      yield* sql`delete from evaluations where project = ${run.project} and id not in (select id from (
+        select id, row_number() over (partition by attr order by created_at desc, id desc) as n from evaluations
+        where project = ${run.project}) where n <= 3)`
+      yield* sql`delete from footprints where project = ${run.project} and id not in (select footprint from evaluations
+        where project = ${run.project})`
+    }))
   }).pipe(Effect.orDie)
 
 export const loadRun = (id: string) =>

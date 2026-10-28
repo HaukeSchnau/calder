@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/rpc"
-import { Change, DeploymentRecord, LogEntry, MergeRequest, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
+import { AuditMismatch, Change, DeploymentRecord, LogEntry, MergeRequest, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
 
 export class NotFound extends Schema.TaggedError<NotFound>("@calder-ci/api/NotFound")("NotFound", {
   what: Schema.String,
@@ -79,6 +79,11 @@ export class UiRpcs extends RpcGroup.make(
     success: Run,
     error: Schema.Union([NotFound, Refused]),
   }),
+  /**
+   * Evaluates the project's default branch head afresh and drops the footprint records that disagree,
+   * as the nightly audit does.
+   */
+  Rpc.make("audit", { payload: { project: Schema.String }, success: Schema.Array(AuditMismatch), error: NotFound }),
   /**
    * Runs a working copy that `calder check` pushed as `ref` (under `calder/check/`) the way a pull request
    * would. A newer check of the same ref replaces an older one; a background check only takes slots

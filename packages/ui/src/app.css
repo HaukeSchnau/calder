@@ -774,3 +774,4 @@ a.sb:hover { background: var(--hover); color: var(--ink); }
   .rt-row > :nth-child(3), .rt-row > :nth-child(5), .rt-row > :nth-child(6), .rt-row > :nth-child(7) { display: none; }
   .pdeps { flex-wrap: wrap; }
 }
+.audit-warn { margin: 10px 0 0; padding: 8px 12px; border: 1px solid var(--heat); border-radius: 6px; background: var(--raise); color: var(--heat-ink); }
