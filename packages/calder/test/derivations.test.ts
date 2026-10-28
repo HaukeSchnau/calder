@@ -13,7 +13,7 @@ const GiB = 2 ** 30
 
 /** What `nix eval` makes of an attribute: a derivation or null, an error Nix can't catch, and how much memory it takes. */
 interface Attr {
-  readonly value?: Derivation | null | "missing"
+  readonly value?: Derivation | null | "missing" | "unreachable"
   readonly bytes?: number
 }
 
@@ -30,6 +30,8 @@ const nix = (
     readonly closure?: () => ReadonlyArray<string>
     readonly attrs?: Readonly<Record<string, Attr>>
     readonly hang?: number
+    /** Loading the flake itself takes this much and never ends. */
+    readonly heavyFlake?: number
     /** The flake itself fails to load, such as an input that can't be fetched. */
     readonly broken?: boolean
     /** Nix succeeds without reporting any attribute, as a Nix whose trace output changed would. */
@@ -53,16 +55,18 @@ const nix = (
         yield* options.evaluating ?? Effect.void
         const asked = [...argv.at(-1)!.matchAll(/\(report \d+ f\.(\S+)\)/g)].map((m) => m[1]!)
         evaluated.push(asked)
-        const reports: Array<Stream.Stream<Uint8Array>> = [
-          Stream.make(line(options.broken ? "error: cannot fetch input 'nixpkgs'" : "trace: calder-flake")),
-        ]
+        const reports: Array<Stream.Stream<Uint8Array>> = options.heavyFlake === undefined
+          ? [Stream.make(line(options.broken ? "error: cannot fetch input 'nixpkgs'" : "trace: calder-flake"))]
+          : [Stream.fromEffect(Effect.sync(() => held.set(pid, options.heavyFlake!))).pipe(Stream.drain), Stream.never]
+        if (options.heavyFlake !== undefined) exit = Effect.never
         if (options.broken) exit = Effect.succeed(1)
         for (const [i, name] of options.broken || options.silent ? [] : asked.entries()) {
           const attr = options.attrs?.[name] ?? {}
           const value = attr.value === undefined ? (name === "b" ? null : drv(name)) : attr.value
           const grow = Stream.fromEffect(Effect.sync(() => held.set(pid, held.get(pid)! + (attr.bytes ?? 0)))).pipe(Stream.drain)
-          if (value === "missing") {
-            reports.push(Stream.make(line("error:"), line("       … while calling the 'seq' builtin"), line(`       error: attribute '${name}' missing`)))
+          if (value === "missing" || value === "unreachable") {
+            const error = value === "missing" ? `attribute '${name}' missing` : "unable to download 'https://example.org/x': HTTP error 502"
+            reports.push(Stream.make(line("error:"), line("       … while calling the 'seq' builtin"), line(`       error: ${error}`)))
             exit = Effect.succeed(1)
             break
           }
@@ -75,7 +79,11 @@ const nix = (
         }
         stderr = Stream.flatten(Stream.fromIterable(reports))
       }
-      const stdout = argv[1] === "--query" ? (options.closure?.() ?? []).join("\n") : ""
+      // `--print-invalid` lists the invalid paths and succeeds; without it, any invalid path fails.
+      const listing = argv.includes("--print-invalid")
+      if (listing) exit = Effect.succeed(0)
+      const stdout = argv[1] === "--query" ? (options.closure?.() ?? []).join("\n")
+        : listing && !valid() ? argv.filter((a) => a.startsWith("/nix/store/")).join("\n") : ""
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(pid),
         exitCode: Effect.map(exit, ChildProcessSpawner.ExitCode),
@@ -228,6 +236,21 @@ describe("evaluating within the job's memory", () => {
       expect(logged).toContain("gone did not evaluate: attribute 'gone' missing")
     }))
 
+  it.live("retries an error many attributes share only until two failed with it", () =>
+    Effect.gen(function*() {
+      const down = { value: "unreachable" as const }
+      const fake = nix(() => true, { attrs: { x: down, y: down, z: down } })
+      const { errors } = yield* evaluate(fake, ["x", "y", "z"], null)
+      expect([...errors.keys()]).toEqual(["x", "y", "z"])
+      expect(fake.evaluated).toEqual([["x", "y", "z"], ["x", "y", "z"], ["y", "z"], ["y", "z"], ["z"]])
+    }))
+
+  it.live("says it was loading the flake that outgrew the budget", () =>
+    Effect.gen(function*() {
+      const error = yield* Effect.flip(evaluate(nix(() => true, { heavyFlake: 4 * GiB }), ["a"], 3 * GiB))
+      expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/)
+    }))
+
   it.live("doesn't cache an attribute whose evaluation failed, so the next plan tries it again", () =>
     Effect.gen(function*() {
       let flaky = true
@@ -235,8 +258,13 @@ describe("evaluating within the job's memory", () => {
       const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
       const plan = derivations(run("git+file:///mirror?rev=1"), ["shell"], dir, undefined, unlimited)
         .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      expect((yield* plan).derivations).toEqual(new Map())
+      const twice = derivations(run("git+file:///mirror?rev=1"), ["a", "shell"], dir, undefined, unlimited)
+        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
+      expect((yield* twice).derivations).toEqual(new Map([["a", drv("a")]]))
       flaky = false
+      // The next plan of the commit evaluates only what the cache lacks.
+      expect((yield* twice).derivations).toEqual(new Map([["a", drv("a")], ["shell", drv("shell")]]))
+      expect(fake.evaluated.at(-1)).toEqual(["shell"])
       expect((yield* plan).derivations).toEqual(new Map([["shell", drv("shell")]]))
     }))
 

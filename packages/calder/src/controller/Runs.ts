@@ -85,10 +85,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
   const lane = 1
   const slots = {
-    // Plans of one repository in one pool take turns anyway (Resolve's lock, in the pool's home), and one
-    // waiting there or evaluating a large flake must leave the other slots to other projects: three of
-    // infra's pull requests once held every plan slot for an hour while every other project's runs stayed
-    // in planning. Claims are per project and pool, so a push's plan never waits for pull requests'.
+    // One plan per project at a time: two of infra's plans side by side, a pull request's and a push's,
+    // held 8.7 GB of the 8 GiB jobs slice and both ran past 30 minutes. A long plan also leaves the other
+    // slots to other projects: three of infra's pull requests once held every plan slot for an hour while
+    // every other project's runs stayed in planning.
     plans: Slots.make({ capacity: config.jobs.slots.plans, maxPerProject: 1 }),
     builds: Slots.make({ capacity: config.jobs.slots.builds, lane }),
     // Each other system's builds wait for its remote builders apart, so one that is unavailable stalls only its own.
@@ -260,8 +260,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
    * tower and ten on srv-2; a plan stuck far past that would otherwise hold its project's slot for the
    * worker's four hours.
    */
-  const planTimeout = "30 minutes"
-  const timedOut: JobResult = { _tag: "Died", message: "planning took longer than 30 minutes, so it was stopped" }
+  const planTimeout = Duration.minutes(30)
+  const timedOut: JobResult = { _tag: "Died", message: `planning took longer than ${Duration.toMinutes(planTimeout)} minutes, so it was stopped` }
 
   /** Ends a run that could not be planned, unless a cancel came in first. */
   const unplanned = (run: Rows.RunRow, message: string) =>
@@ -304,16 +304,17 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run)) }
       const event = JSON.parse(run.event) as Domain.Event
       const claim: Slots.Claim = {
-        project: `${run.project}/${poolOf(run)}`,
+        project: run.project,
         expected: 0,
         run: run.created_at,
-        // Within its project, the default branch's push goes before schedules and other branches.
+        // A push to the default branch goes before every plan that isn't one, so it waits for at most the
+        // plan that runs, which the timeout bounds.
         critical: event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch,
         label: `${run.id}'s plan`,
       }
       const log = logTo(run, "plan", run.span_id, null)
       const waits = slots.plans.waitsFor(claim)
-      if (waits !== null) yield* log({ _tag: "Log", stream: "calder", text: `waiting for a plan slot: ${waits}`, timestamp: Date.now() })
+      if (waits !== null) yield* log({ _tag: "Log", stream: "calder", text: `waiting for a plan slot (${waits})`, timestamp: Date.now() })
       const planned = yield* Effect.raceFirst(
         slots.plans.with(claim, jobs.run(job, { pool: poolOf(run), onEvent: log }).pipe(Effect.timeoutOption(planTimeout))).pipe(
           Effect.map((done) => Option.some(Option.getOrElse(done, () => ({ result: timedOut })))),
