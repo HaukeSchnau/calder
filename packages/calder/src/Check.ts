@@ -1,6 +1,6 @@
 import type { Calder } from "@calder-ci/core"
 import { Effect } from "effect"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Exec from "./Exec.ts"
@@ -75,12 +75,29 @@ export const checkFiles = (dir: string, project: Calder.Project) =>
     yield* Resolve.checkFiles(project, yield* Repo.make(copy.gitDir, copy.sha))
   })
 
-/** Pushes the commit as `ref` with the user's own git credentials, replacing what the ref held. */
-export const push = (copy: WorkingCopy, remote: string, ref: string) =>
-  Exec.run(["git", "--git-dir", copy.gitDir, "push", "-q", remote, `+${copy.sha}:refs/heads/${ref}`])
+/**
+ * Runs `git push` from a scratch git directory that borrows the repository's objects. Pushing from the
+ * repository itself to its remote's URL updated `refs/remotes/<remote>/<ref>` there, which jj imported
+ * as a bookmark and then, once the check deleted the ref, as a conflict; an agent lost unbookmarked
+ * commits that way. The scratch directory has no remotes and its refs go with it.
+ */
+const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => mkdtempSync(join(tmpdir(), "calder-push-"))),
+    (scratch) =>
+      Effect.gen(function*() {
+        yield* Exec.run(["git", "init", "-q", "--bare", scratch])
+        writeFileSync(join(scratch, "objects", "info", "alternates"), `${join(copy.gitDir, "objects")}\n`)
+        yield* Exec.run(["git", "--git-dir", scratch, "push", "-q", ...args])
+      }),
+    (scratch) => Effect.sync(() => rmSync(scratch, { recursive: true, force: true })),
+  )
+
+/** Pushes the commit as `ref` with the user's own git credentials, replacing what the ref held. Leaves the repository's refs alone. */
+export const push = (copy: WorkingCopy, remote: string, ref: string) => pushFromScratch(copy, [remote, `+${copy.sha}:refs/heads/${ref}`])
 
 export const drop = (copy: WorkingCopy, remote: string, ref: string) =>
-  Exec.run(["git", "--git-dir", copy.gitDir, "push", "-q", remote, "--delete", `refs/heads/${ref}`]).pipe(Effect.ignore)
+  pushFromScratch(copy, [remote, "--delete", `refs/heads/${ref}`]).pipe(Effect.ignore)
 
 /**
  * Pushes `dir`'s working copy and starts its check run. `key` names the ref (`calder/check/<key>`), so a
