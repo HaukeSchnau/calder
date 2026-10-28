@@ -36,12 +36,14 @@ interface Holder {
  * reach a verdict instead of all advancing slowly. Across projects the step expected to finish soonest
  * goes first, minus the time it has waited, so short checks report quickly and long ones still start.
  * `perProject` keeps one project from holding every slot while another project waits; while nobody
- * else waits, it may use them all. Critical claims go before all others and have `lane` slots beyond
- * `capacity` to themselves.
+ * else waits, it may use them all. `maxPerProject` holds even then. Critical claims go before all others
+ * and have `lane` slots beyond `capacity` to themselves.
  */
 export const make = (options: {
   readonly capacity: number
   readonly perProject?: number
+  /** At most this many slots per project, even while nobody else waits, so one project's stuck jobs can't hold them all. */
+  readonly maxPerProject?: number
   /** Slots beyond capacity that only critical claims take. */
   readonly lane?: number
   readonly now?: () => number
@@ -56,6 +58,7 @@ export const make = (options: {
   let seq = 0
 
   const fits = (project: string) => options.perProject === undefined || (byProject.get(project) ?? 0) < options.perProject
+  const under = (project: string) => options.maxPerProject === undefined || (byProject.get(project) ?? 0) < options.maxPerProject
 
   const take = (claim: { readonly project: string; readonly label?: string | undefined; readonly critical?: boolean | undefined }) => {
     const holder: Holder = { project: claim.project, label: claim.label ?? claim.project, critical: claim.critical === true }
@@ -71,6 +74,7 @@ export const make = (options: {
    * work has the lane. Critical work fills the lane first, so the lane never counts against other work.
    */
   const eligible = (w: Claim) => {
+    if (!under(w.project)) return false
     const running = holders.length
     const regular = running - Math.min(lane, holders.filter((h) => h.critical).length)
     if (w.critical === true) return running < options.capacity + lane
@@ -114,7 +118,7 @@ export const make = (options: {
 
   const acquire = (claim: Claim): Effect.Effect<Holder> =>
     Effect.suspend(() => {
-      if (eligible(claim) && fits(claim.project) && waiters.length === 0) return Effect.succeed(take(claim))
+      if (eligible(claim) && fits(claim.project) && !waiters.some(eligible)) return Effect.succeed(take(claim))
       const waiter: Waiter = { ...claim, seq: seq++, since: now(), granted: Deferred.makeUnsafe<void>() }
       waiters.push(waiter)
       grant()
@@ -158,7 +162,7 @@ export const make = (options: {
      * null when it would get one at once.
      */
     waitsFor: (claim: Claim): string | null => {
-      if (eligible(claim) && fits(claim.project) && waiters.length === 0) return null
+      if (eligible(claim) && fits(claim.project) && !waiters.some(eligible)) return null
       const ahead = waiters.filter((w) => claim.critical === true ? w.critical === true : true).length
       const busy = `${holders.length} of ${options.capacity}${claim.critical === true && lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
       // Reasons reach pull requests' comments, so other projects' steps stay nameless.

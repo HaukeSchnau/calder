@@ -106,7 +106,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   protection requires (`calder/<step>`).
 
 Steps wait for a slot of their kind: plans, builds, tasks and actions each have a number the controller's
-`jobs.slots` sets. A step that deploys (a task with `lease`, an action with a deploy grant, a preview's
+`jobs.slots` sets. A project plans one run at a time, so a long plan leaves the other plan slots to other projects and two
+large evaluations never share the jobs' memory. A push to the default branch goes before every plan that
+isn't one, so it waits for at most the plan that runs. A plan that takes longer than 30 minutes is stopped
+and ends its run. A step that deploys (a task with `lease`, an action with a deploy grant, a preview's
 task or action) and every step whose value it reads, such as the build it deploys, is on the critical
 path; the controller marks it, and a fork's run has none. Among the projects under their share of slots,
 critical steps go first, and they may take one slot beyond the number, so a preview never queues behind a
@@ -119,6 +122,16 @@ commit (`self.rev`, `self.shortRev`, `self.lastModified`, `self.lastModifiedDate
 sources read `revCount`, so its plan evaluates nothing. Only a trusted run's or a same-repo pull request's
 plan counts. Put the revision into what a deploy hands the service rather than into a build, and a
 merge reuses the pull request's builds too.
+
+The attributes a plan needs share one `nix eval` while they fit 80% of the plan job's memory (its
+systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once the next attribute might
+not fit, a new one takes over where it stopped: infra's six hosts no longer need 7 GB in one evaluator,
+and its pull requests plan in a 4 GB job. An attribute that doesn't fit even in an evaluator of its own
+fails the plan at once, naming the attribute, instead of swapping. One that fails in a way Nix can't catch,
+such as a missing attribute or an input that couldn't be fetched, gets one more try in a new evaluator;
+failing again, it is cached nowhere, its build evaluates it when it runs, and a dev shell's failure fails
+the plan with Nix's reason, since task keys include it. The plan's log says how many evaluators it took
+and the most one held.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch

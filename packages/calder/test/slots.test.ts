@@ -50,6 +50,25 @@ describe("Slots", () => {
       expect(order.slice(3)).toEqual(["hopwatch", "t3code-4"])
     }))
 
+  it.effect("keeps one project's stuck plans from holding every slot, even while nobody else waits", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 4, maxPerProject: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      for (const pr of [2, 3, 4]) yield* job(`infra-pr-${pr}`, { project: "infra", expected: 0, run: pr, label: `infra-${pr}'s plan` })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["infra-pr-2"])
+      expect(slots.waitsFor({ project: "infra", expected: 0, run: 7 })).toContain("infra-2's plan")
+      // The default branch's push came last, but goes before the pull requests' plans that wait.
+      yield* job("infra-main", { project: "infra", expected: 0, run: 6, critical: true })
+      yield* job("t3code", { project: "t3code", expected: 0, run: 6 })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["infra-pr-2", "t3code"])
+      expect(slots.waitsFor({ project: "hopwatch", expected: 0, run: 7 })).toBeNull()
+      yield* Deferred.succeed(hold, undefined)
+      yield* Effect.yieldNow
+      expect(order.slice(2)).toEqual(["infra-main", "infra-pr-3", "infra-pr-4"])
+    }))
+
   it.effect("runs a project's older runs first, shortest first within a run", () =>
     Effect.gen(function*() {
       const slots = Slots.make({ capacity: 1 })
