@@ -68,6 +68,8 @@ export class Jobs extends Context.Service<Jobs, {
     readonly agent?: boolean
     /** Taken only by an agent with a free slot right now; otherwise the job comes back `Lost`. */
     readonly offload?: boolean
+    /** Hears what a job that waits for an agent waits for, whenever that changes. */
+    readonly onWaiting?: (reason: string) => Effect.Effect<void>
     /** A local step that may outlive a restart of the controller, which adopts it instead of stopping it. */
     readonly adoptable?: boolean
   }) => Effect.Effect<{ readonly result: JobResult; readonly usage: Usage; readonly id: string }>
@@ -346,13 +348,19 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
 
       const agentMode = Effect.gen(function*() {
+        const log = (text: string) => options.onEvent({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
         // An offloaded job never waits: no agent takes it, and it runs here.
         if (options.offload !== true) {
           const stale = agents.usage().filter((a) => a.connected && !a.current && a.platform === platform)
           const why = stale.map((a) => `; ${a.name} has compatibility version ${a.compatibility}, not ${compatibility}, and gets no jobs`).join("")
-          yield* options.onEvent({ _tag: "Log", stream: "calder", text: `waiting for a ${platform} agent${why}`, timestamp: Date.now() })
+          yield* log(`waiting for a ${platform} agent${why}`)
         }
-        const exited = yield* agents.run({ id, token }, platform, { wait: options.offload !== true, onPlaced: onStart }).pipe(
+        const exited = yield* agents.run({ id, token }, platform, {
+          wait: options.offload !== true,
+          onPlaced: onStart,
+          ...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
+          onLog: log,
+        }).pipe(
           Effect.flatMap((code) =>
             Effect.sleep("1 second").pipe(
               Effect.andThen(Deferred.succeed(result, {

@@ -1,5 +1,6 @@
-import { type Cause, Context, Deferred, Effect, Layer, Queue, Stream } from "effect"
+import { type Cause, Clock, Context, Deferred, Duration, Effect, Layer, Queue, Stream } from "effect"
 import { readFileSync } from "node:fs"
+import * as Exec from "../Exec.ts"
 import { type AgentOrder, compatibility, Unauthorized } from "../Protocol.ts"
 import { Config } from "./Config.ts"
 
@@ -26,7 +27,31 @@ interface Waiter {
   readonly job: { readonly id: string; readonly token: string }
   readonly platform: string
   readonly placed: Deferred.Deferred<Placed>
+  readonly onWaiting: (reason: string) => Effect.Effect<void>
+  readonly onLog: (text: string) => Effect.Effect<void>
 }
+
+/** An agent whose host sleeps while idle. `wake` wakes the host, and the agent connects once the host is up. */
+export interface Sleeper {
+  readonly name: string
+  readonly platform: string
+  readonly wake: Effect.Effect<unknown, { readonly message: string }>
+}
+
+/** A sleeper's latest wake. */
+interface Wake {
+  readonly at: number
+  /** Why it came to nothing; null while it may still bring the agent. */
+  failure: string | null
+  connected: boolean
+}
+
+/** A sleeper's host is woken at most once in this time, however many jobs wait for it. */
+export const wakeEvery = "2 minutes"
+/** How long a wake may take, from the start of its command until the agent connects. */
+export const wakeTimeout = "3 minutes"
+/** How often a waiting job checks whether a sleeper's host is due for another wake. */
+const wakeCheck = "15 seconds"
 
 export interface AgentUsage {
   readonly name: string
@@ -51,12 +76,18 @@ export class Agents extends Context.Service<Agents, {
   /**
    * Starts the job's worker on an agent and waits for it to exit; returns the exit code, -1 if it was
    * lost. Without `wait`, a job no agent can take right now returns -2 at once. `onPlaced` runs once an
-   * agent took the job.
+   * agent took the job. While the job waits, the hosts of its platform's sleepers that are away are
+   * woken; `onWaiting` hears what the job waits for whenever that changes, and `onLog` how the wakes go.
    */
   readonly run: (
     job: { readonly id: string; readonly token: string },
     platform: string,
-    options?: { readonly wait?: boolean; readonly onPlaced?: Effect.Effect<void> },
+    options?: {
+      readonly wait?: boolean
+      readonly onPlaced?: Effect.Effect<void>
+      readonly onWaiting?: (reason: string) => Effect.Effect<void>
+      readonly onLog?: (text: string) => Effect.Effect<void>
+    },
   ) => Effect.Effect<number>
   readonly stop: (job: string) => Effect.Effect<void>
   readonly connect: (auth: { readonly token: string; readonly name: string }, agent: {
@@ -71,11 +102,15 @@ export class Agents extends Context.Service<Agents, {
   readonly usage: () => ReadonlyArray<AgentUsage>
 }>()("calder/controller/Agents") {}
 
-/** Agents authenticate with `secret`; with none, no agent may connect. `version` is the controller's compatibility. */
-export const make = (secret: string | null, version: number = compatibility): Agents["Service"] => {
+/**
+ * Agents authenticate with `secret`; with none, no agent may connect. `version` is the controller's
+ * compatibility, and `sleepers` are the agents whose hosts it wakes for waiting jobs.
+ */
+export const make = (secret: string | null, version: number = compatibility, sleepers: ReadonlyArray<Sleeper> = []): Agents["Service"] => {
   const connections = new Map<string, Connection>()
   const placed = new Map<string, Placed>()
   const waiters: Array<Waiter> = []
+  const wakes = new Map<string, Wake>()
   // Bumped on every connect, so a grace timer knows whether its agent came back.
   const generations = new Map<string, number>()
   // Every agent seen since start, so a missing one stays visible.
@@ -112,17 +147,88 @@ export const make = (secret: string | null, version: number = compatibility): Ag
       yield* assign
     })
 
+  /** What a job of `platform` waits for: an agent, and how the wakes of the platform's sleepers went. */
+  const reason = (platform: string) =>
+    [`an agent of ${platform} to take it`, ...sleepers.flatMap((s) => {
+      const wake = wakes.get(s.name)
+      return s.platform !== platform || wake === undefined || wake.connected ? [] : [wake.failure ?? `waking ${s.name}`]
+    })].join("; ")
+
+  /** Tells the jobs that wait for `platform` what happened, and what they wait for now. */
+  const tell = (platform: string, text: string) =>
+    Effect.forEach(waiters.filter((w) => w.platform === platform), (w) =>
+      Effect.suspend(() =>
+        // A job an agent took meanwhile no longer waits.
+        waiters.includes(w) ? Effect.andThen(w.onLog(text), w.onWaiting(reason(platform))) : Effect.void
+      ), { discard: true })
+
+  /**
+   * Wakes a sleeper's host in a fiber of its own, which outlives the job that asked: other jobs wait for
+   * the agent too, and the wake on record has to settle before another starts.
+   */
+  const wake = (sleeper: Sleeper, at: number) => {
+    const attempt: Wake = { at, failure: null, connected: false }
+    const fail = (failure: string) =>
+      Effect.gen(function*() {
+        if (wakes.get(sleeper.name) !== attempt || attempt.connected) return
+        attempt.failure = failure
+        yield* Effect.logWarning(failure)
+        yield* tell(sleeper.platform, failure)
+      })
+    const failed = (why: string) => fail(`waking ${sleeper.name} failed: ${why.split("\n")[0]}`)
+    return Effect.sync(() => wakes.set(sleeper.name, attempt)).pipe(
+      Effect.andThen(Effect.forkDetach(Effect.gen(function*() {
+        yield* Effect.logInfo(`waking ${sleeper.name}`)
+        yield* tell(sleeper.platform, `waking ${sleeper.name}`)
+        yield* sleeper.wake.pipe(
+          // The host is up, and its agent connects by itself.
+          Effect.andThen(Effect.never),
+          Effect.timeoutOrElse({ duration: wakeTimeout, orElse: () => fail(`${sleeper.name} didn't connect within ${wakeTimeout} of waking it`) }),
+          Effect.catch((error) => failed(error.message)),
+          Effect.catchDefect((defect) => failed(String(defect))),
+        )
+      }))),
+      Effect.uninterruptible,
+    )
+  }
+
+  /**
+   * Wakes the hosts of the platform's sleepers that are away, each once per `wakeEvery` and only after
+   * its last wake brought the agent or failed.
+   */
+  const rouse = (platform: string) =>
+    Effect.gen(function*() {
+      const now = yield* Clock.currentTimeMillis
+      for (const sleeper of sleepers) {
+        if (sleeper.platform !== platform || connections.has(sleeper.name)) continue
+        const last = wakes.get(sleeper.name)
+        const due = last === undefined ||
+          (now - last.at >= Duration.toMillis(wakeEvery) && (last.connected || last.failure !== null))
+        if (due) yield* wake(sleeper, now)
+      }
+    })
+
   return {
     run: (job, platform, options) =>
       Effect.gen(function*() {
-        const waiter: Waiter = { job, platform, placed: Deferred.makeUnsafe<Placed>() }
+        const waiter: Waiter = {
+          job,
+          platform,
+          placed: Deferred.makeUnsafe<Placed>(),
+          onWaiting: options?.onWaiting ?? (() => Effect.void),
+          onLog: options?.onLog ?? (() => Effect.void),
+        }
         waiters.push(waiter)
         yield* assign
-        if (options?.wait === false && waiters.includes(waiter)) {
+        const waits = waiters.includes(waiter)
+        if (waits && options?.wait === false) {
           waiters.splice(waiters.indexOf(waiter), 1)
           return -2
         }
-        const p = yield* Deferred.await(waiter.placed).pipe(
+        if (waits) yield* waiter.onWaiting(reason(platform))
+        // While the job waits, no connected agent of its platform has a free slot.
+        const rousing = rouse(platform).pipe(Effect.andThen(Effect.sleep(wakeCheck)), Effect.forever)
+        const p = yield* (waits ? Effect.raceFirst(Deferred.await(waiter.placed), rousing) : Deferred.await(waiter.placed)).pipe(
           Effect.onInterrupt(() => Effect.sync(() => waiters.includes(waiter) && waiters.splice(waiters.indexOf(waiter), 1))),
         )
         if (options?.onPlaced !== undefined) yield* options.onPlaced
@@ -157,6 +263,13 @@ export const make = (secret: string | null, version: number = compatibility): Ag
               else if (p.stopping) Queue.offerUnsafe(orders, { _tag: "Stop", job })
             }
             yield* Effect.logInfo(`agent ${auth.name} (${agent.platform}, ${agent.slots} slots) connected`)
+            const woken = wakes.get(auth.name)
+            if (woken !== undefined && !woken.connected) {
+              woken.connected = true
+              const connected = `${auth.name} connected after ${Math.round(((yield* Clock.currentTimeMillis) - woken.at) / 1000)} s`
+              yield* Effect.logInfo(connected)
+              yield* tell(agent.platform, connected)
+            }
             if (unknown.length > 0) {
               yield* Effect.logWarning(`agent ${auth.name} runs ${unknown.length} workers of jobs this controller doesn't know: it stops them before it gets new jobs`)
             }
@@ -202,5 +315,11 @@ export const make = (secret: string | null, version: number = compatibility): Ag
 
 export const layer = Layer.effect(Agents)(Effect.gen(function*() {
   const config = yield* Config
-  return make(config.agents === null ? null : readFileSync(config.agents.tokenFile, "utf8").trim())
+  const spawner = yield* Exec.SpawnerTag
+  if (config.agents === null) return make(null)
+  const sleepers = config.agents.wake.map(({ command, ...sleeper }) => ({
+    ...sleeper,
+    wake: Exec.run(command).pipe(Effect.provideService(Exec.SpawnerTag, spawner)),
+  }))
+  return make(readFileSync(config.agents.tokenFile, "utf8").trim(), compatibility, sleepers)
 }))

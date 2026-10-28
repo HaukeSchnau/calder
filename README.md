@@ -273,6 +273,15 @@ doesn't know, such as jobs from before its restart, before it gives that agent n
 restarts stops the workers its earlier run left behind before it takes jobs, from the pids it keeps in
 `<workspaces>/.workers`.
 
+The controller wakes agents whose hosts sleep while idle. Its config's `agents.wake` lists them, each
+with its `name`, `platform` and the `command` that wakes its host, such as
+`["systemctl", "start", "calder-wake@tower.service"]`. While a job waits for a platform and no connected
+agent of it has a free slot, the controller runs the command of each listed agent of that platform that
+is away, in the background. It wakes a host at most once per two minutes and waits for one wake to settle
+before the next. The step's wait reason reads `an agent of x86_64-linux to take it; waking tower`, and
+its log says `tower connected after 41 s` once the agent is back. A command that fails, or an agent that
+doesn't connect within three minutes, leaves the step waiting with that reason until a later wake works.
+
 ## Two addresses
 
 The controller listens twice. `listen` is for the private network: Gitea's webhook, agents and their

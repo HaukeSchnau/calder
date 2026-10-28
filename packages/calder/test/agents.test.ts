@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Fiber, Stream } from "effect"
+import { type Duration, Effect, Fiber, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import * as Agents from "../src/controller/Agents.ts"
 import type { AgentOrder } from "../src/Protocol.ts"
 
@@ -10,17 +11,48 @@ const ticks = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }))
 
 const connect = (
   agents: Agents.Agents["Service"],
-  { running = [], compatibility = 1, name = "mac-a", slots = 1 }: { running?: ReadonlyArray<string>; compatibility?: number; name?: string; slots?: number } = {},
+  { running = [], compatibility = 1, name = "mac-a", slots = 1, platform = "aarch64-darwin" }: {
+    running?: ReadonlyArray<string>
+    compatibility?: number
+    name?: string
+    slots?: number
+    platform?: string
+  } = {},
 ) =>
   Effect.gen(function*() {
     const orders: Array<AgentOrder> = []
-    const fiber = yield* agents.connect({ ...auth, name }, { platform: "aarch64-darwin", slots, running, build: "b1", compatibility }).pipe(
+    const fiber = yield* agents.connect({ ...auth, name }, { platform, slots, running, build: "b1", compatibility }).pipe(
       Stream.runForEach((order) => Effect.sync(() => orders.push(order))),
       Effect.forkChild,
     )
     yield* ticks
     return { orders, fiber }
   })
+
+/** The tower, which sleeps while idle; `wake` stands for its wake command, and counts its runs. */
+const sleeping = (wake: Effect.Effect<unknown, { readonly message: string }>) => {
+  const woken = { count: 0 }
+  const tower = { name: "tower", platform: "x86_64-linux", wake: Effect.suspend(() => (woken.count++, wake)) }
+  return { agents: Agents.make("secret", 1, [tower]), woken }
+}
+
+/** A job that waits for an x86_64-linux agent, with what it was told it waits for and its log. */
+const waitFor = (agents: Agents.Agents["Service"], id: string, platform = "x86_64-linux") =>
+  Effect.gen(function*() {
+    const reasons: Array<string> = []
+    const log: Array<string> = []
+    const fiber = yield* Effect.forkChild(agents.run({ id, token: `t${id}` }, platform, {
+      onWaiting: (reason) => Effect.sync(() => void reasons.push(reason)),
+      onLog: (text) => Effect.sync(() => void log.push(text)),
+    }))
+    yield* ticks
+    return { reasons, log, fiber }
+  })
+
+const waking = "an agent of x86_64-linux to take it; waking tower"
+
+/** Moves the test clock and lets what that woke run, such as a wake's own fiber. */
+const later = (duration: Duration.Input) => TestClock.adjust(duration).pipe(Effect.andThen(ticks))
 
 describe("Agents", () => {
   it.effect("a job waits for an agent of its platform with a free slot", () =>
@@ -145,6 +177,77 @@ describe("Agents", () => {
       expect(started).toEqual(["b"])
       yield* agents.exited(auth, "b", 0)
       expect(yield* Fiber.join(waiting)).toBe(0)
+    }))
+
+  it.effect("waiting jobs wake a sleeping agent's host at most once per two minutes, and a failed wake keeps them waiting", () =>
+    Effect.gen(function*() {
+      const { agents, woken } = sleeping(Effect.fail({ message: "systemctl start calder-wake@tower.service exited with 1: Job failed.\nSee the journal." }))
+      const failed = "an agent of x86_64-linux to take it; waking tower failed: systemctl start calder-wake@tower.service exited with 1: Job failed."
+      const a = yield* waitFor(agents, "a")
+      expect(woken.count).toBe(1)
+      expect(a.log).toEqual(["waking tower", "waking tower failed: systemctl start calder-wake@tower.service exited with 1: Job failed."])
+      expect(a.reasons).toEqual(["an agent of x86_64-linux to take it", waking, failed])
+
+      const b = yield* waitFor(agents, "b")
+      expect(b.reasons).toEqual([failed])
+      yield* later("105 seconds")
+      expect(woken.count).toBe(1)
+      yield* later("15 seconds")
+      expect(woken.count).toBe(2)
+      expect(b.reasons.slice(-2)).toEqual([waking, failed])
+
+      const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux", slots: 2 })
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }, { _tag: "Start", job: "b", token: "tb" }])
+      expect(a.log.at(-1)).toBe("tower connected after 0 s")
+    }))
+
+  it.effect("only a job that no connected agent of its platform takes wakes that platform's sleepers", () =>
+    Effect.gen(function*() {
+      const { agents, woken } = sleeping(Effect.void)
+      expect(yield* agents.run({ id: "offloaded", token: "to" }, "x86_64-linux", { wait: false })).toBe(-2)
+      yield* connect(agents, { name: "srv-x", platform: "x86_64-linux" })
+      const a = yield* waitFor(agents, "a")
+      expect(a.reasons).toEqual([])
+      yield* waitFor(agents, "mac", "aarch64-darwin")
+      yield* later("5 minutes")
+      expect(woken.count).toBe(0)
+
+      const b = yield* waitFor(agents, "b")
+      expect(woken.count).toBe(1)
+      expect(b.reasons.at(-1)).toBe(waking)
+    }))
+
+  it.effect("a woken agent says how long it took to connect, and takes the waiting jobs", () =>
+    Effect.gen(function*() {
+      const { agents, woken } = sleeping(Effect.void)
+      const a = yield* waitFor(agents, "a")
+      yield* later("40 seconds")
+      const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux" })
+      expect(a.log).toEqual(["waking tower", "tower connected after 40 s"])
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
+
+      yield* Fiber.interrupt(tower.fiber)
+      yield* agents.exited({ ...auth, name: "tower" }, "a", 0)
+      expect(yield* Fiber.join(a.fiber)).toBe(0)
+      // Within two minutes of the last wake the host isn't woken again; the job checks every 15 s.
+      yield* waitFor(agents, "b")
+      yield* later("75 seconds")
+      expect(woken.count).toBe(1)
+      yield* later("15 seconds")
+      expect(woken.count).toBe(2)
+    }))
+
+  it.effect("a wake whose agent doesn't connect in time keeps the job waiting and is tried again", () =>
+    Effect.gen(function*() {
+      const { agents, woken } = sleeping(Effect.never)
+      const a = yield* waitFor(agents, "a")
+      yield* later("179 seconds")
+      expect(woken.count).toBe(1)
+      expect(a.reasons.at(-1)).toBe(waking)
+      yield* later("16 seconds")
+      expect(a.log).toEqual(["waking tower", "tower didn't connect within 3 minutes of waking it", "waking tower"])
+      expect(woken.count).toBe(2)
+      expect(a.reasons.at(-1)).toBe(waking)
     }))
 
   it.effect("agents need the secret", () =>

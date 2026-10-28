@@ -78,7 +78,17 @@ export const ConfigSchema = Schema.Struct({
    */
   egress: Schema.NullOr(Schema.Struct({ allow: Schema.Array(Schema.String), allowPrivate: Schema.Array(Schema.String) })),
   /** Agents on other hosts authenticate with the secret in this file. Without it none may connect. */
-  agents: Schema.NullOr(Schema.Struct({ tokenFile: Schema.String })),
+  agents: Schema.NullOr(Schema.Struct({
+    tokenFile: Schema.String,
+    /**
+     * Agents whose hosts sleep while idle. While a job waits for `platform` and no connected agent of it
+     * has a free slot, the controller runs `command`, such as `systemctl start calder-wake@tower.service`,
+     * for each one that is away, at most once per two minutes. The agent `name` connects once its host is up.
+     */
+    wake: Schema.Array(Schema.Struct({ name: Schema.String, platform: Schema.String, command: Schema.NonEmptyArray(Schema.String) })).pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed([])),
+    ),
+  })),
   projects: Schema.Record(Schema.String, ProjectConfig),
   retention: Schema.Struct({
     /** Days a finished run keeps its steps, tests and results (see `Db.prune`). */
