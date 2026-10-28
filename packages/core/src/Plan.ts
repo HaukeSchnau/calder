@@ -24,7 +24,11 @@ export interface PlannedStep {
   readonly target: boolean
   /** Downstream of an action, so its result is never reused. */
   readonly neverReuse: boolean
-  /** A task of a preview rule that reads secrets: a same-repo pull request's run grants them. */
+  /**
+   * A step only a preview rule reaches that a same-repo pull request runs as a trusted job: a task that
+   * reads secrets, which the run grants, or an action, such as one that waits for the preview's readiness
+   * on the private network.
+   */
   readonly preview: boolean
 }
 
@@ -206,7 +210,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
         required: unique(implicit),
         target: targets.has(step.name),
         neverReuse: step.kind === "action" || upstream.some((p) => p.kind === "action" || p.neverReuse),
-        preview: trust === "pr" && preview && hasGrants(step),
+        preview: trust === "pr" && preview && (hasGrants(step) || step.kind === "action"),
       })
       state.set(step.name, "done")
       order.push(step.name)

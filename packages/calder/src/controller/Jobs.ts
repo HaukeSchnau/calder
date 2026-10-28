@@ -31,8 +31,11 @@ export interface ActiveJob {
   readonly samples: Array<Sample>
   /** Closes when the job ends, however it ends, which releases what the job holds, such as its deploy lease. */
   readonly scope: Scope.Closeable
-  /** Set by the RPC server while the job holds a deploy lease: the project, its app and its endpoints. */
-  lease: { readonly project: string; readonly app: string; readonly targets: ReadonlyArray<string> } | undefined
+  /**
+   * Set by the RPC server while the job holds a deploy lease: the project, its app and its promotion
+   * endpoints, which a task that deploys through its own tool has none of (null).
+   */
+  lease: { readonly project: string; readonly app: string; readonly targets: ReadonlyArray<string> | null } | undefined
 }
 
 export interface Usage {
@@ -84,6 +87,12 @@ const groupId = (name: string) => {
   return line === undefined ? undefined : Number(line.split(":")[2])
 }
 
+/**
+ * The group systemd workers run in, which needs the controller's sockets and token files. Workers in
+ * process mode are the controller's own children, whose user may not hand files to that group.
+ */
+export const workersGroup = (mode: "systemd" | "process") => (mode === "systemd" ? groupId("calder-workers") : undefined)
+
 const parseCpuUsec = (stat: string) => Number(/usage_usec (\d+)/.exec(stat)?.[1] ?? 0)
 const readNumber = (path: string) => {
   try {
@@ -116,7 +125,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
   mkdirSync(jobsDir, { recursive: true, mode: 0o751 })
   // systemd creates the runtime directory with the controller's own group; workers need to reach the
   // socket and their token files in it.
-  const workers = groupId("calder-workers")
+  const workers = workersGroup(config.jobs.mode)
   if (workers !== undefined) {
     chownSync(config.runtimeDir, process.getuid!(), workers)
     chmodSync(config.runtimeDir, 0o750)

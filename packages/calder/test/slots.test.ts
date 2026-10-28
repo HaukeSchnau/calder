@@ -129,4 +129,26 @@ describe("Slots", () => {
       expect(order).toEqual(["busy"])
       expect(slots.usage().running).toBe(0)
     }))
+
+  it.effect("starts a deploy's critical step in the lane while long checks hold every slot, and says why others wait", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 2, perProject: 1, lane: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      yield* job("test-server", { project: "t3code", expected: minutes(20), run: 0, label: "t3code-452 test-server" })
+      yield* job("lint", { project: "studienbuch", expected: minutes(1), run: 0, label: "studienbuch-21 lint" })
+      yield* Effect.yieldNow
+      const check = { project: "studienbuch", expected: minutes(1), run: 0 }
+      expect(slots.waitsFor(check)).toBe("2 of 2 busy: t3code-452 test-server, studienbuch-21 lint")
+      yield* job("test-web", check)
+      yield* job("deploy-pr", { project: "studienbuch", expected: minutes(1), run: 0, critical: true, label: "studienbuch-21 preview" })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["test-server", "lint", "deploy-pr"])
+      // The lane is full now, so the next critical step waits, ahead of the check.
+      expect(slots.waitsFor({ ...check, critical: true })).toBe("3 of 2 (+1 for deploys) busy: t3code-452 test-server, studienbuch-21 lint, studienbuch-21 preview")
+      yield* job("ready-pr", { project: "studienbuch", expected: minutes(1), run: 0, critical: true })
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(hold, undefined)
+      yield* Effect.yieldNow
+      expect(order.slice(3)).toEqual(["ready-pr", "test-web"])
+    }))
 })

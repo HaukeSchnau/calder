@@ -132,7 +132,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       const seq = live.seq()
       const [run] = yield* db(Rows.runsWithCounts([row]))
       const expected = yield* estimates.steps(row.project)
-      const steps = (yield* db(Rows.loadSteps(id))).map((s) => Rows.step(s, expected.get(s.name) ?? null))
+      const steps = Rows.withReasons((yield* db(Rows.loadSteps(id))).map((s) => Rows.step(s, expected.get(s.name) ?? null)))
       const failing = yield* db(sql<Rows.TestRow>`select * from tests where run_id = ${id} and status in ('failed', 'timeout')
         and superseded = 0 limit 200`)
       const flaky = yield* flakyKeys(row.project, failing)

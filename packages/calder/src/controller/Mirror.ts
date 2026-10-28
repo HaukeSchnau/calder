@@ -18,6 +18,8 @@ export interface CommitInfo {
   readonly author: string
   readonly timestamp: number
   readonly changeId: string | null
+  /** The commit's root tree. */
+  readonly tree: string
 }
 
 /**
@@ -146,6 +148,7 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
         author: m?.[1] ?? author,
         timestamp: Number(m?.[2] ?? 0) * 1000,
         changeId: field("change-id") ?? null,
+        tree: field("tree") ?? "",
       }
     })
 

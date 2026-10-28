@@ -259,14 +259,26 @@ const status = Command.make("status", { run: runId, url }, ({ run, url }) =>
     const client = yield* Remote.client
     const detail = yield* client.run({ id: run })
     const r = detail.run
+    const now = Date.now()
+    const total = Cli.took((r.finishedAt ?? now) - r.createdAt)
     yield* Console.log(`${r.project} #${r.number} ${r.status}${r.error ? `: ${r.error}` : ""}  ${r.commit.sha.slice(0, 12)} ${r.commit.title}`)
-    for (const step of detail.steps) {
-      if (step.kind === "output") continue
-      yield* Console.log(Cli.stepLine(step))
+    const steps = detail.steps
+    const critical = steps.filter((s) => s.critical === true && s.queuedAt !== null && s.startedAt !== null)
+    yield* Console.log([
+      r.finishedAt === null ? `  ${total} so far` : `  took ${total}`,
+      r.plannedAt == null ? null : `planned in ${Cli.took(r.plannedAt - r.createdAt)}`,
+      critical.length === 0 ? null : `the critical path (·) waited ${Cli.took(critical.reduce((sum, s) => sum + s.startedAt! - s.queuedAt!, 0))} for slots`,
+    ].filter((part) => part !== null).join("; "))
+    const rows = Cli.timings(steps, now)
+    const lines = Cli.table(rows)
+    for (const [i, step] of steps.filter((s) => s.kind !== "output").entries()) {
+      yield* Console.log(`  ${lines[i]!.trimEnd()}${Domain.unneeded(step) ? " (not needed: no task that starts from it ran)" : ""}`)
       for (const o of step.outputs) yield* Console.log(`    ${o.name}: ${url.replace(/\/$/, "")}/${Domain.outputPath(r.id, step.name, o.name)}`)
     }
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
-    Command.withDescription("Show a run's steps, why the failed ones failed, and links to their outputs"),
+    Command.withDescription(
+      "Show a run's steps with how long each waited and ran, what waiting ones wait for, why failed ones failed, and links to their outputs",
+    ),
   )
 
 /** `calder logs <run> [step]`: the output of a step, or of every step with its name in front. */

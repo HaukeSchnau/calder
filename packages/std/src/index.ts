@@ -1,5 +1,6 @@
 export * as Alchemy from "./Alchemy.ts"
 export * as Bun from "./Bun.ts"
+export * as Environments from "./Environments.ts"
 export * as Gitea from "./Gitea.ts"
 export * as Npm from "./Npm.ts"
 export * as Pnpm from "./Pnpm.ts"

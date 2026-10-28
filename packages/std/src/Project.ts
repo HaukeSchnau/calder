@@ -1,5 +1,6 @@
 import { Action, type Base, type Files, type Flake, Calder, Nix, On, type Step } from "@calder-ci/core"
 import * as Alchemy from "./Alchemy.ts"
+import * as Environments from "./Environments.ts"
 import * as Release from "./Release.ts"
 
 /** The parts of `.calder/flake.ts` the standard pipeline reads. */
@@ -87,18 +88,20 @@ export interface AlchemyOptions<A = void> {
 /**
  * The pipeline of a project its Alchemy stack deploys: pull requests and pushes run the checks, and
  * the default branch deploys the production stage once they passed. With `previews`, a same-repo pull
- * request deploys a stage of its own after its checks, and closing it removes the stage.
+ * request deploys a stage of its own after its checks, and closing it removes the stage. A preset of
+ * `Environments.project`, which composes environments, previews before checks and readiness.
  */
 export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project => {
   const flakeChecks = Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name }))
   const checks = [...flakeChecks, ...(options.checks ?? [])]
   const branch = options.defaultBranch ?? "main"
-  const shared = options.shared === undefined ? {} : { shared: options.shared }
-  const nightly = options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)]
-  const deploy = Alchemy.deploy(options.stack, { stage: options.production ?? "prod", after: checks })
-  const previews = options.previews === undefined ? [] : [
-    On.preview(Alchemy.preview(options.stack, { url: options.previews.url, after: checks })),
-    On.pullRequestClosed([Alchemy.destroy(options.stack)]),
-  ]
-  return Calder.project({ ...shared, rules: [On.pullRequest(checks), ...previews, On.push(branch, [deploy]), ...nightly] })
+  return Environments.project({
+    stack: options.stack,
+    checks,
+    ...(options.previews === undefined ? {} : { previews: { url: options.previews.url, after: checks } }),
+    environments: { [options.production ?? "prod"]: { on: { push: branch }, after: checks } },
+    defaultBranch: branch,
+    ...(options.shared === undefined ? {} : { shared: options.shared }),
+    ...(options.nightly === undefined ? {} : { nightly: options.nightly }),
+  })
 }

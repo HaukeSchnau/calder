@@ -100,10 +100,10 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
       const id = `${input.project}-${number}`
       const now = Date.now()
       yield* db(sql`insert into runs (id, project, number, event, sha, branch, pr, title, commit_title, author, change_id, commit_time,
-          trust, status, created_at, trace_id, span_id, fork)
+          trust, status, created_at, trace_id, span_id, fork, tree)
         values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
           ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
-          ${input.fork === true ? 1 : 0})`)
+          ${input.fork === true ? 1 : 0}, ${commit.tree === "" ? null : commit.tree})`)
 
       // A newer revision of the same pull request or branch makes runs of older ones pointless. A revision
       // is as old as its first run there, so a rerun or a trigger of an older one replaces nothing.

@@ -31,7 +31,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.
   Builds for another system than the controller's, which Nix sends to remote builders, take build
-  slots of their own per system, so a remote builder that admits nothing stalls only its system's builds.
+  slots of their own per system, as many per builder host of it (`/etc/nix/machines`) as the
+  controller has, so a remote builder that admits nothing stalls only its system's builds.
   Flake inputs that name another project's repository (`git+ssh` or `git+https` on the forge) come
   from Calder's mirror of it, in plans, builds and tasks alike, so a flake with private inputs
   evaluates without credentials, also in a pull request's sandbox. Agents fetch inputs themselves.
@@ -78,7 +79,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
   secret the project doesn't configure dies saying so. ``cmd`... ${Cmd.pullRequest}` `` passes the
   run's pull-request number. `lease: true` makes a trusted task hold the project's deploy lease while
-  it runs, like `Release.promote`: one deploy at a time, and latest wins per step. Once the same step of a
+  it runs, like `Release.promote`: one deploy at a time, and latest wins per step. Holding it, the task
+  doesn't run on a push once the branch moved past the run's revision (it is skipped), publishes the store
+  paths its command interpolates to the binary cache, each pinned as that step's release, and gets the
+  lease's fencing token as `FLEET_FENCE` for whatever it deploys to. Once the same step of a
   newer run held the lease, an older run's step is skipped instead of running; another step of a newer run,
   or the same step still waiting for its turn, replaces nothing, so a deploy that waits for a slow build
   still happens when its turn comes. Deploys of the same run take the lease in turn. Who holds the lease
@@ -92,20 +96,68 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`calder/<step>`).
 
+Steps wait for a slot of their kind: plans, builds, tasks and actions each have a number the controller's
+`jobs.slots` sets. A step that deploys (a task with `lease`, an action with a deploy grant, a preview's
+task or action) and every step it depends on is on the critical path: it goes before other steps waiting
+for the same kind of slot, and may take one slot beyond the number, so a preview never queues behind a
+long check. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
+comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
+
+A plan evaluates the flake once per revision. A commit with the same root tree as the last one planned,
+such as the merge of a pull request that was up to date, reuses its derivations unless they mention that
+commit (`self.rev`, `self.shortRev`, `self.lastModified` or `self.lastModifiedDate`), so its plan
+evaluates nothing. Put the revision into what a deploy hands the service rather than into a build, and a
+merge reuses the pull request's builds too.
+
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch
 is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
-and home. Actions with grants and tasks with `lease` stay refused. `On.pullRequestClosed` rules run when
+and home, and so does a preview's action, such as one that waits for the preview to be ready on the
+private network; it keeps the pull request's services. Actions with grants and tasks with `lease` stay
+refused.
+
+What steps of a pull request's run say with `PullRequest.comment`, such as a preview's URL, goes into
+Calder's one comment on the pull request, with how long after the push each said it. Once a pull request
+has that comment, Calder keeps it up to date with its newest run: each step's status, what a waiting step
+waits for, how long each waited for a slot and ran, how long the run planned, and how long the steps on the
+critical path queued. `On.pullRequestClosed` rules run when
 a pull request is merged or closed, as a trusted run of the base branch's head that knows the pull
 request's number, such as to remove its preview. `calder plan --event closed:<n>` shows them.
 
-`Project.alchemy` from `@calder-ci/std` is the pipeline of a repository its [Alchemy](https://alchemy.run)
-stack deploys. The default branch deploys the production stage (`Alchemy.deploy`, holding the lease)
-once the checks passed; with `previews`, same-repo pull requests deploy a stage `pr-<n>` of their own
-and comment its URL (`Alchemy.preview`), and closing them destroys it (`Alchemy.destroy`). The project's
+`Environments.project` from `@calder-ci/std` is the pipeline of a repository whose [Alchemy](https://alchemy.run)
+stack deploys its environments. An environment is a stage of the stack, named by its key, and deploys
+when its trigger fires: pushes to a branch (`{ push: "main" }`) or `calder trigger --inputs` with
+matching inputs (`{ manual: { release: Schema.Literal("prod") } }`). Its deploy (`deploy-<stage>`,
+`Alchemy.deploy`) holds the lease, waits for what `after` names and hands the stack the `artifacts`, each
+store path in its environment variable; with `readiness`, a URL from the stack's outputs, `ready-<stage>`
+then waits until that URL's JSON `revision` reports the run's commit. `then` adds steps after it, such
+as an OTA update. Pull requests run the `checks` and build the artifacts; with `previews`, a same-repo
+pull request deploys stage `pr-<n>` as soon as its artifacts are built (not after the checks, unless
+`previews.after` says so), links it in Calder's comment once it's ready, and closing it destroys the stage.
+
+```ts
+export default Environments.project({
+  stack: { shell, dir: "deploy", env: "cloudflare", setup: Pnpm.install({ shell, dir: "deploy", name: "deploy-install" }),
+    secrets: { FLEET_TOKEN_FILE: "placement-token" }, outputs: { name: "Studienbuch", schema: Outputs } },
+  checks,
+  artifacts: { CALDER_BUNDLE: bundle },
+  readiness: (outputs) => outputs.readiness,
+  previews: { url: (_pr, outputs) => outputs.url, then: (deployed) => [e2eWeb(deployed)] },
+  environments: {
+    beta: { on: { push: "main" }, after: checks, then: (deployed) => [ota("beta", deployed)] },
+    prod: { on: { manual: { release: Schema.Literal("prod") } } },
+  },
+  nightly: "0 3 * * *",
+})
+```
+
+`Project.alchemy` is the same with one environment, the production stage the default branch deploys once
+the checks passed, and previews after the checks. The project's
 secret `env` is a dotenv file of the providers' credentials, which the CLI reads with `--env-file`.
-The CLI starts as `pnpm exec alchemy`; a Bun repository sets `runner: "bun"` and installs with
-`Bun.install`, and its steps run `bun alchemy`. A stack whose package has its own lockfile in a
+The CLI is the installed `node_modules/.bin/alchemy`, not `pnpm exec alchemy`, which checks the install
+again first; a Bun repository sets `runner: "bun"` and installs with `Bun.install`, and its steps run
+`bun alchemy`. Tasks keep Node's compile cache in their workspace slot (`NODE_COMPILE_CACHE`), so the
+CLI doesn't compile itself from scratch on every deploy. A stack whose package has its own lockfile in a
 directory, such as a website in `site/`, sets `dir` on the stack and on its install, and the CLI runs
 there.
 
@@ -191,7 +243,8 @@ calder trigger <project> [--branch b]  # runs a branch head on the controller, f
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
 calder runs [project] [--limit n]      # recent runs with their status, event, commit and age
 calder projects                        # the projects and the latest run of each default branch
-calder status <run>                    # a run's steps, with why those that failed did and links to outputs
+calder status <run>                    # a run's steps, how long each waited for a slot and ran, what waiting
+                                     # ones wait for, why failed ones failed, and links to outputs
 calder logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
                                      # until the step ends, or the run without a step
 calder rerun <run> | calder cancel <run>  # run ids look like studienbuch-12
@@ -242,7 +295,7 @@ them, so Nix's garbage collector leaves them alone; reuse skips a result whose o
 | Path | What |
 | --- | --- |
 | `packages/core` | `@calder-ci/core`: the API and the plan engine (`Calder.plan` is pure and testable) |
-| `packages/std` | `@calder-ci/std`: `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
+| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |

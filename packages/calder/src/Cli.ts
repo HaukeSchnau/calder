@@ -55,6 +55,27 @@ export const ago = (ms: number) => {
   return `${span} ago`
 }
 
+/** A duration for people: `12 s`, `1m 52s`. */
+export const took = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`
+}
+
+/**
+ * A run's steps as rows of a table: status, name, how long it waited for a slot and how long it ran, and
+ * what it waits for or why it failed. `·` marks steps on a deploy's or a preview's critical path.
+ */
+export const timings = (steps: ReadonlyArray<Domain.StepRun>, now: number) =>
+  steps.filter((s) => s.kind !== "output").map((s) => [
+    s.status,
+    `${s.name}${s.critical === true ? " ·" : ""}`,
+    s.queuedAt !== null && s.startedAt !== null ? `waited ${took(s.startedAt - s.queuedAt)}` : "",
+    s.startedAt === null ? "" : s.finishedAt === null ? `running ${took(now - s.startedAt)}` : `took ${took(s.finishedAt - s.startedAt)}`,
+    s.status === "pending" || s.status === "queued"
+      ? s.waiting == null ? "" : `waits for ${s.waiting}`
+      : s.error !== null && s.status !== "passed" ? s.error.message.split("\n")[0]! : "",
+  ])
+
 /** Rows as lines with their columns padded to line up. */
 export const table = (rows: ReadonlyArray<ReadonlyArray<string>>) => {
   const widths = rows.reduce<Array<number>>((w, row) => row.map((cell, i) => Math.max(w[i] ?? 0, cell.length)), [])

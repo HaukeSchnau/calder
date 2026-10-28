@@ -5,13 +5,16 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { RunInfo } from "../src/Protocol.ts"
-import { derivations } from "../src/worker/Resolve.ts"
+import { derivations, fromEarlier } from "../src/worker/Resolve.ts"
 
 const run = (flake: string) => ({ flake }) as RunInfo
 const drv = (name: string) => ({ drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}`, system: "x86_64-linux" })
 
-/** Answers `nix eval` with a derivation per attribute and `nix-store --check-validity` with `valid`. */
-const nix = (valid: () => boolean, evaluating = Effect.void) => {
+/**
+ * Answers `nix eval` with a derivation per attribute, `nix-store --check-validity` with `valid` and
+ * `nix-store --query --requisites` with `closure`.
+ */
+const nix = (valid: () => boolean, evaluating = Effect.void, closure: () => ReadonlyArray<string> = () => []) => {
   const calls: Array<string> = []
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.gen(function*() {
@@ -19,7 +22,7 @@ const nix = (valid: () => boolean, evaluating = Effect.void) => {
       calls.push(argv.slice(0, 2).join(" "))
       const evaluates = argv[1] === "eval"
       if (evaluates) yield* evaluating
-      const stdout = evaluates ? JSON.stringify({ a0: drv("a"), a1: null }) : ""
+      const stdout = evaluates ? JSON.stringify({ a0: drv("a"), a1: null }) : argv[1] === "--query" ? closure().join("\n") : ""
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(1),
         exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(evaluates || valid() ? 0 : 1)),
@@ -87,5 +90,29 @@ describe("derivations", () => {
       }
       yield* plan
       expect(calls).toEqual(["nix eval", "nix-store --check-validity"])
+    }))
+
+  it.effect("takes an earlier plan's derivations of the same tree, unless they mention its commit", () =>
+    Effect.gen(function*() {
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
+      // The closure of the earlier derivation: one .drv file, which may mention the commit.
+      const closure = join(dir, "x-bundle.drv")
+      const { calls, spawner } = nix(() => true, Effect.void, () => [closure])
+      const pr = "1".repeat(40)
+      const committed = 1_761_609_600
+      const earlier = { revision: pr, derivations: { a: drv("a"), b: null }, app: "app" }
+      const take = (attrs: ReadonlyArray<string>) =>
+        fromEarlier(earlier, attrs, committed).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+
+      writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`)
+      expect(yield* take(["a", "b"])).toEqual(new Map([["a", drv("a")], ["b", null]]))
+      // A derivation that embeds the commit, such as a version from `self.shortRev` or `self.lastModified`, doesn't carry over.
+      for (const mark of [pr.slice(0, 7), String(committed), "20251028000000"]) {
+        writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1-${mark}")])`)
+        expect(yield* take(["a", "b"])).toBeUndefined()
+      }
+      // Nor does a plan that didn't evaluate every attribute this one needs.
+      expect(yield* take(["a", "c"])).toBeUndefined()
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(0)
     }))
 })
