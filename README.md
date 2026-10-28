@@ -86,7 +86,9 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   step's newest. A check Gitea can't answer within 10 s counts as current. The task gets the lease's
   fencing token as `FLEET_FENCE` for whatever it deploys to. In a pull request's run and when it closes,
   the lease is the pull request's own, so its previews and their removal take turns beside the project's
-  deploys, and a preview deploys only while the pull request is open at the run's revision. `artifacts: { ENV: step }` names store paths a task
+  deploys, and a preview deploys only while the pull request is open at the run's revision. `lease: "<name>"`
+  holds the project's lease of that name instead, `<project>#<name>`, with the same rules, for a deploy that
+  neither waits for the project's others nor holds them up, such as an app store build. `artifacts: { ENV: step }` names store paths a task
   deploys: it waits for those steps, gets each path in its variable, and holding the lease publishes them
   to the binary cache first, outside a pull request each pinned as `<project>-<step>-<variable>`, and
   looks at the head once more. Once the same step of a
@@ -219,10 +221,10 @@ checking that its host resolves the runtime versions CI did. Only eas gets the E
 when a reverted native change sends the update to an older runtime version, which builds of the newer one never
 load. Its value is each platform's update.
 
-The publish and the store builds hold the project's deploy lease: they run one at a time, a newer run's replaces
-an older one's that still waits, and a run whose branch moved on skips them, so an older commit never ships last.
-A store build holds the lease while it builds, which delays the project's other deploys meanwhile; store builds
-run only when the native app changed. Give every step of an app the same `env`, such as `EXPO_PUBLIC_API_URL`:
+The publish and the store builds hold deploy leases of their own, `<project>#ota`, `#testflight` and `#play`:
+each runs one at a time, a newer run's replaces an older one's that still waits, and a run whose branch moved on
+skips it, so an older commit never ships last. None of them waits for the project's environment deploys or holds
+them up. Give every step of an app the same `env`, such as `EXPO_PUBLIC_API_URL`:
 the runtime versions, the export, the publish and the store builds all evaluate the app config, and a variable
 one of them lacks can change its runtime version or bundle.
 

@@ -252,11 +252,11 @@ describe("Expo.publishUpdate", scripts, () => {
     expect(ran.stderr).toContain("eas is missing: add eas-cli to the app's devDependencies")
   })
 
-  it.effect("runs every time holding the deploy lease, after the export, and is named after its channel", () =>
+  it.effect("runs every time holding its own lease, after the export, and is named after its channel", () =>
     Effect.gen(function*() {
       expect(publish.name).toBe("ota-beta")
       expect(task(publish).reuse).toBe("never")
-      expect(task(publish).lease).toBe(true)
+      expect(task(publish).lease).toBe("ota")
       const plan = yield* Calder.plan(Calder.project({ rules: [On.push("main", [publish])] }), Event.push("main"))
       expect(plan.get("ota-beta")?.needs).toEqual(expect.arrayContaining(["install", "ota-export.update", "runtime-ios", "runtime-android"]))
       expect(plan.get("ota-export.update")?.needs).toEqual(["ota-export"])
@@ -301,12 +301,12 @@ describe("Expo.testflight", scripts, () => {
     expect(ran.calls.some((call) => call.includes("-exportArchive"))).toBe(false)
   })
 
-  it("runs on the Mac with the deploy lease, keyed by the runtime version alone, and is the only step with the key", () => {
+  it("runs on the Mac with its own lease, keyed by the runtime version alone, and is the only step with the key", () => {
     const def = task(step)
     expect(def.platform).toBe("aarch64-darwin")
     const elsewhere = { platform: "x86_64-linux" } as const
     expect(task(Expo.testflight({ ...elsewhere, runtime: ios, appId: "123", appStoreConnect })).platform).toBe("aarch64-darwin")
-    expect(def.lease).toBe(true)
+    expect(def.lease).toBe("testflight")
     expect(def.setup).toBeUndefined()
     expect(def.inputs).toEqual(Files.of())
     expect(def.secrets).toEqual({ ASC_PRIVATE_KEY_PATH: Secret.file("asc-key") })
@@ -353,7 +353,7 @@ describe("Expo.playInternal", scripts, () => {
     const mac = Expo.playInternal({ platform: "aarch64-darwin", runtime: android, keystore: "k", password: "p", serviceAccount: "s" })
     expect(task(mac).platform).toBe("aarch64-darwin")
     expect(def.inputs).toEqual(Files.of())
-    expect(def.lease).toBe(true)
+    expect(def.lease).toBe("play")
     expect(Object.keys(def.secrets).sort()).toEqual(["GPLAY_SERVICE_ACCOUNT_JSON", "UPLOAD_KEYSTORE", "UPLOAD_KEYSTORE_PASSWORD"])
   })
 })

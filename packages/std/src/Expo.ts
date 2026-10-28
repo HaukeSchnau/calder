@@ -31,10 +31,11 @@ import { Schema } from "effect"
  * Give every step of an app the same `env`: the runtime versions, the export, the publish and the
  * store builds evaluate the app config, and a variable one of them lacks can change what it computes.
  *
- * The publish and the store builds hold the project's deploy lease, so they run one at a time, a
- * newer run's replaces an older one's that still waits, and a run whose branch moved on skips them.
- * A store build holds it while it builds, which delays the project's other deploys then, but store
- * builds run only when the native app changed.
+ * The publish and the store builds hold deploy leases of their own, `<project>#ota`, `#testflight`
+ * and `#play`: each runs one at a time, a newer run's replaces an older one's that still waits, and a
+ * run whose branch moved on skips it, so an older commit never ships last. None of them waits for the
+ * project's environment deploys or holds them up, although a store build holds its lease for as long
+ * as it builds.
  */
 
 /** Where a step runs: an agent of `platform`, the controller's by default, in the dev shell `shell`. */
@@ -251,7 +252,7 @@ mv "$published" "$value"`
 
 /**
  * Publishes an exported update to the EAS Update channel `channel`, named `ota-<channel>`, for the
- * installed builds whose runtime version matches. It holds the deploy lease, and runs every time its
+ * installed builds whose runtime version matches. It holds the lease `<project>#ota`, and runs every time its
  * rule does, since a revert has to ship too, although an update with its files went out before. It
  * warns when a reverted native change makes it go to an older runtime version. Its value is the update
  * of each platform.
@@ -262,7 +263,7 @@ export const publishUpdate = (options: PublishOptions) => {
     ...hostOf(options),
     setup: options.setup,
     after: options.after ?? [],
-    lease: true,
+    lease: "ota",
     reuse: "never",
     // eas wants --environment only for the variables it bundles with, and the export is bundled already.
     env: { EAS_UPDATE_SKIP_ENVIRONMENT_CHECK: "1", ...options.env },
@@ -283,14 +284,13 @@ export interface StoreBuildOptions extends AppOptions {
 }
 
 /**
- * A store build's toolchain, key and lease: it installs itself, so that a lockfile change alone doesn't
- * build again, and holds the deploy lease, so that uploads happen in the order of their runs.
+ * A store build's toolchain and key: it installs itself, so that a lockfile change alone doesn't build
+ * again. Each store build also holds a lease of its own, so that uploads happen in the order of their runs.
  */
 const storeBuild = (options: StoreBuildOptions) => ({
   ...hostOf(options),
   after: options.after ?? [],
   inputs: options.inputs ?? Files.of(),
-  lease: true as const,
 })
 
 export interface AppStoreConnectKey {
@@ -404,6 +404,7 @@ export const testflight = (options: TestflightOptions) =>
   Task.make(options.name ?? "testflight", {
     ...storeBuild(options),
     platform: "aarch64-darwin",
+    lease: "testflight",
     env: {
       // CocoaPods fails without a UTF-8 locale, and launchd starts agents without one.
       LANG: "en_US.UTF-8",
@@ -499,6 +500,7 @@ export const playInternal = (options: PlayOptions) =>
   Task.make(options.name ?? "play", {
     platform: "x86_64-linux",
     ...storeBuild(options),
+    lease: "play",
     env: { LANG: "en_US.UTF-8", ...options.env },
     secrets: {
       UPLOAD_KEYSTORE: Secret.file(options.keystore),
