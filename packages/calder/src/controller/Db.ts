@@ -241,6 +241,10 @@ export const migrations = {
     yield* sql`create table run_records (run_id text not null, attr text not null, evaluation integer not null,
       primary key (run_id, attr))`
     yield* sql`create index run_records_evaluation on run_records (evaluation)`
+    // Footprints an audit found wrong: a record of the attribute with the same digest isn't kept again,
+    // until the footprint changes.
+    yield* sql`create table record_blocks (project text not null, attr text not null, digest text not null,
+      primary key (project, attr, digest))`
     // Records an audit found wrong: a fresh evaluation of the default branch's head disagreed with them.
     yield* sql`create table audit_mismatches (id integer primary key autoincrement, project text not null, attr text not null,
       revision text not null, detail text not null, at integer not null)`

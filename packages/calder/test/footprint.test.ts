@@ -154,12 +154,16 @@ describe("records", () => {
   it.effect("are read by trusted runs and forks only from trusted runs, and written by no fork", () =>
     Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
-      const keep = (id: string, trust: "pr" | "trusted", fork: 0 | 1, derivation: typeof drv) =>
-        Rows.keepRecords({ project: "app", id, trust, fork }, { ...records, evaluations: [{ ...records.evaluations[0]!, derivation }] })
+      const push = (branch: string) => JSON.stringify({ _tag: "Push", branch })
+      const keep = (id: string, trust: "pr" | "trusted", fork: 0 | 1, derivation: typeof drv, event = push("main")) =>
+        Rows.keepRecords({ project: "app", id, trust, fork, event }, "main", { ...records, evaluations: [{ ...records.evaluations[0]!, derivation }] })
       yield* keep("app-1", "trusted", 0, drv)
-      yield* keep("app-2", "pr", 0, { ...drv, drv: "/nix/store/y-shell.drv" })
-      yield* keep("app-3", "pr", 1, { ...drv, drv: "/nix/store/z-fork.drv" })
+      yield* keep("app-2", "pr", 0, { ...drv, drv: "/nix/store/y-shell.drv" }, JSON.stringify({ _tag: "PullRequest", number: 1 }))
+      yield* keep("app-3", "pr", 1, { ...drv, drv: "/nix/store/z-fork.drv" }, JSON.stringify({ _tag: "PullRequest", number: 2 }))
+      // A push to another branch runs that branch's ci.ts in the trusted worker: it keeps nothing.
+      yield* keep("app-4", "trusted", 0, { ...drv, drv: "/nix/store/b-branch.drv" }, push("feature"))
       expect((yield* sql<{ run_id: string }>`select run_id from evaluations order by id`).map((r) => r.run_id)).toEqual(["app-1", "app-2"])
+      expect(Rows.writesRecords({ fork: 0, trust: "trusted", event: JSON.stringify({ _tag: "Schedule", cron: "0 * * * *" }) }, "main")).toBe(true)
       const newest = (trust: "pr" | "trusted", fork: 0 | 1) =>
         Effect.map(Rows.records({ project: "app", trust, fork }), (r) => r?.evaluations.map((e) => e.derivation?.drv))
       // A pull request's ci.ts runs in the worker that records, so what it recorded never reaches a trusted run.
@@ -245,13 +249,30 @@ describe("what a record may be trusted with", () => {
       // A JSON file the evaluation wrote with builtins.toFile has no deriver but is addressed by its text.
       const json = join(dir, "inventory.json")
       writeFileSync(json, "{}")
+      // A copy of the whole source under another name has the source's NAR hash.
+      const copy = "/nix/store/c-src"
+      // A derivation whose input is `builtins.toFile "rev" self.rev`: a text file in its closure names the commit.
+      const rev = join(dir, "rev")
+      writeFileSync(rev, `${src}`)
+      const reads = join(dir, "reads-rev.drv")
+      writeFileSync(reads, `Derive([("out","/nix/store/r-reads","","")],[],["${rev}"],"x86_64-linux","/bin/sh",[],[])`)
+      const requisites: Record<string, ReadonlyArray<string>> = { [reads]: [reads, rev] }
       const { spawner } = answering({
-        "nix-store --query": { stdout: (argv) => argv[2] === "--deriver" ? argv.slice(3).map((p) => derivers[p] ?? "unknown-deriver").join("\n") : argv.at(-1)! },
-        "nix path-info": { stdout: JSON.stringify({ [json]: { ca: "text:sha256:x", references: [] }, "/nix/store/u-unknown": { ca: null } }) },
+        "nix-store --query": {
+          stdout: (argv) => argv[2] === "--deriver" ? argv.slice(3).map((p) => derivers[p] ?? "unknown-deriver").join("\n") : (requisites[argv.at(-1)!] ?? [argv.at(-1)!]).join("\n"),
+        },
+        "nix path-info": {
+          stdout: JSON.stringify({
+            [json]: { ca: "text:sha256:x", references: [], narHash: "sha256-json=" },
+            "/nix/store/u-unknown": { ca: null },
+            [copy]: { ca: "fixed:r:sha256:y", references: [], narHash: "sha256-source=" },
+            [rev]: { ca: "text:sha256:z", references: [], narHash: "sha256-rev=" },
+          }),
+        },
       })
       const recorder = {
         source: src, url: "", revision: "a", at: files({}), marks: [src], pinned: new Set(["/nix/store/n-nixpkgs"]),
-        context: "nix", nonce, read: () => Effect.succeed(new Map<string, string>()),
+        context: "nix", nonce, narHash: "sha256-source=", read: () => Effect.succeed(new Map<string, string>()),
       }
       const candidate = (attr: string, outside: ReadonlyArray<string>) => ({ attr, index: 0, count: 0, entries: [], derivation: null, outside })
       const kept = yield* vetted(recorder, [
@@ -260,6 +281,8 @@ describe("what a record may be trusted with", () => {
         candidate("reads-nixpkgs", ["/nix/store/n-nixpkgs"]),
         candidate("reads-plain", ["/nix/store/p-plain"]),
         candidate("reads-a-written-file", [json]),
+        candidate("reads-a-copy-of-the-source", [copy]),
+        { ...candidate("builds-from-the-commit's-rev", []), derivation: { drv: reads, out: "/nix/store/r-reads", system: "x86_64-linux" } },
       ]).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
       expect(kept.map((c) => c.attr)).toEqual(["reads-nixpkgs", "reads-plain", "reads-a-written-file"])
     }))

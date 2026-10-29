@@ -145,9 +145,15 @@ from `self`), mentions its commit or the whole source (`self.rev`, `self.lastMod
 its footprint read a file mentioning `revCount`. Commit metadata transformed in code, such as
 `hashString "sha256" self.rev` or `self.${"rev" + "Count"}`, isn't detected: keep it out of what builds
 read, or such a record carries one commit's value to the next until the audit catches it. An evaluation
-the recorder can't follow (a path it can't attribute, a file inside a submodule, a store path whose
-deriver Nix doesn't know, no strace, as on darwin) records nothing, so those attributes evaluate every
-time. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
+the recorder can't follow (a path it can't attribute, a file inside a submodule, no strace, as on darwin)
+records nothing, so those attributes evaluate every time. A store path the evaluation read whose deriver
+Nix doesn't know keeps the record only when it is content-addressed (a `builtins.toFile` result, a fixed
+download), refers to no copy of the source, and its text doesn't name the commit; a path whose NAR hash
+is the source's (`builtins.path { path = self; name = "src"; }`) counts as the whole source, in what was
+read and in a derivation's closure. Records come only from the default branch's runs (pushes, schedules,
+manual runs) and same-repo pull requests: a push to another branch runs that branch's ci.ts in the trusted
+worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
+changes. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
 runs and forks' runs take only trusted runs' records, since a pull request's ci.ts runs in the worker
 that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing.
 Every night, and on `calder audit <project>`, the controller evaluates each default branch's head afresh,

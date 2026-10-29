@@ -337,7 +337,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       // Footprints go to their own tables, not into the stored plan.
       const { recorded, mismatches: _, ...planned_ } = result.plan
-      if (recorded !== undefined) yield* db(Rows.keepRecords(run, recorded))
+      if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
       for (const [attr, evaluation] of Object.entries(result.plan.fromRecords ?? {})) {
         yield* db(sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`)
       }
@@ -1356,6 +1356,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         // The runs whose plans took this record, such as deploys that may have shipped the wrong derivation.
         const used = m.record === undefined ? [] : yield* db(sql<{ run_id: string }>`select run_id from run_records
           where evaluation = ${m.record} order by run_id`)
+        // Until its footprint changes, the attribute isn't recorded again: it would be wrong again.
+        if (m.record !== undefined) {
+          yield* db(sql`insert into record_blocks (project, attr, digest) select project, attr, digest from evaluations
+            where id = ${m.record} on conflict do nothing`)
+        }
         yield* db(sql`delete from evaluations where project = ${project} and attr = ${m.attr}`)
         yield* db(sql`insert into audit_mismatches (project, attr, revision, detail, at)
           values (${project}, ${m.attr}, ${sha}, ${JSON.stringify({ ...m, runs: used.map((u) => u.run_id) })}, ${Date.now()})`)

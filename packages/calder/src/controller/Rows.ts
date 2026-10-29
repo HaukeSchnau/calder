@@ -296,13 +296,27 @@ export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
   }).pipe(Effect.orDie)
 
 /**
- * Keeps what a plan recorded, unless its run is a fork's, and the newest three records per attribute of
- * the project with them.
+ * Whether a run's records may be kept: a pull request's (same-repo only) as pull-request trust, and of
+ * trusted runs only the default branch's (its pushes, schedules and manual runs). A push to another branch
+ * runs that branch's ci.ts in the trusted worker, so it could forge one.
  */
-export const keepRecords = (run: Pick<RunRow, "project" | "fork" | "trust" | "id">, recorded: Records) =>
+export const writesRecords = (run: Pick<RunRow, "fork" | "trust" | "event">, defaultBranch: string | undefined) => {
+  if (run.fork === 1) return false
+  if (run.trust === "pr") return true
+  const event = JSON.parse(run.event) as Domain.Event
+  return event._tag === "Schedule" || event._tag === "Manual" || (event._tag === "Push" && event.branch === defaultBranch)
+}
+
+/**
+ * Keeps what a plan or build recorded, if its run may write records (`writesRecords`), except records an
+ * audit blocked, and the newest three records per attribute of the project with them.
+ */
+export const keepRecords = (run: Pick<RunRow, "project" | "fork" | "trust" | "id" | "event">, defaultBranch: string | undefined, recorded: Records) =>
   Effect.gen(function*() {
-    if (run.fork === 1 || recorded.evaluations.length === 0) return
+    if (!writesRecords(run, defaultBranch) || recorded.evaluations.length === 0) return
     const sql = yield* SqlClient.SqlClient
+    const blocked = new Set((yield* sql<{ attr: string; digest: string }>`select attr, digest from record_blocks
+      where project = ${run.project}`).map((b) => `${b.attr}\0${b.digest}`))
     const now = Date.now()
     yield* sql.withTransaction(Effect.gen(function*() {
       const ids = new Map<string, number>()
@@ -313,7 +327,7 @@ export const keepRecords = (run: Pick<RunRow, "project" | "fork" | "trust" | "id
       }
       for (const e of recorded.evaluations) {
         const footprint = ids.get(e.footprint)
-        if (footprint === undefined) continue
+        if (footprint === undefined || blocked.has(`${e.attr}\0${e.digest}`)) continue
         yield* sql`insert into evaluations (project, attr, footprint, count, digest, derivation, app, trust, run_id, created_at)
           values (${run.project}, ${e.attr}, ${footprint}, ${e.count}, ${e.digest},
             ${e.derivation === null ? null : JSON.stringify(e.derivation)}, ${e.app === undefined ? null : JSON.stringify(e.app)},

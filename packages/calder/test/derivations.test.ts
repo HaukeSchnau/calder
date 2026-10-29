@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Option, Sink, Stream } from "effect"
+import { Effect, Option, PlatformError, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { RunInfo } from "../src/Protocol.ts"
 import * as Footprint from "../src/worker/Footprint.ts"
@@ -37,6 +37,8 @@ const nix = (
     readonly broken?: boolean
     /** Nix succeeds without reporting any attribute, as a Nix whose trace output changed would. */
     readonly silent?: boolean
+    /** The command (nix, or strace in front of it) is killed by a signal before the flake loads. */
+    readonly killed?: "nix" | "strace"
   } = {},
 ) => {
   const calls: Array<string> = []
@@ -52,6 +54,24 @@ const nix = (
       held.set(pid, GiB / 4)
       let stderr: Stream.Stream<Uint8Array> = Stream.empty
       let exit: Effect.Effect<number> = Effect.succeed(evaluates || valid() ? 0 : 1)
+      if (options.killed !== undefined && argv[0] === options.killed && (argv[1] === "eval" || argv[0] === "strace")) {
+        calls[calls.length - 1] = argv.slice(0, 2).join(" ")
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(pid),
+          exitCode: Effect.fail(PlatformError.systemError({
+            _tag: "Unknown", module: "ChildProcess", method: "exitCode", cause: new Error("Process interrupted due to receipt of signal: 'SIGKILL'"),
+          })),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          stdin: Sink.drain,
+          stdout: Stream.empty,
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+          unref: Effect.succeed(Effect.void),
+        })
+      }
       if (evaluates) {
         yield* options.evaluating ?? Effect.void
         const asked = [...argv.at(-1)!.matchAll(/\(report \d+ f\.(\S+)\)/g)].map((m) => m[1]!)
@@ -269,6 +289,22 @@ describe("evaluating within the job's memory", () => {
       expect((yield* plan).derivations).toEqual(new Map([["shell", drv("shell")]]))
     }))
 
+  it.live("fails fast as too large when nix is killed loading the flake, and falls back when strace is", () =>
+    Effect.gen(function*() {
+      const error = yield* Effect.flip(evaluate(nix(() => true, { killed: "nix" }), ["a"], 3 * GiB))
+      expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/)
+
+      const fake = nix(() => true, { killed: "strace" })
+      const recorder = {
+        source: "/nix/store/x-source", url: "path:/nix/store/x-source?rev=1", revision: "1", at: Footprint.tree([]), marks: [],
+        pinned: new Set<string>(), context: "nix", nonce: "5eed", narHash: "sha256-source=", read: () => Effect.succeed(new Map<string, string>()),
+      }
+      const result = yield* derivations(run("git+file:///mirror"), ["a"], undefined, undefined, unlimited, { recorder })
+        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
+      expect(result.derivations).toEqual(new Map([["a", drv("a")]]))
+      expect(fake.calls.filter((c) => c === "strace -f" || c === "nix eval")).toEqual(["strace -f", "nix eval"])
+    }))
+
   it.live("evaluates as before, recording nothing, when recording what Nix read fails", () =>
     Effect.gen(function*() {
       const fake = nix(() => true)
@@ -281,6 +317,7 @@ describe("evaluating within the job's memory", () => {
         pinned: new Set<string>(),
         context: "nix",
         nonce: "5eed",
+        narHash: "sha256-source=",
         read: () => Effect.succeed(new Map<string, string>()),
       }
       const logged: Array<string> = []

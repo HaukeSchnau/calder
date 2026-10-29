@@ -596,8 +596,9 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
         rmSync(scratch, { recursive: true, force: true })
       }
     })
-    // Killed before the flake loaded, such as strace by a signal: no attribute was in flight.
-    if (exit !== 0 && exit !== "full" && exit !== "over" && !loaded) {
+    // Killed before the flake loaded under the recorder, such as strace by a signal: the recording failed,
+    // and the plan evaluates without it. Without the recorder, loading the flake outgrew the memory.
+    if (exit !== 0 && exit !== "full" && exit !== "over" && !loaded && (exit !== "killed" || recorder !== undefined)) {
       return yield* new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: exit === "killed" ? -1 : exit, stderr: stderr.join("\n") })
     }
     if (exit === 0 && got.length < attrs.length) return yield* unexpected(`${attrs.length - got.length} attributes went unreported`)
@@ -700,6 +701,8 @@ export interface Recorder {
   readonly at: Footprint.Tree
   /** What a derivation that depends on this commit or on the whole source contains (see `marksOf`). */
   readonly marks: ReadonlyArray<string>
+  /** The source's NAR hash: a store path with it is the source under another name. */
+  readonly narHash: string
   /** Store paths a read of which `flake.lock` pins or that are Nix's own: the inputs and Nix's closure. */
   readonly pinned: ReadonlySet<string>
   /** What else decides an evaluation's result (`evaluationContext`), which every digest covers. */
@@ -757,6 +760,7 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
       revision: locked.rev,
       at: Footprint.tree(yield* repo.entries),
       marks: [...marksOf(locked.rev, locked.lastModified), locked.narHash, path],
+      narHash: locked.narHash,
       pinned: new Set([...inputs(archive).filter((p) => p !== path), ...own]),
       context,
       nonce: randomBytes(8).toString("hex"),
@@ -797,7 +801,7 @@ export const vetted = (recorder: Recorder, candidates: ReadonlyArray<Candidate>)
       ...c.outside.filter((p) => !recorder.pinned.has(p) && !byContent.has(p)).map((p) => derivers.get(p) ?? null),
     ]
     const all = [...new Set(candidates.flatMap(roots).filter((d): d is string => d !== null))]
-    const marked = yield* commitBound(all, recorder.marks)
+    const marked = yield* commitBound(all, recorder)
     return candidates.filter((c) =>
       roots(c).every((root) => root !== null && !marked.has(root)) &&
       !c.entries.slice(0, c.count).some(([p, a]) => a === "read" && counting.has(p))
@@ -805,27 +809,24 @@ export const vetted = (recorder: Recorder, candidates: ReadonlyArray<Candidate>)
   })
 
 /**
- * Of `paths`, those that are content-addressed (`ca` text or fixed), refer to nothing but other store paths
- * than the source, and whose text doesn't mention the commit.
+ * Of `paths`, those that are content-addressed (`ca` text or fixed), aren't a copy of the source (its NAR
+ * hash), refer to nothing but other store paths than the source, and whose text doesn't mention the commit.
  */
 const contentAddressed = (paths: ReadonlyArray<string>, recorder: Recorder) =>
   Effect.gen(function*() {
-    if (paths.length === 0) return new Set<string>()
-    const out = yield* Exec.run(["nix", "path-info", "--json", ...paths]).pipe(Effect.orElseSucceed(() => "{}"))
-    const parsed = JSON.parse(out) as Record<string, { readonly ca?: string | null; readonly references?: ReadonlyArray<string> }> |
-      ReadonlyArray<{ readonly path: string; readonly ca?: string | null; readonly references?: ReadonlyArray<string> }>
-    const infos = Array.isArray(parsed) ? parsed : Object.entries(parsed).map(([path, info]) => ({ path, ...info }))
-    return new Set(infos.filter((info) => {
+    const infos = yield* pathInfo(paths)
+    return new Set([...infos].filter(([path, info]) => {
       if (!info.ca?.startsWith("text:") && !info.ca?.startsWith("fixed:")) return false
-      if ((info.references ?? []).includes(recorder.source)) return false
+      // A copy of the whole source under another name is the source.
+      if (info.narHash === recorder.narHash || (info.references ?? []).includes(recorder.source)) return false
       if (!info.ca.startsWith("text:")) return true
       try {
-        const text = readFileSync(info.path, "utf8")
+        const text = readFileSync(path, "utf8")
         return !recorder.marks.some((mark) => text.includes(mark))
       } catch {
         return false
       }
-    }).map((info) => info.path))
+    }).map(([path]) => path))
   })
 
 /** The derivation each store path came from: itself for a derivation, null where Nix doesn't know one. */
@@ -875,31 +876,57 @@ const records = (
   })
 
 /**
- * Of `drvs`, those whose closure contains a derivation mentioning one of `marks`. A closure that can't be
- * read counts as marked, which only costs an evaluation later.
+ * Of `drvs`, those whose closure depends on the commit or the whole source: a derivation in it mentions one
+ * of `recorder.marks`, a text file in it does (`builtins.toFile "rev" self.rev`), or a source in it is a copy
+ * of the whole source under another name (`builtins.path { path = self; name = "src"; }`, whose NAR hash is
+ * the source's). A closure that can't be read counts as bound, which only costs an evaluation later.
  */
-const commitBound = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) =>
+const commitBound = (drvs: ReadonlyArray<string>, recorder: Pick<Recorder, "marks" | "narHash">) =>
   Effect.gen(function*() {
     const closures = yield* Effect.forEach(drvs, (drv) =>
       Exec.run(["nix-store", "--query", "--requisites", drv]).pipe(
-        Effect.map((out) => [drv, out.split("\n").filter((p) => p.endsWith(".drv"))] as const),
+        Effect.map((out) => [drv, out.split("\n").filter(Boolean)] as const),
         Effect.orElseSucceed(() => [drv, null] as const),
       ), { concurrency: 4 })
-    const mentions = new Map<string, boolean>()
-    const mentioning = (path: string) => {
-      let known = mentions.get(path)
+    const mentions = (path: string) => {
+      try {
+        const text = readFileSync(path, "utf8")
+        return recorder.marks.some((mark) => text.includes(mark))
+      } catch {
+        return true
+      }
+    }
+    const sources = [...new Set(closures.flatMap(([, closure]) => (closure ?? []).filter((p) => !p.endsWith(".drv"))))]
+    const infos = yield* pathInfo(sources)
+    const bound = new Map<string, boolean>()
+    const check = (path: string) => {
+      let known = bound.get(path)
       if (known === undefined) {
-        try {
-          const text = readFileSync(path, "utf8")
-          known = marks.some((mark) => text.includes(mark))
-        } catch {
-          known = true
+        if (path.endsWith(".drv")) known = mentions(path)
+        else {
+          const info = infos.get(path)
+          known = info === undefined || info.narHash === recorder.narHash || (info.ca?.startsWith("text:") === true && mentions(path))
         }
-        mentions.set(path, known)
+        bound.set(path, known)
       }
       return known
     }
-    return new Set(closures.filter(([, closure]) => closure === null || closure.some(mentioning)).map(([drv]) => drv))
+    return new Set(closures.filter(([, closure]) => closure === null || closure.some(check)).map(([drv]) => drv))
+  })
+
+/** `nix path-info` of store paths: how each is addressed, its NAR hash and references. */
+const pathInfo = (paths: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    const infos = new Map<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> }>()
+    for (let i = 0; i < paths.length; i += 500) {
+      const out = yield* Exec.run(["nix", "path-info", "--json", ...paths.slice(i, i + 500)]).pipe(Effect.orElseSucceed(() => "{}"))
+      const parsed = JSON.parse(out) as Record<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> } | null> |
+        ReadonlyArray<{ readonly path: string; readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> }>
+      for (const info of Array.isArray(parsed) ? parsed : Object.entries(parsed).map(([path, info]) => ({ path, ...info }))) {
+        if (info !== null) infos.set(info.path, info)
+      }
+    }
+    return infos
   })
 
 /**
