@@ -95,6 +95,43 @@ const groupId = (name: string) => {
  */
 export const workersGroup = (mode: "systemd" | "process") => (mode === "systemd" ? groupId("calder-workers") : undefined)
 
+/** How often a worker's unit may time out starting before its job dies. */
+const startAttempts = 4
+
+/**
+ * Runs `start`, the `systemctl start` of a worker's unit, until the unit started. systemd gives up on
+ * a unit whose start step outlasts its timeout, as on a host whose job slice is out of memory: the
+ * job's code never ran, so the unit starts again after 15 s, 30 s and 60 s, and an error of the host
+ * doesn't become the step's. A unit that failed otherwise may have run, so it doesn't start again.
+ * `result` tells the unit's `Result`. The wait may be interrupted even where the job may not, and so
+ * may a retry's start once it succeeded, so a cancelled deploy stops. Returns why the unit didn't start,
+ * its cause first, since Calder's comment cuts reasons at 120 characters.
+ */
+export const startUnit = <E, R>(
+  start: Effect.Effect<{ readonly exitCode: number; readonly stderr: string }, E, R>,
+  result: Effect.Effect<string, E, R>,
+  log: (text: string) => Effect.Effect<void>,
+) =>
+  Effect.gen(function*() {
+    for (let attempt = 1;; attempt++) {
+      const { exitCode, stderr } = yield* start
+      if (exitCode === 0) {
+        if (attempt > 1) yield* Effect.interruptible(Effect.void)
+        return undefined
+      }
+      const unitResult = (yield* result) || "unknown"
+      const line = stderr.trim().split("\n")[0]!.replace(/\.$/, "") || `systemctl exited with ${exitCode}`
+      const said = /^Job for (\S+) failed because (.+)$/.exec(line)
+      const cause = said?.[2] ?? line
+      const where = said === null ? `result ${unitResult}` : `result ${unitResult}, ${said[1]}`
+      if (unitResult !== "timeout") return `${cause} (${where})`
+      if (attempt === startAttempts) return `${cause}, tried ${startAttempts} times (${where})`
+      const seconds = 15 * 2 ** (attempt - 1)
+      yield* log(`the worker didn't start: ${cause} (${where}); starting it again in ${seconds} s`)
+      yield* Effect.interruptible(Effect.sleep(`${seconds} seconds`))
+    }
+  })
+
 const parseCpuUsec = (stat: string) => Number(/usage_usec (\d+)/.exec(stat)?.[1] ?? 0)
 const readNumber = (path: string) => {
   try {
@@ -313,10 +350,10 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         // Without --no-block this returns once systemd has executed the worker (Type=exec), so the unit
         // is active when the watch below first looks.
         yield* onStart
-        const started = yield* exec(["systemctl", "start", unit(options.pool, id)])
-        if (started.exitCode !== 0) {
-          return { _tag: "Died", message: `could not start the worker: ${started.stderr.trim()}` } satisfies JobResult
-        }
+        const log = (text: string) => options.onEvent({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
+        const unitResult = Effect.map(unitState(options.pool, id), (state) => state.result)
+        const failed = yield* startUnit(exec(["systemctl", "start", unit(options.pool, id)]), unitResult, log)
+        if (failed !== undefined) return { _tag: "Died", message: `could not start the worker: ${failed}` } satisfies JobResult
         const followed = yield* follow(job)
         usage = followed.usage
         return followed.result

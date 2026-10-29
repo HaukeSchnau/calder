@@ -53,7 +53,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   another platform's agents name an install with that `platform` (`Pnpm.install({ platform: "x86_64-linux", name: ... })`).
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
   Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
-  setup keeps. A task is reused
+  setup keeps, and its slot's directory gets the time as its modification time, by which the host's
+  retention removes slots unused for a week. A task is reused
   when its key matches: git tree ids of its inputs (`inputs: Files.workspace(...)`, the whole
   repository by default), its setup's key, the dev shell, the command and the values it interpolates.
   A task with a setup needn't list manifests or lockfiles, since the setup's key covers them. A path
@@ -114,7 +115,10 @@ Steps wait for a slot of their kind: plans, builds, tasks and actions each have 
 `jobs.slots` sets. A project plans one run at a time, so a long plan leaves the other plan slots to other projects and two
 large evaluations never share the jobs' memory. A push to the default branch goes before every plan that
 isn't one, so it waits for at most the plan that runs. A plan that takes longer than 30 minutes is stopped
-and ends its run. A step that deploys (a task with `lease`, an action with a deploy grant, a preview's
+and ends its run. A job whose systemd unit timed out starting, such as when a loaded host keeps the unit's
+start step past systemd's timeout, never ran its code, so it starts again after 15 s, 30 s and 60 s, saying
+so in its log, before its step dies with the unit's result. A unit that failed to start otherwise doesn't
+start again. A step that deploys (a task with `lease`, an action with a deploy grant, a preview's
 task or action) and every step whose value it reads, such as the build it deploys, is on the critical
 path; the controller marks it, and a fork's run has none. Among the projects under their share of slots,
 critical steps go first, and they may take one slot beyond the number, so a preview never queues behind a

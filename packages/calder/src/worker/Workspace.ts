@@ -39,12 +39,13 @@ const remove = (path: string) =>
 const snapshotDir = (root: string) => join(dirname(root), ".deps")
 
 /**
- * Marks a snapshot as just used. A snapshot starts with its slot's modification time, which can be
- * days old, and the cleanup keeps the most recently used ones.
+ * Marks a slot or a snapshot as just used, by its modification time: the host's retention removes
+ * slots unused for seven days, and the cleanup here keeps the most recently used snapshots. A snapshot
+ * or a slot cloned from one starts with the modification time it was taken with, which can be days old.
  */
-const used = (snapshot: string) => {
+const used = (path: string) => {
   const now = new Date()
-  utimesSync(snapshot, now, now)
+  utimesSync(path, now, now)
 }
 
 /**
@@ -75,6 +76,7 @@ export const open = (root: string, deps: string | null) =>
     mkdirSync(cache, { recursive: true })
     const fresh = deps !== null && read(marker) !== deps
     if (fresh) rmSync(marker, { force: true })
+    used(root)
     return { root, src, cache, fresh, restored, snapshots } satisfies Slot
   })
 
