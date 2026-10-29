@@ -148,10 +148,12 @@ footprint records don't cover. Put the revision into what a deploy hands the ser
 reuses the pull request's builds too.
 
 The attributes a plan needs share one `nix eval` while they fit 80% of the plan job's memory (its
-systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once the next attribute might
-not fit, a new one takes over where it stopped: infra's six hosts no longer need 7 GB in one evaluator,
-and its pull requests plan in a 4 GB job. An attribute that doesn't fit even in an evaluator of its own
-fails the plan at once, naming the attribute, instead of swapping. One that fails in a way Nix can't catch,
+systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once it holds more than
+that, a new one takes over from the attribute it was in: infra's six hosts no longer need 7 GB in one
+evaluator. It doesn't stop earlier on a guess, since attributes that share a configuration, such as a
+host's check and the host, add little after the first. An attribute that doesn't fit even in an evaluator
+of its own fails at once, naming the attribute, instead of swapping: a dev shell fails the plan, a build
+its step. One that fails in a way Nix can't catch,
 such as a missing attribute or an input that couldn't be fetched, gets one more try in a new evaluator;
 failing again, it is cached nowhere, its build evaluates it when it runs, and a dev shell's failure fails
 the plan with Nix's reason, since task keys include it. The plan's log says how many evaluators it took
