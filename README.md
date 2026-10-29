@@ -113,7 +113,10 @@ and ends its run. A step that deploys (a task with `lease`, an action with a dep
 task or action) and every step whose value it reads, such as the build it deploys, is on the critical
 path; the controller marks it, and a fork's run has none. Among the projects under their share of slots,
 critical steps go first, and they may take one slot beyond the number, so a preview never queues behind a
-long check. Checks a deploy only waits for (`after`) take their turn like any other. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
+long check. A task's `gate`, steps it waits for like `after`, is on its critical path too, with what those
+read: `Environments.project`'s `previews.after` gates the preview, such as on a smoke test of what it
+deploys. Checks a deploy only waits for (`after`) take their turn like any other, so a push's checks don't
+jump the queue, and `Project.alchemy`'s previews wait for their checks that way. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
 comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
 
 A plan evaluates the flake once per revision. A commit with the same root tree as the last one planned,
@@ -186,7 +189,7 @@ store path in its environment variable; with `readiness`, a URL from the stack's
 then waits until that URL's JSON `revision` reports the run's commit. `then` adds steps after it, such
 as an OTA update. Pull requests run the `checks` and build the artifacts; with `previews`, a same-repo
 pull request deploys stage `pr-<n>` as soon as its artifacts are built (not after the checks, unless
-`previews.after` says so), links it in Calder's comment once it's ready, and closing it destroys the stage.
+`previews.after` gates it on some, which then take the latency lane with it), links it in Calder's comment once it's ready, and closing it destroys the stage.
 
 ```ts
 export default Environments.project({

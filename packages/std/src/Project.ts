@@ -98,10 +98,11 @@ export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project =>
   return Environments.project({
     stack: options.stack,
     checks,
-    ...(options.previews === undefined ? {} : { previews: { url: options.previews.url, after: checks } }),
     environments: { [options.production ?? "prod"]: { on: { push: branch }, after: checks } },
     defaultBranch: branch,
     ...(options.shared === undefined ? {} : { shared: options.shared }),
     ...(options.nightly === undefined ? {} : { nightly: options.nightly }),
+    // Previews wait for every check in its usual turn, unlike `previews.after`, which gates them.
+    ...(options.previews === undefined ? {} : { rules: Environments.preview(options, { url: options.previews.url, after: checks }) }),
   })
 }

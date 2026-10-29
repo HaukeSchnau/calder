@@ -40,6 +40,10 @@ export interface Options<A> {
    */
   readonly previews?: {
     readonly url: (pr: number, outputs: A) => string
+    /**
+     * Steps the preview waits for, on its critical path: they take the latency lane with it, so keep
+     * them few and quick, such as a smoke test of what it deploys.
+     */
     readonly after?: ReadonlyArray<Step.Any>
     /** Steps such as E2E tests against the preview. Like the rest of a pull request's, they may not have grants. */
     readonly then?: (deployed: Step.Step<A, any, any, any, any>) => ReadonlyArray<Step.Step<any, any, any, any, never>>
@@ -69,6 +73,31 @@ export const deploy = <A>(
   return { deployed, ready, last: (ready ?? deployed) as Step.Step<A, any, any, any, any> }
 }
 
+/**
+ * The rules of the previews: a same-repo pull request deploys stage `pr-<number>` on each update and
+ * Calder's comment links it, then closing the pull request destroys the stage. The deploy waits for
+ * `gate` on its critical path and for `after` in their usual turn.
+ */
+export const preview = <A>(
+  options: Pick<Options<A>, "stack" | "artifacts" | "readiness">,
+  preview: Pick<NonNullable<Options<A>["previews"]>, "url" | "then"> & {
+    readonly gate?: ReadonlyArray<Step.Any>
+    readonly after?: ReadonlyArray<Step.Any>
+  },
+) => {
+  const [deployed, link] = Alchemy.preview(options.stack, {
+    url: preview.url,
+    ...(preview.gate === undefined ? {} : { gate: preview.gate }),
+    ...(preview.after === undefined ? {} : { after: preview.after }),
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+    ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
+  })
+  return [
+    On.preview([deployed, link, ...(preview.then?.(link as Step.Step<A, any, any, any, any>) ?? [])]),
+    On.pullRequestClosed([Alchemy.destroy(options.stack)]),
+  ]
+}
+
 const ruleOf = (trigger: Trigger, targets: ReadonlyArray<Step.Any>) =>
   "push" in trigger ? On.push(trigger.push, targets) : On.manual({ inputs: trigger.manual }, targets)
 
@@ -83,19 +112,11 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
   const checks = options.checks ?? []
   const artifacts = Object.values(options.artifacts ?? {})
   const branch = options.defaultBranch ?? "main"
-  const previews = options.previews === undefined ? [] : (() => {
-    const previews = options.previews
-    const [deployed, link] = Alchemy.preview(options.stack, {
-      url: previews.url,
-      ...(previews.after === undefined ? {} : { after: previews.after }),
-      ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
-      ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
-    })
-    return [
-      On.preview([deployed, link, ...(previews.then?.(link as Step.Step<A, any, any, any, any>) ?? [])]),
-      On.pullRequestClosed([Alchemy.destroy(options.stack)]),
-    ]
-  })()
+  const previews = options.previews === undefined ? [] : preview(options, {
+    url: options.previews.url,
+    ...(options.previews.after === undefined ? {} : { gate: options.previews.after }),
+    ...(options.previews.then === undefined ? {} : { then: options.previews.then }),
+  })
   const environments = Object.entries(options.environments).map(([name, environment]) => {
     const stage = Alchemy.stageName(name)
     const { deployed, ready, last } = deploy(options, stage, environment)

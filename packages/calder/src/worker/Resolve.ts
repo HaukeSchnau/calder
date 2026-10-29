@@ -1214,6 +1214,7 @@ export const resolve = (
           exits: p.exits,
           after: p.after,
           required: p.required,
+          ...(p.gates.length === 0 ? {} : { gates: p.gates }),
           target: p.target,
           neverReuse: p.neverReuse || (def._tag === "Task" && def.reuse === "never"),
           build: null,

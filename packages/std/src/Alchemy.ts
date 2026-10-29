@@ -173,6 +173,8 @@ export const preview = <A = void>(
   options: {
     readonly url: (pr: number, outputs: A) => string
     readonly after?: ReadonlyArray<Step.Any>
+    /** Steps the deploy waits for on its critical path, such as a smoke test of what it deploys (`Task.make`'s `gate`). */
+    readonly gate?: ReadonlyArray<Step.Any>
     readonly artifacts?: Artifacts
     readonly readiness?: (outputs: A) => string
   },
@@ -181,6 +183,7 @@ export const preview = <A = void>(
     ...shellOf(stack),
     setup: stack.setup,
     after: options.after ?? [],
+    gate: options.gate ?? [],
     lease: true,
     reuse: "never",
     run: run(stack, "deploy", [{ text: "pr-" }, Cmd.pullRequest]),

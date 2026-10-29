@@ -20,6 +20,8 @@ export interface PlannedStep {
   readonly after: ReadonlyArray<string>
   /** The required checks among `after`, added because the step has grants. */
   readonly required: ReadonlyArray<string>
+  /** The steps among `after` on this one's critical path: a task's `gate`. */
+  readonly gates: ReadonlyArray<string>
   /** Requested by a rule rather than pulled in by another step. */
   readonly target: boolean
   /** Downstream of an action, so its result is never reused. */
@@ -208,6 +210,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
         exits: unique(exits),
         after: unique([...after, ...implicit]),
         required: unique(implicit),
+        gates: def._tag === "Task" ? unique(def.gate.map((s) => canonical(s).name)) : [],
         target: targets.has(step.name),
         neverReuse: step.kind === "action" || upstream.some((p) => p.kind === "action" || p.neverReuse),
         preview: trust === "pr" && preview && (hasGrants(step) || step.kind === "action"),
