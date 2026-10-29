@@ -305,11 +305,8 @@ export const make = (repo: Repo, workspace: ReadonlyArray<string>) =>
     }
 
     return {
-      /** Paths matching the patterns. */
-      match: (patterns: ReadonlyArray<string>) => {
-        const res = patterns.map(Files.globToRegExp)
-        return [...files].filter((f) => res.some((r) => r.test(f))).sort()
-      },
+      /** Paths matching the patterns, without those a `!` pattern matches. */
+      match: (patterns: ReadonlyArray<string>) => [...files].filter(Files.matcher(patterns)).sort(),
       closures,
       closure,
       packageOf,

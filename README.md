@@ -59,7 +59,12 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   A task with a setup needn't list manifests or lockfiles, since the setup's key covers them. A path
   or pattern in a step's files that matches no file fails the plan, since that part of the key would
   never change; `calder plan` checks the working copy for this before you push. Wrap files that may be
-  missing in `Files.optional(...)`. Pull requests and pushes
+  missing in `Files.optional(...)`; as a task's `each`, it lets the patterns match nothing, and the task
+  then has no file to run, which its status says. A glob starting with `!` leaves out what it matches,
+  wherever it stands (`Files.glob("**/*.ts", "!dist/**")`); in `Files.imports` it leaves out starting
+  points, not what the others import. Each include must match a file the negations leave, each negation
+  must remove a file an include matched, and a list of globs without an include fails the plan, optional
+  or not. Pull requests and pushes
   reuse everything by default. Schedules and manual runs (`reuse: "builds"`) run tasks without
   `outputs` again, files of tasks with `each` included. A task with `reuse: "never"` runs every time,
   for checks of the machine rather than the code. When a task's outcome differs from an earlier one
@@ -315,7 +320,10 @@ const testServer = Vitest.files({
 })
 ```
 
-`vitest: ["vp", "test"]` runs it through Vite+, and `before` is a command that runs in `dir` first.
+`vitest: ["vp", "test"]` runs it through Vite+, and `before` is a command that runs in `dir` first. A
+test glob starting with `!` leaves files out, such as those of packages with a vitest config of their own
+(`tests: ["**/*.test.ts", "!apps/server/**"]`), so a new package's tests run without a change to ci.ts.
+`allowEmpty: true` lets the globs match no file, such as in a package before its first test.
 
 ## Commands
 

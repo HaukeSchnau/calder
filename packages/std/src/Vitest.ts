@@ -9,8 +9,16 @@ export interface FilesOptions {
   readonly setup?: Setup.Setup
   /** The package vitest runs in, relative to the repository root. The root by default. */
   readonly dir?: string
-  /** Globs of the test files, relative to `dir`. */
+  /**
+   * Globs of the test files, relative to `dir`. One starting with `!` leaves files out, such as
+   * `!apps/server/**` for a package with a vitest config of its own.
+   */
   readonly tests: ReadonlyArray<string>
+  /**
+   * Lets `tests` match no file, such as in a package before its first test: the step then has no file
+   * to run. Otherwise tests that match nothing fail the plan, in case a pattern is wrong.
+   */
+  readonly allowEmpty?: boolean
   /**
    * What every test file runs with besides its imports: vitest configs and setup files. The setup's
    * key already covers manifests and lockfiles; without a setup, the default is the root ones.
@@ -55,15 +63,17 @@ const script = (before: ReadonlyArray<string>) =>
 export const files = (options: FilesOptions) => {
   const dir = options.dir ?? "."
   const inDir = (path: string) => (dir === "." ? path : `${dir}/${path}`)
+  const pattern = (glob: string) => (glob.startsWith("!") ? `!${inDir(glob.slice(1))}` : inDir(glob))
   const fromDir = (file: string) => (dir !== "." && file.startsWith(`${dir}/`) ? file.slice(dir.length + 1) : file)
   const report = inDir(".vitest-report.json")
+  const each = Files.imports(options.tests.map(pattern), { aliases: options.aliases ?? {} })
   return Task.make(options.name ?? "test", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     ...(options.setup === undefined ? {} : { setup: options.setup }),
     ...(options.inputs === undefined ? {} : { inputs: options.inputs }),
     ...(options.shards === undefined ? {} : { shards: { count: options.shards } }),
     ...(options.env === undefined ? {} : { env: options.env }),
-    each: Files.imports(options.tests.map(inDir), { aliases: options.aliases ?? {} }),
+    each: options.allowEmpty === true ? Files.optional(each) : each,
     run: ({ files }) =>
       cmd`bash -c ${script(options.before ?? [])} vitest ${dir} ${report} ${options.vitest ?? ["vitest"]} run ${options.args ?? []} ${files.map(fromDir)}`,
     report: Report.vitest(report),

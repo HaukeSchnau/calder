@@ -51,6 +51,11 @@ describe("Calder's comment on a pull request", () => {
     ].join("\n"))
   })
 
+  it("says a task whose each matched no file had none, instead of counting it as reused", () => {
+    const body = render({ run, now: at, link: "l", notes: [], steps: [step("test-ui", { status: "reused", files: { total: 0, ran: 0, flaky: 0 } })] })
+    expect(body.split("\n").slice(2)).toEqual(["| Step | Status | Waited | Took |", "| --- | --- | ---: | ---: |", "| test-ui | no files |  |  |"])
+  })
+
   it("keeps an earlier run's preview until the newest run says otherwise", () => {
     const body = render({ run, now: at, link: "l", notes: [{ step: "preview-url", run: { id: "studienbuch-20", number: 20 }, markdown: "Preview: u", at: 0 }], steps: [] })
     expect(body.split("\n").slice(0, 2)).toEqual(["Preview: u", "<sub>from run 20; run 21 hasn't said it yet</sub>"])

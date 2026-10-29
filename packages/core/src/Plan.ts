@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import type { Event } from "./Event.ts"
 import type { Project } from "./Calder.ts"
+import * as Files from "./Files.ts"
 import { matchesBranch, type Reuse, type Rule } from "./On.ts"
 import { dependencies, isStep, type Kind, type Step, taskSecrets } from "./Step.ts"
 
@@ -167,6 +168,13 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       }
       if (def._tag === "Task" && def.each !== undefined && (typeof def.run !== "function" || def.report === undefined)) {
         return fail(`"${step.name}" checks files one by one, so its run must take the shard's files and it needs a report`)
+      }
+      if (def._tag === "Task" || def._tag === "Setup") {
+        const written = def._tag === "Setup" ? [def.inputs] : [def.inputs, def.each, def.shards?.split]
+        const lists = written.flatMap((files) => (files === undefined ? [] : Files.includeless(files)))
+        if (lists.length > 0) {
+          return fail(`"${step.name}" has globs that only leave files out, ${lists.map((l) => JSON.stringify(l)).join(", ")}: add one that includes files`)
+        }
       }
       if (def._tag === "Task" && def.setup !== undefined && def.setup.def._tag === "Setup" && def.setup.def.platform !== def.platform) {
         return fail(`"${step.name}" runs on ${def.platform ?? "the controller's platform"} but its setup "${def.setup.name}" on ${def.setup.def.platform ?? "the controller's platform"}`)
