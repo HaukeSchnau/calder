@@ -10,6 +10,11 @@ export const ProjectConfig = Schema.Struct({
   targets: Schema.optional(Schema.Array(Schema.String)),
   /** Secrets steps of this project may be granted: name to a file the controller can read. */
   secrets: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * The flake needs more memory to evaluate than a pull request's job gets: its pull requests' plans and
+   * build evaluations run in `calder-job-pr-large@`, which the host gives more.
+   */
+  largeEvaluations: Schema.optional(Schema.Boolean),
 })
 export type ProjectConfig = typeof ProjectConfig.Type
 

@@ -24,6 +24,8 @@ export interface ActiveJob {
   readonly tokenHash: string
   readonly spec: Job
   readonly pool: Pool
+  /** The systemd unit template of a local worker: its pool's, or the larger pull-request one (`large`). */
+  readonly template: string
   /** Runs on an agent, which fetches over HTTP what local workers read from disk. */
   readonly remote: boolean
   readonly onEvent: (event: JobEvent) => Effect.Effect<void>
@@ -57,6 +59,11 @@ export class Jobs extends Context.Service<Jobs, {
    */
   readonly run: (spec: Job, options: {
     readonly pool: Pool
+    /**
+     * A pull request's plan or build evaluation of a project whose flake needs more memory: runs in
+     * `calder-job-pr-large@`, which the host gives more than `calder-job-pr@`.
+     */
+    readonly large?: boolean
     readonly onEvent: (event: JobEvent) => Effect.Effect<void>
     /** Runs as the worker starts: here at once, on an agent once one takes the job. */
     readonly onStart?: Effect.Effect<void>
@@ -173,18 +180,19 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
   }
   const exec = (argv: ReadonlyArray<string>) => Exec.exec(argv).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
 
-  const unit = (pool: Pool, id: string) => `calder-job-${pool}@${id}.service`
+  const templateOf = (pool: Pool, large: boolean) => `calder-job-${pool}${large && pool === "pr" ? "-large" : ""}`
+  const unit = (template: string, id: string) => `${template}@${id}.service`
 
   const groupOf = (pool: Pool) => groupId(`calder-${pool}`)
 
-  const cgroupOf = (pool: Pool, id: string) =>
-    exec(["systemctl", "show", "-p", "ControlGroup", "--value", unit(pool, id)]).pipe(
+  const cgroupOf = (template: string, id: string) =>
+    exec(["systemctl", "show", "-p", "ControlGroup", "--value", unit(template, id)]).pipe(
       Effect.map((r) => (r.stdout.trim() === "" ? undefined : join("/sys/fs/cgroup", r.stdout.trim()))),
     )
 
   /** Whether the unit is still alive, and why it died if not. */
-  const unitState = (pool: Pool, id: string) =>
-    exec(["systemctl", "show", "-p", "ActiveState", "-p", "Result", unit(pool, id)]).pipe(
+  const unitState = (template: string, id: string) =>
+    exec(["systemctl", "show", "-p", "ActiveState", "-p", "Result", unit(template, id)]).pipe(
       Effect.map((r) => {
         const props = Object.fromEntries(r.stdout.trim().split("\n").map((l) => l.split("=") as [string, string]))
         return { active: props.ActiveState === "active" || props.ActiveState === "activating", result: props.Result ?? "" }
@@ -199,7 +207,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       let cpuLast: { usec: number; at: number } | null = null
       let cgroup: string | undefined
       const sample = Effect.gen(function*() {
-        cgroup ??= yield* cgroupOf(job.pool, job.id)
+        cgroup ??= yield* cgroupOf(job.template, job.id)
         if (cgroup === undefined) return
         const usec = parseCpuUsec(readText(join(cgroup, "cpu.stat")) ?? "")
         const memory = readNumber(join(cgroup, "memory.current")) ?? 0
@@ -217,7 +225,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
       const watch = Effect.gen(function*() {
         yield* sample.pipe(Effect.ignore)
-        const state = yield* unitState(job.pool, job.id)
+        const state = yield* unitState(job.template, job.id)
         if (!state.active) {
           yield* Effect.sleep("1 second")
           const done = yield* Deferred.poll(job.result)
@@ -238,7 +246,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       return { result: value, usage: yield* finalUsage }
     })
 
-  const stopUnit = (pool: Pool, id: string) => exec(["systemctl", "stop", unit(pool, id)]).pipe(Effect.ignore)
+  const stopUnit = (template: string, id: string) => exec(["systemctl", "stop", unit(template, id)]).pipe(Effect.ignore)
 
   // Workers the last controller left running: adopt those whose units still run, stop the rest.
   const adoptable = new Map<string, Adopted>()
@@ -256,10 +264,11 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       if (settled !== undefined) yield* Deferred.succeed(settled, undefined)
     })
   if (config.jobs.mode === "systemd") {
-    const rows = yield* db(sql<{ id: string; token_hash: string; pool: Pool; spec: string; created_at: number }>`select * from jobs`)
+    const rows = yield* db(sql<{ id: string; token_hash: string; pool: Pool; template: string | null; spec: string; created_at: number }>`select * from jobs`)
     for (const row of rows) {
       const spec = JSON.parse(row.spec) as Job
-      const state = yield* unitState(row.pool, row.id)
+      const template = row.template ?? templateOf(row.pool, false)
+      const state = yield* unitState(template, row.id)
       if (!state.active || spec._tag !== "Step") {
         yield* db(sql`delete from jobs where id = ${row.id}`)
         continue
@@ -273,6 +282,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         tokenHash: row.token_hash,
         spec,
         pool: row.pool,
+        template,
         remote: false,
         onEvent: (event) => sink.target?.(event) ?? Effect.sync(() => sink.buffer.push(event)),
         result: Deferred.makeUnsafe<JobResult>(),
@@ -281,8 +291,9 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         lease: undefined,
       })
     }
-    const listed = yield* exec(["systemctl", "list-units", "--all", "--plain", "--no-legend", "calder-job-pr@*.service", "calder-job-trusted@*.service"])
-    const kept = new Set([...adoptable.values()].map((a) => unit(jobs.get(a.id)!.pool, a.id)))
+    const listed = yield* exec(["systemctl", "list-units", "--all", "--plain", "--no-legend", "calder-job-pr@*.service", "calder-job-pr-large@*.service",
+      "calder-job-trusted@*.service"])
+    const kept = new Set([...adoptable.values()].map((a) => unit(jobs.get(a.id)!.template, a.id)))
     const orphans = listed.stdout.split("\n").map((l) => l.trim().split(/\s+/)[0] ?? "").filter((u) => u.startsWith("calder-job-") && !kept.has(u))
     if (orphans.length > 0) yield* exec(["systemctl", "stop", ...orphans]).pipe(Effect.ignore)
     if (adoptable.size > 0) yield* Effect.logInfo(`adopted ${adoptable.size} running workers`)
@@ -291,7 +302,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       Effect.gen(function*() {
         if (!adoptable.has(id)) return
         const job = jobs.get(id)
-        if (job !== undefined) yield* stopUnit(job.pool, id)
+        if (job !== undefined) yield* stopUnit(job.template, id)
         yield* forget(id)
       }), { discard: true }).pipe(Effect.delay("10 minutes"), Effect.forkScoped)
   }
@@ -314,6 +325,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         tokenHash: sha256(token),
         spec,
         pool: options.pool,
+        template: templateOf(options.pool, options.large === true),
         remote,
         onEvent: options.onEvent,
         result,
@@ -331,8 +343,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         if (gid !== undefined && config.jobs.mode === "systemd") chownSync(tokenFile, process.getuid!(), gid)
         // The worker fetched its secrets when it started; the journal never holds them.
         if (persisted) {
-          yield* db(sql`insert into jobs (id, token_hash, pool, spec, created_at)
-            values (${id}, ${job.tokenHash}, ${options.pool}, ${JSON.stringify({ ...spec, secrets: {} })}, ${Date.now()})`)
+          yield* db(sql`insert into jobs (id, token_hash, pool, template, spec, created_at)
+            values (${id}, ${job.tokenHash}, ${options.pool}, ${job.template}, ${JSON.stringify({ ...spec, secrets: {} })}, ${Date.now()})`)
         }
       })
       const onStart = options.onStart ?? Effect.void
@@ -351,8 +363,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         // is active when the watch below first looks.
         yield* onStart
         const log = (text: string) => options.onEvent({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
-        const unitResult = Effect.map(unitState(options.pool, id), (state) => state.result)
-        const failed = yield* startUnit(exec(["systemctl", "start", unit(options.pool, id)]), unitResult, log)
+        const unitResult = Effect.map(unitState(job.template, id), (state) => state.result)
+        const failed = yield* startUnit(exec(["systemctl", "start", unit(job.template, id)]), unitResult, log)
         if (failed !== undefined) return { _tag: "Died", message: `could not start the worker: ${failed}` } satisfies JobResult
         const followed = yield* follow(job)
         usage = followed.usage
@@ -420,7 +432,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const stop = remote
         ? agents.stop(id)
         : config.jobs.mode === "systemd"
-        ? Effect.suspend(() => (stopping && persisted ? Effect.void : stopUnit(options.pool, id)))
+        ? Effect.suspend(() => (stopping && persisted ? Effect.void : stopUnit(job.template, id)))
         : Effect.void
 
       const body = Effect.scoped(
@@ -446,7 +458,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       for (const event of sink.buffer.splice(0)) yield* onEvent(event)
       sink.target = onEvent
       const followed = yield* Effect.scoped(follow(job)).pipe(
-        Effect.onInterrupt(() => (stopping ? Effect.void : stopUnit(job.pool, id))),
+        Effect.onInterrupt(() => (stopping ? Effect.void : stopUnit(job.template, id))),
         Effect.ensuring(Effect.suspend(() => (stopping ? Effect.void : forget(id)))),
       )
       return { ...followed, id }

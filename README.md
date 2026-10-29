@@ -157,7 +157,11 @@ its step. One that fails in a way Nix can't catch,
 such as a missing attribute or an input that couldn't be fetched, gets one more try in a new evaluator;
 failing again, it is cached nowhere, its build evaluates it when it runs, and a dev shell's failure fails
 the plan with Nix's reason, since task keys include it. The plan's log says how many evaluators it took
-and the most one held.
+and the most one held. A pull request's job gets less memory than a trusted run's. A project whose flake
+needs more to evaluate, such as infra, whose srv-2 contract check alone holds 3 GiB, sets
+`largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@`, which the
+host defines with more memory. Plans and build evaluations both take plan slots, one per project at a
+time, so one project's flake is never evaluated twice side by side.
 
 A plan also records what each attribute's evaluation read of the repository: its footprint. It evaluates
 `path:<source>?rev=…` under strace, which gives the same derivations as the mirror's `git+file:` URL but
@@ -171,7 +175,7 @@ footprint changed for later, so tasks start without waiting for them. The first 
 evaluates them all in a plan slot, in one evaluator while they fit its job's memory, and records their footprints; the
 others wait for it and then build like planned builds, on their system's builders, reused when their output
 exists. A build too large to evaluate fails. Where the evaluation fails twice, each build evaluates its own
-attribute, with the same memory budget.
+attribute the same way, in a plan slot.
 A record counts for no other commit when its
 derivation's closure, or the deriver of a store path the evaluation read (import from a derivation built
 from `self`), mentions its commit or the whole source (`self.rev`, `self.lastModified`, `src = self`), or

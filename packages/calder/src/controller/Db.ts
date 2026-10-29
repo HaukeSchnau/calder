@@ -249,6 +249,11 @@ export const migrations = {
     yield* sql`create table audit_mismatches (id integer primary key autoincrement, project text not null, attr text not null,
       revision text not null, detail text not null, at integer not null)`
   }),
+  "0018_job_templates": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // The unit template a persisted worker runs in, when it isn't its pool's (Jobs.ts `large`).
+    yield* sql`alter table jobs add column template text`
+  }),
 }
 
 /**

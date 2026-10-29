@@ -79,20 +79,52 @@ describe("builds", () => {
       expect(plan.derivations).toMatchObject({ "checks.x86_64-linux.mac": derivation("mac", "aarch64-darwin") })
     }))
 
-  it.live("tries evaluating the builds together once more, then evaluates each attribute on its own", () =>
+  it.live("tries evaluating the builds together once more, then evaluates each build's attribute alone, in plan slots", () =>
     Effect.gen(function*() {
       const derivations: Array<string | null> = []
-      const { status, jobs } = yield* drive({
-        steps: ["a", "b"].map((name) => ({ ...build(name, "x86_64-linux"), build: { attr: name, drv: null, out: null, system: null } })),
+      const { status, jobs, steps } = yield* drive({
+        steps: ["a", "b", "c"].map((name) => ({ ...build(name, "x86_64-linux"), build: { attr: name, drv: null, out: null, system: null } })),
         result: (_step, job) => {
-          if (job.evaluate !== undefined) return { _tag: "Died", message: "error: flake.nix:1: syntax error" }
-          derivations.push(job.derivation)
-          return undefined
+          if (job.evaluate === undefined) {
+            derivations.push(job.derivation)
+            return undefined
+          }
+          // Together they fail, as when the host is short of memory; alone, c throws.
+          if (job.evaluate.builds.length > 1) return { _tag: "Died", message: "could not start the worker: timed out" }
+          const name = job.evaluate.builds[0]!.name
+          return {
+            _tag: "Evaluated",
+            derivations: { [name]: name === "c" ? null : { drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}`, system: "x86_64-linux" } },
+            tooLarge: {},
+            uses: {},
+            errors: name === "c" ? { c: "assertion 'false' failed" } : {},
+          }
         },
       })
+      expect(status).toBe("failed")
+      expect(jobs.filter((j) => j.endsWith("evaluates")).toSorted()).toEqual(["a evaluates", "a evaluates", "a evaluates", "b evaluates", "c evaluates"])
+      expect(derivations.toSorted()).toEqual(["/nix/store/a.drv", "/nix/store/b.drv"])
+      expect(steps.get("c")).toMatchObject({ status: "failed", error: { tag: "EvaluationFailed", message: "c did not evaluate: assertion 'false' failed" } })
+    }))
+
+  it.live("evaluates a pull request's builds in the larger unit where the project's flake needs it, and builds them in the usual one", () =>
+    Effect.gen(function*() {
+      const { status, large } = yield* drive({
+        event: { _tag: "PullRequest", number: 5, base: "main", head: "feature", fork: false },
+        project: { largeEvaluations: true },
+        steps: ["a", "b"].map((name) => ({ ...build(name, "x86_64-linux"), build: { attr: name, drv: null, out: null, system: null } })),
+        // Together they fail; each build then evaluates alone, also in the larger unit.
+        result: (_step, job) =>
+          job.evaluate === undefined ? undefined
+          : job.evaluate.builds.length > 1 ? { _tag: "Died", message: "out of memory" }
+          : {
+            _tag: "Evaluated",
+            derivations: Object.fromEntries(job.evaluate.builds.map(({ name: n }) => [n, { drv: `/nix/store/${n}.drv`, out: `/nix/store/${n}`, system: "x86_64-linux" }])),
+            tooLarge: {},
+            uses: {},
+          },
+      })
       expect(status).toBe("passed")
-      expect(jobs.filter((j) => j.endsWith("evaluates"))).toHaveLength(2)
-      // Without a derivation, each build's job evaluates its attribute alone (Steps.ts `evaluateAlone`).
-      expect(derivations).toEqual([null, null])
+      expect(large.toSorted()).toEqual(["a evaluates", "a evaluates", "a evaluates", "b evaluates"])
     }))
 })
