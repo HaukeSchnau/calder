@@ -237,6 +237,42 @@ describe("evaluating within the job's memory", () => {
       expect(fake.evaluated).toEqual([["check", "host", "other", "last"], ["last"]])
     }))
 
+  it.live("keeps a lone evaluator going in a slice that holds only leftover slab and the job itself", () =>
+    Effect.gen(function*() {
+      // srv-2's idle jobs slice held 1.47 GB of slab; the job's own unit charges its worker and page cache.
+      const root = mkdtempSync(join(tmpdir(), "calder-cgroup-"))
+      const slice = join(root, "calder.slice", "calder-jobs.slice")
+      const unit = join(slice, "calder-job-trusted@1.service")
+      mkdirSync(unit, { recursive: true })
+      writeFileSync(join(slice, "memory.high"), String(8 * GiB))
+      writeFileSync(join(slice, "memory.current"), String(1.5 * GiB + 5.5 * GiB))
+      writeFileSync(join(unit, "memory.high"), String(7.5 * GiB))
+      writeFileSync(join(unit, "memory.current"), String(5.5 * GiB))
+      const self = join(root, "self")
+      writeFileSync(self, "0::/calder.slice/calder-jobs.slice/calder-job-trusted@1.service\n")
+      const fake = nix(() => true, { attrs: { x: { bytes: 2 * GiB }, y: { bytes: 2.5 * GiB }, z: { bytes: GiB / 4 } } })
+      const memory = { ...fake.memory(5.5 * GiB), room: jobMemory(root, self).room! }
+      yield* derivations(run("git+file:///mirror"), ["x", "y", "z"], undefined, undefined, memory)
+        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
+      // 4.75 GiB after y, within the job's budget and the slice's room of 6.4 GiB: one evaluator. Counting
+      // the slab and the job's own charge as neighbors left room for 4.6 GiB and stopped it before z.
+      expect(fake.evaluated).toEqual([["x", "y", "z"]])
+    }))
+
+  it.live("starts new evaluators when the slice has no room for more, but never fails an attribute for it", () =>
+    Effect.gen(function*() {
+      const fake = nix(() => true, { attrs: { x: { bytes: GiB }, y: { bytes: GiB }, z: { bytes: GiB } } })
+      const logged: Array<string> = []
+      const memory = { ...fake.memory(3 * GiB), room: () => GiB / 2 }
+      const { derivations: result, tooLarge } = yield* derivations(run("git+file:///mirror"), ["x", "y", "z"], undefined, (text) => Effect.sync(() => void logged.push(text)), memory)
+        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
+      expect(result).toEqual(new Map(["x", "y", "z"].map((h) => [h, drv(h)])))
+      expect(tooLarge.size).toBe(0)
+      // Each evaluator gets its first attribute whatever the slice holds, then stops.
+      expect(fake.evaluated).toEqual([["x", "y", "z"], ["y", "z"], ["z"]])
+      expect(logged.at(-1)).toContain("with 3 evaluators, 2 of them for want of room in the jobs slice")
+    }))
+
   it.live("leaves out an attribute that outgrows the budget even on its own, saying which, and goes on with the rest", () =>
     Effect.gen(function*() {
       const fake = nix(() => true, { attrs: { a: { bytes: GiB / 2 }, huge: { bytes: 4 * GiB }, c: { bytes: GiB / 2 }, d: { bytes: GiB / 2 } }, hang: 3 * GiB })
@@ -362,6 +398,16 @@ describe("evaluating within the job's memory", () => {
     // 80% of 3.5 GiB, less what this process holds.
     expect(budget).toBeLessThan(0.8 * 3.5 * GiB)
     expect(budget).toBeGreaterThan(0.8 * (3.5 * GiB - process.memoryUsage().rss - GiB / 4))
+
+    // What the slice has room for: 80% of its 8 GiB less what its other units use. Its own total also
+    // holds slab that finished jobs left behind and this job's own charge, which don't count.
+    const slice = join(root, "calder.slice", "calder-jobs.slice")
+    writeFileSync(join(slice, "memory.current"), String(7.5 * GiB))
+    writeFileSync(join(unit, "memory.current"), String(5 * GiB))
+    expect(jobMemory(root, self).room?.()).toBe(Math.floor(0.8 * 8 * GiB))
+    mkdirSync(join(slice, "calder-job-trusted@2.service"))
+    writeFileSync(join(slice, "calder-job-trusted@2.service", "memory.current"), String(2 * GiB))
+    expect(jobMemory(root, self).room?.()).toBe(Math.floor(0.8 * 6 * GiB))
 
     writeFileSync(self, "0::/\n")
     expect(jobMemory(root, self).budget).toBeNull()

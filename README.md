@@ -151,7 +151,10 @@ The attributes a plan needs share one `nix eval` while they fit 80% of the plan 
 systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once it holds more than
 that, a new one takes over from the attribute it was in: infra's six hosts no longer need 7 GB in one
 evaluator. It doesn't stop earlier on a guess, since attributes that share a configuration, such as a
-host's check and the host, add little after the first. An attribute that doesn't fit even in an evaluator
+host's check and the host, add little after the first. Once it has an attribute, it also stops when the
+jobs slice lacks room for what it holds (80% of the slice's limit less what other jobs use), so a busy
+slice costs evaluators instead of throttling every job in it; whether an attribute is too large depends
+only on the job's own limit. An attribute that doesn't fit even in an evaluator
 of its own fails at once, naming the attribute, instead of swapping: a dev shell fails the plan, a build
 its step. One that fails in a way Nix can't catch,
 such as a missing attribute or an input that couldn't be fetched, gets one more try in a new evaluator;
