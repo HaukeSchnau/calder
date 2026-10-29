@@ -306,6 +306,8 @@ export interface Earlier {
 export interface Evaluated {
   readonly derivations: ReadonlyMap<string, Derivation | null>
   readonly errors: ReadonlyMap<string, string>
+  /** Attributes that outgrew the budget in an evaluator of their own, which their builds would swap as much for. */
+  readonly tooLarge: ReadonlyMap<string, TooLarge>
   /** The footprints its evaluators recorded, when it had a recorder. */
   readonly recorded?: Records
 }
@@ -334,7 +336,7 @@ export const derivations = (
     readonly fresh?: boolean
   } = {},
 ) =>
-  attrs.length === 0 ? Effect.succeed<Evaluated>({ derivations: new Map(), errors: new Map() }) : cached(run, cacheDir, (entry) =>
+  attrs.length === 0 ? Effect.succeed<Evaluated>({ derivations: new Map(), errors: new Map(), tooLarge: new Map() }) : cached(run, cacheDir, (entry) =>
     Effect.gen(function*() {
       const known = entry?.derivations ?? {}
       // What the cache holds and the store still has; entries cached before derivations carried their
@@ -349,7 +351,7 @@ export const derivations = (
       )
       const hits = new Map(cachedHere.filter((attr) => !known[attr] || !invalid.has(known[attr].drv)).map((attr) => [attr, known[attr] ?? null]))
       const missing = attrs.filter((attr) => !hits.has(attr))
-      if (missing.length === 0) return { result: { derivations: hits, errors: new Map<string, string>() } as Evaluated, entry: {} }
+      if (missing.length === 0) return { result: { derivations: hits, errors: new Map(), tooLarge: new Map() } as Evaluated, entry: {} }
       // Recording that fails, such as strace without ptrace, leaves the plan to evaluate as before.
       const evaluated = yield* evaluate(run.flake, missing, memory, log, options.recorder).pipe(
         Effect.catchTag("CommandFailed", (e) =>
@@ -363,6 +365,7 @@ export const derivations = (
       const result: Evaluated = {
         derivations: new Map([...hits, ...evaluated.derivations]),
         errors: evaluated.errors,
+        tooLarge: evaluated.tooLarge,
         ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
       }
       return { result, entry: { derivations: { ...known, ...Object.fromEntries(evaluated.derivations) } } }
@@ -619,15 +622,15 @@ const straced = (file: string) => [
   "-e", "trace=?open,openat,?openat2,?stat,?lstat,?newfstatat,?statx,?access,?faccessat,?faccessat2,?readlinkat,?readlink",
 ]
 
-/** An attribute needs more memory to evaluate than the plan's job may use, even in an evaluator of its own. */
+/** An attribute needs more memory to evaluate than its job may use, even in an evaluator of its own. */
 export class TooLarge extends Schema.TaggedError<TooLarge>("calder/TooLarge")("TooLarge", {
   attr: Schema.String,
   budget: Schema.Number,
 }) {
   override get message() {
     const what = this.attr === loadingTheFlake ? "Loading the flake" : `Evaluating ${this.attr} alone`
-    return `${what} took more than ${gib(this.budget)}, 80% of what the plan's job may use, ` +
-      "so the plan stopped instead of swapping. Make the attribute cheaper to evaluate or give the pool's jobs more memory."
+    return `${what} took more than ${gib(this.budget)}, 80% of what its job may use, ` +
+      "so Calder stopped it instead of swapping. Make the attribute cheaper to evaluate or give the pool's jobs more memory."
   }
 }
 
@@ -641,7 +644,8 @@ const loadingTheFlake = "loading the flake"
  * a pull request's job may use, which stalled its plans for an hour. So an evaluator stops between
  * attributes once the next, if it grows as much as the largest so far, might not fit the budget, and at
  * once when it outgrows it; a new one goes on where it stopped. An attribute that outgrows the budget in
- * an evaluator of its own fails the evaluation (`TooLarge`), since its build would swap as much. One that
+ * an evaluator of its own is `tooLarge`, since its build would swap as much, and the rest go on without
+ * it; a flake that outgrows it loading fails the evaluation (`TooLarge`). One that
  * fails in a way Nix can't catch, such as a missing attribute or an input that couldn't be fetched, gets one
  * more try in a fresh evaluator; failing again, it is left out of `derivations`, so nothing caches it, and
  * `errors` has Nix's reason. One that throws, which `tryEval` catches, is null.
@@ -655,6 +659,7 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
     const passes: Array<{ readonly attrs: ReadonlyArray<string>; readonly trace: Footprint.Trace | undefined }> = []
     const derivations = new Map<string, Derivation | null>()
     const errors = new Map<string, string>()
+    const tooLarge = new Map<string, TooLarge>()
     const retried = new Set<string>()
     /** How many attributes failed for good with each error: one many share, such as an unreachable input, isn't retried. */
     const failedWith = new Map<string, number>()
@@ -668,12 +673,21 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
       if (recorder !== undefined) passes.push({ attrs: rest.slice(0, pass.got.length), trace: pass.trace })
       evaluators++
       peak = Math.max(peak, pass.peak)
+      const before = largest
       largest = pass.largest
       pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation))
       done += pass.got.length
       const next = rest[pass.got.length]
       if (next === undefined || pass.stop === "full" || (pass.stop === "over" && pass.got.length > 0)) continue
-      if (pass.stop === "over") return yield* new TooLarge({ attr: pass.loaded ? next : loadingTheFlake, budget: memory.budget ?? 0 })
+      if (pass.stop === "over" && !pass.loaded) return yield* new TooLarge({ attr: loadingTheFlake, budget: memory.budget ?? 0 })
+      if (pass.stop === "over") {
+        tooLarge.set(next, new TooLarge({ attr: next, budget: memory.budget ?? 0 }))
+        done++
+        // What it grew by says nothing about the rest, which would otherwise get an evaluator each.
+        largest = before
+        yield* log(tooLarge.get(next)!.message)
+        continue
+      }
       if (!retried.has(next) && (failedWith.get(pass.error) ?? 0) < 2) {
         retried.add(next)
         // A fetch or the daemon may fail for a moment.
@@ -687,10 +701,10 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
     }
     const budget = memory.budget === null ? "" : ` of ${gib(memory.budget)}`
     yield* log(`evaluated ${derivations.size} attributes of the flake in ${Date.now() - started} ms with ${evaluators} evaluators, holding at most ${gib(peak)}${budget}`)
-    if (recorder === undefined) return { derivations, errors } as Evaluated
+    if (recorder === undefined) return { derivations, errors, tooLarge } as Evaluated
     const recorded = yield* records(recorder, passes, derivations)
     yield* log(`recorded footprints of ${recorded.evaluations.length} of ${attrs.length} attributes`)
-    return { derivations, errors, recorded } as Evaluated
+    return { derivations, errors, tooLarge, recorded } as Evaluated
   })
 
 /** What a plan records footprints with: the source in the store, the `path:` URL that reads it there, and its git tree. */
@@ -1090,7 +1104,7 @@ export const directUses = (
   return edges
 }
 
-const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>) =>
+export const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>) =>
   builds.length < 2
     ? Effect.succeed(new Map<string, Array<string>>())
     : Effect.forEach(builds, (b) =>
@@ -1141,8 +1155,16 @@ export const resolve = (
     const held = new Map([...taken].map(([attr, h]) => [attr, h.derivation]))
     const heldApp = records === undefined ? undefined : appFromRecords(records, at, context!)
     const known = audit ? new Map<string, Derivation | null>() : held
-    const unknown = attrs.filter((attr) => !known.has(attr))
-    const rest = byDependencies(unknown, yield* lastClosures(unknown, records), ownReads(records))
+    // Builds whose footprints changed are evaluated together once the run's first of them runs, which
+    // records their footprints (see Runs.ts `evaluation`). The plan evaluates only dev shells, which task
+    // keys need now, and an audit everything.
+    const unknown = attrs.filter((attr) => !known.has(attr) && (audit || shells.includes(attr)))
+    const deferred = attrs.filter((attr) => !known.has(attr) && !unknown.includes(attr))
+    if (deferred.length > 0 && reused === undefined) yield* log(`left ${deferred.length} builds to evaluate when the first of them runs`)
+    // Until then, a deferred build waits for a build slot of the system its last record built for.
+    const lastSystem = new Map((records?.evaluations ?? []).toReversed().flatMap((e) => (e.derivation === null ? [] : [[e.attr, e.derivation.system] as const])))
+    const ordered = (some: ReadonlyArray<string>) => Effect.map(lastClosures(some, records), (closures) => byDependencies(some, closures, ownReads(records)))
+    const rest = yield* ordered(unknown)
     const needsApp = !(reused !== undefined && earlier !== undefined) && (audit || heldApp === undefined)
     // An audit evaluates exactly as plans did before footprints, through the mirror and without the
     // recorder, so a record and its check never share a way of evaluating.
@@ -1151,7 +1173,7 @@ export const resolve = (
     // When the flake fails to load, builds evaluate on their own when they run, but keys need the dev
     // shells now. An attribute too large to evaluate would swap as much in its build.
     const result = reused !== undefined
-      ? { derivations: reused, errors: new Map<string, string>(), recorded: undefined }
+      ? { derivations: reused, errors: new Map<string, string>(), tooLarge: new Map<string, TooLarge>(), recorded: undefined }
       : yield* derivations(run, rest, undefined, log, undefined, { recorder: recording, fresh: audit }).pipe(
       Effect.catchIf(
         (e) => e._tag !== "TooLarge",
@@ -1170,7 +1192,12 @@ export const resolve = (
         })
       ),
     )
+    const large = result.tooLarge.values().next()
+    if (large.done !== true) return yield* new Calder.PlanError({ message: large.value.message })
     const evaluated = new Map([...known, ...result.derivations])
+    // Evaluated in the order a plan evaluates, so their footprints keep as much as the plan's would.
+    const left = deferred.filter((attr) => !evaluated.has(attr))
+    const order = left.length === 0 ? [] : yield* ordered(left)
     const broken = shells.filter((shell) => !evaluated.get(shell))
     if (broken.length > 0) {
       const why = broken.map((shell) => `${shell}: ${result.errors.get(shell) || "it threw"}`).join("; ")
@@ -1227,7 +1254,8 @@ export const resolve = (
           case "Build": {
             const attr = Flake.attrPath(def.ref, run.system)
             const derivation = evaluated.get(attr) ?? null
-            return { ...base, detail: attr, build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null, system: derivation?.system ?? null } }
+            const system = derivation?.system ?? lastSystem.get(attr) ?? null
+            return { ...base, detail: attr, build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null, system } }
           }
           case "Setup":
             return {
@@ -1331,6 +1359,7 @@ export const resolve = (
       derivations: Object.fromEntries(evaluated),
       ...(recorded === undefined ? {} : { recorded }),
       ...(audit ? { mismatches } : {}),
+      ...(order.length === 0 ? {} : { deferred: order }),
       // Which record gave each attribute this plan took, so a wrong record's deploys can be listed.
       ...(taken.size === 0 || audit ? {} : {
         fromRecords: Object.fromEntries([...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id]]))),

@@ -1,7 +1,7 @@
 // Drives one push run through the real workflow, with stub services around it.
 import type { Domain } from "@calder-ci/api"
-import { Effect, Layer, PlatformError, Schedule } from "effect"
-import { ChildProcessSpawner } from "effect/process"
+import { Effect, Layer, PlatformError, Schedule, Sink, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"
 import { Agents, make as makeAgents } from "../src/controller/Agents.ts"
 import { Cache } from "../src/controller/Cache.ts"
@@ -16,7 +16,7 @@ import { layerCore } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
-import type { JobResult, PlannedStep, PlanSpec } from "../src/Protocol.ts"
+import type { Job, JobResult, PlannedStep, PlanSpec } from "../src/Protocol.ts"
 import { config } from "./config.ts"
 import { insertRun, layer as sqlite } from "./sqlite.ts"
 
@@ -46,11 +46,13 @@ export interface Drive {
   /** What a step's job does once it started, before it passes. */
   readonly work?: (step: string) => Effect.Effect<void>
   /** How a step's job ends instead of passing with its `value`. */
-  readonly result?: (step: string) => JobResult | undefined
+  readonly result?: (step: string, job: Extract<Job, { _tag: "Step" }>) => JobResult | undefined
   /** Keeps reading the steps after the run ended until this holds, for work the run doesn't wait for. */
   readonly settled?: (steps: ReadonlyMap<string, Domain.StepRun>) => boolean
   /** The run's event, a push to main by default. */
   readonly event?: Domain.Event
+  /** What the run's plan says besides its steps. */
+  readonly plan?: Partial<PlanSpec>
 }
 
 /**
@@ -66,12 +68,13 @@ export const drive = ({
   result = () => undefined,
   settled = () => true,
   event = { _tag: "Push", branch: "main" },
+  plan: extra = {},
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     const trust = event._tag === "PullRequest" ? "pr" : "trusted"
     const pr = event._tag === "PullRequest" ? event.number : null
-    const plan: PlanSpec = { version: 1, app: null, trust, reuse: "all", schedules: [], steps: [...planned] }
+    const plan: PlanSpec = { version: 1, app: null, trust, reuse: "all", schedules: [], steps: [...planned], ...extra }
     yield* insertRun("app-1", { at: 1 })
     for (const name of passed) {
       yield* sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
@@ -97,8 +100,25 @@ export const drive = ({
       Layer.succeed(Agents)(makeAgents(null)),
       Layer.succeed(Cache)(cache),
       Layer.succeed(Comments)({ note: unused, touch: () => Effect.void }),
+      // Only the store answers, holding nothing, so a build's output exists only where `cache` has it.
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
-        ChildProcessSpawner.make(() => Effect.fail(PlatformError.systemError({ _tag: "NotFound", module: "test", method: "spawn" }))),
+        ChildProcessSpawner.make((command) =>
+          ChildProcess.isStandardCommand(command) && command.command === "nix-store"
+            ? Effect.succeed(ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+              unref: Effect.succeed(Effect.void),
+            }))
+            : Effect.fail(PlatformError.systemError({ _tag: "NotFound", module: "test", method: "spawn" }))
+        ),
       ),
       Layer.succeed(Projects)({ get: () => project, all: () => [project], byRepo: unused }),
       Layer.succeed(Mirror)({
@@ -128,12 +148,12 @@ export const drive = ({
       Layer.succeed(Jobs)({
         run: (job, options) =>
           Effect.gen(function*() {
-            if (job._tag === "Step") jobs.push(job.step)
+            if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
             if (job._tag === "Step") pools.set(job.step, options.pool)
             yield* options.onStart ?? Effect.void
             if (job._tag === "Step") yield* work(job.step)
             return {
-              result: (job._tag === "Step" ? result(job.step) : undefined) ??
+              result: (job._tag === "Step" ? result(job.step, job) : undefined) ??
                 { _tag: "Passed", value: job._tag === "Step" ? value(job.step) : null, outputs: {}, key: null },
               usage: { cpuSeconds: null, memoryPeakBytes: null },
               id: `job-${jobs.length}`,
@@ -155,5 +175,6 @@ export const drive = ({
     const status = yield* ended.pipe(Effect.provide(Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provide(services))))
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
-    return { status, jobs, statuses, steps, pools }
+    const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
+    return { status, jobs, statuses, steps, pools, plan: stored }
   }).pipe(Effect.provide(sqlite))
