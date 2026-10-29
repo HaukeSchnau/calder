@@ -283,6 +283,8 @@ export const JobResult = Schema.Union([
     tooLarge: Schema.Record(Schema.String, Schema.String),
     /** The builds each build uses, as the plan's `needs` has them. */
     uses: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+    /** Nix's reason for builds that didn't evaluate, where Nix gave one. */
+    errors: Schema.optional(Schema.Record(Schema.String, Schema.String)),
     recorded: Schema.optional(Records),
   }),
   Schema.TaggedStruct("Died", { message: Schema.String }),

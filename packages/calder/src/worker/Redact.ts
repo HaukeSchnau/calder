@@ -130,8 +130,10 @@ export const result = (redact: (text: string) => string, result: JobResult): Job
       return { ...result, message: redact(result.message) }
     case "Skipped":
       return { ...result, reason: redact(result.reason) }
-    case "Evaluated":
-      return { ...result, tooLarge: Object.fromEntries(Object.entries(result.tooLarge).map(([name, why]) => [name, redact(why)])) }
+    case "Evaluated": {
+      const each = (reasons: Record<string, string>) => Object.fromEntries(Object.entries(reasons).map(([name, why]) => [name, redact(why)]))
+      return { ...result, tooLarge: each(result.tooLarge), ...(result.errors === undefined ? {} : { errors: each(result.errors) }) }
+    }
     case "Passed":
     case "Planned":
       return result

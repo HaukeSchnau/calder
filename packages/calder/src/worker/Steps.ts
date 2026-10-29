@@ -79,11 +79,9 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
   Effect.gen(function*() {
     const { emit, log } = yield* Job
     const parse = NixLog.parser()
-    // Without a derivation, the run's shared evaluation failed (see `evaluate`): the build evaluates its
-    // attribute alone, with the same memory budget and cache lock.
-    const alone = job.derivation === null ? yield* evaluateAlone(job.run, attr, (text) => log("calder", text)) : undefined
-    if (alone?._tag === "Failed") return alone
-    const drv = alone?.drv ?? job.derivation!
+    // The controller sends a build only once it has its derivation (Runs.ts `evaluation`).
+    const drv = job.derivation
+    if (drv === null) return { _tag: "Died", message: `${attr} has no derivation to build` } satisfies JobResult
     yield* log("calder", `nix build ${attr}`)
     const ref = `${drv}^*`
     const attempt = Effect.gen(function*() {
@@ -109,25 +107,6 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
     const exit = yield* Effect.exit(withPolicies(attempt, step.policies))
     return toResult(exit, { key: drv })
   })
-
-/** A build's attribute evaluated by itself: its derivation, or the failed result that says why it has none. */
-const evaluateAlone = (run: RunInfo, attr: string, say: (text: string) => Effect.Effect<void>) => {
-  const failed = (tag: string, message: string) => ({ _tag: "Failed", error: null, tag, message, key: null, outputs: {} }) satisfies JobResult
-  return Resolve.derivations(run, [attr], undefined, say).pipe(
-    Effect.map((evaluated) => {
-      const derivation = evaluated.derivations.get(attr)
-      const tooLarge = evaluated.tooLarge.get(attr)
-      if (derivation) return { _tag: "Derivation" as const, drv: derivation.drv }
-      if (tooLarge !== undefined) return failed("TooLarge", tooLarge.message)
-      const error = evaluated.errors.get(attr)
-      return failed("EvaluationFailed", error === undefined ? `${attr} threw; nix eval ${run.flake}#${attr}.drvPath says why` : `${attr} did not evaluate: ${error}`)
-    }),
-    Effect.catchTags({
-      TooLarge: (e) => Effect.succeed(failed("TooLarge", e.message)),
-      CommandFailed: (e) => Effect.succeed(failed("EvaluationFailed", `the flake did not load: ${e.stderr.trim().split("\n").slice(-5).join("\n")}`)),
-    }),
-  )
-}
 
 /**
  * The builds a plan left unevaluated, evaluated the way plans evaluate, in one evaluator while they fit
@@ -159,6 +138,10 @@ export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =
         return e === undefined ? [] : [[b.name, e.message]]
       })),
       uses: Object.fromEntries(uses),
+      errors: Object.fromEntries(what.builds.flatMap((b) => {
+        const error = evaluated.errors.get(b.attr)
+        return error === undefined ? [] : [[b.name, error]]
+      })),
       ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
     } satisfies JobResult
   })

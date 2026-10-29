@@ -12,6 +12,8 @@ export interface Project {
   readonly targets: ReadonlyArray<string> | null
   /** Secrets steps may be granted: name to a file the controller can read. */
   readonly secrets: { readonly [name: string]: string }
+  /** Pull requests' plans and build evaluations run in the larger pull-request unit (Config's `largeEvaluations`). */
+  readonly largeEvaluations?: boolean
 }
 
 /**
@@ -42,7 +44,7 @@ export const layer = Layer.effect(Projects)(Effect.gen(function*() {
   const branchFromRepo = new Set<string>()
   for (const [name, p] of Object.entries(config.projects)) {
     if (p.defaultBranch === undefined) branchFromRepo.add(name)
-    add({ name, repo: p.repo, defaultBranch: p.defaultBranch ?? "main", targets: p.targets ?? null, secrets: p.secrets ?? {} })
+    add({ name, repo: p.repo, defaultBranch: p.defaultBranch ?? "main", targets: p.targets ?? null, secrets: p.secrets ?? {}, largeEvaluations: p.largeEvaluations === true })
   }
 
   const hasPipeline = (repo: string, ref: string) => gitea.hasFile(repo, ref, ".calder/ci.ts")

@@ -10,7 +10,7 @@ import { Gitea } from "../src/controller/Gitea.ts"
 import { Jobs } from "../src/controller/Jobs.ts"
 import * as Live from "../src/controller/Live.ts"
 import { Mirror } from "../src/controller/Mirror.ts"
-import { Projects } from "../src/controller/Projects.ts"
+import { type Project, Projects } from "../src/controller/Projects.ts"
 import * as Rows from "../src/controller/Rows.ts"
 import { layerCore } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
@@ -53,6 +53,8 @@ export interface Drive {
   readonly event?: Domain.Event
   /** What the run's plan says besides its steps. */
   readonly plan?: Partial<PlanSpec>
+  /** The project's configuration besides its name and repository. */
+  readonly project?: Partial<Project>
 }
 
 /**
@@ -69,6 +71,7 @@ export const drive = ({
   settled = () => true,
   event = { _tag: "Push", branch: "main" },
   plan: extra = {},
+  project: configured = {},
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -92,8 +95,10 @@ export const drive = ({
     const jobs: Array<string> = []
     /** The pool each step's job ran in. */
     const pools = new Map<string, string>()
+    /** The jobs that ran in the larger pull-request unit. */
+    const large: Array<string> = []
     const statuses = new Map<string, string>()
-    const project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {} }
+    const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
     const services = Layer.mergeAll(
       config(),
       Live.layer,
@@ -150,6 +155,7 @@ export const drive = ({
           Effect.gen(function*() {
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
             if (job._tag === "Step") pools.set(job.step, options.pool)
+            if (options.large === true) large.push(jobs.at(-1) ?? "plan")
             yield* options.onStart ?? Effect.void
             if (job._tag === "Step") yield* work(job.step)
             return {
@@ -176,5 +182,5 @@ export const drive = ({
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
-    return { status, jobs, statuses, steps, pools, plan: stored }
+    return { status, jobs, statuses, steps, pools, large, plan: stored }
   }).pipe(Effect.provide(sqlite))
