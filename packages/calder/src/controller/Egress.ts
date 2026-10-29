@@ -23,28 +23,32 @@ const v4Ranges: ReadonlyArray<readonly [string, number]> = [
 ]
 
 /**
- * The IPv4 address an IPv6 one carries: IPv4-mapped (`::ffff:0:0/96`) or NAT64 (`64:ff9b::/96`), in
- * dotted or hex notation, which the URL parser makes one.
+ * The IPv4 address a canonical IPv6 one carries: IPv4-mapped (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`)
+ * or IPv4-compatible (`::/96`).
  */
-const carried = (address: string) => {
-  if (isIP(address) !== 6) return undefined
-  const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1)
-  const groups = /^(?:::ffff:|64:ff9b::)(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})$/.exec(canonical)
+const carried = (canonical: string) => {
+  const groups = /^(?:::ffff:|64:ff9b::|::)(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})$/.exec(canonical)
   if (groups === null) return undefined
   const n = parseInt(groups[1] ?? "0", 16) * 65536 + parseInt(groups[2]!, 16)
   return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".")
 }
 
-/** Loopback, private, link-local, CGNAT (the Tailnet), multicast and reserved addresses. */
+/**
+ * Loopback, private, link-local, CGNAT (the Tailnet), multicast and reserved addresses. An IPv6 address
+ * is compared in the URL parser's canonical form, without a zone id, so every notation of one address
+ * gives one answer; anything that isn't an address counts as private.
+ */
 export const isPrivate = (address: string): boolean => {
-  const inner = carried(address)
-  if (inner !== undefined) return isPrivate(inner)
-  if (isIP(address) === 4) {
-    const n = v4(address)
+  const bare = address.split("%")[0]!
+  if (isIP(bare) === 4) {
+    const n = v4(bare)
     return v4Ranges.some(([base, bits]) => Math.floor(n / 2 ** (32 - bits)) === Math.floor(v4(base) / 2 ** (32 - bits)))
   }
-  const lower = address.toLowerCase()
-  return lower === "::" || lower === "::1" || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower) || /^ff/.test(lower)
+  if (isIP(bare) !== 6) return true
+  const canonical = new URL(`http://[${bare}]`).hostname.slice(1, -1)
+  const inner = carried(canonical)
+  if (inner !== undefined) return isPrivate(inner)
+  return canonical === "::" || /^f[cd]/.test(canonical) || /^fe[89ab]/.test(canonical) || /^ff/.test(canonical)
 }
 
 /** `*.example.org` matches subdomains, anything else the exact host. */
