@@ -93,9 +93,42 @@ describe("resolve", () => {
   it.effect("a path or pattern that matches no file fails the plan, unless it is optional", () =>
     Effect.gen(function*() {
       const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` })
-      const error = yield* plan(app, [build(Files.union(Files.glob("src/**"), Files.of("static"), Files.imports("src/**/*.tsx")))]).pipe(Effect.flip)
-      expect(error.message).toContain(`No file matches "static" (build's inputs), "src/**/*.tsx" (build's inputs).`)
+      const inputs = Files.union(Files.glob("src/**", "!dist/**"), Files.of("static"), Files.imports("src/**/*.tsx"))
+      const error = yield* plan(app, [build(inputs)]).pipe(Effect.flip)
+      expect(error.message).toContain(`No file matches "!dist/**" (build's inputs), "static" (build's inputs), "src/**/*.tsx" (build's inputs).`)
       yield* plan(app, [build(Files.union(Files.glob("src/**"), Files.optional(Files.of("static"))))])
+    }))
+
+  it.effect("an include must keep a file the negations leave, a negation must remove one an include matched", () =>
+    Effect.gen(function*() {
+      const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` })
+      const error = yield* plan(app, [build(Files.union(Files.glob("src/*.test.ts", "!src/**"), Files.glob("src/**", "!package.json")))]).pipe(Effect.flip)
+      expect(error.message).toContain(`No file matches "src/*.test.ts" (build's inputs), "!package.json" (build's inputs).`)
+      const negated = yield* plan(app, [build(Files.optional(Files.glob("!src/**")))]).pipe(Effect.flip)
+      expect(negated.message).toBe(`"build" has globs that only leave files out, ["!src/**"]: add one that includes files`)
+    }))
+
+  it.effect("a pattern starting with ! leaves files out of a task's inputs and its each", () =>
+    Effect.gen(function*() {
+      const repo = { ...app, "src/b.test.ts": `import { a } from "./a"`, "legacy/c.test.ts": "" }
+      const test = Task.make("test", {
+        inputs: Files.glob("src/**", "!src/*.test.ts"),
+        each: Files.imports(["**/*.test.ts", "!legacy/**"]),
+        run: ({ files }) => cmd`vitest run ${files}`,
+        report: Report.junit("junit.xml"),
+      })
+      const planned = task(yield* plan(repo, [test]), "test")
+      expect(planned.inputs).toEqual(["src/a.ts"])
+      expect(planned.each!.map((e) => e.file)).toEqual(["src/a.test.ts", "src/b.test.ts"])
+    }))
+
+  it.effect("a task's each may match no file once it is optional, and then has none to run", () =>
+    Effect.gen(function*() {
+      const test = (each: Files.Files) => Task.make("test", { each, run: ({ files }) => cmd`vitest run ${files}`, report: Report.junit("junit.xml") })
+      const error = yield* plan(app, [test(Files.imports("test/**/*.test.ts"))]).pipe(Effect.flip)
+      expect(error.message).toContain(`No file matches "test/**/*.test.ts" (test's each)`)
+      expect(task(yield* plan(app, [test(Files.optional(Files.imports("test/**/*.test.ts")))]), "test").each).toEqual([])
+      expect(task(yield* plan(app, [test(Files.optional(Files.imports("src/*.test.ts")))]), "test").each!.map((e) => e.file)).toEqual(["src/a.test.ts"])
     }))
 
   it.effect("a workspace package's files include the root configs it builds with", () =>

@@ -18,8 +18,12 @@ export interface Note {
 
 const cell = (text: string) => text.replaceAll("|", "\\|").replaceAll("\n", " ")
 
+/** A task whose `each` matched no file, which counts as reused but reused nothing. */
+const empty = (step: Domain.StepRun) => step.status === "reused" && step.files?.total === 0
+
 /** A step's status for people: what it waits for, how it failed, or how it ended. */
 const statusOf = (step: Domain.StepRun) => {
+  if (empty(step)) return "no files"
   if (step.status === "pending" || step.status === "queued") return step.waiting == null ? "waiting" : `waiting for ${step.waiting}`
   if (step.error !== null && step.status !== "passed") return `${step.status}: ${step.error.message.split("\n")[0]!.slice(0, 120)}`
   return step.status
@@ -48,8 +52,8 @@ export const render = (input: {
   const total = took((run.finishedAt ?? now) - run.createdAt)
   const planned = run.plannedAt == null ? "planning" : `planned in ${took(run.plannedAt - run.createdAt)}`
   const header = `**Run ${run.number}** ${ended ? `${run.status} in ${total}` : `${run.status}, ${total} so far`} · \`${run.commit.sha.slice(0, 12)}\` · ${planned} · [steps](${input.link})`
-  const ran = steps.filter((s) => s.status !== "reused")
-  const reused = steps.filter((s) => s.status === "reused")
+  const ran = steps.filter((s) => s.status !== "reused" || empty(s))
+  const reused = steps.filter((s) => s.status === "reused" && !empty(s))
   const row = (s: Domain.StepRun) => {
     const waited = s.queuedAt !== null && s.startedAt !== null ? took(s.startedAt - s.queuedAt) : ""
     const time = s.startedAt === null ? "" : s.finishedAt === null ? `${took(now - s.startedAt)} so far` : took(s.finishedAt - s.startedAt)

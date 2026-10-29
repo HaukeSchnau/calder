@@ -432,6 +432,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return [
           "success",
           row.kind === "build" ? "already built"
+          : s.files?.total === 0 ? "no files to check"
           : row.kind !== "setup" ? "reused an identical result"
           : s.unneeded === true ? "not needed: no task that starts from it ran"
           : "already set up",

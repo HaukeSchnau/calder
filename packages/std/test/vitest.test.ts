@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cmd } from "@calder-ci/core"
+import { Cmd, Files } from "@calder-ci/core"
 import { spawnSync } from "node:child_process"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -49,6 +49,13 @@ describe("Vitest.files", () => {
       `--outputFile.json=${join(root, report)}`,
     ])
     expect(existsSync(join(root, report))).toBe(true)
+  })
+
+  it("reads the test globs in `dir`, negated ones too, and lets them match nothing with allowEmpty", () => {
+    const step = Vitest.files({ dir: "pkg", tests: ["src/**/*.test.ts", "!src/legacy/**"], allowEmpty: true })
+    expect(step.def._tag === "Task" ? step.def.each : undefined).toEqual(
+      Files.optional(Files.imports(["pkg/src/**/*.test.ts", "!pkg/src/legacy/**"])),
+    )
   })
 
   it("runs `before` in the package directory first", () => {

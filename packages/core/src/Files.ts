@@ -1,7 +1,8 @@
 /**
  * What a task reads. Keys are made of git tree ids of these paths at the revision, so a task is
  * reused only when its inputs are byte-identical. Every path and pattern must match a file at the
- * revision, or planning fails, unless it is `optional`.
+ * revision, or planning fails, unless it is `optional`: an include one a negation doesn't remove, and a
+ * negation one an include matched. A list of globs needs an include, `optional` or not.
  */
 export type Files =
   | { readonly _tag: "All" }
@@ -30,13 +31,17 @@ export const of = (...paths: ReadonlyArray<string>): Files => ({ _tag: "Of", pat
  */
 export const workspace = (...dirs: ReadonlyArray<string>): Files => ({ _tag: "Workspace", dirs: dirs.map(normalize) })
 
-/** Files matching globs. `*` stays within a directory, `**` crosses directories. */
+/**
+ * Files matching globs. `*` stays within a directory, `**` crosses directories. A pattern starting
+ * with `!` leaves out what it matches, wherever it stands: `glob("src/*.ts", "!src/*.test.ts")`.
+ */
 export const glob = (...patterns: ReadonlyArray<string>): Files => ({ _tag: "Glob", patterns })
 
 /**
  * Files matching the globs and every repository file they import, transitively: relative paths,
  * workspace packages through their `exports`, and `aliases` (an import prefix and the path it stands
  * for, like Vite's `resolve.alias`). Packages from the registry count through the lockfile instead.
+ * A glob starting with `!` leaves out files it matches as starting points, but not what the others import.
  * Type-only imports vanish when code runs, so they count only with `types: true`, as for a typecheck.
  *
  * As a task's `each`, every matching file is keyed on its own imports, so a change reruns only the
@@ -54,10 +59,48 @@ export const imports = (
 
 export const union = (...members: ReadonlyArray<Files>): Files => ({ _tag: "Union", members })
 
-/** Files that may be missing at a revision, such as optional configuration. */
+/**
+ * Files that may be missing at a revision, such as optional configuration. As a task's `each`, its
+ * patterns may match no file, such as in a package before its first test; the task then has none to run.
+ */
 export const optional = (files: Files): Files => ({ _tag: "Optional", files })
 
 const normalize = (path: string) => path.replace(/^\.\//, "").replace(/\/+$/, "") || "."
+
+/** Whether a path matches one of the patterns that don't start with `!` and none of those that do. */
+export const matcher = (patterns: ReadonlyArray<string>): ((path: string) => boolean) => {
+  const include = patterns.filter((p) => !p.startsWith("!")).map(globToRegExp)
+  const exclude = patterns.filter((p) => p.startsWith("!")).map((p) => globToRegExp(p.slice(1)))
+  return (path) => include.some((re) => re.test(path)) && !exclude.some((re) => re.test(path))
+}
+
+/**
+ * The patterns of a list that select nothing among `paths`: an include that matches no file a negation
+ * leaves, and a negation that removes no file an include matched.
+ */
+export const unmatched = (patterns: ReadonlyArray<string>, paths: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const included = matcher(patterns.filter((p) => !p.startsWith("!")))
+  const removed = matcher(patterns.filter((p) => p.startsWith("!")).map((p) => p.slice(1)))
+  return patterns.filter((pattern) => {
+    const re = globToRegExp(pattern.replace(/^!/, ""))
+    return !paths.some((path) => re.test(path) && (pattern.startsWith("!") ? included(path) : !removed(path)))
+  })
+}
+
+/** The pattern lists in `files` without a pattern that includes files, which select nothing at any revision. */
+export const includeless = (files: Files): ReadonlyArray<ReadonlyArray<string>> => {
+  switch (files._tag) {
+    case "Glob":
+    case "Imports":
+      return files.patterns.some((p) => !p.startsWith("!")) ? [] : [files.patterns]
+    case "Union":
+      return files.members.flatMap(includeless)
+    case "Optional":
+      return includeless(files.files)
+    default:
+      return []
+  }
+}
 
 const globCache = new Map<string, RegExp>()
 

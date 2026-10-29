@@ -84,11 +84,8 @@ export const paths = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyA
         return ["."]
       case "Of":
         return files.paths
-      case "Glob": {
-        const all = yield* repo.files
-        const res = files.patterns.map(Files.globToRegExp)
-        return all.filter((f) => res.some((r) => r.test(f)))
-      }
+      case "Glob":
+        return (yield* repo.files).filter(Files.matcher(files.patterns))
       case "Imports": {
         const graph = yield* graphOf(repo)
         return [...(yield* graph.closure(graph.match(files.patterns), files))].sort()
@@ -136,13 +133,8 @@ const unmatched = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArra
         )
       }
       case "Glob":
-      case "Imports": {
-        const all = yield* repo.files
-        return files.patterns.filter((pattern) => {
-          const re = Files.globToRegExp(pattern)
-          return !all.some((f) => re.test(f))
-        })
-      }
+      case "Imports":
+        return Files.unmatched(files.patterns, yield* repo.files)
       case "Union":
         return (yield* Effect.forEach(files.members, (m) => unmatched(repo, m))).flat()
     }
@@ -182,8 +174,10 @@ export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
  * A key for every file of a task's `each`: the task's own key base (with its setup's key), the file,
  * everything it imports and its package's data files.
  */
-const eachKeys = (repo: RepoAt, each: Files.Files, keyBase: string) =>
+const eachKeys = (repo: RepoAt, written: Files.Files, keyBase: string) =>
   Effect.gen(function*() {
+    // `optional` only lets the patterns match nothing.
+    const each = written._tag === "Optional" ? written.files : written
     const graph = yield* graphOf(repo)
     const entries = each._tag === "Imports" || each._tag === "Glob" ? graph.match(each.patterns) : [...new Set(yield* paths(repo, each))].sort()
     const byEntry = each._tag === "Imports" ? yield* graph.closures(entries, each) : new Map(entries.map((e) => [e, [e]] as const))
