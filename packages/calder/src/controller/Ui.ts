@@ -312,7 +312,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         const sha = yield* gitea.head(p.repo, target)
         const event: Domain.Event = schedule !== undefined ? { _tag: "Schedule", cron: schedule }
           : inputs === undefined ? { _tag: "Push", branch: target }
-          : { _tag: "Manual", inputs }
+          : { _tag: "Manual", inputs, branch: target }
         return yield* runs.create({ project, event, sha }).pipe(Effect.mapError((e) => new Refused({ reason: e.message })))
       }),
     audit: ({ project }) =>

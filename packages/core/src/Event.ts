@@ -15,7 +15,8 @@ export const PullRequestClosed = Schema.TaggedStruct("PullRequestClosed", {
 })
 export const Push = Schema.TaggedStruct("Push", { branch: Schema.String })
 export const Scheduled = Schema.TaggedStruct("Schedule", { cron: Schema.String })
-export const Manual = Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown) })
+/** A run started by hand (`calder trigger --inputs`) of `branch`'s head. Older runs lack `branch` and count as the default branch's. */
+export const Manual = Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown), branch: Schema.optional(Schema.String) })
 /**
  * A working copy checked before it is pushed (`calder check`), pushed as `ref`. It runs what a pull request
  * would; `background` checks only take slots nothing else wants.

@@ -3,6 +3,7 @@ import { Effect, Fiber } from "effect"
 import { vi } from "vitest"
 import * as Leases from "../src/controller/Leases.ts"
 import { leaseOf, pullRequestStale } from "../src/controller/WorkerServer.ts"
+import { branchOf } from "../src/controller/Workflow.ts"
 import type { RunInfo } from "../src/Protocol.ts"
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}))
@@ -10,8 +11,11 @@ vi.mock("@effect/sql-sqlite-bun", () => ({}))
 const run = (event: RunInfo["event"], branch: string | null) => ({ project: "app", event, branch }) as RunInfo
 
 describe("the lease a deploy takes", () => {
-  it("is the project's, checked against the default branch for manual and scheduled runs, whatever revision they run", () => {
-    // `calder trigger --branch feature --inputs '{"release":"prod"}'` runs feature's head as a manual run of the default branch.
+  it("is the project's, checked against the run's branch: the default branch's for a schedule, the triggered one for a manual run", () => {
+    // A schedule's branch is the default branch; a manual run's is the branch it was triggered on.
+    expect(branchOf({ _tag: "Schedule", cron: "0 3 * * *" }, "main")).toBe("main")
+    expect(branchOf({ _tag: "Manual", inputs: {} }, "main")).toBe("main")
+    expect(branchOf({ _tag: "Manual", inputs: { release: "prod" }, branch: "feature" }, "main")).toBe("feature")
     expect(leaseOf(run({ _tag: "Manual", inputs: { release: "prod" } }, "main"), true)).toEqual({ key: "app", current: { branch: "main" } })
     expect(leaseOf(run({ _tag: "Schedule", cron: "0 3 * * *" }, "main"), true)).toEqual({ key: "app", current: { branch: "main" } })
     expect(leaseOf(run({ _tag: "Push", branch: "main" }, "main"), true)).toEqual({ key: "app", current: { branch: "main" } })

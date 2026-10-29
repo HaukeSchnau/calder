@@ -34,6 +34,18 @@ export class Runs extends Context.Service<Runs, {
   readonly audit: (project: string) => Effect.Effect<ReadonlyArray<Domain.AuditMismatch>>
 }>()("calder/controller/Runs") {}
 
+/**
+ * The branch a run is of, which its deploy lease checks the revision against (WorkerServer `leaseOf`): a
+ * manual run's is the branch it was triggered on, a schedule's the default branch.
+ */
+export const branchOf = (event: Domain.Event, defaultBranch: string) =>
+  event._tag === "Push" ? event.branch
+  : event._tag === "PullRequest" ? event.head
+  : event._tag === "PullRequestClosed" ? event.base
+  : event._tag === "Check" ? event.ref
+  : event._tag === "Manual" ? event.branch ?? defaultBranch
+  : defaultBranch
+
 export const layer = Layer.effect(Runs)(Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient
   const core = yield* RunsCore
@@ -91,11 +103,7 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
       )
       const event = input.event
       const trust: Domain.Trust = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted"
-      const branch = event._tag === "Push" ? event.branch
-        : event._tag === "PullRequest" ? event.head
-        : event._tag === "PullRequestClosed" ? event.base
-        : event._tag === "Check" ? event.ref
-        : project.defaultBranch
+      const branch = branchOf(event, project.defaultBranch)
       const pr = event._tag === "PullRequest" || event._tag === "PullRequestClosed" ? event.number : null
       const title = pr === null ? null : yield* gitea.pullTitle(project.repo, pr)
       const number = yield* db(Counters.next(`run:${input.project}`))

@@ -303,7 +303,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (pipelineDir.dir === null) return yield* unplanned(run, pipelineDir.error ?? "could not read the revision")
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
-      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run)) }
+      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run, projects.get(run.project)?.defaultBranch)) }
       const event = JSON.parse(run.event) as Domain.Event
       const claim: Slots.Claim = {
         project: run.project,

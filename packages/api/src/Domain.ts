@@ -45,7 +45,8 @@ export const Event = Schema.Union([
   Schema.TaggedStruct("PullRequestClosed", { number: Schema.Number, base: Schema.String, head: Schema.String }),
   Schema.TaggedStruct("Push", { branch: Schema.String }),
   Schema.TaggedStruct("Schedule", { cron: Schema.String }),
-  Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown) }),
+  /** A run of `branch`'s head started by hand. Older runs lack `branch` and count as the default branch's. */
+  Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown), branch: Schema.optional(Schema.String) }),
   /** A working copy checked before it is pushed (`calder check`), pushed as `ref`. It runs what a pull request would. */
   Schema.TaggedStruct("Check", { ref: Schema.String, base: Schema.String, background: Schema.optional(Schema.Boolean) }),
 ])
