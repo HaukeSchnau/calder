@@ -79,7 +79,7 @@ export const ConfigSchema = Schema.Struct({
   fleet: Schema.Array(Schema.String),
   /**
    * Sandboxed workers reach the network only through the controller's egress proxy: hosts in `allow`
-   * (`*.example.org` for subdomains) on public addresses, plus `allowPrivate` hosts on private ones.
+   * (`*.example.org` for subdomains) on public addresses, and each `host:port` in `allowPrivate` on any.
    */
   egress: Schema.NullOr(Schema.Struct({ allow: Schema.Array(Schema.String), allowPrivate: Schema.Array(Schema.String) })),
   /** Agents on other hosts authenticate with the secret in this file. Without it none may connect. */

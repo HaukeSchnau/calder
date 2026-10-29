@@ -22,10 +22,23 @@ const v4Ranges: ReadonlyArray<readonly [string, number]> = [
   ["224.0.0.0", 3],
 ]
 
+/**
+ * The IPv4 address an IPv6 one carries: IPv4-mapped (`::ffff:0:0/96`) or NAT64 (`64:ff9b::/96`), in
+ * dotted or hex notation, which the URL parser makes one.
+ */
+const carried = (address: string) => {
+  if (isIP(address) !== 6) return undefined
+  const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1)
+  const groups = /^(?:::ffff:|64:ff9b::)(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})$/.exec(canonical)
+  if (groups === null) return undefined
+  const n = parseInt(groups[1] ?? "0", 16) * 65536 + parseInt(groups[2]!, 16)
+  return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".")
+}
+
 /** Loopback, private, link-local, CGNAT (the Tailnet), multicast and reserved addresses. */
 export const isPrivate = (address: string): boolean => {
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)
-  if (mapped !== null) return isPrivate(mapped[1]!)
+  const inner = carried(address)
+  if (inner !== undefined) return isPrivate(inner)
   if (isIP(address) === 4) {
     const n = v4(address)
     return v4Ranges.some(([base, bits]) => Math.floor(n / 2 ** (32 - bits)) === Math.floor(v4(base) / 2 ** (32 - bits)))
@@ -38,6 +51,26 @@ export const isPrivate = (address: string): boolean => {
 export const allowed = (host: string, patterns: ReadonlyArray<string>) =>
   patterns.some((p) => (p.startsWith("*.") ? host.endsWith(p.slice(1)) : host === p))
 
+/**
+ * Why the proxy refuses `host:port`, or null. Without `addresses` it checks only the lists, before the
+ * proxy resolves the host. A host in `allow` may resolve only to public addresses. An entry of
+ * `allowPrivate` names one host and port exactly (`git.schnau.dev:443`), which may resolve to any
+ * address: the forge on the Tailnet shares its address with every other port of its host.
+ */
+export const admit = (
+  host: string,
+  port: number,
+  addresses: ReadonlyArray<string> | undefined,
+  egress: { readonly allow: ReadonlyArray<string>; readonly allowPrivate: ReadonlyArray<string> },
+): { readonly status: string; readonly reason: string } | null => {
+  const anywhere = egress.allowPrivate.includes(`${host}:${port}`)
+  if (!anywhere && !allowed(host, egress.allow)) return { status: "403 Not On The Allowlist", reason: "not on the allowlist" }
+  if (addresses === undefined) return null
+  if (addresses.length === 0) return { status: "502 Unknown Host", reason: "unknown host" }
+  if (!anywhere && addresses.some(isPrivate)) return { status: "403 Private Address", reason: "private address" }
+  return null
+}
+
 interface Client extends Tunnel.End {
   head: Array<Uint8Array>
   decided: boolean
@@ -49,31 +82,32 @@ const refuse = (socket: Socket<Client>, status: string) => {
 
 /**
  * The only way out for sandboxed workers (pull-request runs, `PrivateNetwork=yes`): an HTTP CONNECT
- * proxy on a unix socket that reaches allowlisted hosts on public addresses. Workers bridge it to a
+ * proxy on a unix socket that reaches allowlisted hosts (`admit`). Workers bridge it to a
  * loopback port inside their network namespace.
  */
 export const layer = Layer.effectDiscard(Effect.gen(function*() {
   const config = yield* Config
   if (config.egress === null) return
-  const { allow, allowPrivate } = config.egress
+  const egress = config.egress
   const services = yield* Effect.context<never>()
   const log = (message: string) => Effect.runForkWith(services)(Effect.logInfo(message))
   const path = join(config.runtimeDir, "egress.sock")
   if (existsSync(path)) rmSync(path)
 
   const open = async (socket: Socket<Client>, host: string, port: number) => {
-    if (!allowed(host, allow)) {
-      log(`egress refused ${host}:${port}: not on the allowlist`)
-      return refuse(socket, "403 Not On The Allowlist")
+    const unlisted = admit(host, port, undefined, egress)
+    if (unlisted !== null) {
+      log(`egress refused ${host}:${port}: ${unlisted.reason}`)
+      return refuse(socket, unlisted.status)
     }
-    const addresses = isIP(host) !== 0 ? [{ address: host }] : await Bun.dns.lookup(host, {}).catch(() => [])
-    if (addresses.length === 0) return refuse(socket, "502 Unknown Host")
-    if (!allowPrivate.includes(host) && addresses.some((a) => isPrivate(a.address))) {
-      log(`egress refused ${host}:${port}: private address`)
-      return refuse(socket, "403 Private Address")
+    const addresses = isIP(host) !== 0 ? [host] : (await Bun.dns.lookup(host, {}).catch(() => [])).map((a) => a.address)
+    const refused = admit(host, port, addresses, egress)
+    if (refused !== null) {
+      if (refused.status !== "502 Unknown Host") log(`egress refused ${host}:${port}: ${refused.reason}`)
+      return refuse(socket, refused.status)
     }
     const upstream = await Bun.connect<Tunnel.End>({
-      hostname: addresses[0]!.address,
+      hostname: addresses[0]!,
       port,
       data: Tunnel.end(),
       socket: Tunnel.handlers,
