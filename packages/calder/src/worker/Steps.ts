@@ -174,7 +174,7 @@ const inShell = (job: StepJob, workspace: string, shell: Flake.FlakeRef | undefi
  */
 const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacyShell: Flake.FlakeRef | undefined) =>
   Effect.gen(function*() {
-    const { log, remote } = yield* Job
+    const { log, redact, remote } = yield* Job
     if (job.workspace === null) return yield* Effect.die(new Error(`${name} needs a workspace`))
     const opened = Date.now()
     const slot = yield* Workspace.open(isAbsolute(job.workspace) || remote === null ? job.workspace : join(remote.workspaces, job.workspace), job.deps)
@@ -203,13 +203,14 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
       : Cmd.render(setup.run, {})
     if (slot.fresh && command !== null) {
       const started = Date.now()
+      const last = lastWords(redact)
       const exitCode = yield* Exec.stream(
         inShell(job, workspace, setup === undefined ? legacyShell : setup.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-setup", ...command]),
         { cwd: workspace, env: env(job.run, name, extraEnv) },
-        (stream, line) => log(stream, line),
+        (stream, line) => log(stream, last.see(line)),
       )
       if (exitCode !== 0) {
-        return { _tag: "Failed", result: toResult(Exit.fail(new Calder.TaskFailed({ exitCode, failures: [] }))) } as const
+        return { _tag: "Failed", result: toResult(Exit.fail(new Calder.TaskFailed({ exitCode, failures: [], ...last.said() }))) } as const
       }
       yield* log("calder", `set up in ${Math.round((Date.now() - started) / 1000)} s; other slots clone this one`)
     }
@@ -326,12 +327,35 @@ export const deploying = (self: Job["Service"], job: StepJob, name: string, def:
     return { _tag: "Held", fence: lease.fence } as const
   })
 
+const ansi = /\u001b\[[0-9;?]*[ -/]*[@-~]/g
+/** What a wrapper prints after the command it ran failed: pnpm, just, and Go's `exit status 1`. */
+const wrapperNote = /^ELIFECYCLE\b|^error: Recipe `[^`]+` failed\b|^exit status \d+$/i
+
+/**
+ * Keeps the last line of a command's output that says something, which is usually why it ended: not
+ * blank, without color codes, and not a wrapper's note that the command failed, such as pnpm's
+ * `ELIFECYCLE Command failed with exit code 1`. It keeps the line redacted, then cut to 500 characters,
+ * so a cut can't leave the head of a secret.
+ */
+export const lastWords = (redact: (text: string) => string) => {
+  let last: string | undefined
+  return {
+    /** Takes a line as it goes to the log. */
+    see: (line: string) => {
+      const text = line.replace(ansi, "").trim()
+      if (text !== "" && !wrapperNote.test(text)) last = redact(text).slice(0, 500)
+      return line
+    },
+    said: (): { readonly lastLine?: string } => (last === undefined ? {} : { lastLine: last }),
+  }
+}
+
 export const task = (job: StepJob, step: Step.Any, values: Record<string, unknown>) =>
   Effect.gen(function*() {
     const def = step.def
     if (def._tag !== "Task") return yield* Effect.die(new Error(`${step.name} is not a task`))
     const self = yield* Job
-    const { emit, log, remote } = self
+    const { emit, log, redact, remote } = self
     const setup = def.setup?.def._tag === "Setup" ? def.setup.def : undefined
     const prepared = yield* prepare(job, step.name, setup, def.shell)
     if (prepared._tag === "Failed") return prepared.result
@@ -379,13 +403,10 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       if (def.report !== undefined) rmSync(join(workspace, def.report.path), { force: true })
       if (def.value !== undefined) rmSync(join(workspace, def.value.path), { force: true })
       yield* log("calder", `$ ${argv.join(" ")}`)
-      let last = ""
-      const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) => {
-        if (line.trim() !== "") last = line.trim()
-        return log(stream, line)
-      })
+      const last = lastWords(redact)
+      const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) => log(stream, last.see(line)))
       if (def.skipCode !== undefined && exitCode === def.skipCode) {
-        skipped = last === "" ? `exited with ${exitCode}` : last
+        skipped = last.said().lastLine ?? `exited with ${exitCode}`
         return undefined
       }
       let failures: ReadonlyArray<Calder.TestFailure> = []
@@ -407,7 +428,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
           yield* log("calder", `no report at ${def.report.path}`)
         }
       }
-      if (exitCode !== 0) return yield* new Calder.TaskFailed({ exitCode, failures })
+      if (exitCode !== 0) return yield* new Calder.TaskFailed({ exitCode, failures, ...last.said() })
       return def.value === undefined ? undefined : yield* readValue(workspace, def.value)
     })
     const exit = yield* Effect.exit(withPolicies(once, step.policies))

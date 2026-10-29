@@ -8,6 +8,7 @@ import type { Job as JobSpec, JobResult, PlanSpec } from "../Protocol.ts"
 import * as Client from "./Client.ts"
 import * as Egress from "./Egress.ts"
 import * as Load from "./Load.ts"
+import * as Redact from "./Redact.ts"
 import * as Repo from "./Repo.ts"
 import { resolve } from "./Resolve.ts"
 import * as Steps from "./Steps.ts"
@@ -83,16 +84,33 @@ export const run = (
   options: { readonly socket: string; readonly tokenFile: string } | { readonly remote: Client.Remote; readonly token: string },
 ) =>
   Effect.gen(function*() {
+    // An agent hands its worker the job's token in CALDER_TOKEN, and the job's commands inherit the
+    // worker's environment.
+    delete process.env.CALDER_TOKEN
     if (process.env.CALDER_EGRESS !== undefined) yield* Egress.bridge(process.env.CALDER_EGRESS)
     const remote = "remote" in options ? options.remote : null
     const token = "token" in options ? options.token : readFileSync(options.tokenFile, "utf8").trim()
-    const job = yield* Client.make(id, token, remote)
-    const spec = yield* Client.reconnecting(job.client.job({ job: id, token }))
+    const connected = yield* Client.make(id, token, remote)
+    const spec = yield* Client.reconnecting(connected.client.job({ job: id, token }))
     Object.assign(process.env, Repo.insteadOf(spec.run.mirrors))
+    // Nothing the job prints, says or fails with leaves the worker with its secrets or its token in it.
+    const redact = Redact.make([...(spec._tag === "Step" ? Object.values(spec.secrets) : []), token])
+    const job: Client.Job["Service"] = {
+      ...connected,
+      client: {
+        ...connected.client,
+        pullRequestComment: (payload) => connected.client.pullRequestComment({ ...payload, markdown: redact(payload.markdown) }),
+        giteaDispatch: (payload) =>
+          connected.client.giteaDispatch({ ...payload, inputs: Object.fromEntries(Object.entries(payload.inputs).map(([k, v]) => [k, redact(v)])) }),
+      },
+      emit: (event) => connected.emit(Redact.event(redact, event)),
+      log: (stream, text) => connected.log(stream, redact(text)),
+      redact,
+    }
     const result: JobResult = yield* (spec._tag === "Plan" ? plan(spec) : step(spec)).pipe(
       Effect.provideService(Client.Job, job),
       Effect.catchCause((cause) => Effect.succeed({ _tag: "Died", message: Cause.pretty(cause) } satisfies JobResult)),
     )
     yield* job.flush
-    yield* Client.reconnecting(job.client.finish({ job: id, token, result }))
+    yield* Client.reconnecting(job.client.finish({ job: id, token, result: Redact.result(redact, result) }))
   }).pipe(Effect.scoped, Effect.provide("remote" in options ? Client.layerClientRemote(options.remote) : Client.layerClient(options.socket)))
