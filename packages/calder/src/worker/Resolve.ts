@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core"
@@ -455,6 +455,11 @@ export interface Memory {
   readonly budget: number | null
   /** The anonymous resident memory of a process, in bytes. */
   readonly resident: (pid: number) => number
+  /**
+   * What an evaluator may hold given what else runs in the job's slice: 80% of the slice's limit less
+   * what its other units use. Null where the slice has no limit.
+   */
+  readonly room?: () => number | null
   /** How often a running evaluator is checked against the budget. */
   readonly every: Duration.Input
 }
@@ -472,21 +477,40 @@ export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): 
       return Number.NaN
     }
   }
+  // "max" reads as NaN.
+  const limitOf = (dir: string) => Math.min(...[read(join(dir, "memory.high")), read(join(dir, "memory.max"))].filter(Number.isFinite))
   let limit = Number.POSITIVE_INFINITY
+  let unit: string | undefined
   try {
     const path = /^0::(\/.*)$/m.exec(readFileSync(self, "utf8"))?.[1]
     for (let dir = join(root, path ?? ""); path !== undefined && dir.startsWith(root); dir = dirname(dir)) {
-      // "max" reads as NaN.
-      for (const value of [read(join(dir, "memory.high")), read(join(dir, "memory.max"))]) {
-        if (Number.isFinite(value)) limit = Math.min(limit, value)
-      }
+      limit = Math.min(limit, limitOf(dir))
       if (dir === root) break
     }
+    if (path !== undefined && path !== "/") unit = join(root, path)
   } catch {
     // Not cgroup v2: nothing limits the job.
   }
+  // The slice the job's unit runs in, which other jobs share.
+  const slice = unit === undefined ? undefined : dirname(unit)
   return {
     budget: Number.isFinite(limit) ? Math.floor((limit - process.memoryUsage().rss) * 0.8) : null,
+    ...(slice === undefined || slice === root ? {} : {
+      room: () => {
+        const sliceLimit = limitOf(slice)
+        if (!Number.isFinite(sliceLimit)) return null
+        // The other units' own charges: the slice's total also holds what finished jobs left behind,
+        // such as kernel slab, and this job's worker and page cache, which its own budget covers.
+        try {
+          const others = readdirSync(slice, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory() && join(slice, entry.name) !== unit)
+            .reduce((sum, entry) => sum + (read(join(slice, entry.name, "memory.current")) || 0), 0)
+          return Math.floor((sliceLimit - others) * 0.8)
+        } catch {
+          return null
+        }
+      },
+    }),
     // Anonymous memory only: what the evaluator allocated, not the files it has mapped.
     // The process and its children: under the recorder, nix runs below strace.
     resident: (pid) => {
@@ -549,6 +573,17 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
       peak = Math.max(peak, now)
       return now
     }
+    // Over the job's budget; or, once it got an attribute, over what the slice has room for. A new
+    // evaluator always gets its first attribute within the budget, so the slice only costs evaluators,
+    // and an attribute is too large only for the job (`TooLarge`), never for a busy slice.
+    let forRoom = false
+    const full = () => {
+      const now = resident()
+      if (memory.budget !== null && now > memory.budget) return true
+      const room = got.length === 0 ? null : memory.room?.() ?? null
+      forRoom = room !== null && now > room
+      return forRoom
+    }
     const exit = yield* Exec.stream(argv, env, (stream, line) =>
       Effect.gen(function*() {
         const report = /^trace: calder-(flake|derivation)(?: (.*))?$/.exec(line)
@@ -567,13 +602,13 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
         })
         if (index !== got.length) return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`)
         got.push(derivation)
-        if (memory.budget !== null && got.length < attrs.length && resident() > memory.budget) return yield* new Stopped()
+        if (got.length < attrs.length && full()) return yield* new Stopped()
       }), (id) => {
       pid = id
       return Effect.gen(function*() {
         while (memory.budget !== null) {
           yield* Effect.sleep(memory.every)
-          if (resident() > memory.budget) return yield* new Stopped()
+          if (full()) return yield* new Stopped()
         }
       })
     }).pipe(
@@ -603,7 +638,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
       : got.length === attrs.length ? "done" as const : "failed" as const
     // Nix's innermost error comes last.
     const error = stderr.map((line) => line.trim()).findLast((line) => line.startsWith("error:"))?.replace(/^error:\s*/, "") ?? ""
-    return { got, stop, error, peak, loaded, trace }
+    return { got, stop, error, peak, loaded, trace, forRoom: stop === "over" && forRoom }
   })
 
 /** Runs a command under strace, writing the source accesses Footprint.parseTrace reads to `file`. */
@@ -657,12 +692,14 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
     const failedWith = new Map<string, number>()
     let done = 0
     let evaluators = 0
+    let forRoom = 0
     let peak = 0
     while (done < attrs.length) {
       const rest = attrs.slice(done)
       const pass = yield* evaluator(flake, rest, memory, recorder)
       if (recorder !== undefined) passes.push({ attrs: rest.slice(0, pass.got.length), trace: pass.trace })
       evaluators++
+      if (pass.forRoom) forRoom++
       peak = Math.max(peak, pass.peak)
       pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation))
       done += pass.got.length
@@ -687,7 +724,8 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
       yield* log(`${next} did not evaluate: ${pass.error}`)
     }
     const budget = memory.budget === null ? "" : ` of ${gib(memory.budget)}`
-    yield* log(`evaluated ${derivations.size} attributes of the flake in ${Date.now() - started} ms with ${evaluators} evaluators, holding at most ${gib(peak)}${budget}`)
+    const slice = forRoom === 0 ? "" : `, ${forRoom} of them for want of room in the jobs slice`
+    yield* log(`evaluated ${derivations.size} attributes of the flake in ${Date.now() - started} ms with ${evaluators} evaluators${slice}, holding at most ${gib(peak)}${budget}`)
     if (recorder === undefined) return { derivations, errors, tooLarge } as Evaluated
     const recorded = yield* records(recorder, passes, derivations)
     yield* log(`recorded footprints of ${recorded.evaluations.length} of ${attrs.length} attributes`)
