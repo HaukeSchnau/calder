@@ -13,6 +13,7 @@ import * as Values from "../Values.ts"
 import { fetching, gitEnv, Job, reconnecting } from "./Client.ts"
 import * as NixLog from "./NixLog.ts"
 import * as Repo from "./Repo.ts"
+import * as Resolve from "./Resolve.ts"
 import { paths } from "./Resolve.ts"
 import * as Workspace from "./Workspace.ts"
 
@@ -78,14 +79,13 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
   Effect.gen(function*() {
     const { emit, log } = yield* Job
     const parse = NixLog.parser()
-    let drv: string | null = job.derivation
-    const ref = drv === null ? `${job.run.flake}#${attr}` : `${drv}^*`
+    // Without a derivation, the run's shared evaluation failed (see `evaluate`): the build evaluates its
+    // attribute alone, with the same memory budget and cache lock.
+    const alone = job.derivation === null ? yield* evaluateAlone(job.run, attr, (text) => log("calder", text)) : undefined
+    if (alone?._tag === "Failed") return alone
+    const drv = alone?.drv ?? job.derivation!
     yield* log("calder", `nix build ${attr}`)
-    if (drv === null) {
-      drv = (yield* Exec.run(["nix", "eval", "--raw", `${ref}.drvPath`], { env: env(job.run, step.name) }).pipe(
-        Effect.orElseSucceed(() => ""),
-      )).trim() || null
-    }
+    const ref = `${drv}^*`
     const attempt = Effect.gen(function*() {
       const out: Array<string> = []
       const exitCode = yield* Exec.stream(
@@ -108,6 +108,59 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
     })
     const exit = yield* Effect.exit(withPolicies(attempt, step.policies))
     return toResult(exit, { key: drv })
+  })
+
+/** A build's attribute evaluated by itself: its derivation, or the failed result that says why it has none. */
+const evaluateAlone = (run: RunInfo, attr: string, say: (text: string) => Effect.Effect<void>) => {
+  const failed = (tag: string, message: string) => ({ _tag: "Failed", error: null, tag, message, key: null, outputs: {} }) satisfies JobResult
+  return Resolve.derivations(run, [attr], undefined, say).pipe(
+    Effect.map((evaluated) => {
+      const derivation = evaluated.derivations.get(attr)
+      const tooLarge = evaluated.tooLarge.get(attr)
+      if (derivation) return { _tag: "Derivation" as const, drv: derivation.drv }
+      if (tooLarge !== undefined) return failed("TooLarge", tooLarge.message)
+      const error = evaluated.errors.get(attr)
+      return failed("EvaluationFailed", error === undefined ? `${attr} threw; nix eval ${run.flake}#${attr}.drvPath says why` : `${attr} did not evaluate: ${error}`)
+    }),
+    Effect.catchTags({
+      TooLarge: (e) => Effect.succeed(failed("TooLarge", e.message)),
+      CommandFailed: (e) => Effect.succeed(failed("EvaluationFailed", `the flake did not load: ${e.stderr.trim().split("\n").slice(-5).join("\n")}`)),
+    }),
+  )
+}
+
+/**
+ * The builds a plan left unevaluated, evaluated the way plans evaluate, in one evaluator while they fit
+ * the job's memory, recording what they read for the plans after them. The job fails only where Nix does,
+ * such as for a flake that doesn't load; each build then evaluates its own attribute.
+ */
+export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =>
+  Effect.gen(function*() {
+    const { log } = yield* Job
+    const say = (text: string) => log("calder", text)
+    const repo = yield* Repo.make(job.run.mirror, job.run.revision)
+    const recorder = yield* Resolve.recorder(job.run, repo)
+    const attrs = [...new Set(what.builds.map((b) => b.attr))]
+    yield* say(`evaluating the ${attrs.length} builds the plan left for when the first of them runs`)
+    const evaluated = yield* Resolve.derivations(job.run, attrs, undefined, say, undefined, { recorder }).pipe(
+      // Loading the flake alone outgrew the memory: so would every build's.
+      Effect.catchTag("TooLarge", (e) => Effect.succeed({ derivations: new Map(), errors: new Map(), tooLarge: new Map(attrs.map((a) => [a, e])) } as Resolve.Evaluated)),
+    )
+    const derivation = (attr: string) => evaluated.derivations.get(attr) ?? null
+    const uses = yield* Resolve.buildEdges([
+      ...what.planned,
+      ...what.builds.flatMap((b) => (derivation(b.attr) === null ? [] : [{ name: b.name, drv: derivation(b.attr)!.drv }])),
+    ])
+    return {
+      _tag: "Evaluated",
+      derivations: Object.fromEntries(what.builds.map((b) => [b.name, derivation(b.attr)])),
+      tooLarge: Object.fromEntries(what.builds.flatMap((b) => {
+        const e = evaluated.tooLarge.get(b.attr)
+        return e === undefined ? [] : [[b.name, e.message]]
+      })),
+      uses: Object.fromEntries(uses),
+      ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
+    } satisfies JobResult
   })
 
 // ----------------------------------------------------------------------------------------------- task

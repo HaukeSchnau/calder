@@ -63,7 +63,9 @@ const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
     }
     switch (def._tag) {
       case "Build":
-        return yield* Steps.build(spec, step, Flake.attrPath(def.ref, spec.run.system))
+        return spec.evaluate === undefined
+          ? yield* Steps.build(spec, step, Flake.attrPath(def.ref, spec.run.system))
+          : yield* Steps.evaluate(spec, spec.evaluate)
       case "Setup":
         return yield* Steps.setup(spec, step)
       case "Task":

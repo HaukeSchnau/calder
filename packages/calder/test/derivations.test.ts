@@ -214,9 +214,9 @@ describe("evaluating within the job's memory", () => {
     Effect.gen(function*() {
       const logged: Array<string> = []
       const log = (text: string) => Effect.sync(() => void logged.push(text))
-      const { derivations: result, errors } = yield* derivations(run("git+file:///mirror"), attrs, undefined, log, fake.memory(budget))
+      const { derivations: result, errors, tooLarge } = yield* derivations(run("git+file:///mirror"), attrs, undefined, log, fake.memory(budget))
         .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      return { result, errors, logged }
+      return { result, errors, tooLarge, logged }
     })
 
   it.live("shares one evaluator while the attributes fit", () =>
@@ -237,14 +237,16 @@ describe("evaluating within the job's memory", () => {
       expect(fake.evaluated).toEqual([["h1", "h2", "h3", "h4"], ["h3", "h4"]])
     }))
 
-  it.live("stops at once, saying which attribute, when one outgrows the budget even on its own", () =>
+  it.live("leaves out an attribute that outgrows the budget even on its own, saying which, and goes on with the rest", () =>
     Effect.gen(function*() {
-      const fake = nix(() => true, { attrs: { a: { bytes: GiB / 2 }, huge: { bytes: 4 * GiB } }, hang: 3 * GiB })
-      const error = yield* Effect.flip(evaluate(fake, ["a", "huge", "c"], 3 * GiB))
-      expect(error).toMatchObject({ _tag: "TooLarge", attr: "huge", budget: 3 * GiB })
-      expect(error.message).toContain("took more than 3.0 GiB")
-      // It gets another try in an evaluator of its own before it counts as too large; nothing swaps or waits.
-      expect(fake.evaluated).toEqual([["a", "huge", "c"], ["huge", "c"]])
+      const fake = nix(() => true, { attrs: { a: { bytes: GiB / 2 }, huge: { bytes: 4 * GiB }, c: { bytes: GiB / 2 }, d: { bytes: GiB / 2 } }, hang: 3 * GiB })
+      const { result, tooLarge } = yield* evaluate(fake, ["a", "huge", "c", "d"], 3 * GiB)
+      expect(result).toEqual(new Map([["a", drv("a")], ["c", drv("c")], ["d", drv("d")]]))
+      expect([...tooLarge.values()]).toMatchObject([{ _tag: "TooLarge", attr: "huge", budget: 3 * GiB }])
+      expect(tooLarge.get("huge")!.message).toContain("took more than 3.0 GiB")
+      // It gets another try in an evaluator of its own before it counts as too large; nothing swaps or waits,
+      // and how much it grew doesn't give the rest an evaluator each.
+      expect(fake.evaluated).toEqual([["a", "huge", "c", "d"], ["huge", "c", "d"], ["c", "d"]])
     }))
 
   it.live("tries an attribute Nix can't evaluate once more, then leaves it out with Nix's reason, uncached", () =>

@@ -2,14 +2,14 @@ import { createHash } from "node:crypto"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Calder, Event, Flake, Nix, On } from "@calder-ci/core"
+import { Calder, cmd, Event, Flake, Nix, On, Task } from "@calder-ci/core"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Sink, Stream } from "effect"
 import { SqlClient } from "effect/sql"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { vi } from "vitest"
 import * as Rows from "../src/controller/Rows.ts"
-import type { RunInfo } from "../src/Protocol.ts"
+import type { Records, RunInfo } from "../src/Protocol.ts"
 import * as Footprint from "../src/worker/Footprint.ts"
 import { byDependencies, evaluationContext, fromRecords, ownReads, recorder, resolve, vetted } from "../src/worker/Resolve.ts"
 import { memoryRepo } from "./memoryRepo.ts"
@@ -240,6 +240,39 @@ const answering = (answers: Record<string, { readonly code?: number; readonly st
   )
   return { spawner, evaluated }
 }
+
+describe("a plan with builds whose footprints changed", () => {
+  it.effect("evaluates only dev shells and leaves the builds for the build slots of the systems they last built for", () =>
+    Effect.gen(function*() {
+      const shellDrv = { drv: "/nix/store/s-shell.drv", out: "/nix/store/s-shell", system: "x86_64-linux" }
+      const { spawner, evaluated } = answering({
+        "nix --version": { stdout: "nix (Nix) 2.34.9" },
+        "nix config": { stdout: "true" },
+        "nix-store --check-validity": {},
+        "nix-store --query": {},
+      }, () => shellDrv)
+      const flake = Flake.make({ devShells: ["ci"] })
+      const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` })
+      const host = Nix.build(Flake.attr("checks.x86_64-linux.host"), { name: "host" })
+      const project = Calder.project({ rules: [On.push("main", [qa, host])] })
+      const run = { id: "app-1", project: "app", number: 1, revision: "b", branch: "main", trust: "trusted", event: Event.push("main"),
+        flake: "git+file:///mirror", mirror: "/mirror", mirrors: {}, pipelineDir: "", system: "x86_64-linux" } satisfies RunInfo
+      const records: Records = {
+        footprints: [{ id: "f", revision: "a", entries: [["flake.nix", "read"]] }],
+        evaluations: [{
+          attr: "checks.x86_64-linux.host", footprint: "f", count: 1, digest: "of another flake.nix",
+          derivation: { drv: "/nix/store/h-host.drv", out: "/nix/store/h-host", system: "aarch64-darwin" },
+        }],
+      }
+      const spec = yield* Effect.gen(function*() {
+        return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" }), undefined, { records })
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      expect(evaluated).toEqual(["devShells.x86_64-linux.ci"])
+      expect(spec.steps.find((s) => s.name === "host")?.build).toEqual({ attr: "checks.x86_64-linux.host", drv: null, out: null, system: "aarch64-darwin" })
+      expect(spec.deferred).toEqual(["checks.x86_64-linux.host"])
+      expect(spec.steps.find((s) => s.name === "qa")?.task?.shell).toBe("devShells.x86_64-linux.ci")
+    }))
+})
 
 describe("what a record may be trusted with", () => {
   it.effect("trusts no attribute that read a store path built from the source, or whose deriver Nix doesn't know", () =>

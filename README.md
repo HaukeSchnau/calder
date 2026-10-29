@@ -163,7 +163,14 @@ lets strace see each file Nix opens, lists or looks up. The next plan compares t
 commit, and takes the derivation of every attribute whose footprint holds without running Nix; a push that
 changes nothing Nix read plans in about a second. A footprint includes what the attributes evaluated
 before it in the same `nix eval` read, so attributes evaluate after those their last derivations depended on:
-a lockfile's dependencies then keep their record while the app build that uses them changes. A record counts for no other commit when its
+a lockfile's dependencies then keep their record while the app build that uses them changes. The plan
+evaluates only dev shells whose footprint changed, which task keys need, and leaves the builds whose
+footprint changed for later, so tasks start without waiting for them. The first of those builds to run
+evaluates them all in a plan slot, in one evaluator while they fit its job's memory, and records their footprints; the
+others wait for it and then build like planned builds, on their system's builders, reused when their output
+exists. A build too large to evaluate fails. Where the evaluation fails twice, each build evaluates its own
+attribute, with the same memory budget.
+A record counts for no other commit when its
 derivation's closure, or the deriver of a store path the evaluation read (import from a derivation built
 from `self`), mentions its commit or the whole source (`self.rev`, `self.lastModified`, `src = self`), or
 its footprint read a file mentioning `revCount`. Commit metadata transformed in code, such as

@@ -157,10 +157,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     if (index !== null && !Number.isNaN(index)) {
       workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index))
     }
-    // Taken before any run is driven again, or the run would claim the same slots for new jobs.
-    const row = spec.derivation === null ? undefined : yield* Rows.loadStep(spec.run.id, spec.step).pipe(Effect.provideService(SqlClient.SqlClient, sql))
-    const system = row === undefined ? null : Rows.spec(row).build?.system ?? null
-    const release = (spec.derivation === null ? slots.tasks : buildSlots(system)).reserve(spec.run.project)
+    // Taken before any run is driven again, or the run would claim the same slots for new jobs. A build's
+    // job holds a build slot, also before its derivation is known, and evaluating builds a plan slot.
+    const row = yield* Rows.loadStep(spec.run.id, spec.step).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+    const build = row === undefined ? null : Rows.spec(row).build
+    const held = spec.evaluate !== undefined ? slots.plans : build === null ? slots.tasks : buildSlots(build.system)
+    const release = held.reserve(spec.run.project)
     yield* jobs.settled(adopted.id).pipe(
       Effect.ensuring(release),
       Effect.ensuring(Effect.sync(() => index !== null && workspaces.get(key)?.delete(index))),
@@ -684,6 +686,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly withdraw?: Deferred.Deferred<void>
       /** The pool when it isn't the run's, such as a preview's trusted job in a pull-request run. */
       readonly pool?: Pool
+      /** Whether the job is on a deploy's or preview's critical path, when the step's own spec doesn't say. */
+      readonly critical?: boolean
     },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
@@ -750,7 +754,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         expected: options.expected,
         run: run.created_at,
         background,
-        critical: Rows.spec(row).critical === true,
+        critical: options.critical ?? Rows.spec(row).critical === true,
         label: `${run.id} ${row.name}`,
       }
       const busy = reattached === undefined ? options.slots.waitsFor(claim) : null
@@ -815,6 +819,111 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       return instead
     })
 
+  /** Per run, once its first build without a derivation runs: the builds whose attributes were too large, with why. */
+  const evaluations = new Map<string, Deferred.Deferred<ReadonlyMap<string, string>>>()
+
+  /**
+   * Evaluates the builds the run's plan left unevaluated (Resolve.ts `resolve`) in one job of the first
+   * of them that runs, as its plan would have: in one evaluator while they fit, recording their
+   * footprints. The others wait for it, not each evaluating the flake. Their steps then get the
+   * derivations and the edges between builds a plan gives, so they build where their system builds and
+   * an output that exists is reused; the run's plan gets them for later plans of the same tree. Where the
+   * evaluation fails, each build evaluates its attribute itself.
+   */
+  const evaluation = (
+    run: Rows.RunRow,
+    name: string,
+    job: (step: string, evaluate: NonNullable<Extract<Job, { _tag: "Step" }>["evaluate"]>) => Job,
+  ) =>
+    Effect.gen(function*() {
+      const pending = evaluations.get(run.id)
+      if (pending !== undefined) {
+        yield* waiting(run.id, name, "waiting for the run's builds to be evaluated")
+        return yield* Deferred.await(pending).pipe(Effect.ensuring(waiting(run.id, name, null)))
+      }
+      const done = Deferred.makeUnsafe<ReadonlyMap<string, string>>()
+      evaluations.set(run.id, done)
+      const evaluate = Effect.gen(function*() {
+        const steps = (yield* db(Rows.loadSteps(run.id))).map(Rows.spec)
+        const builds = steps.flatMap((s) => (s.build === null ? [] : [{ name: s.name, build: s.build, critical: s.critical === true }]))
+        const order = (JSON.parse((yield* db(Rows.loadRun(run.id)))?.plan ?? "{}") as PlanSpec).deferred ?? []
+        const rank = (attr: string) => (order.includes(attr) ? order.indexOf(attr) : order.length)
+        const what = {
+          builds: builds.flatMap((b) => (b.build.drv === null ? [{ name: b.name, attr: b.build.attr }] : []))
+            .sort((a, b) => rank(a.attr) - rank(b.attr)),
+          planned: builds.flatMap((b) => (b.build.drv === null ? [] : [{ name: b.name, drv: b.build.drv }])),
+        }
+        // A worker that was evaluating when the controller restarted goes on, as its step's job.
+        const by = jobs.adopted().find((a) => a.spec.run.id === run.id && a.spec.evaluate !== undefined)?.spec.step ?? name
+        const row = (yield* db(Rows.loadStep(run.id, by)))!
+        const collect = { tests: [], attempts: 0 }
+        // Every build it evaluates waits for it. It is plan work and takes a plan slot, so one project's
+        // flake is evaluated once at a time, as the worker's cache lock would have it anyway, and no build
+        // slot sits idle for the minutes it takes.
+        const critical = builds.some((b) => b.build.drv === null && b.critical)
+        const attempt = execute(run, row, () => job(by, what), {
+          slots: slots.plans,
+          what: "a plan slot",
+          expected: 0,
+          action: false,
+          shard: null,
+          workspace: false,
+          critical,
+        }, collect)
+        const say = (text: string) => logTo(run, row.name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
+        const why = (result: JobResult) => (result._tag === "Died" ? result.message.split("\n")[0] : result._tag)
+        let r = yield* attempt
+        // It fails mostly when the host is short of memory, as when a worker's unit times out starting.
+        if (r.result._tag !== "Evaluated" && !stopped(r)) {
+          yield* say(`evaluating the builds together failed, so it tries once more: ${why(r.result)}`)
+          r = yield* attempt
+        }
+        if (r.result._tag !== "Evaluated") {
+          if (!stopped(r)) yield* say(`evaluating the builds together failed again, so each evaluates its own attribute: ${why(r.result)}`)
+          return new Map<string, string>()
+        }
+        const { derivations, uses, tooLarge, recorded } = r.result
+        if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
+        const changed = yield* db(sql.withTransaction(Effect.gen(function*() {
+          const stored = (yield* Rows.loadRun(run.id))?.plan
+          if (stored === null || stored === undefined) return []
+          const plan = JSON.parse(stored) as PlanSpec
+          const deps = new Map(plan.steps.map((s) => [s.name, new Set([...s.needs, ...s.after, ...s.exits])]))
+          // Whether `from` waits for `to`, directly or through other steps.
+          const waitsFor = (from: string, to: string, seen = new Set<string>()): boolean => {
+            if (from === to) return true
+            if (seen.has(from)) return false
+            seen.add(from)
+            return [...(deps.get(from) ?? [])].some((d) => waitsFor(d, to, seen))
+          }
+          const steps = Rows.criticalPath(plan.steps.map((s): PlannedStep => {
+            const derivation = s.build === null ? undefined : derivations[s.name] ?? undefined
+            // A use that would close a cycle with the plan's own order (a worker's mistake, or a rule that
+            // put a build after one that uses it) is left out: the run would wait forever.
+            const more = (uses[s.name] ?? []).filter((n) => !s.needs.includes(n) && deps.has(n) && !waitsFor(n, s.name))
+            for (const n of more) deps.get(s.name)!.add(n)
+            return {
+              ...s,
+              needs: [...s.needs, ...more],
+              build: derivation === undefined || s.build === null ? s.build : { ...s.build, drv: derivation.drv, out: derivation.out, system: derivation.system },
+            }
+          }), run.fork === 1)
+          const attrs = Object.fromEntries(plan.steps.flatMap((s) => (s.build === null || !(s.name in derivations) ? [] : [[s.build.attr, derivations[s.name] ?? null]])))
+          yield* sql`update runs set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs } })} where id = ${run.id}`
+          const updated = steps.filter((s, i) => JSON.stringify(s) !== JSON.stringify(plan.steps[i]))
+          for (const s of updated) yield* sql`update steps set spec = ${JSON.stringify(s)} where run_id = ${run.id} and name = ${s.name}`
+          return updated.map((s) => s.name)
+        })))
+        yield* Effect.forEach(changed, (n) => publishStep(run.id, n), { discard: true })
+        return new Map(Object.entries(tooLarge))
+      })
+      return yield* evaluate.pipe(
+        Effect.catchCause((cause) => Effect.logError(`evaluating ${run.id}'s builds failed`, cause).pipe(Effect.as(new Map<string, string>()))),
+        Effect.tap((tooLarge) => Deferred.succeed(done, tooLarge)),
+        Effect.onInterrupt(() => Deferred.succeed(done, new Map())),
+      )
+    })
+
   const step = (runId: string, name: string) =>
     Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
@@ -828,9 +937,17 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* share(run, name, spec.build.out)
         return yield* settle(run, row, { status: "reused", value: spec.build.out, key: spec.build.drv })
       }
-      const all = yield* db(Rows.loadSteps(runId))
-      const byName = new Map(all.map((s) => [s.name, s]))
+      let all = yield* db(Rows.loadSteps(runId))
+      let byName = new Map(all.map((s) => [s.name, s]))
       const setups = Rows.setupsOf(spec, (n) => byName.get(n)?.kind)
+      // Builds the run's evaluation found this step uses (see `evaluation`) came after the plan, which the
+      // run waited for.
+      const late = [...spec.needs, ...spec.after].filter((n) => !setups.includes(n) && byName.has(n) && !Rows.terminal(byName.get(n)!.status))
+      if (late.length > 0) {
+        yield* Effect.forEach(late, (n) => Deferred.await(stepped.get(runId, n)), { discard: true })
+        all = yield* db(Rows.loadSteps(runId))
+        byName = new Map(all.map((s) => [s.name, s]))
+      }
       const deps = [...spec.needs, ...spec.after].filter((n) => !setups.includes(n)).map((n) => byName.get(n)?.status ?? "blocked")
       if (deps.some((status) => !Rows.succeeded(status) && status !== "skipped")) return yield* settle(run, row, { status: "blocked" })
       const skippedDep = [...spec.needs, ...spec.after].find((n) => byName.get(n)?.status === "skipped")
@@ -875,7 +992,26 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       if (spec.build !== null) {
-        const { drv, system } = spec.build
+        let build = spec.build
+        if (build.drv === null) {
+          const tooLarge = yield* evaluation(run, name, (step, evaluate) => stepJob({ step, inputs: {}, evaluate }))
+          const now = (yield* db(Rows.loadStep(runId, name))) ?? row
+          if ((yield* db(Rows.loadRun(runId)))?.status === "cancelled") return yield* settle(run, now, { status: "cancelled" })
+          const large = tooLarge.get(name)
+          if (large !== undefined) return yield* settle(run, now, { status: "failed", error: { tag: "TooLarge", message: large, json: null } })
+          const evaluated = Rows.spec(now)
+          build = evaluated.build ?? build
+          // The builds it turned out to use, as a plan that evaluated it would have had it wait for.
+          const uses = evaluated.needs.filter((n) => !spec.needs.includes(n))
+          yield* Effect.forEach(uses, (n) => Deferred.await(stepped.get(runId, n)), { discard: true })
+          const after = new Map((yield* db(Rows.loadSteps(runId))).map((s) => [s.name, s.status]))
+          if (uses.some((n) => !Rows.succeeded(after.get(n) ?? "blocked"))) return yield* settle(run, now, { status: "blocked" })
+          if (build.drv !== null && build.out !== null && (yield* available(build.out))) {
+            yield* share(run, name, build.out)
+            return yield* settle(run, now, { status: "reused", value: build.out, key: build.drv })
+          }
+        }
+        const { drv, system } = build
         const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: buildSlots(system), what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`, expected, action: false, shard: null, workspace: false }, collect)
         if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
         if (r.result._tag === "Passed" && typeof r.result.value === "string") yield* share(run, name, r.result.value)
@@ -1287,6 +1423,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       supersedes.delete(runId)
       stepped.drop(runId)
       wanted.drop(runId)
+      evaluations.delete(runId)
       yield* publishRun(runId)
       yield* comments.touch(runId)
     }).pipe(Effect.catchCause((cause) => Effect.logError("finish failed", cause)))

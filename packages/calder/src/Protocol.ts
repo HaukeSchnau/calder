@@ -133,6 +133,8 @@ export const PlanSpec = Schema.Struct({
   mismatches: Schema.optional(Schema.Array(Mismatch)),
   /** The record each attribute the plan took from records came from, by attribute. */
   fromRecords: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
+  /** The builds the plan left unevaluated, by attribute, in the order to evaluate them. */
+  deferred: Schema.optional(Schema.Array(Schema.String)),
 })
 export type PlanSpec = typeof PlanSpec.Type
 
@@ -204,6 +206,14 @@ export const StepJob = Schema.TaggedStruct("Step", {
   deps: Schema.NullOr(Schema.String),
   /** For a task with `each`: the files this job checks. */
   files: Schema.NullOr(Schema.Array(Schema.String)),
+  /**
+   * For the first build the plan left unevaluated: instead of building, evaluates every such build of the
+   * run together, and finds which builds use which, among them and the `planned` ones.
+   */
+  evaluate: Schema.optional(Schema.Struct({
+    builds: Schema.Array(Schema.Struct({ name: Schema.String, attr: Schema.String })),
+    planned: Schema.Array(Schema.Struct({ name: Schema.String, drv: Schema.String })),
+  })),
 })
 
 export const Job = Schema.Union([PlanJob, StepJob])
@@ -265,6 +275,15 @@ export const JobResult = Schema.Union([
      * finish without it; required once every worker is newer than this field.
      */
     outputs: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  }),
+  /** A step job's `evaluate`: the builds' derivations by step, null for one that threw or failed. */
+  Schema.TaggedStruct("Evaluated", {
+    derivations: Schema.Record(Schema.String, Schema.NullOr(Derivation)),
+    /** Builds whose attribute outgrew the job's memory alone, with why. */
+    tooLarge: Schema.Record(Schema.String, Schema.String),
+    /** The builds each build uses, as the plan's `needs` has them. */
+    uses: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+    recorded: Schema.optional(Records),
   }),
   Schema.TaggedStruct("Died", { message: Schema.String }),
   /** A task that didn't do its work: a newer run's same step took the deploy lease, or it exited with its `skipCode`. */
