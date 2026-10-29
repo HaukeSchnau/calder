@@ -3,7 +3,8 @@ import { admit, allowed, isPrivate } from "../src/controller/Egress.ts"
 
 describe("Egress", () => {
   it("refuses private, Tailnet and loopback addresses", () => {
-    for (const address of ["10.1.2.3", "100.101.2.3", "127.0.0.1", "169.254.169.254", "172.20.0.1", "192.168.1.1", "::1", "fd7a:115c:a1e0::1", "fe80::1", "::ffff:10.0.0.1", "::ffff:a00:1", "64:ff9b::a00:1", "64:ff9b::10.0.0.1"]) {
+    for (const address of ["10.1.2.3", "100.101.2.3", "127.0.0.1", "169.254.169.254", "172.20.0.1", "192.168.1.1", "::1", "fd7a:115c:a1e0::1", "fe80::1", "::ffff:10.0.0.1", "::ffff:a00:1", "64:ff9b::a00:1", "64:ff9b::10.0.0.1",
+      "0:0:0:0:0:0:0:1", "::a00:1", "fe80::1%eth0"]) {
       expect(isPrivate(address), address).toBe(true)
     }
     for (const address of ["104.16.0.35", "140.82.121.4", "2606:4700::6810:84e5", "100.128.0.1", "172.32.0.1", "::ffff:6810:23", "64:ff9b::6810:23"]) {
