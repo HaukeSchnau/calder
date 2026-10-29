@@ -228,9 +228,10 @@ const deploys = (step: PlannedStep) =>
   leased(step.task) || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
 
 /**
- * Marks the steps that deploy, and those whose values they read, as `critical`: they take the latency
- * lane. Checks a deploy only waits for (`after`) are not, or a push's every check would be. The
- * controller decides this rather than taking the plan's word, and a fork's run has no critical steps.
+ * Marks the steps that deploy, those whose values they read, and those they are gated on (a task's
+ * `gate`, such as a preview's smoke test) as `critical`: they take the latency lane. Checks a deploy
+ * only waits for (`after`) are not, or a push's every check would be. The controller decides this
+ * rather than taking the plan's word, and a fork's run has no critical steps.
  */
 export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): ReadonlyArray<PlannedStep> => {
   const byName = new Map(steps.map((s) => [s.name, s]))
@@ -239,7 +240,7 @@ export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): 
     const step = byName.get(name)
     if (step === undefined || critical.has(name)) return
     critical.add(name)
-    for (const dep of step.needs) visit(dep)
+    for (const dep of [...step.needs, ...(step.gates ?? [])]) visit(dep)
   }
   if (!fork) for (const step of steps) if (deploys(step)) visit(step.name)
   return steps.map((step) => ({ ...step, critical: critical.has(step.name) }))

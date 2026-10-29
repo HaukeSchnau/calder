@@ -79,6 +79,15 @@ describe("resolve", () => {
       expect(here.keyBase).toBe(anywhere.keyBase)
     }))
 
+  it.effect("a task's gates reach the controller as the part of its after on its critical path", () =>
+    Effect.gen(function*() {
+      const smoke = Task.make("smoke", { run: cmd`smoke` })
+      const lint = Task.make("lint", { run: cmd`lint` })
+      const spec = yield* plan(app, [Task.make("deploy", { run: cmd`deploy`, after: [lint], gate: [smoke] })])
+      expect(spec.steps.find((s) => s.name === "deploy")).toMatchObject({ after: ["lint", "smoke"], gates: ["smoke"] })
+      expect(spec.steps.find((s) => s.name === "lint")).not.toHaveProperty("gates")
+    }))
+
   it.effect("a dev shell that doesn't evaluate fails the plan, after retries", () =>
     Effect.gen(function*() {
       const flake = Flake.make({ devShells: ["ci"] })

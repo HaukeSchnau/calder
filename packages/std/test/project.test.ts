@@ -75,7 +75,8 @@ describe("Project.alchemy", () => {
     Effect.gen(function*() {
       const same = yield* Calder.plan(project, Event.pullRequest({ number: 7 }))
       expect(same.steps.map((s) => s.name).sort()).toEqual(["artifact", "install", "preview", "preview-url"])
-      expect(same.get("preview")?.preview).toBe(true)
+      // It waits for every check in their usual turn: none gates it into the latency lane.
+      expect(same.get("preview")).toMatchObject({ preview: true, after: ["artifact"], gates: [] })
       const fork = yield* Calder.plan(project, Event.pullRequest({ number: 7, fork: true }))
       expect(fork.steps.map((s) => s.name)).toEqual(["artifact"])
     }))

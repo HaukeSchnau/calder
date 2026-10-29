@@ -118,6 +118,8 @@ export type Def =
     readonly inputs: Files
     readonly each: Files | undefined
     readonly after: ReadonlyArray<Step.Any>
+    /** The steps among `after` on the task's critical path. */
+    readonly gate: ReadonlyArray<Step.Any>
     readonly report: ReportSpec | undefined
     readonly shards: { readonly count: number; readonly split: Files | undefined } | undefined
     readonly outputs: { readonly [name: string]: string }

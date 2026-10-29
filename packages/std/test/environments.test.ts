@@ -46,6 +46,21 @@ describe("Environments.project", () => {
       expect(plan.get("e2e-web")?.after).toEqual(["preview-url"])
     }))
 
+  it.effect("a preview is gated on what its after names, while beta waits for the checks in their turn", () =>
+    Effect.gen(function*() {
+      const gated = Environments.project({
+        stack,
+        checks,
+        artifacts: { CALDER_BUNDLE: bundle },
+        previews: { url: (_pr, outputs) => outputs.url, after: [smoke] },
+        environments: { beta: { on: { push: "main" }, after: checks } },
+      })
+      const pr = yield* Calder.plan(gated, Event.pullRequest({ number: 5 }))
+      expect(pr.get("preview")).toMatchObject({ after: ["serverSmoke"], gates: ["serverSmoke"] })
+      const push = yield* Calder.plan(gated, Event.push("main"))
+      expect(push.get("deploy-beta")).toMatchObject({ after: ["lint", "serverSmoke"], gates: [] })
+    }))
+
   it.effect("a fork's pull request runs the checks and builds the bundle, but has no preview", () =>
     Effect.gen(function*() {
       const plan = yield* Calder.plan(project, Event.pullRequest({ number: 5, fork: true }))

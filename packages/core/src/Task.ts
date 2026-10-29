@@ -28,6 +28,12 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
   readonly each?: Files.Files
   /** Steps that must pass first. They don't enter the task's key. */
   readonly after?: ReadonlyArray<Step.Any>
+  /**
+   * Steps that must pass first like `after`, on the task's critical path: a deploy gated on them waits
+   * for them in the latency lane, such as a preview on a smoke test of what it deploys. Keep them few
+   * and quick; checks a deploy only waits for belong in `after`.
+   */
+  readonly gate?: ReadonlyArray<Step.Any>
   readonly report?: ReportSpec
   /** Runs the task as `count` parallel shards. With `split`, each shard gets a share of the files; with `each`, at most `count` jobs run. */
   readonly shards?: { readonly count: number; readonly split?: Files.Files }
@@ -98,7 +104,8 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     // Every file's key would change with every commit if each one read the whole repository.
     inputs: options.inputs ?? (options.each === undefined ? Files.all() : dependencyFiles),
     each: options.each,
-    after: options.after ?? [],
+    after: [...(options.after ?? []), ...(options.gate ?? [])],
+    gate: options.gate ?? [],
     report: options.report,
     shards: options.shards === undefined ? undefined : { count: options.shards.count, split: options.shards.split },
     outputs: options.outputs ?? {},

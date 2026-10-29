@@ -17,6 +17,11 @@ export const PlannedStep = Schema.Struct({
   exits: Schema.Array(Schema.String),
   after: Schema.Array(Schema.String),
   required: Schema.Array(Schema.String),
+  /**
+   * The steps among `after` on this one's critical path (a task's `gate`). Older plans lack it, and
+   * older controllers order by `after` alone.
+   */
+  gates: Schema.optional(Schema.Array(Schema.String)),
   target: Schema.Boolean,
   neverReuse: Schema.Boolean,
   /**
