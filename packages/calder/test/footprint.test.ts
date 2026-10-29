@@ -160,10 +160,15 @@ describe("records", () => {
       yield* keep("app-1", "trusted", 0, drv)
       yield* keep("app-2", "pr", 0, { ...drv, drv: "/nix/store/y-shell.drv" }, JSON.stringify({ _tag: "PullRequest", number: 1 }))
       yield* keep("app-3", "pr", 1, { ...drv, drv: "/nix/store/z-fork.drv" }, JSON.stringify({ _tag: "PullRequest", number: 2 }))
-      // A push to another branch runs that branch's ci.ts in the trusted worker: it keeps nothing.
+      // A push or manual run of another branch runs that branch's ci.ts in the trusted worker: it keeps nothing.
       yield* keep("app-4", "trusted", 0, { ...drv, drv: "/nix/store/b-branch.drv" }, push("feature"))
+      yield* keep("app-5", "trusted", 0, { ...drv, drv: "/nix/store/m-branch.drv" }, JSON.stringify({ _tag: "Manual", inputs: {}, branch: "feature" }))
       expect((yield* sql<{ run_id: string }>`select run_id from evaluations order by id`).map((r) => r.run_id)).toEqual(["app-1", "app-2"])
-      expect(Rows.writesRecords({ fork: 0, trust: "trusted", event: JSON.stringify({ _tag: "Schedule", cron: "0 * * * *" }) }, "main")).toBe(true)
+      const keeps = (event: unknown) => Rows.writesRecords({ fork: 0, trust: "trusted", event: JSON.stringify(event) }, "main")
+      expect(keeps({ _tag: "Schedule", cron: "0 * * * *" })).toBe(true)
+      // A manual run without a branch is from before runs recorded it, and counts as the default branch's.
+      expect(keeps({ _tag: "Manual", inputs: {} })).toBe(true)
+      expect(keeps({ _tag: "Manual", inputs: {}, branch: "main" })).toBe(true)
       const newest = (trust: "pr" | "trusted", fork: 0 | 1) =>
         Effect.map(Rows.records({ project: "app", trust, fork }), (r) => r?.evaluations.map((e) => e.derivation?.drv))
       // A pull request's ci.ts runs in the worker that records, so what it recorded never reaches a trusted run.

@@ -93,8 +93,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   can't catch a secret that a tool wraps over two lines or splits with color codes. ``cmd`... ${Cmd.pullRequest}` `` passes the
   run's pull-request number. `lease: true` makes a trusted task hold the project's deploy lease while
   it runs, like `Release.promote`: one deploy at a time, and latest wins per step. The controller grants it
-  only while the run's revision is its branch's head (a manual or scheduled run's branch is the default
-  branch); a run of another revision, a rerun of an older one included, is skipped without counting as the
+  only while the run's revision is its branch's head (a scheduled run's branch is the default branch, a
+  manual run's the branch it was triggered on); a run of another revision, a rerun of an older one included, is skipped without counting as the
   step's newest. A check Gitea can't answer within 10 s counts as current. The task gets the lease's
   fencing token as `FLEET_FENCE` for whatever it deploys to. In a pull request's run and when it closes,
   the lease is the pull request's own, so its previews and their removal take turns beside the project's
@@ -137,12 +137,15 @@ deploys. Checks a deploy only waits for (`after`) take their turn like any other
 jump the queue, and `Project.alchemy`'s previews wait for their checks that way. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
 comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
 
-A plan evaluates the flake once per revision. A commit with the same root tree as the last one planned,
-such as the merge of a pull request that was up to date, reuses its derivations unless they mention that
-commit (`self.rev`, `self.shortRev`, `self.lastModified`, `self.lastModifiedDate` or its day) or the flake's
-sources read `revCount`, so its plan evaluates nothing. Only a trusted run's or a same-repo pull request's
-plan counts. Put the revision into what a deploy hands the service rather than into a build, and a
-merge reuses the pull request's builds too.
+A plan evaluates the flake once per revision. A commit with the same root tree as one planned before,
+such as a reworded commit, reuses that plan's derivations unless they mention that commit (`self.rev`,
+`self.shortRev`, `self.lastModified`, `self.lastModifiedDate` or its day) or the flake's sources read
+`revCount`, so its plan evaluates nothing. Plans count by the rules for footprint records: trusted runs and
+forks' runs take only the default branch's (its pushes, schedules and manual runs), since a pull request or
+another branch runs its own ci.ts in the worker that plans; same-repo pull requests take those of same-repo
+pull requests too. A merge doesn't take its pull request's plan, so it evaluates what the default branch's
+footprint records don't cover. Put the revision into what a deploy hands the service rather than into a build, and a merge
+reuses the pull request's builds too.
 
 The attributes a plan needs share one `nix eval` while they fit 80% of the plan job's memory (its
 systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once the next attribute might
@@ -172,8 +175,8 @@ Nix doesn't know keeps the record only when it is content-addressed (a `builtins
 download), refers to no copy of the source, and its text doesn't name the commit; a path whose NAR hash
 is the source's (`builtins.path { path = self; name = "src"; }`) counts as the whole source, in what was
 read and in a derivation's closure. Records come only from the default branch's runs (pushes, schedules,
-manual runs) and same-repo pull requests: a push to another branch runs that branch's ci.ts in the trusted
-worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
+manual runs) and same-repo pull requests: a push or manual run of another branch runs that branch's ci.ts
+in the trusted worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
 changes. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
 runs and forks' runs take only trusted runs' records, since a pull request's ci.ts runs in the worker
 that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing.

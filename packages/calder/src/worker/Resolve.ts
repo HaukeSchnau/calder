@@ -919,11 +919,11 @@ const pathInfo = (paths: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     const infos = new Map<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> }>()
     for (let i = 0; i < paths.length; i += 500) {
-      const out = yield* Exec.run(["nix", "path-info", "--json", ...paths.slice(i, i + 500)]).pipe(Effect.orElseSucceed(() => "{}"))
-      const parsed = JSON.parse(out) as Record<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> } | null> |
-        ReadonlyArray<{ readonly path: string; readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> }>
-      for (const info of Array.isArray(parsed) ? parsed : Object.entries(parsed).map(([path, info]) => ({ path, ...info }))) {
-        if (info !== null) infos.set(info.path, info)
+      // Format 1 is keyed by full store path. `--json-format` needs Nix 2.33; 2.34 warns that `--json` without it will fail.
+      const out = yield* Exec.run(["nix", "path-info", "--json", "--json-format", "1", ...paths.slice(i, i + 500)]).pipe(Effect.orElseSucceed(() => "{}"))
+      const parsed = JSON.parse(out) as Record<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> } | null>
+      for (const [path, info] of Object.entries(parsed)) {
+        if (info !== null) infos.set(path, info)
       }
     }
     return infos

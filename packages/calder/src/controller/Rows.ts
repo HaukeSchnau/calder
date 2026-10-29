@@ -247,36 +247,39 @@ export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): 
 }
 
 /**
- * The newest plan of another commit with the run's tree, from runs whose results it may reuse: trusted
- * ones and those of same-repo pull requests, which the same people push. A fork's plan never counts,
- * since its sandbox could have written what it likes.
+ * Whether a run takes only trusted runs' plans and records. A trusted run and a fork's do, since a pull
+ * request's ci.ts runs in the worker that plans and records and could forge either. A same-repo pull
+ * request also takes those of same-repo pull requests.
  */
-export const earlierPlan = (run: RunRow) =>
+const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) => run.trust === "trusted" || run.fork === 1
+
+/**
+ * The newest plan of another commit with the run's tree that the run trusts, by the rules for records: of
+ * trusted runs only the default branch's (`writesRecords`), and for a same-repo pull request also those of
+ * same-repo pull requests (`trustedOnly`). A push of another branch runs that branch's ci.ts in the trusted
+ * worker, so its plan could be forged.
+ */
+export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
   Effect.gen(function*() {
     if (run.tree == null) return null
     const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ sha: string; plan: string }>`select sha, plan from runs
-      where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha} and plan is not null and (trust = 'trusted' or fork = 0)
-      order by created_at desc limit 5`
-    for (const row of rows) {
+    const rows = yield* sql<{ sha: string; plan: string; event: string; trust: Domain.Trust; fork: number }>`select sha, plan, event, trust, fork
+      from runs where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha} and plan is not null
+      order by created_at desc limit 20`
+    for (const row of rows.filter((r) => writesRecords(r, defaultBranch) && (r.trust === "trusted" || !trustedOnly(run)))) {
       const spec = JSON.parse(row.plan) as PlanSpec
       if (spec.derivations !== undefined) return { revision: row.sha, derivations: spec.derivations, app: spec.app }
     }
     return null
   }).pipe(Effect.orDie)
 
-/**
- * The footprint records a run may trust, newest first, with their footprints. A trusted run and a fork's
- * take only trusted runs' records, since a pull request's ci.ts runs in the worker that records; a
- * same-repo pull request also takes those of same-repo pull requests.
- */
+/** The footprint records a run may trust (`trustedOnly`), newest first, with their footprints. */
 export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    const trustedOnly = run.trust === "trusted" || run.fork === 1
     const rows = yield* sql<{ id: number; attr: string; footprint: number; count: number; digest: string; derivation: string | null; app: string | null }>`
       select id, attr, footprint, count, digest, derivation, app from evaluations
-      where project = ${run.project} and (${trustedOnly ? 1 : 0} = 0 or trust = 'trusted')
+      where project = ${run.project} and (${trustedOnly(run) ? 1 : 0} = 0 or trust = 'trusted')
       order by created_at desc, id desc`
     if (rows.length === 0) return undefined
     const ids = [...new Set(rows.map((r) => r.footprint))]
@@ -298,14 +301,15 @@ export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
 
 /**
  * Whether a run's records may be kept: a pull request's (same-repo only) as pull-request trust, and of
- * trusted runs only the default branch's (its pushes, schedules and manual runs). A push to another branch
- * runs that branch's ci.ts in the trusted worker, so it could forge one.
+ * trusted runs only the default branch's (its pushes, schedules and manual runs). A push or manual run of
+ * another branch runs that branch's ci.ts in the trusted worker, so it could forge one.
  */
 export const writesRecords = (run: Pick<RunRow, "fork" | "trust" | "event">, defaultBranch: string | undefined) => {
   if (run.fork === 1) return false
   if (run.trust === "pr") return true
   const event = JSON.parse(run.event) as Domain.Event
-  return event._tag === "Schedule" || event._tag === "Manual" || (event._tag === "Push" && event.branch === defaultBranch)
+  return event._tag === "Schedule" || (event._tag === "Manual" && (event.branch === undefined || event.branch === defaultBranch)) ||
+    (event._tag === "Push" && event.branch === defaultBranch)
 }
 
 /**
