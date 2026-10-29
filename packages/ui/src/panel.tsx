@@ -1,7 +1,7 @@
 // The docked panel under the graph. One selected step drives every tab: its log lines, its span in
 // the run's trace, its metrics and history, its failing tests and its value or error.
 
-import type { Domain } from "@calder-ci/api"
+import { Domain } from "@calder-ci/api"
 import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
@@ -211,6 +211,7 @@ function LogsView({ detail, step, scope, follow, onScope, onSelect }: {
               AsyncResult.isInitial(result) ? "Loading log lines"
               : lines.length ? `No lines match${q ? ` "${query.trim()}"` : " these filters"}.`
               : followKey ? (step.status === "pending" || step.status === "queued" ? `Waiting for ${step.name} to start.` : "Waiting for output.")
+              : Domain.noFiles(step) ? "No files: its each matched none, so nothing ran."
               : step.status === "reused" ? "Reused: nothing ran." : "No log lines."
             }</p>
           )}

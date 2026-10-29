@@ -366,8 +366,9 @@ export const counts = (runIds: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     if (runIds.length === 0) return new Map<string, Record<string, number>>()
     const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ run_id: string; status: string; n: number }>`select run_id, status, count(*) as n from steps
-      where ${sql.in("run_id", runIds)} and kind != 'output' group by run_id, status`
+    const rows = yield* sql<{ run_id: string; status: string; n: number }>`select run_id,
+        case when status = 'reused' and files_total = 0 then 'no-files' else status end as status, count(*) as n from steps
+      where ${sql.in("run_id", runIds)} and kind != 'output' group by 1, 2`
     const out = new Map<string, Record<string, number>>()
     for (const r of rows) {
       const c = out.get(r.run_id) ?? {}

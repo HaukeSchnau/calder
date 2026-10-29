@@ -90,7 +90,7 @@ export const Run = Schema.Struct({
   /** Why the run errored before its steps could run, such as a plan error. */
   error: Schema.NullOr(Schema.String),
   traceId: Schema.NullOr(Schema.String),
-  /** Counts by status, for lists. */
+  /** Counts by status, for lists, where a task whose `each` matched no file counts as `no-files`. */
   counts: Schema.Record(Schema.String, Schema.Number),
 })
 export type Run = typeof Run.Type
@@ -174,6 +174,9 @@ export const StepRun = Schema.Struct({
   critical: Schema.optionalKey(Schema.Boolean),
 })
 export type StepRun = typeof StepRun.Type
+
+/** A task whose `each` matched no file: it counts as reused, though nothing was there to reuse. */
+export const noFiles = (step: Pick<StepRun, "status" | "files">) => step.status === "reused" && step.files?.total === 0
 
 /**
  * A setup that never ran because no task of its run that starts from it ran. It counts as reused and

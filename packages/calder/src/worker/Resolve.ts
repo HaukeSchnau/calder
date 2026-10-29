@@ -119,7 +119,7 @@ export const paths = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyA
   })
 
 /** The paths and patterns of `files` that match nothing at the revision, except `optional` ones. */
-const unmatched = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
+const unmatched = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArray<Files.Unmatched>, Exec.ExecError, Exec.Spawner> =>
   Effect.gen(function*() {
     switch (files._tag) {
       case "All":
@@ -130,7 +130,7 @@ const unmatched = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArra
         const all = yield* repo.files
         return (files._tag === "Of" ? files.paths : files.dirs).filter((path) =>
           path !== "." && !all.some((f) => f === path || f.startsWith(`${path}/`))
-        )
+        ).map((pattern) => ({ pattern, negated: false }))
       }
       case "Glob":
       case "Imports":
@@ -160,12 +160,18 @@ export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
         ]
       }),
     ]
-    const missing = (yield* Effect.forEach(written, ([where, files]) =>
-      Effect.map(unmatched(repo, files), (patterns) => patterns.map((pattern) => `${JSON.stringify(pattern)} (${where})`))
+    const found = (yield* Effect.forEach(written, ([where, files]) =>
+      Effect.map(unmatched(repo, files), (patterns) => patterns.map((u) => ({ ...u, where })))
     )).flat()
-    if (missing.length > 0) {
+    const listed = (negated: boolean) => found.filter((u) => u.negated === negated).map((u) => `${JSON.stringify(u.pattern)} (${u.where})`)
+    const [missing, removed] = [listed(false), listed(true)]
+    if (found.length > 0) {
+      const what = [
+        ...(missing.length === 0 ? [] : [`No file matches ${missing.join(", ")}.`]),
+        ...(removed.length === 0 ? [] : [`${removed.join(", ")} ${removed.length === 1 ? "matches" : "match"} only files the negations leave out.`]),
+      ]
       return yield* new Calder.PlanError({
-        message: `No file matches ${missing.join(", ")}. Fix the path or pattern, or wrap files that may be missing in Files.optional(...).`,
+        message: `${what.join(" ")} Fix the path or pattern, or wrap files that may be missing in Files.optional(...).`,
       })
     }
   })

@@ -163,7 +163,7 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
   const { run } = detail
   const d = runDuration(run, now)
   const total = totalSteps(run.counts)
-  const finished = count(run.counts, "passed", "reused", "failed", "died", "blocked", "cancelled", "skipped")
+  const finished = count(run.counts, "passed", "reused", "no-files", "failed", "died", "blocked", "cancelled", "skipped")
   const deploys = detail.steps.some((s) => s.deploys)
   const statusWord = run.status === "passed" ? `passed in ${dur(d ?? 0)}`
     : run.status === "failed" ? `failed after ${dur(d ?? 0)}`

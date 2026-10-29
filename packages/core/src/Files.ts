@@ -74,16 +74,24 @@ export const matcher = (patterns: ReadonlyArray<string>): ((path: string) => boo
   return (path) => include.some((re) => re.test(path)) && !exclude.some((re) => re.test(path))
 }
 
+/** A path or pattern that selects nothing: `negated` when it matches files, but only ones the negations leave out. */
+export interface Unmatched {
+  readonly pattern: string
+  readonly negated: boolean
+}
+
 /**
  * The patterns of a list that select nothing among `paths`: an include that matches no file a negation
  * leaves, and a negation that removes no file an include matched.
  */
-export const unmatched = (patterns: ReadonlyArray<string>, paths: ReadonlyArray<string>): ReadonlyArray<string> => {
+export const unmatched = (patterns: ReadonlyArray<string>, paths: ReadonlyArray<string>): ReadonlyArray<Unmatched> => {
   const included = matcher(patterns.filter((p) => !p.startsWith("!")))
   const removed = matcher(patterns.filter((p) => p.startsWith("!")).map((p) => p.slice(1)))
-  return patterns.filter((pattern) => {
+  return patterns.flatMap((pattern) => {
     const re = globToRegExp(pattern.replace(/^!/, ""))
-    return !paths.some((path) => re.test(path) && (pattern.startsWith("!") ? included(path) : !removed(path)))
+    if (pattern.startsWith("!")) return paths.some((path) => re.test(path) && included(path)) ? [] : [{ pattern, negated: false }]
+    const matching = paths.filter((path) => re.test(path))
+    return matching.some((path) => !removed(path)) ? [] : [{ pattern, negated: matching.length > 0 }]
   })
 }
 
