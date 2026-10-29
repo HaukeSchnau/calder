@@ -91,6 +91,8 @@ export const Records = Schema.Struct({
     derivation: Schema.NullOr(Derivation),
     /** The app's name, for the record of `lib.project.project`. */
     app: Schema.optional(Schema.NullOr(Schema.String)),
+    /** The journal's id of the record, when the controller hands it to a plan. */
+    id: Schema.optional(Schema.Number),
   })),
 })
 export type Records = typeof Records.Type
@@ -102,6 +104,8 @@ export const Mismatch = Schema.Struct({
   evaluated: Schema.NullOr(Derivation),
   /** What the fresh evaluation read that the record didn't. */
   missed: Schema.Array(Schema.String),
+  /** The record's id in the journal. */
+  record: Schema.optional(Schema.Number),
 })
 export type Mismatch = typeof Mismatch.Type
 
@@ -122,6 +126,8 @@ export const PlanSpec = Schema.Struct({
   recorded: Schema.optional(Records),
   /** An audit plan's attributes whose records were wrong. */
   mismatches: Schema.optional(Schema.Array(Mismatch)),
+  /** The record each attribute the plan took from records came from, by attribute. */
+  fromRecords: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
 })
 export type PlanSpec = typeof PlanSpec.Type
 

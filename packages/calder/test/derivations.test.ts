@@ -278,6 +278,9 @@ describe("evaluating within the job's memory", () => {
         revision: "1",
         at: Footprint.tree([]),
         marks: [],
+        pinned: new Set<string>(),
+        context: "nix",
+        nonce: "5eed",
         read: () => Effect.succeed(new Map<string, string>()),
       }
       const logged: Array<string> = []

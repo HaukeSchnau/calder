@@ -28,26 +28,32 @@ export interface Trace {
   readonly marks: ReadonlyArray<number>
   /**
    * How many attributes had their marker when the recorder first saw something it can't attribute, such
-   * as an escaped or relative path or an unexpected error: those after it get no footprint. Null when
-   * nothing was.
+   * as an escaped or relative path, an unexpected error or a line about the source it can't read: those
+   * after it get no footprint. Null when nothing was.
    */
   readonly broken: number | null
+  /**
+   * Store paths other than the source the evaluation read, each with how many attributes had their marker
+   * by then. An attribute's footprint covers what Nix read of them only through their derivers, which
+   * `Resolve` checks like the attribute's own closure.
+   */
+  readonly outside: ReadonlyArray<readonly [string, number]>
 }
 
-const marker = /^\.calder-derivation-(\d+)$/
-
 /**
- * Reads `strace -f -s 4096 -e trace=…` output of an evaluation of `source` (its store path). Paths outside
- * the source are Nix's own: a pure evaluation reaches other store paths only through what it read and
- * the inputs `flake.lock` pins, and no other path at all.
+ * Reads `strace -f -s 4096 -e trace=…` output of an evaluation of `source` (its store path) whose markers
+ * carry `nonce`, so flake code can't forge one. Paths outside the store are Nix's own: a pure evaluation
+ * can't read them.
  */
-export const parseTrace = (log: string, source: string): Trace => {
+export const parseTrace = (log: string, source: string, nonce: string): Trace => {
   const touches: Array<Touch> = []
   const marks: Array<number> = []
+  const outside = new Map<string, number>()
   let broken: number | null = null
   const fail = () => {
     if (broken === null) broken = marks.length
   }
+  const marker = new RegExp(`^\\.calder-derivation-${nonce}-(\\d+)$`)
   const pending = new Map<string, string>()
   for (const raw of log.split("\n")) {
     const match = /^(\d+) +(.*)$/.exec(raw)
@@ -61,46 +67,58 @@ export const parseTrace = (log: string, source: string): Trace => {
     const resumed = /^<\.\.\. \S+ resumed>(.*)$/.exec(rest)
     const line = resumed === null ? rest : `${pending.get(pid) ?? ""}${resumed[1]}`
     if (resumed !== null) pending.delete(pid)
-    const call = /^(\w+)\((.*)\) += (-?\d+|\?)(?: (\w+))?/.exec(line)
-    if (call === null) continue
-    const [, name, args, result, errno] = call as unknown as [string, string, string, string, string | undefined]
-    // The path argument: the first string, after a directory descriptor for the *at calls.
-    const atCall = name.endsWith("at") || name === "openat2" || name === "statx" || name === "faccessat2"
-    const path = /"((?:[^"\\]|\\.)*)"(\.\.\.)?/.exec(atCall ? args.replace(/^[^,]*, */, "") : args)
-    if (path === null) continue
-    const [, text, truncated] = path as unknown as [string, string, string | undefined]
-    const dirfd = atCall ? args.split(",")[0]!.trim() : "AT_FDCWD"
-    if (text === "") continue // fstat of an open descriptor: its open counted.
-    if (!text.startsWith("/")) {
-      // Relative to a descriptor, which could be inside the source.
-      if (dirfd !== "AT_FDCWD") fail()
-      continue
-    }
-    if (text !== source && !text.startsWith(`${source}/`)) continue
-    if (text.includes("\\") || truncated !== undefined) {
-      fail()
-      continue
-    }
-    const relative = text === source ? "" : text.slice(source.length + 1)
-    const mark = marker.exec(relative)
-    if (mark !== null) {
-      if (Number(mark[1]) === marks.length) marks.push(touches.length)
-      else fail()
-      continue
-    }
-    const failed = result.startsWith("-")
-    if (failed && errno !== "ENOENT" && errno !== "ENOTDIR") {
-      fail()
-      continue
-    }
-    const access: Access = name.startsWith("readlink")
-      ? "read"
-      : name.startsWith("open")
-      ? (/O_DIRECTORY/.test(args) ? "list" : "read")
-      : "lookup"
-    touches.push({ path: relative, access, found: !failed })
+    // Whatever mentions the source has to come out as a touch or a marker.
+    const mentions = line.includes(source)
+    const touched = (() => {
+      const call = /^(\w+)\((.*)\) += (-?\d+|\?)(?: (\w+))?/.exec(line)
+      if (call === null) return false
+      const [, name, args, result, errno] = call as unknown as [string, string, string, string, string | undefined]
+      // The path argument: the first string, after a directory descriptor for the *at calls.
+      const atCall = name.endsWith("at") || name === "openat2" || name === "statx" || name === "faccessat2"
+      const path = /"((?:[^"\\]|\\.)*)"(\.\.\.)?/.exec(atCall ? args.replace(/^[^,]*, */, "") : args)
+      if (path === null) return false
+      const [, text, truncated] = path as unknown as [string, string, string | undefined]
+      const dirfd = atCall ? args.split(",")[0]!.trim() : "AT_FDCWD"
+      if (text === "") return !mentions // fstat of an open descriptor: its open counted.
+      if (!text.startsWith("/")) {
+        // Relative to a descriptor, which could be inside the source.
+        if (dirfd !== "AT_FDCWD") fail()
+        return true
+      }
+      const failed = result.startsWith("-")
+      if (text !== source && !text.startsWith(`${source}/`)) {
+        // From the flake's first file on: what Nix reads while it starts, such as its configuration, isn't
+        // the evaluation's.
+        const store = /^\/nix\/store\/[0-9a-z]{32}-[^/]+/.exec(text)?.[0]
+        if (store !== undefined && !failed && touches.length > 0 && !outside.has(store)) outside.set(store, marks.length)
+        return !mentions
+      }
+      if (text.includes("\\") || truncated !== undefined) {
+        fail()
+        return true
+      }
+      const relative = text === source ? "" : text.slice(source.length + 1)
+      const mark = marker.exec(relative)
+      if (mark !== null) {
+        if (Number(mark[1]) === marks.length) marks.push(touches.length)
+        else fail()
+        return true
+      }
+      if (failed && errno !== "ENOENT" && errno !== "ENOTDIR") {
+        fail()
+        return true
+      }
+      const access: Access = name.startsWith("readlink")
+        ? "read"
+        : name.startsWith("open")
+        ? (/O_DIRECTORY/.test(args) ? "list" : "read")
+        : "lookup"
+      touches.push({ path: relative, access, found: !failed })
+      return true
+    })()
+    if (mentions && !touched) fail()
   }
-  return { touches, marks, broken }
+  return { touches, marks, broken, outside: [...outside] }
 }
 
 /** The revision's files, from `git ls-tree -r`: what identities are computed against. */
@@ -157,7 +175,9 @@ export const footprints = (trace: Trace, at: Tree): Pass => {
   let next = 0
   for (const [i, mark] of trace.marks.entries()) {
     for (; next < mark; next++) {
-      const touch = trace.touches[next]!
+      const raw = trace.touches[next]!
+      // A directory opened without O_DIRECTORY, then read, is listed all the same.
+      const touch = raw.access === "read" && at.dirs.has(raw.path) ? { ...raw, access: "list" as const } : raw
       if ((identity(at, touch.path, touch.access) !== "absent") !== touch.found) broken = Math.min(broken, i)
       const key = `${touch.access}\0${touch.path}`
       if (!seen.has(key)) {
@@ -170,9 +190,13 @@ export const footprints = (trace: Trace, at: Tree): Pass => {
   return { entries, counts }
 }
 
-/** The digest of a footprint's first `count` entries' identities at a revision: equal digests, equal footprint. */
-export const digest = (at: Tree, entries: ReadonlyArray<readonly [string, Access]>, count: number) =>
-  sha256(entries.slice(0, count).map(([path, access]) => identity(at, path, access)))
+/**
+ * The digest of a footprint's first `count` entries' identities at a revision, with what else decides the
+ * evaluation's result (`context`: Nix's version, the system, settings such as import from derivation):
+ * equal digests, equal derivation.
+ */
+export const digest = (at: Tree, entries: ReadonlyArray<readonly [string, Access]>, count: number, context: string) =>
+  sha256([context, ...entries.slice(0, count).map(([path, access]) => identity(at, path, access))])
 
 /** Entries of `fresh` that `recorded` lacks: what a record missed, for the audit's log. */
 export const missed = (recorded: ReadonlyArray<readonly [string, Access]>, fresh: ReadonlyArray<readonly [string, Access]>) => {

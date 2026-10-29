@@ -140,13 +140,20 @@ commit, and takes the derivation of every attribute whose footprint holds withou
 changes nothing Nix read plans in about a second. A footprint includes what the attributes evaluated
 before it in the same `nix eval` read, so attributes evaluate after those their last derivations depended on:
 a lockfile's dependencies then keep their record while the app build that uses them changes. A record counts for no other commit when its
-derivation's closure mentions its commit or the whole source (`self.rev`, `self.lastModified`,
-`src = self`) or its footprint read a file mentioning `revCount`, and an evaluation the recorder can't
-follow (a path it can't attribute, a file inside a submodule, no strace, as on darwin) records nothing, so
-those attributes evaluate every time. Records follow the trust rules of results: a fork's run takes
-trusted runs' records only and leaves none. Every night, and on `calder audit <project>`, the controller
-evaluates each default branch's head afresh, drops the records that disagree, logs what the fresh
-evaluation read that they didn't, and the project's page shows it for two weeks.
+derivation's closure, or the deriver of a store path the evaluation read (import from a derivation built
+from `self`), mentions its commit or the whole source (`self.rev`, `self.lastModified`, `src = self`), or
+its footprint read a file mentioning `revCount`. Commit metadata transformed in code, such as
+`hashString "sha256" self.rev` or `self.${"rev" + "Count"}`, isn't detected: keep it out of what builds
+read, or such a record carries one commit's value to the next until the audit catches it. An evaluation
+the recorder can't follow (a path it can't attribute, a file inside a submodule, a store path whose
+deriver Nix doesn't know, no strace, as on darwin) records nothing, so those attributes evaluate every
+time. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
+runs and forks' runs take only trusted runs' records, since a pull request's ci.ts runs in the worker
+that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing.
+Every night, and on `calder audit <project>`, the controller evaluates each default branch's head afresh,
+through the mirror and without the recorder, as plans did before records, and drops the records that
+disagree. It logs each as `footprint record wrong:` with the runs whose plans took it (infra alerts on
+that line), and the project's page shows it for two weeks.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch

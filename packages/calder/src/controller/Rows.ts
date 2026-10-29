@@ -265,18 +265,18 @@ export const earlierPlan = (run: RunRow) =>
   }).pipe(Effect.orDie)
 
 /**
- * The newest footprint record per attribute that `run` may trust, with their footprints. Records follow
- * the trust rules of results: a fork's run takes trusted runs' records only; other runs also take those of
- * same-repo pull requests, which are the only other runs that write any.
+ * The footprint records a run may trust, newest first, with their footprints. A trusted run and a fork's
+ * take only trusted runs' records, since a pull request's ci.ts runs in the worker that records; a
+ * same-repo pull request also takes those of same-repo pull requests.
  */
-export const records = (project: string, forkOnly: boolean) =>
+export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ attr: string; footprint: number; count: number; digest: string; derivation: string | null; app: string | null }>`
-      select e.attr, e.footprint, e.count, e.digest, e.derivation, e.app from evaluations e
-      where e.project = ${project} and (${forkOnly ? 0 : 1} = 1 or e.trust = 'trusted')
-        and e.id = (select e2.id from evaluations e2 where e2.project = e.project and e2.attr = e.attr
-          and (${forkOnly ? 0 : 1} = 1 or e2.trust = 'trusted') order by e2.created_at desc, e2.id desc limit 1)`
+    const trustedOnly = run.trust === "trusted" || run.fork === 1
+    const rows = yield* sql<{ id: number; attr: string; footprint: number; count: number; digest: string; derivation: string | null; app: string | null }>`
+      select id, attr, footprint, count, digest, derivation, app from evaluations
+      where project = ${run.project} and (${trustedOnly ? 1 : 0} = 0 or trust = 'trusted')
+      order by created_at desc, id desc`
     if (rows.length === 0) return undefined
     const ids = [...new Set(rows.map((r) => r.footprint))]
     const footprints = yield* sql<{ id: number; revision: string; entries: string }>`select id, revision, entries from footprints
@@ -284,6 +284,7 @@ export const records = (project: string, forkOnly: boolean) =>
     return {
       footprints: footprints.map((f) => ({ id: String(f.id), revision: f.revision, entries: JSON.parse(f.entries) })),
       evaluations: rows.map((r) => ({
+        id: r.id,
         attr: r.attr,
         footprint: String(r.footprint),
         count: r.count,

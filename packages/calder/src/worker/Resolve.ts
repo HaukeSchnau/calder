@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core"
 import { type Duration, Effect, Option, Schedule, Schema } from "effect"
+import { randomBytes } from "node:crypto"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import type { Mismatch, PlannedStep, PlanSpec, Records, RunInfo } from "../Protocol.ts"
@@ -371,10 +372,10 @@ export const derivations = (
 type Log = (text: string) => Effect.Effect<void>
 
 /** The app the flake's `lib.project` declares, or null; cached like the derivations. */
-export const appOf = (run: RunInfo, cacheDir = defaultCacheDir, recorder?: Recorder) =>
+export const appOf = (run: RunInfo, cacheDir = defaultCacheDir, recorder?: Recorder, fresh = false) =>
   cached(run, cacheDir, (entry) =>
     Effect.gen(function*() {
-      if (entry?.app !== undefined) return { result: { app: entry.app, recorded: undefined }, entry: {} }
+      if (entry?.app !== undefined && !fresh) return { result: { app: entry.app, recorded: undefined }, entry: {} }
       if (recorder === undefined) {
         const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`]).pipe(
           Effect.map((name) => name.trim() || null),
@@ -386,11 +387,11 @@ export const appOf = (run: RunInfo, cacheDir = defaultCacheDir, recorder?: Recor
       const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
       const expr = `let p = (builtins.getFlake ${JSON.stringify(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`
       const out = yield* Exec.exec([...straced(join(scratch, "trace")), "nix", "eval", "--json", "--expr", expr], {
-        env: { ...process.env, XDG_CACHE_HOME: join(scratch, "cache") },
+        env: { ...process.env, NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") },
       }).pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })))
       const trace = yield* Effect.sync(() => {
         try {
-          return Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder.source)
+          return Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder.source, recorder.nonce)
         } catch {
           return undefined
         } finally {
@@ -402,9 +403,12 @@ export const appOf = (run: RunInfo, cacheDir = defaultCacheDir, recorder?: Recor
         ? Footprint.footprints({ ...trace, marks: [trace.touches.length] }, recorder.at)
         : undefined
       const count = pass?.counts[0]
-      const recorded: Records | undefined = pass === undefined || count === undefined || count === null ? undefined : {
+      const kept = pass === undefined || count === undefined || count === null ? [] : yield* vetted(recorder, [
+        { attr: appAttr, index: 0, count, entries: pass.entries, derivation: null, outside: trace!.outside.map(([p]) => p) },
+      ])
+      const recorded: Records | undefined = pass === undefined || count === undefined || count === null || kept.length === 0 ? undefined : {
         footprints: [{ id: "app", revision: recorder.revision, entries: pass.entries }],
-        evaluations: [{ attr: appAttr, footprint: "app", count, digest: Footprint.digest(recorder.at, pass.entries, count), derivation: null, app }],
+        evaluations: [{ attr: appAttr, footprint: "app", count, digest: Footprint.digest(recorder.at, pass.entries, count, recorder.context), derivation: null, app }],
       }
       return { result: { app, recorded }, entry: { app } }
     }))
@@ -521,7 +525,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     const unexpected = (what: string) => new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: 0, stderr: `nix eval gave ${what}` })
     const reports = attrs.map((attr, i) => `(report ${i} f.${attr})`).join(" ")
     // Under the recorder, a lookup of a marker that doesn't exist follows each attribute, after its value.
-    const mark = recorder === undefined ? "" : `builtins.seq (builtins.pathExists "\${f.outPath}/.calder-derivation-\${toString i}")`
+    const mark = recorder === undefined ? "" : `builtins.seq (builtins.pathExists "\${f.outPath}/.calder-derivation-${recorder.nonce}-\${toString i}")`
     const expr = `let f = builtins.getFlake ${JSON.stringify(recorder?.url ?? flake)};
       one = x: let t = builtins.tryEval (builtins.seq x.drvPath x); in
         if t.success then { drv = t.value.drvPath; out = t.value.outPath; system = t.value.system; } else null;
@@ -531,7 +535,8 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     const nix = ["nix", "eval", "--json", "--expr", expr]
     const argv = scratch === undefined ? nix : [...straced(join(scratch, "trace")), ...nix]
     // An empty fetcher cache, so no cached hash of a copied path hides that the evaluation read its files.
-    const env = scratch === undefined ? {} : { env: { ...process.env, XDG_CACHE_HOME: join(scratch, "cache") } }
+    // Nix 2.34 reads NIX_CACHE_HOME before XDG_CACHE_HOME.
+    const env = scratch === undefined ? {} : { env: { ...process.env, NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") } }
     const got: Array<Derivation | null> = []
     const stderr: Array<string> = []
     let loaded = false
@@ -584,15 +589,16 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     )
     const trace = scratch === undefined ? undefined : yield* Effect.sync(() => {
       try {
-        return Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder!.source)
+        return Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder!.source, recorder!.nonce)
       } catch {
         return undefined
       } finally {
         rmSync(scratch, { recursive: true, force: true })
       }
     })
-    if (exit !== 0 && exit !== "full" && exit !== "over" && exit !== "killed" && !loaded) {
-      return yield* new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: exit, stderr: stderr.join("\n") })
+    // Killed before the flake loaded, such as strace by a signal: no attribute was in flight.
+    if (exit !== 0 && exit !== "full" && exit !== "over" && !loaded) {
+      return yield* new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: exit === "killed" ? -1 : exit, stderr: stderr.join("\n") })
     }
     if (exit === 0 && got.length < attrs.length) return yield* unexpected(`${attrs.length - got.length} attributes went unreported`)
     // Killed by a signal, such as the kernel's OOM killer (which takes the whole job instead unless its
@@ -694,8 +700,26 @@ export interface Recorder {
   readonly at: Footprint.Tree
   /** What a derivation that depends on this commit or on the whole source contains (see `marksOf`). */
   readonly marks: ReadonlyArray<string>
+  /** Store paths a read of which `flake.lock` pins or that are Nix's own: the inputs and Nix's closure. */
+  readonly pinned: ReadonlySet<string>
+  /** What else decides an evaluation's result (`evaluationContext`), which every digest covers. */
+  readonly context: string
+  /** In each marker's name, so flake code can't forge one. */
+  readonly nonce: string
   readonly read: (paths: ReadonlyArray<string>) => Effect.Effect<ReadonlyMap<string, string>, Error>
 }
+
+/**
+ * What besides the files it read decides an evaluation's result: Nix's version, the system it evaluates
+ * for, and the settings that change what evaluates (import from derivation, and whatever `NIX_CONFIG`
+ * sets). A record made under another counts nowhere.
+ */
+export const evaluationContext = (system: string) =>
+  Effect.gen(function*() {
+    const version = (yield* Exec.run(["nix", "--version"])).trim()
+    const ifd = (yield* Exec.run(["nix", "config", "show", "allow-import-from-derivation"]).pipe(Effect.orElseSucceed(() => "?"))).trim()
+    return sha256({ version, system, ifd, config: process.env.NIX_CONFIG ?? "" })
+  }).pipe(Effect.orElseSucceed(() => undefined))
 
 /**
  * A recorder for the run's revision, or none where Calder can't record: not Linux, no strace, or a flake
@@ -712,29 +736,112 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
       readonly locked?: { readonly rev?: string; readonly revCount?: number; readonly lastModified?: number; readonly narHash?: string }
     }
     if (path === undefined || locked?.rev === undefined || locked.lastModified === undefined || locked.narHash === undefined) return undefined
+    const context = yield* evaluationContext(run.system)
+    if (context === undefined) return undefined
+    // The inputs flake.lock pins, and Nix's own closure (its libraries and data).
+    const archive = JSON.parse(yield* Exec.run(["nix", "flake", "archive", "--json", "--dry-run", run.flake])) as unknown
+    const inputs = (node: unknown): ReadonlyArray<string> => {
+      const n = node as { readonly path?: string; readonly inputs?: Record<string, unknown> } | null
+      return n === null || typeof n !== "object" ? [] : [...(n.path === undefined ? [] : [n.path]), ...Object.values(n.inputs ?? {}).flatMap(inputs)]
+    }
+    const own = (yield* Exec.run(["sh", "-c", "nix-store --query --requisites \"$(readlink -f \"$(command -v nix)\")\""])).split("\n").filter(Boolean)
     const query = [
       `rev=${locked.rev}`,
       ...(locked.revCount === undefined ? [] : [`revCount=${locked.revCount}`]),
       `lastModified=${locked.lastModified}`,
       `narHash=${encodeURIComponent(locked.narHash)}`,
     ].join("&")
-    const at = Footprint.tree(yield* repo.entries)
     return {
       source: path,
       url: `path:${path}?${query}`,
       revision: locked.rev,
-      at,
+      at: Footprint.tree(yield* repo.entries),
       marks: [...marksOf(locked.rev, locked.lastModified), locked.narHash, path],
+      pinned: new Set([...inputs(archive).filter((p) => p !== path), ...own]),
+      context,
+      nonce: randomBytes(8).toString("hex"),
       read: repo.read,
     } satisfies Recorder
   }).pipe(Effect.orElseSucceed(() => undefined))
 
+/** A footprint that might become a record: an attribute of an evaluator, with what it read of the store. */
+export interface Candidate {
+  readonly attr: string
+  readonly index: number
+  readonly count: number
+  readonly entries: ReadonlyArray<readonly [string, Footprint.Access]>
+  readonly outside: ReadonlyArray<string>
+  readonly derivation: Derivation | null
+}
+
+/**
+ * The candidates one may trust. Not one whose derivation's closure mentions the commit or the whole
+ * source (`self.rev`, `src = self`), nor one that read a store path whose deriver does (import from a
+ * derivation built from `self`), nor one that read a store path whose deriver Nix doesn't know, nor one
+ * whose footprint read a file mentioning `revCount`: another commit with the same footprint evaluates to
+ * something else then.
+ */
+export const vetted = (recorder: Recorder, candidates: ReadonlyArray<Candidate>) =>
+  Effect.gen(function*() {
+    const nix = [...new Set(candidates.flatMap((c) => c.entries.slice(0, c.count).filter(([p, a]) => a === "read" && p.endsWith(".nix")).map(([p]) => p)))]
+    const sources = yield* recorder.read(nix).pipe(Effect.orElseSucceed(() => undefined))
+    const counting = sources === undefined ? new Set(nix) : new Set([...sources].filter(([, text]) => text.includes("revCount")).map(([p]) => p))
+    const foreign = [...new Set(candidates.flatMap((c) => c.outside))].filter((p) => !recorder.pinned.has(p))
+    const derivers = yield* derivers_(foreign)
+    // Without a deriver, a path the evaluation itself wrote by content (`builtins.toFile`, a fixed-output
+    // fetch) is a function of what it read, unless it refers to the source or mentions the commit.
+    const unknown = foreign.filter((p) => derivers.get(p) === null)
+    const byContent = yield* contentAddressed(unknown, recorder)
+    const roots = (c: Candidate) => [
+      ...(c.derivation === null ? [] : [c.derivation.drv]),
+      ...c.outside.filter((p) => !recorder.pinned.has(p) && !byContent.has(p)).map((p) => derivers.get(p) ?? null),
+    ]
+    const all = [...new Set(candidates.flatMap(roots).filter((d): d is string => d !== null))]
+    const marked = yield* commitBound(all, recorder.marks)
+    return candidates.filter((c) =>
+      roots(c).every((root) => root !== null && !marked.has(root)) &&
+      !c.entries.slice(0, c.count).some(([p, a]) => a === "read" && counting.has(p))
+    )
+  })
+
+/**
+ * Of `paths`, those that are content-addressed (`ca` text or fixed), refer to nothing but other store paths
+ * than the source, and whose text doesn't mention the commit.
+ */
+const contentAddressed = (paths: ReadonlyArray<string>, recorder: Recorder) =>
+  Effect.gen(function*() {
+    if (paths.length === 0) return new Set<string>()
+    const out = yield* Exec.run(["nix", "path-info", "--json", ...paths]).pipe(Effect.orElseSucceed(() => "{}"))
+    const parsed = JSON.parse(out) as Record<string, { readonly ca?: string | null; readonly references?: ReadonlyArray<string> }> |
+      ReadonlyArray<{ readonly path: string; readonly ca?: string | null; readonly references?: ReadonlyArray<string> }>
+    const infos = Array.isArray(parsed) ? parsed : Object.entries(parsed).map(([path, info]) => ({ path, ...info }))
+    return new Set(infos.filter((info) => {
+      if (!info.ca?.startsWith("text:") && !info.ca?.startsWith("fixed:")) return false
+      if ((info.references ?? []).includes(recorder.source)) return false
+      if (!info.ca.startsWith("text:")) return true
+      try {
+        const text = readFileSync(info.path, "utf8")
+        return !recorder.marks.some((mark) => text.includes(mark))
+      } catch {
+        return false
+      }
+    }).map((info) => info.path))
+  })
+
+/** The derivation each store path came from: itself for a derivation, null where Nix doesn't know one. */
+const derivers_ = (paths: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    const out = new Map<string, string | null>(paths.filter((p) => p.endsWith(".drv")).map((p) => [p, p]))
+    const rest = paths.filter((p) => !out.has(p))
+    if (rest.length === 0) return out
+    const lines = (yield* Exec.run(["nix-store", "--query", "--deriver", ...rest]).pipe(Effect.orElseSucceed(() => ""))).split("\n")
+    rest.forEach((p, i) => out.set(p, lines[i]?.endsWith(".drv") ? lines[i]! : null))
+    return out
+  })
+
 /**
  * The records an evaluation leaves: a footprint per evaluator, and for each attribute it got that one
- * may trust, how much of it is the attribute's and its identities' digest. An attribute gets none when
- * its derivation's closure mentions the commit or the whole source (`self.rev`, `src = self`), or its
- * footprint read a file mentioning `revCount`: another commit with the same footprint evaluates to
- * something else then.
+ * may trust (`vetted`), how much of it is the attribute's and its identities' digest.
  */
 const records = (
   recorder: Recorder,
@@ -742,24 +849,18 @@ const records = (
   derivations: ReadonlyMap<string, Derivation | null>,
 ) =>
   Effect.gen(function*() {
-    const candidates = passes.flatMap((pass, index) => {
+    const candidates = passes.flatMap((pass, index): ReadonlyArray<Candidate> => {
       if (pass.trace === undefined) return []
-      const { entries, counts } = Footprint.footprints(pass.trace, recorder.at)
+      const trace = pass.trace
+      const { entries, counts } = Footprint.footprints(trace, recorder.at)
       return pass.attrs.flatMap((attr, i) => {
         const count = counts[i]
-        return count === undefined || count === null || !derivations.has(attr) ? [] : [{ attr, index, count, entries }]
+        const derivation = derivations.get(attr)
+        if (count === undefined || count === null || derivation === undefined) return []
+        return [{ attr, index, count, entries, derivation, outside: trace.outside.filter(([, before]) => before <= i).map(([p]) => p) }]
       })
     })
-    const nix = [...new Set(candidates.flatMap((c) => c.entries.slice(0, c.count).filter(([p, a]) => a === "read" && p.endsWith(".nix")).map(([p]) => p)))]
-    const sources = yield* recorder.read(nix).pipe(Effect.orElseSucceed(() => undefined))
-    const counting = sources === undefined ? new Set(nix) : new Set([...sources].filter(([, text]) => text.includes("revCount")).map(([p]) => p))
-    const drvs = [...new Set(candidates.flatMap((c) => derivations.get(c.attr) ? [derivations.get(c.attr)!.drv] : []))]
-    const marked = yield* commitBound(drvs, recorder.marks)
-    const kept = candidates.filter((c) => {
-      const derivation = derivations.get(c.attr)
-      return (derivation === null || derivation === undefined || !marked.has(derivation.drv)) &&
-        !c.entries.slice(0, c.count).some(([p, a]) => a === "read" && counting.has(p))
-    })
+    const kept = yield* vetted(recorder, candidates)
     const used = [...new Set(kept.map((c) => c.index))]
     return {
       footprints: used.map((index) => ({ id: String(index), revision: recorder.revision, entries: kept.find((c) => c.index === index)!.entries })),
@@ -767,8 +868,8 @@ const records = (
         attr: c.attr,
         footprint: String(c.index),
         count: c.count,
-        digest: Footprint.digest(recorder.at, c.entries, c.count),
-        derivation: derivations.get(c.attr) ?? null,
+        digest: Footprint.digest(recorder.at, c.entries, c.count, recorder.context),
+        derivation: c.derivation,
       })),
     } satisfies Records
   })
@@ -802,16 +903,19 @@ const commitBound = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) 
   })
 
 /**
- * Attributes whose recorded footprint holds at the revision `at` describes, with the derivation they
- * evaluated to: its entries' identities digest as they did where it was recorded.
+ * Attributes whose recorded footprint holds at the revision `at` describes, under the evaluation context
+ * `context`, with the derivation they evaluated to and the record's id. Records come newest first; the
+ * first that holds counts.
  */
-export const fromRecords = (records: Records, attrs: ReadonlyArray<string>, at: Footprint.Tree) => {
+export const fromRecords = (records: Records, attrs: ReadonlyArray<string>, at: Footprint.Tree, context: string) => {
   const footprints = new Map(records.footprints.map((f) => [f.id, f]))
-  const held = new Map<string, Derivation | null>()
+  const held = new Map<string, { readonly derivation: Derivation | null; readonly id: number | undefined }>()
   for (const evaluation of records.evaluations) {
     const footprint = footprints.get(evaluation.footprint)
     if (held.has(evaluation.attr) || !attrs.includes(evaluation.attr) || footprint === undefined) continue
-    if (Footprint.digest(at, footprint.entries, evaluation.count) === evaluation.digest) held.set(evaluation.attr, evaluation.derivation)
+    if (Footprint.digest(at, footprint.entries, evaluation.count, context) === evaluation.digest) {
+      held.set(evaluation.attr, { derivation: evaluation.derivation, id: evaluation.id })
+    }
   }
   return held
 }
@@ -876,24 +980,24 @@ const lastClosures = (attrs: ReadonlyArray<string>, records: Records | undefined
   })
 
 /** The app's name from a record whose footprint holds, if one does. */
-const appFromRecords = (records: Records, at: Footprint.Tree) => {
+const appFromRecords = (records: Records, at: Footprint.Tree, context: string) => {
   const footprints = new Map(records.footprints.map((f) => [f.id, f]))
   const evaluation = records.evaluations.find((e) => {
     const footprint = footprints.get(e.footprint)
-    return e.attr === appAttr && e.app !== undefined && footprint !== undefined && Footprint.digest(at, footprint.entries, e.count) === e.digest
+    return e.attr === appAttr && e.app !== undefined && footprint !== undefined && Footprint.digest(at, footprint.entries, e.count, context) === e.digest
   })
-  return evaluation?.app
+  return evaluation === undefined ? undefined : { app: evaluation.app ?? null, id: evaluation.id }
 }
 
 /** Of the held derivations, those still in the store: a collected one has to be instantiated again. */
-const inStore = (held: ReadonlyMap<string, Derivation | null>) =>
+const inStore = <A extends { readonly derivation: Derivation | null }>(held: ReadonlyMap<string, A>) =>
   Effect.gen(function*() {
-    const drvs = [...held.values()].flatMap((d) => (d === null ? [] : [d.drv]))
+    const drvs = [...held.values()].flatMap((h) => (h.derivation === null ? [] : [h.derivation.drv]))
     if (drvs.length === 0) return held
     const out = yield* Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...drvs])
-    if (out.exitCode !== 0) return new Map<string, Derivation | null>()
+    if (out.exitCode !== 0) return new Map<string, A>()
     const invalid = new Set(out.stdout.split("\n").filter(Boolean))
-    return new Map([...held].filter(([, d]) => d === null || !invalid.has(d.drv)))
+    return new Map([...held].filter(([, h]) => h.derivation === null || !invalid.has(h.derivation.drv)))
   })
 
 const sameDerivation = (a: Derivation | null, b: Derivation | null) => a?.drv === b?.drv && a?.out === b?.out
@@ -1002,13 +1106,20 @@ export const resolve = (
     }, log)
     // Attributes whose recorded footprint holds here need no evaluation, nor does the app's name.
     const at = Footprint.tree(yield* repo.entries)
-    const held = options.records === undefined || reused !== undefined ? new Map<string, Derivation | null>() : yield* inStore(fromRecords(options.records, attrs, at))
-    const heldApp = options.records === undefined ? undefined : appFromRecords(options.records, at)
+    const context = options.records === undefined ? undefined : yield* evaluationContext(run.system)
+    const records = context === undefined ? undefined : options.records
+    const taken = records === undefined || reused !== undefined
+      ? new Map<string, { readonly derivation: Derivation | null; readonly id: number | undefined }>()
+      : yield* inStore(fromRecords(records, attrs, at, context!))
+    const held = new Map([...taken].map(([attr, h]) => [attr, h.derivation]))
+    const heldApp = records === undefined ? undefined : appFromRecords(records, at, context!)
     const known = audit ? new Map<string, Derivation | null>() : held
     const unknown = attrs.filter((attr) => !known.has(attr))
-    const rest = byDependencies(unknown, yield* lastClosures(unknown, options.records), ownReads(options.records))
+    const rest = byDependencies(unknown, yield* lastClosures(unknown, records), ownReads(records))
     const needsApp = !(reused !== undefined && earlier !== undefined) && (audit || heldApp === undefined)
-    const recording = reused === undefined && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined
+    // An audit evaluates exactly as plans did before footprints, through the mirror and without the
+    // recorder, so a record and its check never share a way of evaluating.
+    const recording = reused === undefined && !audit && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined
     if (held.size > 0 && !audit) yield* log(`took ${held.size} of ${attrs.length} attributes from footprints that hold at this commit`)
     // When the flake fails to load, builds evaluate on their own when they run, but keys need the dev
     // shells now. An attribute too large to evaluate would swap as much in its build.
@@ -1163,17 +1274,25 @@ export const resolve = (
     const named = reused !== undefined && earlier !== undefined
       ? { app: earlier.app, recorded: undefined }
       : heldApp !== undefined && !audit
-      ? { app: heldApp, recorded: undefined }
-      : yield* appOf(run, undefined, recording)
+      ? { app: heldApp.app, recorded: undefined }
+      : yield* appOf(run, undefined, recording, audit)
     const recorded = merge(result.recorded, named.recorded)
-    const mismatches: Array<Mismatch> = !audit ? [] : [...held].flatMap(([attr, derivation]) => {
+    const wrong = !audit ? [] : [...taken].flatMap(([attr, { derivation, id }]) => {
       const fresh = result.derivations.get(attr)
-      if (fresh === undefined || sameDerivation(fresh, derivation)) return []
-      return [{ attr, recorded: derivation, evaluated: fresh, missed: missedBy(options.records!, recorded, attr) }]
+      return fresh === undefined || sameDerivation(fresh, derivation) ? [] : [{ attr, recorded: derivation, evaluated: fresh, id }]
     })
-    if (audit && heldApp !== undefined && heldApp !== named.app) {
-      mismatches.push({ attr: appAttr, recorded: null, evaluated: null, missed: missedBy(options.records!, recorded, appAttr) })
-    }
+    const appWrong = audit && heldApp !== undefined && heldApp.app !== named.app
+    // What the fresh evaluation read that the wrong records didn't: recorded again, for the log only.
+    const again = wrong.length === 0 && !appWrong ? undefined : yield* Effect.gen(function*() {
+      const r = yield* recorder(run, repo)
+      if (r === undefined) return undefined
+      const out = yield* derivations(run, wrong.map((w) => w.attr), undefined, log, undefined, { recorder: r, fresh: true }).pipe(Effect.option)
+      return Option.getOrUndefined(out)?.recorded
+    })
+    const mismatches: Array<Mismatch> = [
+      ...wrong.map((w) => ({ attr: w.attr, recorded: w.recorded, evaluated: w.evaluated, missed: missedBy(records!, again, w.attr), ...(w.id === undefined ? {} : { record: w.id }) })),
+      ...(appWrong ? [{ attr: appAttr, recorded: null, evaluated: null, missed: [], ...(heldApp.id === undefined ? {} : { record: heldApp.id }) }] : []),
+    ]
     const spec: PlanSpec = {
       version: 1,
       app: named.app,
@@ -1184,6 +1303,10 @@ export const resolve = (
       derivations: Object.fromEntries(evaluated),
       ...(recorded === undefined ? {} : { recorded }),
       ...(audit ? { mismatches } : {}),
+      // Which record gave each attribute this plan took, so a wrong record's deploys can be listed.
+      ...(taken.size === 0 || audit ? {} : {
+        fromRecords: Object.fromEntries([...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id]]))),
+      }),
     }
     return spec
   })

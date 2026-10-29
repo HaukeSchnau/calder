@@ -237,6 +237,10 @@ export const migrations = {
       footprint integer not null, count integer not null, digest text not null, derivation text, app text, trust text not null,
       run_id text not null, created_at integer not null)`
     yield* sql`create index evaluations_attr on evaluations (project, attr, created_at desc)`
+    // Which record gave a run's plan each attribute it took, so a wrong record's deploys can be listed.
+    yield* sql`create table run_records (run_id text not null, attr text not null, evaluation integer not null,
+      primary key (run_id, attr))`
+    yield* sql`create index run_records_evaluation on run_records (evaluation)`
     // Records an audit found wrong: a fresh evaluation of the default branch's head disagreed with them.
     yield* sql`create table audit_mismatches (id integer primary key autoincrement, project text not null, attr text not null,
       revision text not null, detail text not null, at integer not null)`

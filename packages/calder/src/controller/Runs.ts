@@ -303,13 +303,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (pipelineDir.dir === null) return yield* unplanned(run, pipelineDir.error ?? "could not read the revision")
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
-      const job: Job = {
-        _tag: "Plan",
-        run: runInfo(run, pipelineDir.dir),
-        requiredChecks: required,
-        earlier: yield* db(Rows.earlierPlan(run)),
-        records: yield* db(Rows.records(run.project, run.fork === 1)),
-      }
+      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run)) }
       const event = JSON.parse(run.event) as Domain.Event
       const claim: Slots.Claim = {
         project: run.project,
@@ -324,7 +318,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const waits = slots.plans.waitsFor(claim)
       if (waits !== null) yield* log({ _tag: "Log", stream: "calder", text: `waiting for a plan slot (${waits})`, timestamp: Date.now() })
       const planned = yield* Effect.raceFirst(
-        slots.plans.with(claim, jobs.run(job, { pool: poolOf(run), onEvent: log }).pipe(Effect.timeoutOption(planTimeout))).pipe(
+        // Records are read once the plan has its slot, so it sees what the plan ahead of it recorded.
+        slots.plans.with(
+          claim,
+          Effect.flatMap(db(Rows.records(run)), (records) =>
+            jobs.run({ ...job, ...(records === undefined ? {} : { records }) }, { pool: poolOf(run), onEvent: log }).pipe(Effect.timeoutOption(planTimeout))),
+        ).pipe(
           Effect.map((done) => Option.some(Option.getOrElse(done, () => ({ result: timedOut })))),
         ),
         Effect.raceFirst(Deferred.await(cancelSignal(runId)), Deferred.await(supersedeSignal(runId))).pipe(Effect.as(Option.none())),
@@ -339,6 +338,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       // Footprints go to their own tables, not into the stored plan.
       const { recorded, mismatches: _, ...planned_ } = result.plan
       if (recorded !== undefined) yield* db(Rows.keepRecords(run, recorded))
+      for (const [attr, evaluation] of Object.entries(result.plan.fromRecords ?? {})) {
+        yield* db(sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`)
+      }
       const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
@@ -1341,7 +1343,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         pipelineDir: dir,
         system: config.system,
       }
-      const job: Job = { _tag: "Plan", run: info, requiredChecks: [], earlier: null, records: yield* db(Rows.records(project, false)), audit: true }
+      const records = yield* db(Rows.records({ project, trust: "trusted", fork: 0 }))
+      const job: Job = { _tag: "Plan", run: info, requiredChecks: [], earlier: null, ...(records === undefined ? {} : { records }), audit: true }
       const claim: Slots.Claim = { project, expected: 0, run: Date.now(), label: `${project}'s audit` }
       const { result } = yield* slots.plans.with(claim, jobs.run(job, { pool: "trusted", onEvent: () => Effect.void }))
       if (result._tag !== "Planned") {
@@ -1350,15 +1353,19 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
       const mismatches = result.plan.mismatches ?? []
       for (const m of mismatches) {
+        // The runs whose plans took this record, such as deploys that may have shipped the wrong derivation.
+        const used = m.record === undefined ? [] : yield* db(sql<{ run_id: string }>`select run_id from run_records
+          where evaluation = ${m.record} order by run_id`)
         yield* db(sql`delete from evaluations where project = ${project} and attr = ${m.attr}`)
         yield* db(sql`insert into audit_mismatches (project, attr, revision, detail, at)
-          values (${project}, ${m.attr}, ${sha}, ${JSON.stringify(m)}, ${Date.now()})`)
-        yield* Effect.logWarning(
-          `audit of ${project}@${sha.slice(0, 12)}: ${m.attr} evaluated to ${m.evaluated?.drv ?? "nothing"} where its record said ` +
-            `${m.recorded?.drv ?? "nothing"}; the fresh evaluation also read ${m.missed.join(", ") || "nothing the record didn't"}`,
+          values (${project}, ${m.attr}, ${sha}, ${JSON.stringify({ ...m, runs: used.map((u) => u.run_id) })}, ${Date.now()})`)
+        // infra's CalderFootprintRecordWrong alert matches this line (modules/features/calder/alerts.nix).
+        yield* Effect.logError(
+          `footprint record wrong: ${project} ${m.attr} at ${sha.slice(0, 12)} evaluated to ${m.evaluated?.drv ?? "nothing"} where its ` +
+            `record said ${m.recorded?.drv ?? "nothing"}; runs that took it: ${used.map((u) => u.run_id).join(", ") || "none"}; ` +
+            `the fresh evaluation also read ${m.missed.join(", ") || "nothing the record didn't"}`,
         )
       }
-      if (result.plan.recorded !== undefined) yield* db(Rows.keepRecords({ project, fork: 0, trust: "trusted", id: info.id }, result.plan.recorded))
       yield* Effect.logInfo(`audited ${project}@${sha.slice(0, 12)}: ${mismatches.length} records contradicted`)
       return mismatches
     }).pipe(Effect.catchCause((cause) => Effect.logWarning(`the audit of ${project} failed`, cause).pipe(Effect.as([]))))
