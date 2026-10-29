@@ -119,7 +119,7 @@ export function stepDuration(step: Domain.StepRun, now: number): number | null {
   return (step.finishedAt ?? now) - step.startedAt
 }
 
-export const count = (counts: Domain.Run["counts"], ...statuses: ReadonlyArray<Domain.StepStatus>) =>
+export const count = (counts: Domain.Run["counts"], ...statuses: ReadonlyArray<Domain.StepStatus | "no-files">) =>
   statuses.reduce((sum, s) => sum + (counts[s] ?? 0), 0)
 
 export const totalSteps = (counts: Domain.Run["counts"]) => Object.values(counts).reduce((a, b) => a + b, 0)

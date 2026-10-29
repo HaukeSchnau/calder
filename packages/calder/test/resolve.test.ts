@@ -112,7 +112,9 @@ describe("resolve", () => {
     Effect.gen(function*() {
       const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` })
       const error = yield* plan(app, [build(Files.union(Files.glob("src/*.test.ts", "!src/**"), Files.glob("src/**", "!package.json")))]).pipe(Effect.flip)
-      expect(error.message).toContain(`No file matches "src/*.test.ts" (build's inputs), "!package.json" (build's inputs).`)
+      expect(error.message).toContain(
+        `No file matches "!package.json" (build's inputs). "src/*.test.ts" (build's inputs) matches only files the negations leave out.`,
+      )
       const negated = yield* plan(app, [build(Files.optional(Files.glob("!src/**")))]).pipe(Effect.flip)
       expect(negated.message).toBe(`"build" has globs that only leave files out, ["!src/**"]: add one that includes files`)
     }))
