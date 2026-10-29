@@ -285,6 +285,19 @@ export const Deployment = Schema.Struct({
 })
 export type Deployment = typeof Deployment.Type
 
+/** A footprint record an audit found wrong (see the controller's `audit`). */
+export const AuditMismatch = Schema.Struct({
+  attr: Schema.String,
+  revision: Schema.String,
+  at: Schema.Number,
+  /** The derivation the record said, and what a fresh evaluation gave. */
+  recorded: Schema.NullOr(Schema.String),
+  evaluated: Schema.NullOr(Schema.String),
+  /** What the fresh evaluation read that the record didn't. */
+  missed: Schema.Array(Schema.String),
+})
+export type AuditMismatch = typeof AuditMismatch.Type
+
 export const Project = Schema.Struct({
   name: Schema.String,
   repo: Schema.String,
@@ -294,6 +307,8 @@ export const Project = Schema.Struct({
   deployments: Schema.Array(Deployment),
   /** The last 20 runs on the default branch, oldest first, for sparklines. */
   history: Schema.Array(Schema.Struct({ id: Schema.String, status: RunStatus, durationMs: Schema.NullOr(Schema.Number) })),
+  /** Footprint records audits found wrong in the last two weeks. Older controllers send none. */
+  audits: Schema.optional(Schema.Array(AuditMismatch)),
 })
 export type Project = typeof Project.Type
 

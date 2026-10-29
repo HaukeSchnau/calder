@@ -2,7 +2,7 @@ import type { Domain } from "@calder-ci/api"
 import { Array as Arr, Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import { Calder } from "@calder-ci/core"
-import type { PlannedStep, PlanSpec } from "../Protocol.ts"
+import type { PlannedStep, PlanSpec, Records } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 
 /**
@@ -262,6 +262,83 @@ export const earlierPlan = (run: RunRow) =>
       if (spec.derivations !== undefined) return { revision: row.sha, derivations: spec.derivations, app: spec.app }
     }
     return null
+  }).pipe(Effect.orDie)
+
+/**
+ * The footprint records a run may trust, newest first, with their footprints. A trusted run and a fork's
+ * take only trusted runs' records, since a pull request's ci.ts runs in the worker that records; a
+ * same-repo pull request also takes those of same-repo pull requests.
+ */
+export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const trustedOnly = run.trust === "trusted" || run.fork === 1
+    const rows = yield* sql<{ id: number; attr: string; footprint: number; count: number; digest: string; derivation: string | null; app: string | null }>`
+      select id, attr, footprint, count, digest, derivation, app from evaluations
+      where project = ${run.project} and (${trustedOnly ? 1 : 0} = 0 or trust = 'trusted')
+      order by created_at desc, id desc`
+    if (rows.length === 0) return undefined
+    const ids = [...new Set(rows.map((r) => r.footprint))]
+    const footprints = yield* sql<{ id: number; revision: string; entries: string }>`select id, revision, entries from footprints
+      where ${sql.in("id", ids)}`
+    return {
+      footprints: footprints.map((f) => ({ id: String(f.id), revision: f.revision, entries: JSON.parse(f.entries) })),
+      evaluations: rows.map((r) => ({
+        id: r.id,
+        attr: r.attr,
+        footprint: String(r.footprint),
+        count: r.count,
+        digest: r.digest,
+        derivation: r.derivation === null ? null : JSON.parse(r.derivation),
+        ...(r.app === null ? {} : { app: JSON.parse(r.app) as string | null }),
+      })),
+    } as Records
+  }).pipe(Effect.orDie)
+
+/**
+ * Whether a run's records may be kept: a pull request's (same-repo only) as pull-request trust, and of
+ * trusted runs only the default branch's (its pushes, schedules and manual runs). A push to another branch
+ * runs that branch's ci.ts in the trusted worker, so it could forge one.
+ */
+export const writesRecords = (run: Pick<RunRow, "fork" | "trust" | "event">, defaultBranch: string | undefined) => {
+  if (run.fork === 1) return false
+  if (run.trust === "pr") return true
+  const event = JSON.parse(run.event) as Domain.Event
+  return event._tag === "Schedule" || event._tag === "Manual" || (event._tag === "Push" && event.branch === defaultBranch)
+}
+
+/**
+ * Keeps what a plan or build recorded, if its run may write records (`writesRecords`), except records an
+ * audit blocked, and the newest three records per attribute of the project with them.
+ */
+export const keepRecords = (run: Pick<RunRow, "project" | "fork" | "trust" | "id" | "event">, defaultBranch: string | undefined, recorded: Records) =>
+  Effect.gen(function*() {
+    if (!writesRecords(run, defaultBranch) || recorded.evaluations.length === 0) return
+    const sql = yield* SqlClient.SqlClient
+    const blocked = new Set((yield* sql<{ attr: string; digest: string }>`select attr, digest from record_blocks
+      where project = ${run.project}`).map((b) => `${b.attr}\0${b.digest}`))
+    const now = Date.now()
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const ids = new Map<string, number>()
+      for (const footprint of recorded.footprints) {
+        const [row] = yield* sql<{ id: number }>`insert into footprints (project, revision, entries, created_at)
+          values (${run.project}, ${footprint.revision}, ${JSON.stringify(footprint.entries)}, ${now}) returning id`
+        ids.set(footprint.id, row!.id)
+      }
+      for (const e of recorded.evaluations) {
+        const footprint = ids.get(e.footprint)
+        if (footprint === undefined || blocked.has(`${e.attr}\0${e.digest}`)) continue
+        yield* sql`insert into evaluations (project, attr, footprint, count, digest, derivation, app, trust, run_id, created_at)
+          values (${run.project}, ${e.attr}, ${footprint}, ${e.count}, ${e.digest},
+            ${e.derivation === null ? null : JSON.stringify(e.derivation)}, ${e.app === undefined ? null : JSON.stringify(e.app)},
+            ${run.trust}, ${run.id}, ${now})`
+      }
+      yield* sql`delete from evaluations where project = ${run.project} and id not in (select id from (
+        select id, row_number() over (partition by attr order by created_at desc, id desc) as n from evaluations
+        where project = ${run.project}) where n <= 3)`
+      yield* sql`delete from footprints where project = ${run.project} and id not in (select footprint from evaluations
+        where project = ${run.project})`
+    }))
   }).pipe(Effect.orDie)
 
 export const loadRun = (id: string) =>

@@ -22,7 +22,8 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
       return { _tag: "Planned", plan: empty } satisfies JobResult
     }
     const repo = yield* Repo.make(spec.run.mirror, spec.run.revision)
-    return { _tag: "Planned", plan: yield* resolve(planned, project, spec.run, repo, spec.earlier ?? undefined) } satisfies JobResult
+    const plan = yield* resolve(planned, project, spec.run, repo, spec.earlier ?? undefined, { records: spec.records, audit: spec.audit })
+    return { _tag: "Planned", plan } satisfies JobResult
   }).pipe(
     Effect.catchTags({
       LoadFailed: (e) => Effect.succeed({ _tag: "PlanFailed", message: e.message } satisfies JobResult),

@@ -117,6 +117,24 @@ const plan = Command.make("plan", {
     yield* Check.checkFiles(dir, project)
   })).pipe(Command.withDescription("Show the steps an event would run, without running them; fails when a path or pattern matches no file"))
 
+/** `calder audit`: the nightly audit of a project's footprint records, now. */
+const audit = Command.make("audit", {
+  project: Argument.String("project").pipe(Argument.withDescription("The project, as calder projects lists it")),
+  url,
+}, ({ project, url }) =>
+  Effect.gen(function*() {
+    const client = yield* Remote.client
+    const mismatches = yield* client.audit({ project })
+    if (mismatches.length === 0) yield* Console.log(`${project}: every footprint record that holds at the default branch's head agrees with a fresh evaluation`)
+    for (const m of mismatches) {
+      yield* Console.log(`${m.attr}: recorded ${m.recorded ?? "nothing"}, evaluated ${m.evaluated ?? "nothing"}; dropped its records`)
+      if (m.missed.length > 0) yield* Console.log(`  the fresh evaluation also read ${m.missed.join(", ")}`)
+    }
+    if (mismatches.length > 0) return yield* Effect.fail(new Error(`${mismatches.length} records were wrong`))
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
+    Command.withDescription("Evaluate a project's default branch head afresh and drop the footprint records it contradicts"),
+  )
+
 /** `calder trigger`: a branch head like a push, or with `--inputs` a manual run of the rules taking them. */
 const trigger = Command.make("trigger", {
   project: Argument.String("project").pipe(Argument.withDescription("The project, as calder projects lists it")),
@@ -316,7 +334,7 @@ const cancel = Command.make("cancel", { run: runId, url }, ({ run, url }) =>
     yield* Console.log(`cancelled ${run}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(Command.withDescription("Cancel a run that hasn't ended"))
 
-const subcommands = [controller, worker, agent, gen, plan, check, watch, trigger, runs, projects, status, logs, rerun, cancel, merge]
+const subcommands = [controller, worker, agent, gen, plan, check, watch, trigger, audit, runs, projects, status, logs, rerun, cancel, merge]
 
 const calder = Command.make("calder").pipe(
   Command.withDescription("Calder plans and runs the pipelines in .calder/ci.ts, here or on its controller"),

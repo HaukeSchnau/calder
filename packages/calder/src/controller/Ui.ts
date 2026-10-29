@@ -1,6 +1,7 @@
 import { Domain, NotFound, Refused, UiRpcs } from "@calder-ci/api"
 import { Effect, Stream } from "effect"
 import { SqlClient } from "effect/sql"
+import type { Mismatch } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 import * as Fleet from "./Fleet.ts"
@@ -199,6 +200,11 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
               defaultBranch: project.defaultBranch,
               main,
               deployments: yield* deployments(project),
+              audits: (yield* db(sql<{ attr: string; revision: string; detail: string; at: number }>`select attr, revision, detail, at
+                from audit_mismatches where project = ${name} and at > ${Date.now() - 14 * 86_400_000} order by at desc limit 20`)).map((row) => {
+                const m = JSON.parse(row.detail) as Mismatch
+                return { attr: row.attr, revision: row.revision, at: row.at, recorded: m.recorded?.drv ?? null, evaluated: m.evaluated?.drv ?? null, missed: m.missed }
+              }),
               history: [...history].reverse().map((r) => ({
                 id: r.id,
                 status: r.status,
@@ -309,6 +315,8 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
           : { _tag: "Manual", inputs }
         return yield* runs.create({ project, event, sha }).pipe(Effect.mapError((e) => new Refused({ reason: e.message })))
       }),
+    audit: ({ project }) =>
+      enrolled.get(project) === undefined ? Effect.fail(new NotFound({ what: `project ${project}` })) : runs.audit(project),
     check: ({ repo, ref, sha, background }) =>
       Effect.gen(function*() {
         if (!ref.startsWith("calder/check/")) return yield* new Refused({ reason: "checks are pushed under calder/check/" })

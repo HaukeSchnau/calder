@@ -11,6 +11,7 @@
   gnutar,
   bash,
   coreutils,
+  strace,
 }:
 let
   root = ../.;
@@ -64,7 +65,18 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     basename "$src" | cut -c1-12 > $out/lib/calder/build
     makeWrapper ${lib.getExe bun} $out/bin/calder \
       --add-flags $out/lib/calder/packages/calder/src/main.ts \
-      --prefix PATH : ${lib.makeBinPath [ git gnutar bash coreutils ]}
+      --prefix PATH : ${
+        lib.makeBinPath (
+          [
+            git
+            gnutar
+            bash
+            coreutils
+          ]
+          # Plans record what Nix read of a flake through it (worker/Footprint.ts).
+          ++ lib.optional stdenvNoCC.hostPlatform.isLinux strace
+        )
+      }
     runHook postInstall
   '';
 

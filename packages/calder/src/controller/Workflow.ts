@@ -30,6 +30,8 @@ export class Runs extends Context.Service<Runs, {
    * catch-up after a restart use, so one push never starts two runs.
    */
   readonly ensure: (input: RunInput) => Effect.Effect<Domain.Run, RunError>
+  /** Audits a project's footprint records (RunsCore's `audit`). */
+  readonly audit: (project: string) => Effect.Effect<ReadonlyArray<Domain.AuditMismatch>>
 }>()("calder/controller/Runs") {}
 
 export const layer = Layer.effect(Runs)(Effect.gen(function*() {
@@ -142,6 +144,10 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
     create,
     ensure,
     cancel: core.cancel,
+    audit: (project) =>
+      Effect.map(core.audit(project), (mismatches) =>
+        mismatches.map((m) => ({ attr: m.attr, revision: "", at: Date.now(), recorded: m.recorded?.drv ?? null, evaluated: m.evaluated?.drv ?? null, missed: m.missed }))
+      ),
     rerun: (runId) =>
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))

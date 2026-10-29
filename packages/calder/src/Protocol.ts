@@ -72,6 +72,43 @@ export type PlannedStep = typeof PlannedStep.Type
 
 const Derivation = Schema.Struct({ drv: Schema.String, out: Schema.String, system: Schema.String })
 
+/**
+ * Footprint records (worker/Footprint.ts): what evaluations read of the source, and the derivation each
+ * attribute evaluated to. A footprint's entries are shared by the attributes of one evaluator, each a
+ * prefix of them, and `digest` covers their identities at the revision it was recorded at.
+ */
+export const Records = Schema.Struct({
+  footprints: Schema.Array(Schema.Struct({
+    id: Schema.String,
+    revision: Schema.String,
+    entries: Schema.Array(Schema.Tuple([Schema.String, Schema.Literals(["read", "list", "lookup"])])),
+  })),
+  evaluations: Schema.Array(Schema.Struct({
+    attr: Schema.String,
+    footprint: Schema.String,
+    count: Schema.Number,
+    digest: Schema.String,
+    derivation: Schema.NullOr(Derivation),
+    /** The app's name, for the record of `lib.project.project`. */
+    app: Schema.optional(Schema.NullOr(Schema.String)),
+    /** The journal's id of the record, when the controller hands it to a plan. */
+    id: Schema.optional(Schema.Number),
+  })),
+})
+export type Records = typeof Records.Type
+
+/** An attribute whose record held at the audited revision but whose fresh evaluation differs. */
+export const Mismatch = Schema.Struct({
+  attr: Schema.String,
+  recorded: Schema.NullOr(Derivation),
+  evaluated: Schema.NullOr(Derivation),
+  /** What the fresh evaluation read that the record didn't. */
+  missed: Schema.Array(Schema.String),
+  /** The record's id in the journal. */
+  record: Schema.optional(Schema.Number),
+})
+export type Mismatch = typeof Mismatch.Type
+
 export const PlanSpec = Schema.Struct({
   version: Schema.Literal(1),
   /** The app the release deploys as (`lib.project.project`), when the flake declares one. */
@@ -85,6 +122,12 @@ export const PlanSpec = Schema.Struct({
    * of the same tree may reuse. Older plans lack it.
    */
   derivations: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Derivation))),
+  /** Footprints this plan's evaluations recorded, which the controller keeps apart from the plan. */
+  recorded: Schema.optional(Records),
+  /** An audit plan's attributes whose records were wrong. */
+  mismatches: Schema.optional(Schema.Array(Mismatch)),
+  /** The record each attribute the plan took from records came from, by attribute. */
+  fromRecords: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
 })
 export type PlanSpec = typeof PlanSpec.Type
 
@@ -133,6 +176,10 @@ export const PlanJob = Schema.TaggedStruct("Plan", {
     derivations: Schema.Record(Schema.String, Schema.NullOr(Derivation)),
     app: Schema.NullOr(Schema.String),
   }))),
+  /** The newest footprint records per attribute this run may trust. Older controllers send none. */
+  records: Schema.optional(Records),
+  /** Evaluates every attribute afresh and reports the records that a fresh evaluation contradicts. */
+  audit: Schema.optional(Schema.Boolean),
 })
 
 export const StepJob = Schema.TaggedStruct("Step", {

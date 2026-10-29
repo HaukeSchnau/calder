@@ -133,6 +133,34 @@ failing again, it is cached nowhere, its build evaluates it when it runs, and a 
 the plan with Nix's reason, since task keys include it. The plan's log says how many evaluators it took
 and the most one held.
 
+A plan also records what each attribute's evaluation read of the repository: its footprint. It evaluates
+`path:<source>?rev=…` under strace, which gives the same derivations as the mirror's `git+file:` URL but
+lets strace see each file Nix opens, lists or looks up. The next plan compares those files' git ids at its
+commit, and takes the derivation of every attribute whose footprint holds without running Nix; a push that
+changes nothing Nix read plans in about a second. A footprint includes what the attributes evaluated
+before it in the same `nix eval` read, so attributes evaluate after those their last derivations depended on:
+a lockfile's dependencies then keep their record while the app build that uses them changes. A record counts for no other commit when its
+derivation's closure, or the deriver of a store path the evaluation read (import from a derivation built
+from `self`), mentions its commit or the whole source (`self.rev`, `self.lastModified`, `src = self`), or
+its footprint read a file mentioning `revCount`. Commit metadata transformed in code, such as
+`hashString "sha256" self.rev` or `self.${"rev" + "Count"}`, isn't detected: keep it out of what builds
+read, or such a record carries one commit's value to the next until the audit catches it. An evaluation
+the recorder can't follow (a path it can't attribute, a file inside a submodule, no strace, as on darwin)
+records nothing, so those attributes evaluate every time. A store path the evaluation read whose deriver
+Nix doesn't know keeps the record only when it is content-addressed (a `builtins.toFile` result, a fixed
+download), refers to no copy of the source, and its text doesn't name the commit; a path whose NAR hash
+is the source's (`builtins.path { path = self; name = "src"; }`) counts as the whole source, in what was
+read and in a derivation's closure. Records come only from the default branch's runs (pushes, schedules,
+manual runs) and same-repo pull requests: a push to another branch runs that branch's ci.ts in the trusted
+worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
+changes. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
+runs and forks' runs take only trusted runs' records, since a pull request's ci.ts runs in the worker
+that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing.
+Every night, and on `calder audit <project>`, the controller evaluates each default branch's head afresh,
+through the mirror and without the recorder, as plans did before records, and drops the records that
+disagree. It logs each as `footprint record wrong:` with the runs whose plans took it (infra alerts on
+that line), and the project's page shows it for two weeks.
+
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch
 is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
@@ -308,6 +336,7 @@ calder status <run>                    # a run's steps, how long each waited for
 calder logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
                                      # until the step ends, or the run without a step
 calder rerun <run> | calder cancel <run>  # run ids look like studienbuch-12
+calder audit <project>                 # evaluates the default branch head afresh and drops wrong footprint records
 calder controller --config <file>      # the service
 calder worker <job>                    # started by the controller in a systemd unit, or by an agent
 calder agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
