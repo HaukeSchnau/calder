@@ -37,6 +37,8 @@ export class Job extends Context.Service<Job, {
   readonly client: Client
   readonly emit: (event: JobEvent) => Effect.Effect<void>
   readonly log: (stream: "stdout" | "stderr" | "calder", text: string) => Effect.Effect<void>
+  /** Masks the job's secrets in text that leaves the worker another way than its log. */
+  readonly redact: (text: string) => string
   readonly flush: Effect.Effect<void>
 }>()("calder/worker/Job") {}
 
@@ -85,6 +87,8 @@ export const make = (id: string, token: string, remote: Remote | null): Effect.E
       client,
       emit,
       log: (stream, text) => emit({ _tag: "Log", stream, text, timestamp: Date.now() }),
+      // The worker masks secrets once it has its job (`Worker.run`).
+      redact: (text) => text,
       flush,
     }
   })

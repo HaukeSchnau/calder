@@ -83,7 +83,13 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
   `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
-  secret the project doesn't configure dies saying so. ``cmd`... ${Cmd.pullRequest}` `` passes the
+  secret the project doesn't configure dies saying so. The worker replaces the job's secrets and its token
+  with `***` in what leaves it, also where JSON, a URL, a form or base64 encodes them: logs, test messages,
+  pull-request comments, dispatch inputs and why a step failed or was skipped. A secret counts from 4
+  characters. Of one with several, such as a dotenv file, a key or a service account's JSON, each line,
+  each `KEY=value` line's value and each JSON string, with the lines of a string or of a double-quoted
+  value, counts from 8. Masking works line by line, so it
+  can't catch a secret that a tool wraps over two lines or splits with color codes. ``cmd`... ${Cmd.pullRequest}` `` passes the
   run's pull-request number. `lease: true` makes a trusted task hold the project's deploy lease while
   it runs, like `Release.promote`: one deploy at a time, and latest wins per step. The controller grants it
   only while the run's revision is its branch's head (a manual or scheduled run's branch is the default
@@ -104,7 +110,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   with which a task says it didn't do its work and that's no failure, such as a deploy to a host that is
   offline: the step is skipped, with the last line the command printed as the reason. A skipped step
   doesn't fail its run, but it isn't green either: its commit status is a warning, and the steps after it
-  are skipped too.
+  are skipped too. A task or setup that fails says why the same way, after its exit code
+  (`exited with 1: 3 previews are running (pr-3, pr-7, pr-9); close a PR or wait`), unless its report
+  counted failing tests. Blank lines, color codes and a wrapper's note that the command failed (pnpm's
+  `ELIFECYCLE`, just's `Recipe ... failed`, `exit status N`) don't count as the last line.
 - **action** (`Action.make`): Effect code with side effects. `needs` are the steps whose values the
   body reads, `after` the steps that must pass first, `grants` what it may do (`deploy`, `secrets`).
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
@@ -180,7 +189,7 @@ What steps of a pull request's run say with `PullRequest.comment`, such as a pre
 Calder's one comment on the pull request, with how long after the push each said it; a run a newer one
 replaced says nothing there. Once a pull request has that comment, Calder edits it, a few seconds after
 the state of its newest run changed: each step's status, what a waiting step
-waits for, how long each waited for a slot and ran, how long the run planned, and how long the steps on the
+waits for, why a failed one failed, how long each waited for a slot and ran, how long the run planned, and how long the steps on the
 critical path queued. `On.pullRequestClosed` rules run when
 a pull request is merged or closed, as a trusted run of the base branch's head that knows the pull
 request's number, such as to remove its preview. `calder plan --event closed:<n>` shows them.

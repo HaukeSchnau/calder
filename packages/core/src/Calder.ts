@@ -80,11 +80,12 @@ export type TestFailure = typeof TestFailure.Type
 export class TaskFailed extends Failure<TaskFailed>("@calder-ci/core")("TaskFailed", {
   exitCode: Schema.Number,
   failures: Schema.Array(TestFailure),
+  /** The last line the command printed that says something, which usually says why it failed. */
+  lastLine: Schema.optional(Schema.String),
 }) {
   override get message() {
-    return this.failures.length > 0
-      ? `${this.failures.length} failing test${this.failures.length === 1 ? "" : "s"}`
-      : `exited with ${this.exitCode}`
+    if (this.failures.length > 0) return `${this.failures.length} failing test${this.failures.length === 1 ? "" : "s"}`
+    return this.lastLine === undefined ? `exited with ${this.exitCode}` : `exited with ${this.exitCode}: ${this.lastLine}`
   }
 }
 
