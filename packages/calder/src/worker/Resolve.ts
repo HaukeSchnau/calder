@@ -513,17 +513,16 @@ export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): 
 
 const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`
 
-/** Stops an evaluator: between attributes when the next might not fit (`full`), or during one that outgrew the budget (`over`). */
-class Stopped extends Schema.TaggedError<Stopped>("calder/Stopped")("Stopped", { reason: Schema.Literals(["full", "over"]) }) {}
+/** Stops an evaluator that holds more than the budget. */
+class Stopped extends Schema.TaggedError<Stopped>("calder/Stopped")("Stopped", {}) {}
 
 /**
  * One `nix eval` that evaluates `attrs` in order and reports each derivation on stderr as it gets it, so
- * what it got counts even when it stops before the end. `largest` is the most an attribute added to an
- * evaluator so far, also in earlier ones. `error` is Nix's when it failed on the attribute after those it
- * got. Reports out of order, or missing although Nix succeeded, mean the expression no longer works with
+ * what it got counts even when it stops before the end. `error` is Nix's when it failed on the attribute
+ * after those it got. Reports out of order, or missing although Nix succeeded, mean the expression no longer works with
  * this Nix: that fails like a flake that doesn't load, so nothing is cached.
  */
-const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, largest: number, recorder?: Recorder) =>
+const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, recorder?: Recorder) =>
   Effect.gen(function*() {
     const unexpected = (what: string) => new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: 0, stderr: `nix eval gave ${what}` })
     const reports = attrs.map((attr, i) => `(report ${i} f.${attr})`).join(" ")
@@ -545,7 +544,6 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     let loaded = false
     let pid = 0
     let peak = 0
-    let held = 0
     const resident = () => {
       const now = memory.resident(pid)
       peak = Math.max(peak, now)
@@ -561,7 +559,6 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
         }
         if (report[1] === "flake") {
           loaded = true
-          held = resident()
           return
         }
         const [index, derivation] = yield* Effect.try({
@@ -570,22 +567,17 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
         })
         if (index !== got.length) return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`)
         got.push(derivation)
-        const now = resident()
-        largest = Math.max(largest, now - held)
-        held = now
-        if (memory.budget !== null && got.length < attrs.length && now + largest > memory.budget) {
-          return yield* new Stopped({ reason: "full" })
-        }
+        if (memory.budget !== null && got.length < attrs.length && resident() > memory.budget) return yield* new Stopped()
       }), (id) => {
       pid = id
       return Effect.gen(function*() {
         while (memory.budget !== null) {
           yield* Effect.sleep(memory.every)
-          if (resident() > memory.budget) return yield* new Stopped({ reason: "over" })
+          if (resident() > memory.budget) return yield* new Stopped()
         }
       })
     }).pipe(
-      Effect.catchTag("Stopped", (stopped) => Effect.succeed(stopped.reason)),
+      Effect.catchTag("Stopped", () => Effect.succeed("over" as const)),
       // A signal, such as the kernel's OOM killer's SIGKILL, fails the exit code rather than giving one.
       Effect.catchTag("PlatformError", (e) => /receipt of signal/.test(String(e.cause ?? e.message)) ? Effect.succeed("killed" as const) : Effect.fail(e)),
       Effect.ensuring(Effect.sync(() => scratch === undefined ? undefined : rmSync(join(scratch, "cache"), { recursive: true, force: true }))),
@@ -601,19 +593,17 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     })
     // Killed before the flake loaded under the recorder, such as strace by a signal: the recording failed,
     // and the plan evaluates without it. Without the recorder, loading the flake outgrew the memory.
-    if (exit !== 0 && exit !== "full" && exit !== "over" && !loaded && (exit !== "killed" || recorder !== undefined)) {
+    if (exit !== 0 && exit !== "over" && !loaded && (exit !== "killed" || recorder !== undefined)) {
       return yield* new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: exit === "killed" ? -1 : exit, stderr: stderr.join("\n") })
     }
     if (exit === 0 && got.length < attrs.length) return yield* unexpected(`${attrs.length - got.length} attributes went unreported`)
     // Killed by a signal, such as the kernel's OOM killer (which takes the whole job instead unless its
     // unit sets OOMPolicy=continue): the attribute in flight counts as outgrowing the budget.
-    const stop = exit === "full" || exit === "over" ? exit : exit === "killed" && got.length < attrs.length ? "over" as const
+    const stop = exit === "over" ? exit : exit === "killed" && got.length < attrs.length ? "over" as const
       : got.length === attrs.length ? "done" as const : "failed" as const
-    // The attribute it stopped in had added at least this much.
-    if (stop === "over" && memory.budget !== null) largest = Math.max(largest, memory.budget - held)
     // Nix's innermost error comes last.
     const error = stderr.map((line) => line.trim()).findLast((line) => line.startsWith("error:"))?.replace(/^error:\s*/, "") ?? ""
-    return { got, stop, error, peak, largest, loaded, trace }
+    return { got, stop, error, peak, loaded, trace }
   })
 
 /** Runs a command under strace, writing the source accesses Footprint.parseTrace reads to `file`. */
@@ -641,9 +631,11 @@ const loadingTheFlake = "loading the flake"
  * Evaluates the attributes in order, sharing an evaluator between them, so what they have in common,
  * such as nixpkgs, is evaluated once: t3code's nine took 19 s of CPU in one evaluator and 66 s in one
  * each. An evaluator keeps every value it computed, though: infra's six hosts in one held 7 GB, more than
- * a pull request's job may use, which stalled its plans for an hour. So an evaluator stops between
- * attributes once the next, if it grows as much as the largest so far, might not fit the budget, and at
- * once when it outgrows it; a new one goes on where it stopped. An attribute that outgrows the budget in
+ * a pull request's job may use, which stalled its plans for an hour. So an evaluator stops once it holds
+ * more than the budget, and a new one goes on from the attribute it was in, or the next. It doesn't stop
+ * earlier on a guess: attributes that share a configuration, such as srv-2's contract check and srv-2,
+ * add little after the first, and stopping between them when the next might grow as much as the largest
+ * so far evaluated srv-2's configuration twice, 10 minutes of CPU instead of 6. An attribute that outgrows the budget in
  * an evaluator of its own is `tooLarge`, since its build would swap as much, and the rest go on without
  * it; a flake that outgrows it loading fails the evaluation (`TooLarge`). One that
  * fails in a way Nix can't catch, such as a missing attribute or an input that couldn't be fetched, gets one
@@ -666,25 +658,20 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
     let done = 0
     let evaluators = 0
     let peak = 0
-    let largest = 0
     while (done < attrs.length) {
       const rest = attrs.slice(done)
-      const pass = yield* evaluator(flake, rest, memory, largest, recorder)
+      const pass = yield* evaluator(flake, rest, memory, recorder)
       if (recorder !== undefined) passes.push({ attrs: rest.slice(0, pass.got.length), trace: pass.trace })
       evaluators++
       peak = Math.max(peak, pass.peak)
-      const before = largest
-      largest = pass.largest
       pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation))
       done += pass.got.length
       const next = rest[pass.got.length]
-      if (next === undefined || pass.stop === "full" || (pass.stop === "over" && pass.got.length > 0)) continue
+      if (next === undefined || (pass.stop === "over" && pass.got.length > 0)) continue
       if (pass.stop === "over" && !pass.loaded) return yield* new TooLarge({ attr: loadingTheFlake, budget: memory.budget ?? 0 })
       if (pass.stop === "over") {
         tooLarge.set(next, new TooLarge({ attr: next, budget: memory.budget ?? 0 }))
         done++
-        // What it grew by says nothing about the rest, which would otherwise get an evaluator each.
-        largest = before
         yield* log(tooLarge.get(next)!.message)
         continue
       }

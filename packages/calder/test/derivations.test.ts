@@ -227,14 +227,14 @@ describe("evaluating within the job's memory", () => {
       expect(fake.evaluated).toEqual([["a", "b", "c"]])
     }))
 
-  it.live("goes on in a new evaluator once the next attribute might not fit", () =>
+  it.live("stops an evaluator only once it holds more than the budget, and goes on in a new one", () =>
     Effect.gen(function*() {
-      // Each host takes 1 GiB on top of the flake's quarter: after two, a third might reach 3.25.
-      const host = { bytes: GiB }
-      const fake = nix(() => true, { attrs: { h1: host, h2: host, h3: host, h4: host } })
-      const { result } = yield* evaluate(fake, ["h1", "h2", "h3", "h4"], 3 * GiB)
-      expect(result).toEqual(new Map(["h1", "h2", "h3", "h4"].map((h) => [h, drv(h)])))
-      expect(fake.evaluated).toEqual([["h1", "h2", "h3", "h4"], ["h3", "h4"]])
+      // A host's check evaluates the host's configuration, which the host then shares: stopping after the
+      // check because the host might grow as much would evaluate the configuration twice.
+      const fake = nix(() => true, { attrs: { check: { bytes: 2 * GiB }, host: { bytes: GiB / 4 }, other: { bytes: GiB }, last: { bytes: GiB / 4 } } })
+      const { result } = yield* evaluate(fake, ["check", "host", "other", "last"], 3 * GiB)
+      expect(result).toEqual(new Map(["check", "host", "other", "last"].map((h) => [h, drv(h)])))
+      expect(fake.evaluated).toEqual([["check", "host", "other", "last"], ["last"]])
     }))
 
   it.live("leaves out an attribute that outgrows the budget even on its own, saying which, and goes on with the rest", () =>
