@@ -52,7 +52,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   instead of the root, and put its `node_modules/.bin` on PATH. A setup and its tasks run on one platform, so tasks for
   another platform's agents name an install with that `platform` (`Pnpm.install({ platform: "x86_64-linux", name: ... })`).
 - **task** (`Task.make`): a command in a dev shell, run in a persistent workspace of the repository.
-  Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
+  The worker enters the dev shell from the derivation the plan evaluated, the one the task's key names,
+  so `nix develop` doesn't fetch and evaluate the flake again. Bash still comes from the flake's own
+  `nixpkgs` input, as it does for a flake. An agent's store lacks that derivation, so an agent evaluates
+  the flake. Before each task the workspace is checked out and cleaned with `git clean -ffdx`, except what its
   setup keeps, and its slot's directory gets the time as its modification time, by which the host's
   retention removes slots unused for a week. A task is reused
   when its key matches: git tree ids of its inputs (`inputs: Files.workspace(...)`, the whole
@@ -270,6 +273,9 @@ there.
 A stack with `outputs` makes what it returns, an object, the value of its deploys: after deploying,
 the step reads it with `alchemy state read <name>/<stage>/output` and decodes it with the schema,
 which leaves out secrets such as tokens. A preview's `url` gets the outputs as its second argument.
+Reading them takes a second CLI process, 16 s of casa-crema's deploy. So an environment's deploy reads
+them only when its `readiness` or `then` does; `Project.alchemy`'s production deploy has neither.
+Previews always read them for their link.
 
 ```ts
 export default Project.alchemy({
