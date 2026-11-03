@@ -934,7 +934,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     Effect.gen(function*() {
       const pending = evaluations.get(run.id)
       if (pending !== undefined) {
-        yield* waiting(run.id, name, "waiting for the run's builds to be evaluated")
+        yield* waiting(run.id, name, "the run's builds to be evaluated")
         return yield* Deferred.await(pending).pipe(Effect.ensuring(waiting(run.id, name, null)))
       }
       const done = Deferred.makeUnsafe<ReadonlyMap<string, string>>()
