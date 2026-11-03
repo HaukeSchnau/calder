@@ -164,7 +164,11 @@ export const make = (options: {
     waitsFor: (claim: Claim): string | null => {
       if (eligible(claim) && fits(claim.project) && !waiters.some(eligible)) return null
       const ahead = waiters.filter((w) => claim.critical === true ? w.critical === true : true).length
-      const busy = `${holders.length} of ${options.capacity}${claim.critical === true && lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
+      // A check doesn't count the critical work in the lane, since the lane is beyond the capacity.
+      const inLane = Math.min(lane, holders.filter((h) => h.critical).length)
+      const busy = claim.critical === true
+        ? `${holders.length} of ${options.capacity}${lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
+        : `${holders.length - inLane} of ${options.capacity} busy${inLane > 0 ? ` (+${inLane} ${inLane === 1 ? "deploy" : "deploys"})` : ""}`
       // Reasons reach pull requests' comments, so other projects' steps stay nameless.
       const others = holders.filter((h) => h.project !== claim.project).length
       const own = holders.filter((h) => h.project === claim.project).map((h) => h.label)
