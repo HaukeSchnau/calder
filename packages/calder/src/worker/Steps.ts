@@ -196,12 +196,50 @@ const remember = (slot: Workspace.Slot, deps: string) =>
 
 type SetupDef = Extract<Step.Any["def"], { readonly _tag: "Setup" }>
 
-const inShell = (job: StepJob, workspace: string, shell: Flake.FlakeRef | undefined, argv: ReadonlyArray<string>) => {
-  if (shell === undefined) return argv
-  // An agent's workspace is a shallow checkout, which Nix only takes when told so.
-  const flake = job.run.flake === "" ? `git+file://${workspace}?rev=${job.run.revision}&shallow=1` : job.run.flake
-  return ["nix", "develop", `${flake}#${Flake.attrPath(shell, job.run.system)}`, "--command", ...argv]
-}
+/**
+ * The flake's own nixpkgs as a flake reference: the root's input `nixpkgs` in the checkout's flake.lock,
+ * which is where `nix develop` takes bash from for a flake (Nix's InstallableFlake::nixpkgsFlakeRef).
+ * Nothing when the flake has none, and then `nix develop` takes the registry's either way.
+ */
+const lockedNixpkgs = (workspace: string) =>
+  Effect.gen(function*() {
+    const lock = JSON.parse(readFileSync(join(workspace, "flake.lock"), "utf8")) as {
+      readonly root: string
+      readonly nodes: Record<string, { readonly inputs?: Record<string, string | ReadonlyArray<string>>; readonly locked?: object }>
+    }
+    // An input that follows another names the path to it from the root.
+    const node = (from: string, name: string): string | undefined => {
+      const input = lock.nodes[from]?.inputs?.[name]
+      if (typeof input === "string" || input === undefined) return input
+      return input.reduce<string | undefined>((at, step) => (at === undefined ? undefined : node(at, step)), lock.root)
+    }
+    const locked = lock.nodes[node(lock.root, "nixpkgs") ?? ""]?.locked
+    if (locked === undefined) return undefined
+    const expr = `builtins.flakeRefToString (builtins.fromJSON (builtins.getEnv "CALDER_NIXPKGS"))`
+    return (yield* Exec.run(["nix", "eval", "--impure", "--raw", "--expr", expr], { env: { CALDER_NIXPKGS: JSON.stringify(locked) } })).trim()
+  }).pipe(Effect.orElseSucceed(() => undefined))
+
+/**
+ * `argv` in the dev shell. With the shell's derivation from the plan, the one task keys name, `nix develop`
+ * enters it without fetching and evaluating the flake. casa-crema's deploy spent 10.6 s of its 63 there:
+ * Nix fetched the new revision from the mirror, copied its 20 MB tree to the store and evaluated the shell
+ * again. The derivation took 0.5 s on srv-2 where the flake took 3.2 s. `nix develop` takes bash from the
+ * registry's nixpkgs for a derivation and from the flake's own for a flake, so the flake's stands in for
+ * the registry's. An agent's store lacks the controller's derivations, so it evaluates the flake.
+ */
+export const inShell = (job: StepJob, workspace: string, shell: Flake.FlakeRef | undefined, argv: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    if (shell === undefined) return argv
+    const attr = Flake.attrPath(shell, job.run.system)
+    const drv = job.shells?.[attr]
+    if (drv !== undefined && existsSync(drv)) {
+      const nixpkgs = yield* lockedNixpkgs(workspace)
+      return ["nix", "develop", `${drv}^*`, ...(nixpkgs === undefined ? [] : ["--override-flake", "nixpkgs", nixpkgs]), "--command", ...argv]
+    }
+    // An agent's workspace is a shallow checkout, which Nix only takes when told so.
+    const flake = job.run.flake === "" ? `git+file://${workspace}?rev=${job.run.revision}&shallow=1` : job.run.flake
+    return ["nix", "develop", `${flake}#${attr}`, "--command", ...argv]
+  })
 
 /**
  * Opens the job's slot for its key, checks out the revision keeping what the setup made, and runs
@@ -241,7 +279,7 @@ const prepare = (job: StepJob, name: string, setup: SetupDef | undefined, legacy
       const started = Date.now()
       const last = lastWords(redact)
       const exitCode = yield* Exec.stream(
-        inShell(job, workspace, setup === undefined ? legacyShell : setup.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-setup", ...command]),
+        yield* inShell(job, workspace, setup === undefined ? legacyShell : setup.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-setup", ...command]),
         { cwd: workspace, env: env(job.run, name, extraEnv) },
         (stream, line) => log(stream, last.see(line)),
       )
@@ -418,7 +456,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     const leased = def.lease !== undefined ? yield* deploying(self, job, step.name, def, values) : undefined
     if (leased?._tag === "Ended") return leased.result
 
-    const full = inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-task", ...argv])
+    const full = yield* inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-task", ...argv])
     const taskEnv = env(job.run, step.name, {
       ...goMemLimit(),
       ...extraEnv,
