@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect, Fiber } from "effect"
+import { TestClock } from "effect/testing"
 import * as Slots from "../src/controller/Slots.ts"
 
 const minutes = (n: number) => n * 60_000
@@ -164,7 +165,7 @@ describe("Slots", () => {
       yield* Effect.yieldNow
       expect(order).toEqual(["test-server", "lint", "deploy-pr"])
       // The deploy in the lane doesn't make the capacity look exceeded to a check.
-      expect(slots.waitsFor(check)).toBe("2 of 2 busy (+1 deploy): studienbuch-21 lint, studienbuch-21 preview, 1 of other projects; 1 ahead")
+      expect(slots.waitsFor(check)).toBe("2 of 2 busy (+1 deploy): studienbuch-21 lint, studienbuch-21 preview, 1 of other projects")
       // The lane is full now, so the next critical step waits, ahead of the check.
       expect(slots.waitsFor({ ...check, critical: true })).toBe("3 of 2 (+1 for deploys) busy: studienbuch-21 lint, studienbuch-21 preview, 1 of other projects")
       yield* job("ready-pr", { project: "studienbuch", expected: minutes(1), run: 0, critical: true })
@@ -172,6 +173,29 @@ describe("Slots", () => {
       yield* Deferred.succeed(hold, undefined)
       yield* Effect.yieldNow
       expect(order.slice(3)).toEqual(["ready-pr", "test-web"])
+    }))
+
+  it.effect("tells a waiting step why, again whenever the queue moves", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 1, refresh: "15 seconds" })
+      const lint = yield* Deferred.make<void>()
+      const rest = yield* Deferred.make<void>()
+      const reasons: Array<string> = []
+      const step = (label: string, until: Deferred.Deferred<void>, onWaiting?: (reason: string) => Effect.Effect<void>) =>
+        Effect.forkChild(slots.with({ project: "t3code", expected: minutes(1), run: 0, label }, Deferred.await(until), onWaiting))
+      yield* step("t3code-1 lint", lint)
+      yield* Effect.yieldNow
+      yield* step("t3code-1 test", rest)
+      yield* Effect.yieldNow
+      yield* step("t3code-1 build", rest, (reason) => Effect.sync(() => reasons.push(reason)))
+      yield* Effect.yieldNow
+      expect(reasons).toEqual(["1 of 1 busy: t3code-1 lint; 1 ahead"])
+      // test takes lint's slot; build no longer counts it, nor itself, as ahead.
+      yield* Deferred.succeed(lint, undefined)
+      yield* TestClock.adjust("15 seconds")
+      expect(reasons).toEqual(["1 of 1 busy: t3code-1 lint; 1 ahead", "1 of 1 busy: t3code-1 test"])
+      yield* TestClock.adjust("15 seconds")
+      expect(reasons).toHaveLength(2)
     }))
 
   it.effect("keeps a project at its share while another project's step fits, critical or not", () =>

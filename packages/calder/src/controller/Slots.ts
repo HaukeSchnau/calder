@@ -1,4 +1,4 @@
-import { Deferred, Effect } from "effect"
+import { Deferred, Duration, Effect } from "effect"
 
 /** What a step asks the pool for. */
 export interface Claim {
@@ -19,6 +19,8 @@ export interface Claim {
 }
 
 interface Waiter extends Claim {
+  /** The claim as its caller holds it, so `waitsFor` can tell it from the others. */
+  readonly claim: Claim
   readonly seq: number
   readonly since: number
   readonly granted: Deferred.Deferred<void>
@@ -47,6 +49,8 @@ export const make = (options: {
   /** Slots beyond capacity that only critical claims take. */
   readonly lane?: number
   readonly now?: () => number
+  /** How often a waiting claim's reason is read again, for `with`'s `onWaiting`. */
+  readonly refresh?: Duration.Input
 }) => {
   const now = options.now ?? Date.now
   const lane = options.lane ?? 0
@@ -119,7 +123,7 @@ export const make = (options: {
   const acquire = (claim: Claim): Effect.Effect<Holder> =>
     Effect.suspend(() => {
       if (eligible(claim) && fits(claim.project) && !waiters.some(eligible)) return Effect.succeed(take(claim))
-      const waiter: Waiter = { ...claim, seq: seq++, since: now(), granted: Deferred.makeUnsafe<void>() }
+      const waiter: Waiter = { ...claim, claim, seq: seq++, since: now(), granted: Deferred.makeUnsafe<void>() }
       waiters.push(waiter)
       grant()
       const handOver = Effect.sync(() => {
@@ -145,11 +149,55 @@ export const make = (options: {
       )
     })
 
+  /** Why `claim` would wait for a slot now, or null when it would get one at once. A waiting claim counts only the claims queued before it. */
+  const waitsFor = (claim: Claim): string | null => {
+    const mine = waiters.find((w) => w.claim === claim)
+    if (mine === undefined && eligible(claim) && fits(claim.project) && !waiters.some(eligible)) return null
+    const ahead = waiters.filter((w) =>
+      w !== mine && (mine === undefined || w.seq < mine.seq) && (claim.critical === true ? w.critical === true : true)
+    ).length
+    // A check doesn't count the critical work in the lane, since the lane is beyond the capacity.
+    const inLane = Math.min(lane, holders.filter((h) => h.critical).length)
+    const busy = claim.critical === true
+      ? `${holders.length} of ${options.capacity}${lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
+      : `${holders.length - inLane} of ${options.capacity} busy${inLane > 0 ? ` (+${inLane} ${inLane === 1 ? "deploy" : "deploys"})` : ""}`
+    // Reasons reach pull requests' comments, so other projects' steps stay nameless.
+    const others = holders.filter((h) => h.project !== claim.project).length
+    const own = holders.filter((h) => h.project === claim.project).map((h) => h.label)
+    const who = [...own.slice(0, 4), ...(own.length > 4 ? ["..."] : []), ...(others === 0 ? [] : [`${others} of other projects`])].join(", ")
+    return `${busy}${who === "" ? "" : `: ${who}`}${ahead > 0 ? `; ${ahead} ahead` : ""}`
+  }
+
+  /** Waits for a slot, telling `onWaiting` why whenever that changes, from the first moment it has to wait. */
+  const reporting = (claim: Claim, onWaiting: (reason: string) => Effect.Effect<void>) =>
+    Effect.gen(function*() {
+      const first = waitsFor(claim)
+      if (first === null) return yield* acquire(claim)
+      yield* onWaiting(first)
+      let shown = first
+      const follow = Effect.gen(function*() {
+        while (true) {
+          yield* Effect.sleep(options.refresh ?? "15 seconds")
+          const reason = waitsFor(claim)
+          if (reason !== null && reason !== shown) {
+            shown = reason
+            yield* onWaiting(reason)
+          }
+        }
+      })
+      return yield* Effect.scoped(Effect.forkScoped(follow).pipe(Effect.andThen(acquire(claim))))
+    })
+
   return {
-    /** Runs `effect` in a slot. Interrupting it while it waits gives up its place in the queue. */
-    with: <A, E, R>(claim: Claim, effect: Effect.Effect<A, E, R>) =>
+    /**
+     * Runs `effect` in a slot. Interrupting it while it waits gives up its place in the queue. While it
+     * waits, `onWaiting` hears why, again whenever the queue moves.
+     */
+    with: <A, E, R>(claim: Claim, effect: Effect.Effect<A, E, R>, onWaiting?: (reason: string) => Effect.Effect<void>) =>
       Effect.uninterruptibleMask((restore) =>
-        restore(acquire(claim)).pipe(Effect.flatMap((holder) => restore(effect).pipe(Effect.ensuring(release(holder)))))
+        restore(onWaiting === undefined ? acquire(claim) : reporting(claim, onWaiting)).pipe(
+          Effect.flatMap((holder) => restore(effect).pipe(Effect.ensuring(release(holder)))),
+        )
       ),
     /**
      * Counts a job that already runs, such as one adopted after a restart, at once and even past
@@ -161,20 +209,7 @@ export const make = (options: {
      * Why `claim` would wait for a slot right now, such as `3 of 3 busy: t3code-452 test-server, ...`, or
      * null when it would get one at once.
      */
-    waitsFor: (claim: Claim): string | null => {
-      if (eligible(claim) && fits(claim.project) && !waiters.some(eligible)) return null
-      const ahead = waiters.filter((w) => claim.critical === true ? w.critical === true : true).length
-      // A check doesn't count the critical work in the lane, since the lane is beyond the capacity.
-      const inLane = Math.min(lane, holders.filter((h) => h.critical).length)
-      const busy = claim.critical === true
-        ? `${holders.length} of ${options.capacity}${lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
-        : `${holders.length - inLane} of ${options.capacity} busy${inLane > 0 ? ` (+${inLane} ${inLane === 1 ? "deploy" : "deploys"})` : ""}`
-      // Reasons reach pull requests' comments, so other projects' steps stay nameless.
-      const others = holders.filter((h) => h.project !== claim.project).length
-      const own = holders.filter((h) => h.project === claim.project).map((h) => h.label)
-      const who = [...own.slice(0, 4), ...(own.length > 4 ? ["..."] : []), ...(others === 0 ? [] : [`${others} of other projects`])].join(", ")
-      return `${busy}${who === "" ? "" : `: ${who}`}${ahead > 0 ? `; ${ahead} ahead` : ""}`
-    },
+    waitsFor,
   }
 }
 
