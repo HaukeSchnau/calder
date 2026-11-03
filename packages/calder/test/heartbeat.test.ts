@@ -108,10 +108,12 @@ describe("a heartbeat", () => {
         expect(result.get("waits")?.drv).toMatch(/-waited\.drv$/)
         const beats = logged.filter((line) => line.startsWith("Still evaluating"))
         expect(beats.length).toBeGreaterThan(0)
-        expect(beats.find((line) => line.includes("waits for the Nix daemon"))).toMatch(new RegExp(
+        // A line from while the daemon builds: before, it may still add the flake's source or set the build up.
+        const building = beats.find((line) => line.includes("waits for the Nix daemon") && line.includes("Nix has been building"))
+        expect(building, logged.join("\n")).toMatch(new RegExp(
           "^Still evaluating after \\d+ s, at attribute 1 of 1, waits\\. Nix holds [\\d.]+ GiB.*" +
             "Its main thread waits for the Nix daemon \\(unix_\\w+\\)\\. " +
-            `The last file it opened is ${meta.path}/flake\\.nix.*` +
+            `The last file it opened is ${meta.path}/.*` +
             "Nix has been building '/nix/store/\\w{32}-calder-heartbeat-\\w+\\.drv' for \\d+ s\\..*" +
             "In the last \\d+ s, Nix used [\\d.]+ s of CPU",
         ))
