@@ -115,18 +115,8 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
           ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
           ${input.fork === true ? 1 : 0}, ${commit.tree === "" ? null : commit.tree})`)
 
-      // A newer revision of the same pull request or branch makes runs of older ones pointless. A revision
-      // is as old as its first run there, so a rerun or a trigger of an older one replaces nothing.
-      const same = pr !== null
-        ? sql`pr = ${pr}`
-        : event._tag === "Push" || event._tag === "Check"
-        ? sql`branch = ${branch} and pr is null and event like ${`{"_tag":"${event._tag}"%`}`
-        : null
-      const older = same === null ? [] : yield* db(sql<{ id: string }>`select id from runs
-        where project = ${input.project} and ${same} and status in ('queued', 'planning', 'running') and sha in (
-          select sha from runs where project = ${input.project} and ${same} and created_at < (
-            select min(created_at) from runs where project = ${input.project} and ${same} and sha = ${input.sha}))`)
-      yield* Effect.forEach(older, (r) => core.supersede(r.id, `superseded by #${number}`), { discard: true })
+      const older = yield* db(Rows.replaced({ project: input.project, event, branch, pr, sha: input.sha }))
+      yield* Effect.forEach(older, (id) => core.supersede(id, `superseded by #${number}`), { discard: true })
 
       yield* start(id)
       const row = yield* db(Rows.loadRun(id))

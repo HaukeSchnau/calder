@@ -137,6 +137,15 @@ deploys. Checks a deploy only waits for (`after`) take their turn like any other
 jump the queue, and `Project.alchemy`'s previews wait for their checks that way. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
 comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
 
+A newer revision supersedes the runs of older ones. A pull request's new revision supersedes the pull
+request's older runs. A push supersedes the older pushes and scheduled runs of its branch, and a check the
+older checks. Manual runs are never superseded. A superseded run's waiting steps never start. Its running
+jobs finish and keep their results, which newer runs reuse or wait for. A running build stops, though,
+and frees its slot, once no run that goes on builds its derivation or depends on one that it is building
+right now: stopping it makes the Nix daemon drop what it builds, which a newer build would start over. A
+newer run of the project that still plans, or has builds left to evaluate, may need either, so the build
+runs on until the newer run knows, which it asks every 30 s.
+
 A plan evaluates the flake once per revision. A commit with the same root tree as one planned before,
 such as a reworded commit, reuses that plan's derivations unless they mention that commit (`self.rev`,
 `self.shortRev`, `self.lastModified`, `self.lastModifiedDate` or its day) or the flake's sources read
