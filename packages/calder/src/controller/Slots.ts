@@ -160,7 +160,7 @@ export const make = (options: {
     const inLane = Math.min(lane, holders.filter((h) => h.critical).length)
     const busy = claim.critical === true
       ? `${holders.length} of ${options.capacity}${lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
-      : `${holders.length - inLane} of ${options.capacity} busy${inLane > 0 ? ` (+${inLane} ${inLane === 1 ? "deploy" : "deploys"})` : ""}`
+      : `${holders.length - inLane} of ${options.capacity} busy${inLane > 0 ? ` (+${inLane} ${inLane === 1 ? "deploy or preview" : "deploys or previews"})` : ""}`
     // Reasons reach pull requests' comments, so other projects' steps stay nameless.
     const others = holders.filter((h) => h.project !== claim.project).length
     const own = holders.filter((h) => h.project === claim.project).map((h) => h.label)

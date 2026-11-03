@@ -165,7 +165,7 @@ describe("Slots", () => {
       yield* Effect.yieldNow
       expect(order).toEqual(["test-server", "lint", "deploy-pr"])
       // The deploy in the lane doesn't make the capacity look exceeded to a check.
-      expect(slots.waitsFor(check)).toBe("2 of 2 busy (+1 deploy): studienbuch-21 lint, studienbuch-21 preview, 1 of other projects")
+      expect(slots.waitsFor(check)).toBe("2 of 2 busy (+1 deploy or preview): studienbuch-21 lint, studienbuch-21 preview, 1 of other projects")
       // The lane is full now, so the next critical step waits, ahead of the check.
       expect(slots.waitsFor({ ...check, critical: true })).toBe("3 of 2 (+1 for deploys) busy: studienbuch-21 lint, studienbuch-21 preview, 1 of other projects")
       yield* job("ready-pr", { project: "studienbuch", expected: minutes(1), run: 0, critical: true })
@@ -213,7 +213,7 @@ describe("Slots", () => {
       yield* Effect.yieldNow
       // The lane takes infra's third deploy only because t3code's next step doesn't fit the capacity, which the lane is beyond.
       expect(order).toEqual(["infra-1", "infra-2", "t3code-1", "infra-3"])
-      expect(slots.waitsFor({ project: "t3code", expected: 0, run: 0 })).toContain("3 of 3 busy (+1 deploy)")
+      expect(slots.waitsFor({ project: "t3code", expected: 0, run: 0 })).toContain("3 of 3 busy (+1 deploy or preview)")
       yield* Deferred.succeed(hold, undefined)
     }))
 
