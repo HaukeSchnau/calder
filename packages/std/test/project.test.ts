@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Event, Flake, Calder, Task, cmd } from "@calder-ci/core"
-import { Effect } from "effect"
+import { Calder, Cmd, Event, Flake, type Step, Task, cmd } from "@calder-ci/core"
+import { Effect, Schema } from "effect"
 import * as Pnpm from "../src/Pnpm.ts"
 import * as Project from "../src/Project.ts"
 
@@ -86,6 +86,19 @@ describe("Project.alchemy", () => {
       const plan = yield* Calder.plan(project, Event.pullRequestClosed({ number: 7 }))
       expect(plan.trust).toBe("trusted")
       expect(plan.steps.map((s) => s.name).sort()).toEqual(["destroy-preview", "install"])
+    }))
+
+  it.effect("production reads no outputs that no step reads, while a preview reads them for its link", () =>
+    Effect.gen(function*() {
+      const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) }
+      const site = Project.alchemy({ flake: Flake.make({ checks: ["artifact"], devShells: ["ci"] }), stack: { ...stack, outputs }, previews: { url: (_pr, o) => o.url } })
+      const command = (def: Step.Any["def"]) => (def._tag === "Task" && typeof def.run !== "function" ? Cmd.show(def.run) : "")
+      const prod = (yield* Calder.plan(site, Event.push("main"))).get("deploy-prod")!.step.def
+      expect(prod._tag === "Task" && prod.value).toBeUndefined()
+      expect(command(prod)).not.toContain("state read")
+      const preview = (yield* Calder.plan(site, Event.pullRequest({ number: 7 }))).get("preview")!.step.def
+      expect(preview._tag === "Task" && preview.value?.path).toBe(".calder-alchemy-outputs.json")
+      expect(command(preview)).toContain("state read 'Site/'")
     }))
 
   it.effect("without previews, pull requests only check", () =>
