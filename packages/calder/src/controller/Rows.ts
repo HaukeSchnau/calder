@@ -366,6 +366,57 @@ export const loadStep = (runId: string, name: string) =>
     return rows[0]
   }).pipe(Effect.orDie)
 
+/**
+ * What the runs that go on build: the derivations of active runs' unsettled builds, of any project, and
+ * whether an active run of `project` may still add to them, since it hasn't planned yet or has builds left
+ * to evaluate. A superseded run is cancelled and builds nothing.
+ */
+export const liveBuilds = (project: string) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const rows = yield* sql<{ readonly project: string; readonly status: string; readonly kind: string | null; readonly drv: string | null }>`
+      select r.project, r.status, s.kind, json_extract(s.spec, '$.build.drv') as drv from runs r
+      left join steps s on s.run_id = r.id and s.kind = 'build' and s.status in ('pending', 'queued', 'running')
+      where r.status in ('queued', 'planning', 'running')`
+    return {
+      unknown: rows.some((r) => r.project === project && (r.status !== "running" || (r.kind === "build" && r.drv === null))),
+      drvs: [...new Set(rows.flatMap((r) => (r.drv === null ? [] : [r.drv])))],
+    }
+  }).pipe(Effect.orDie)
+
+/**
+ * The active runs a new run of `sha` replaces, since a newer revision makes them pointless: runs of older
+ * revisions of the same pull request, or of the same branch for a push or a check. A push also replaces
+ * scheduled runs of older revisions of its branch. Their deploys would skip anyway once the branch moved on,
+ * and infra-589's hourly run built srv-1's old closure for hours next to the push that replaced it. A
+ * revision is as old as its first run there, so a rerun or a trigger of an older one replaces nothing.
+ */
+export const replaced = (run: {
+  readonly project: string
+  readonly event: Domain.Event
+  readonly branch: string | null
+  readonly pr: number | null
+  readonly sha: string
+}) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const { project, event, branch, pr, sha } = run
+    const tag = (name: string) => sql`event like ${`{"_tag":"${name}"%`}`
+    const same = pr !== null
+      ? sql`pr = ${pr}`
+      : event._tag === "Push"
+      ? sql`branch = ${branch} and pr is null and (${tag("Push")} or ${tag("Schedule")})`
+      : event._tag === "Check"
+      ? sql`branch = ${branch} and pr is null and ${tag("Check")}`
+      : null
+    if (same === null) return []
+    const older = yield* sql<{ readonly id: string }>`select id from runs
+      where project = ${project} and ${same} and status in ('queued', 'planning', 'running') and sha in (
+        select sha from runs where project = ${project} and ${same} and created_at < (
+          select min(created_at) from runs where project = ${project} and ${same} and sha = ${sha}))`
+    return older.map((r) => r.id)
+  }).pipe(Effect.orDie)
+
 export const counts = (runIds: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     if (runIds.length === 0) return new Map<string, Record<string, number>>()

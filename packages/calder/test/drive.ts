@@ -1,6 +1,6 @@
 // Drives one push run through the real workflow, with stub services around it.
 import type { Domain } from "@calder-ci/api"
-import { Effect, Layer, PlatformError, Schedule, Sink, Stream } from "effect"
+import { Effect, Fiber, Layer, PlatformError, Schedule, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"
 import { Agents, make as makeAgents } from "../src/controller/Agents.ts"
@@ -12,11 +12,11 @@ import * as Live from "../src/controller/Live.ts"
 import { Mirror } from "../src/controller/Mirror.ts"
 import { type Project, Projects } from "../src/controller/Projects.ts"
 import * as Rows from "../src/controller/Rows.ts"
-import { layerCore } from "../src/controller/Runs.ts"
+import { layerCore, type RunsCore } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
-import type { Job, JobResult, PlannedStep, PlanSpec } from "../src/Protocol.ts"
+import type { Job, JobEvent, JobResult, PlannedStep, PlanSpec } from "../src/Protocol.ts"
 import { config } from "./config.ts"
 import { insertRun, layer as sqlite } from "./sqlite.ts"
 
@@ -43,8 +43,8 @@ export interface Drive {
   readonly cache?: Cache["Service"]
   /** The value a step's job passes with. */
   readonly value?: (step: string) => unknown
-  /** What a step's job does once it started, before it passes. */
-  readonly work?: (step: string) => Effect.Effect<void>
+  /** What a step's job does once it started, before it passes, such as report Nix's activities. */
+  readonly work?: (step: string, emit: (event: JobEvent) => Effect.Effect<void>) => Effect.Effect<void>
   /** How a step's job ends instead of passing with its `value`. */
   readonly result?: (step: string, job: Extract<Job, { _tag: "Step" }>) => JobResult | undefined
   /** Keeps reading the steps after the run ended until this holds, for work the run doesn't wait for. */
@@ -55,6 +55,10 @@ export interface Drive {
   readonly plan?: Partial<PlanSpec>
   /** The project's configuration besides its name and repository. */
   readonly project?: Partial<Project>
+  /** What `nix-store --query --requisites` answers; any other query of the store finds nothing. */
+  readonly requisites?: ReadonlyArray<string>
+  /** Runs beside the run, such as a newer run that supersedes it; the run's services stay up until it ends. */
+  readonly meanwhile?: Effect.Effect<void, never, RunsCore | SqlClient.SqlClient>
 }
 
 /**
@@ -72,6 +76,8 @@ export const drive = ({
   event = { _tag: "Push", branch: "main" },
   plan: extra = {},
   project: configured = {},
+  meanwhile = Effect.void,
+  requisites,
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -107,15 +113,16 @@ export const drive = ({
       Layer.succeed(Comments)({ note: unused, touch: () => Effect.void }),
       // Only the store answers, holding nothing, so a build's output exists only where `cache` has it.
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
-        ChildProcessSpawner.make((command) =>
-          ChildProcess.isStandardCommand(command) && command.command === "nix-store"
+        ChildProcessSpawner.make((command) => {
+          const answers = ChildProcess.isStandardCommand(command) && requisites !== undefined && command.args[1] === "--requisites"
+          return ChildProcess.isStandardCommand(command) && command.command === "nix-store"
             ? Effect.succeed(ChildProcessSpawner.makeHandle({
               pid: ChildProcessSpawner.ProcessId(1),
-              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answers ? 0 : 1)),
               isRunning: Effect.succeed(false),
               kill: () => Effect.void,
               stdin: Sink.drain,
-              stdout: Stream.empty,
+              stdout: answers ? Stream.make(new TextEncoder().encode(requisites!.join("\n"))) : Stream.empty,
               stderr: Stream.empty,
               all: Stream.empty,
               getInputFd: () => Sink.drain,
@@ -123,7 +130,7 @@ export const drive = ({
               unref: Effect.succeed(Effect.void),
             }))
             : Effect.fail(PlatformError.systemError({ _tag: "NotFound", module: "test", method: "spawn" }))
-        ),
+        }),
       ),
       Layer.succeed(Projects)({ get: () => project, all: () => [project], byRepo: unused }),
       Layer.succeed(Mirror)({
@@ -157,7 +164,7 @@ export const drive = ({
             if (job._tag === "Step") pools.set(job.step, options.pool)
             if (options.large === true) large.push(jobs.at(-1) ?? "plan")
             yield* options.onStart ?? Effect.void
-            if (job._tag === "Step") yield* work(job.step)
+            if (job._tag === "Step") yield* work(job.step, options.onEvent)
             return {
               result: (job._tag === "Step" ? result(job.step, job) : undefined) ??
                 { _tag: "Passed", value: job._tag === "Step" ? value(job.step) : null, outputs: {}, key: null },
@@ -178,7 +185,12 @@ export const drive = ({
       const run = yield* Rows.loadRun("app-2")
       return run?.status ?? "missing"
     }).pipe(Effect.repeat({ until: (status) => status !== "running", schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
-    const status = yield* ended.pipe(Effect.provide(Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provide(services))))
+    const status = yield* Effect.gen(function*() {
+      const beside = yield* Effect.forkChild(meanwhile)
+      const status = yield* ended
+      yield* Fiber.join(beside)
+      return status
+    }).pipe(Effect.provide(Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provide(services))))
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec

@@ -26,6 +26,23 @@ import * as Telemetry from "./Telemetry.ts"
 import * as Tests from "./Tests.ts"
 
 const activeStatuses = ["queued", "planning", "running"] as const
+/** How often a superseded run's running build asks whether a run that goes on needs it. */
+const neededEvery = "30 seconds"
+
+/**
+ * Whether a superseded run's running build of `drv` is of no use to the runs that go on (Rows `liveBuilds`):
+ * none of them builds `drv`, and none depends on a derivation the build is building right now (`building`).
+ * `closure` holds what the runs that go on build and depend on, or null where it couldn't be read. Stopping
+ * a build makes the Nix daemon stop what it builds for it, so a dependency both closures share, such as a
+ * test suite hours into its run, would start over in the newer run's build. A run of the project that may
+ * still add builds keeps every build, and so does a closure that couldn't be read.
+ */
+export const obsolete = (
+  drv: string,
+  live: { readonly unknown: boolean; readonly drvs: ReadonlyArray<string> },
+  building: ReadonlyArray<string>,
+  closure: ReadonlySet<string> | null,
+) => !live.unknown && !live.drvs.includes(drv) && (building.length === 0 || (closure !== null && !building.some((d) => closure.has(d))))
 
 const short = (sha: string) => sha.slice(0, 12)
 
@@ -687,6 +704,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly offload?: boolean
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
+      /**
+       * Completes once the job's work is of no use to the runs that go on, given the derivations it builds
+       * right now. A started job of a superseded run then stops; without it, a started job runs on.
+       */
+      readonly obsolete?: (building: () => ReadonlyArray<string>) => Effect.Effect<void>
       /** The pool when it isn't the run's, such as a preview's trusted job in a pull-request run. */
       readonly pool?: Pool
       /** Whether the job is on a deploy's or preview's critical path, when the step's own spec doesn't say. */
@@ -697,8 +719,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
     Effect.gen(function*() {
+      /** The derivations the job's Nix builds right now, by activity. */
+      const building = new Map<number, string>()
       const onEvent = (event: JobEvent) =>
         Effect.gen(function*() {
+          if (event._tag === "Activity" && event.activity.type === "build" && event.activity.drv) {
+            if (event.activity.end === null) building.set(event.activity.id, event.activity.drv)
+            else building.delete(event.activity.id)
+          }
           yield* logTo(run, row.name, row.span_id, options.shard)(event)
           if (event._tag === "Tests") collect.tests.push(...event.results)
           if (event._tag === "Attempt") collect.attempts = Math.max(collect.attempts, event.attempt)
@@ -775,7 +803,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         ? Deferred.await(supersedeSignal(run.id))
         : Effect.raceFirst(Deferred.await(options.withdraw), Deferred.await(supersedeSignal(run.id)))
       const withdrawn = withdrawal.pipe(
-        Effect.andThen(Effect.suspend(() => startedAt === null ? Effect.void : Effect.never)),
+        Effect.andThen(Effect.suspend(() => startedAt === null ? Effect.void : options.obsolete?.(() => [...building.values()]) ?? Effect.never)),
         Effect.as({ ...none, result: { _tag: "Died", message: "withdrawn" } satisfies JobResult, withdrawn: true as const }),
       )
       return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, withdrawn))
@@ -1048,7 +1076,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           }
         }
         const { drv, system } = build
-        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), { slots: buildSlots(system), what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`, expected, action: false, shard: null, workspace: false }, collect)
+        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), {
+          slots: buildSlots(system),
+          what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`,
+          expected,
+          action: false,
+          shard: null,
+          workspace: false,
+          ...(drv === null ? {} : { obsolete: obsoleteBuild(run, name, drv) }),
+        }, collect)
         if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
         if (r.result._tag === "Passed" && typeof r.result.value === "string") yield* share(run, name, r.result.value)
         return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
@@ -1378,6 +1414,33 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
       if (flaky.length > 0) yield* Effect.logInfo(`${run.id} ${row.name}: ${flaky.join(", ")} passed on retry`)
       return yield* settle(run, row, { status: "passed", value: null, key, usage, ...extra })
+    })
+
+  /**
+   * Completes once a build of `drv` is `obsolete` for the runs that go on, saying so in the step's log.
+   * Superseded runs' builds otherwise ran on for whoever would reuse them: infra-587's and 588's builds of
+   * srv-1's old closure held every build slot for hours, while srv-1 of the run that replaced them, another
+   * derivation, waited. It asks again every 30 s, since a newer run that still plans or evaluates may need
+   * the same derivation, and the build may move on to what the newer runs need.
+   */
+  const obsoleteBuild = (run: Rows.RunRow, name: string, drv: string) => (building: () => ReadonlyArray<string>) =>
+    Effect.gen(function*() {
+      while (true) {
+        const live = yield* db(Rows.liveBuilds(run.project))
+        const now = building()
+        const asks = !live.unknown && !live.drvs.includes(drv) && now.length > 0 && live.drvs.length > 0
+        const closure = !asks ? new Set<string>() : yield* Exec.run(["nix-store", "--query", "--requisites", ...live.drvs]).pipe(
+          Effect.map((out) => new Set(out.split("\n").filter(Boolean))),
+          Effect.provideService(Exec.SpawnerTag, spawner),
+          Effect.orElseSucceed(() => null),
+        )
+        if (obsolete(drv, live, now, closure)) break
+        yield* Effect.sleep(neededEvery)
+      }
+      const row = yield* db(Rows.loadStep(run.id, name))
+      if (row === undefined) return
+      const text = `stopped this superseded run's build: no run that goes on builds ${drv} or what it was building`
+      yield* logTo(run, name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
     })
 
   /** Whether a build output exists here or in the binary cache, which means its derivation built before. */
