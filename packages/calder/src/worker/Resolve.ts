@@ -9,6 +9,7 @@ import { sha256 } from "../Keys.ts"
 import type { Mismatch, PlannedStep, PlanSpec, Records, RunInfo } from "../Protocol.ts"
 import { Job } from "./Client.ts"
 import * as Footprint from "./Footprint.ts"
+import * as Heartbeat from "./Heartbeat.ts"
 import * as Imports from "./Imports.ts"
 import * as Repo from "./Repo.ts"
 import type { Repo as RepoAt } from "./Repo.ts"
@@ -334,6 +335,8 @@ export const derivations = (
     readonly recorder?: Recorder | undefined
     /** Evaluates even what the cache holds, as an audit does. */
     readonly fresh?: boolean
+    /** How often a running evaluator says what it does. */
+    readonly heartbeat?: Heartbeat.Cadence
   } = {},
 ) =>
   attrs.length === 0 ? Effect.succeed<Evaluated>({ derivations: new Map(), errors: new Map(), tooLarge: new Map() }) : cached(run, cacheDir, (entry) =>
@@ -353,12 +356,13 @@ export const derivations = (
       const missing = attrs.filter((attr) => !hits.has(attr))
       if (missing.length === 0) return { result: { derivations: hits, errors: new Map(), tooLarge: new Map() } as Evaluated, entry: {} }
       // Recording that fails, such as strace without ptrace, leaves the plan to evaluate as before.
-      const evaluated = yield* evaluate(run.flake, missing, memory, log, options.recorder).pipe(
+      const cadence = options.heartbeat ?? Heartbeat.cadence
+      const evaluated = yield* evaluate(run.flake, missing, memory, log, cadence, options.recorder).pipe(
         Effect.catchTag("CommandFailed", (e) =>
           options.recorder === undefined
             ? Effect.fail(e)
             : log(`recording what Nix read failed, so this plan records nothing: ${e.stderr.trim().split("\n").slice(-3).join(" ")}`).pipe(
-              Effect.andThen(evaluate(run.flake, missing, memory, log)),
+              Effect.andThen(evaluate(run.flake, missing, memory, log, cadence)),
             )
         ),
       )
@@ -540,13 +544,29 @@ const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`
 /** Stops an evaluator that holds more than the budget. */
 class Stopped extends Schema.TaggedError<Stopped>("calder/Stopped")("Stopped", {}) {}
 
+/** Where an evaluator's heartbeat goes, how often, and where its attributes stand in the whole evaluation. */
+interface Beat {
+  readonly log: Log
+  readonly cadence: Heartbeat.Cadence
+  /** How many attributes evaluators before this one got, and how many the evaluation has. */
+  readonly before: number
+  readonly total: number
+}
+
+const ansi = /\x1b\[[0-9;]*m/g
+// Nix's result type for an activity's progress (src/libutil/logging.hh), with done and expected first.
+const resProgress = 105
+
 /**
  * One `nix eval` that evaluates `attrs` in order and reports each derivation on stderr as it gets it, so
  * what it got counts even when it stops before the end. `error` is Nix's when it failed on the attribute
  * after those it got. Reports out of order, or missing although Nix succeeded, mean the expression no longer works with
  * this Nix: that fails like a flake that doesn't load, so nothing is cached.
+ *
+ * Nix logs as JSON, which carries its activities, such as a copy to the store, whatever the verbosity:
+ * the heartbeat says which one it is in. Its messages go on as the lines they print as.
  */
-const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, recorder?: Recorder) =>
+const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, beat: Beat, recorder?: Recorder) =>
   Effect.gen(function*() {
     const unexpected = (what: string) => new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: 0, stderr: `nix eval gave ${what}` })
     const reports = attrs.map((attr, i) => `(report ${i} f.${attr})`).join(" ")
@@ -558,7 +578,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
       report = i: x: let v = builtins.toJSON [i (one x)]; in builtins.seq v (${mark} (builtins.trace "calder-derivation \${v}" null));
       in builtins.seq (builtins.seq f (builtins.trace "calder-flake" null)) (builtins.foldl' (_: x: x) null [ ${reports} ])`
     const scratch = recorder === undefined ? undefined : mkdtempSync(join(tmpdir(), "calder-footprint-"))
-    const nix = ["nix", "eval", "--json", "--expr", expr]
+    const nix = ["nix", "eval", "--json", "--log-format", "internal-json", "--expr", expr]
     const argv = scratch === undefined ? nix : [...straced(join(scratch, "trace")), ...nix]
     // An empty fetcher cache, so no cached hash of a copied path hides that the evaluation read its files.
     // Nix 2.34 reads NIX_CACHE_HOME before XDG_CACHE_HOME.
@@ -584,12 +604,17 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
       forRoom = room !== null && now > room
       return forRoom
     }
-    const exit = yield* Exec.stream(argv, env, (stream, line) =>
+    const started = Date.now()
+    /** Nix's activities that haven't ended, oldest first. */
+    const activities = new Map<number, { text: string; started: number; done?: number; expected?: number }>()
+    let said: { readonly text: string; readonly at: number } | undefined
+    const text = (stream: "stdout" | "stderr", line: string) =>
       Effect.gen(function*() {
         const report = /^trace: calder-(flake|derivation)(?: (.*))?$/.exec(line)
         if (report === null) {
           if (stream === "stderr") stderr.push(line)
           if (stderr.length > 200) stderr.shift()
+          if (stream === "stderr" && line.trim() !== "") said = { text: line.trim(), at: Date.now() }
           return
         }
         if (report[1] === "flake") {
@@ -603,14 +628,73 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
         if (index !== got.length) return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`)
         got.push(derivation)
         if (got.length < attrs.length && full()) return yield* new Stopped()
-      }), (id) => {
+      })
+    const logged = (line: string) => {
+      let entry: { readonly action?: string; readonly id?: number; readonly msg?: unknown; readonly text?: unknown; readonly type?: number; readonly fields?: ReadonlyArray<unknown> }
+      try {
+        entry = JSON.parse(line.slice("@nix ".length))
+      } catch {
+        return text("stderr", line)
+      }
+      const id = entry.id ?? 0
+      switch (entry.action) {
+        case "msg":
+          return Effect.forEach(String(entry.msg ?? "").replace(ansi, "").split("\n"), (l) => text("stderr", l), { discard: true })
+        case "start":
+          if (typeof entry.text === "string" && entry.text !== "") activities.set(id, { text: entry.text.replace(ansi, ""), started: Date.now() })
+          return Effect.void
+        case "stop":
+          activities.delete(id)
+          return Effect.void
+        case "result": {
+          const activity = activities.get(id)
+          const [done, expected] = entry.fields ?? []
+          if (activity !== undefined && entry.type === resProgress && typeof done === "number" && typeof expected === "number") {
+            Object.assign(activity, { done, expected })
+          }
+          return Effect.void
+        }
+        default:
+          return Effect.void
+      }
+    }
+    const progress = (): Heartbeat.Progress => {
+      const activity = [...activities.values()].at(-1)
+      const name = attrs[got.length]
+      return {
+        started,
+        loaded,
+        budget: memory.budget,
+        ...(name === undefined ? {} : { attr: { index: beat.before + got.length + 1, total: beat.total, name } }),
+        ...(activity === undefined ? {} : { activity }),
+        ...(said === undefined ? {} : { said }),
+      }
+    }
+    const heartbeat = (id: number) =>
+      Effect.gen(function*() {
+        const trace = scratch === undefined ? undefined : join(scratch, "trace")
+        const look = (daemon: string | null) => Heartbeat.sample(id, { resident: memory.resident, trace, daemon })
+        // Nix's CPU time counts from its start, before which only strace may run.
+        let before: Heartbeat.Sample = { ...look(null), cpu: 0 }
+        yield* Effect.sleep(beat.cadence.first)
+        const daemon = yield* Heartbeat.daemonCgroup
+        while (true) {
+          const now = look(daemon)
+          yield* beat.log(Heartbeat.describe(progress(), before, now))
+          before = now
+          yield* Effect.sleep(beat.cadence.every)
+        }
+      })
+    const exit = yield* Exec.stream(argv, env, (stream, line) =>
+      stream === "stderr" && line.startsWith("@nix ") ? logged(line) : text(stream, line), (id) => {
       pid = id
-      return Effect.gen(function*() {
+      const budget = Effect.gen(function*() {
         while (memory.budget !== null) {
           yield* Effect.sleep(memory.every)
           if (full()) return yield* new Stopped()
         }
       })
+      return Effect.all([budget, heartbeat(id)], { concurrency: "unbounded", discard: true })
     }).pipe(
       Effect.catchTag("Stopped", () => Effect.succeed("over" as const)),
       // A signal, such as the kernel's OOM killer's SIGKILL, fails the exit code rather than giving one.
@@ -680,7 +764,7 @@ const loadingTheFlake = "loading the flake"
 /** How long a failed attribute waits before its second try. */
 const retryAfter = "2 seconds"
 
-const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, log: Log, recorder?: Recorder) =>
+const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, log: Log, cadence: Heartbeat.Cadence, recorder?: Recorder) =>
   Effect.gen(function*() {
     const started = Date.now()
     const passes: Array<{ readonly attrs: ReadonlyArray<string>; readonly trace: Footprint.Trace | undefined }> = []
@@ -696,7 +780,7 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
     let peak = 0
     while (done < attrs.length) {
       const rest = attrs.slice(done)
-      const pass = yield* evaluator(flake, rest, memory, recorder)
+      const pass = yield* evaluator(flake, rest, memory, { log, cadence, before: done, total: attrs.length }, recorder)
       if (recorder !== undefined) passes.push({ attrs: rest.slice(0, pass.got.length), trace: pass.trace })
       evaluators++
       if (pass.forRoom) forRoom++

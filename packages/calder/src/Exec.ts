@@ -64,11 +64,11 @@ export const exec = (argv: ReadonlyArray<string>, options: Options = {}) =>
  * killed with its process group when the effect is interrupted, or when `onLine` or `watch` fails, which
  * is then the result.
  */
-export const stream = <E = never>(
+export const stream = <E = never, R = never>(
   argv: ReadonlyArray<string>,
   options: Options,
-  onLine: (stream: "stdout" | "stderr", line: string) => Effect.Effect<void, E>,
-  watch: (pid: number) => Effect.Effect<void, E> = () => Effect.void,
+  onLine: (stream: "stdout" | "stderr", line: string) => Effect.Effect<void, E, R>,
+  watch: (pid: number) => Effect.Effect<void, E, R> = () => Effect.void,
 ) =>
   Effect.scoped(Effect.gen(function*() {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
