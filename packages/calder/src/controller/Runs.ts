@@ -1014,6 +1014,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const inputs = Object.fromEntries([...spec.needs.filter((n) => !setups.includes(n)), ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
       const expected = Estimates.of(yield* estimates.steps(run.project), name)
       const plan = JSON.parse(run.plan ?? "{}") as PlanSpec
+      // The dev shells the plan evaluated, which a task or setup enters without evaluating the flake again.
+      const shells = spec.task === null && spec.setup === null ? {} : {
+        shells: Object.fromEntries(Object.entries(plan.derivations ?? {}).flatMap(([attr, d]) => (attr.startsWith("devShells.") && d !== null ? [[attr, d.drv]] : []))),
+      }
       const pipelineDir = yield* mirror.pipelineDir(run.project, run.sha).pipe(Effect.orDie)
       const info = runInfo(run, pipelineDir)
       const collect = { tests: [] as Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>, attempts: 0 }
@@ -1029,6 +1033,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         derivation: null,
         deps: null,
         files: null,
+        ...shells,
         ...extra,
       })
 

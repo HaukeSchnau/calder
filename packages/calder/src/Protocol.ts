@@ -202,6 +202,11 @@ export const StepJob = Schema.TaggedStruct("Step", {
   secrets: Schema.Record(Schema.String, Schema.String),
   /** For builds the plan evaluated: the derivation to realise without evaluating again. */
   derivation: Schema.NullOr(Schema.String),
+  /**
+   * For tasks and setups: the dev shells' derivations the plan evaluated, by attribute, which the worker
+   * enters without evaluating the flake again. Older controllers send none.
+   */
+  shells: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** For tasks: the dependency key, so slots set up for it can be cloned. */
   deps: Schema.NullOr(Schema.String),
   /** For a task with `each`: the files this job checks. */
