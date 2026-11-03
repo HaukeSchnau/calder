@@ -160,7 +160,11 @@ its step. One that fails in a way Nix can't catch,
 such as a missing attribute or an input that couldn't be fetched, gets one more try in a new evaluator;
 failing again, it is cached nowhere, its build evaluates it when it runs, and a dev shell's failure fails
 the plan with Nix's reason, since task keys include it. The plan's log says how many evaluators it took
-and the most one held. A pull request's job gets less memory than a trusted run's. A project whose flake
+and the most one held. An evaluator that runs for a minute says what it does, and again every 3 minutes:
+the attribute it is at, Nix's CPU time and memory, what its main thread waits for (such as the Nix daemon),
+the last store path it opened, Nix's current activity (such as a copy to the store), and the memory and io
+pressure of the host and of the Nix daemon's cgroup, with the memory.high that limits the daemon. A host
+without `/proc`, PSI or systemd, such as a Mac, leaves those parts out. A pull request's job gets less memory than a trusted run's. A project whose flake
 needs more to evaluate, such as infra, whose srv-2 contract check alone holds 3 GiB, sets
 `largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@`, which the
 host defines with more memory. Plans and build evaluations both take plan slots, one per project at a
