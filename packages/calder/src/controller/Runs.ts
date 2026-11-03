@@ -791,9 +791,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         critical: options.critical ?? Rows.spec(row).critical === true,
         label: `${run.id} ${row.name}`,
       }
-      const busy = reattached === undefined ? options.slots.waitsFor(claim) : null
-      if (busy !== null) yield* waiting(run.id, row.name, `${options.what}: ${busy}`)
-      const work = reattached ?? options.slots.with(claim, running)
+      const work = reattached ??
+        options.slots.with(claim, running, (busy) => waiting(run.id, row.name, `${options.what}: ${busy}`))
       if (options.action) return yield* work
       const none = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
