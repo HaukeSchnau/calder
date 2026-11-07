@@ -5,7 +5,7 @@ import { SqlClient } from "effect/sql"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
-import { placementToken, sha256, taskKey } from "../Keys.ts"
+import { placementToken, secretsDigest, sha256, taskKey } from "../Keys.ts"
 import type { Job, JobEvent, JobResult, Mismatch, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Cache } from "./Cache.ts"
@@ -24,6 +24,7 @@ import * as Rows from "./Rows.ts"
 import * as Slots from "./Slots.ts"
 import * as Telemetry from "./Telemetry.ts"
 import * as Tests from "./Tests.ts"
+import { leaseOf } from "./WorkerServer.ts"
 
 const activeStatuses = ["queued", "planning", "running"] as const
 /** How often a superseded run's running build asks whether a run that goes on needs it. */
@@ -973,6 +974,61 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       )
     })
 
+  /**
+   * A rerun redoes only what didn't pass (F46). A step that passed in the run it repeats, or took that
+   * run's result, settles as reused from it when it would do the same again: a task with the same key,
+   * an action with the same inputs. That includes steps that otherwise never take a result, such as
+   * deploys and OTA publishes, whose effect the earlier run already had; `calder rerun --force` runs
+   * them again.
+   */
+  const fromRerun = (
+    run: Rows.RunRow,
+    name: string,
+    same: { readonly key: string } | { readonly inputs: Record<string, Outcome> },
+    granted: {
+      /** The secrets the step gets: one that changed, such as a rotated token, has to ship. */
+      readonly secrets: Record<string, string>
+      /** The step's deploy lease, if it takes one (WorkerServer.ts `leaseOf`). */
+      readonly lease: string | undefined
+    },
+  ) =>
+    Effect.gen(function*() {
+      // Recorded for every step, so a rerun of this run can compare.
+      const digest = secretsDigest(config.placementKey ?? "calder", granted.secrets)
+      yield* db(sql`update steps set secrets_digest = ${digest} where run_id = ${run.id} and name = ${name}`)
+      const of = run.rerun_of
+      if (of == null) return undefined
+      const earlier = yield* db(Rows.loadStep(of, name))
+      if (earlier === undefined || !Rows.succeeded(earlier.status)) return undefined
+      if ("key" in same && earlier.key !== same.key) return undefined
+      if ((earlier.secrets_digest ?? null) !== digest) return undefined
+      // A newer run deployed the same step since, so what this one deployed no longer runs there.
+      const origin = earlier.reused_from ?? of
+      if (granted.lease !== undefined) {
+        const [newest] = yield* db(sql<{ run: number }>`select run from lease_steps where project = ${granted.lease} and step = ${name}`)
+        const deployed = yield* db(Rows.loadRun(origin))
+        if (newest === undefined || deployed === undefined || newest.run !== deployed.number) return undefined
+      }
+      if ("inputs" in same) {
+        const steps = new Map((yield* db(Rows.loadSteps(of))).map((s) => [s.name, s]))
+        const changed = Object.entries(same.inputs).some(([n, outcome]) => {
+          const was = steps.get(n)
+          return was === undefined || JSON.stringify(outcomeOf(was)) !== JSON.stringify(outcome)
+        })
+        if (changed) return undefined
+      }
+      const outputs = JSON.parse(earlier.outputs ?? "{}") as Record<string, string>
+      // An output that left the store can't stand in for running the step.
+      if (!Object.values(outputs).every((path) => existsSync(path))) return undefined
+      return {
+        status: "reused",
+        value: earlier.value === null ? null : JSON.parse(earlier.value),
+        outputs,
+        key: earlier.key,
+        reusedFrom: origin,
+      } satisfies Settled
+    })
+
   const step = (runId: string, name: string) =>
     Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
@@ -1123,6 +1179,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
       if (spec.action !== null) {
         const secrets = run.trust === "trusted" ? readSecrets(run.project, spec.action.secrets) : {}
+        const lease = spec.action.deploy ? leaseOf(info, undefined).key : undefined
+        const again = yield* fromRerun(run, name, { inputs }, { secrets, lease })
+        if (again !== undefined) return yield* settle(run, row, again)
         // A same-repo pull request's preview action, such as one that waits for the preview's readiness,
         // runs as a trusted job for the network, but keeps the pull request's trust and services.
         const event = JSON.parse(run.event) as Domain.Event
@@ -1147,6 +1206,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const shardKeys = count === 1 ? [taskKey(task.keyBase, values, null)] : Array.from({ length: count }, (_, i) => taskKey(task.keyBase, values, { index: i + 1, count }))
       const key = count === 1 ? shardKeys[0]! : sha256(shardKeys)
       yield* db(sql`update steps set key = ${key} where run_id = ${runId} and name = ${name}`)
+      // A same-repo pull request grants a preview task its secrets. It then runs as a trusted job: in
+      // the trusted pool, whose network and home it needs. It never goes to an agent, which only
+      // takes trusted runs.
+      const event = JSON.parse(run.event) as Domain.Event
+      const preview = task.preview === true && run.trust === "pr" && run.fork === 0 &&
+        event._tag === "PullRequest" && event.fork === false
+      const secrets = run.trust === "trusted" || preview ? readSecrets(run.project, task.secrets) : {}
+      const again = yield* fromRerun(run, name, { key }, { secrets, lease: Rows.leased(task) ? leaseOf(info, task.lease).key : undefined })
+      if (again !== undefined) return yield* settle(run, row, again)
 
       const reusable = Rows.reusable(spec, plan.reuse)
       // Pull-request runs take any result. Trusted runs take trusted ones, and with reuse "all" also
@@ -1174,13 +1242,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         if (hit !== undefined) return yield* settle(run, row, reused(hit))
       }
 
-      // A same-repo pull request grants a preview task its secrets. It then runs as a trusted job: in
-      // the trusted pool, whose network and home it needs. It never goes to an agent, which only
-      // takes trusted runs.
-      const event = JSON.parse(run.event) as Domain.Event
-      const preview = task.preview === true && run.trust === "pr" && run.fork === 0 &&
-        event._tag === "PullRequest" && event.fork === false
-      const secrets = run.trust === "trusted" || preview ? readSecrets(run.project, task.secrets) : {}
       if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
       const sharded = count > 1
       // Shards that passed with the same key before don't run again.
@@ -1310,6 +1371,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const keys = new Map(each.map((e) => [e.file, task.interpolates.length === 0 ? e.key : taskKey(e.key, values, null)]))
       const key = sha256([...keys.values()])
       yield* db(sql`update steps set key = ${key} where run_id = ${run.id} and name = ${row.name}`)
+      const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
+      const lease = Rows.leased(task) ? leaseOf(context.info, task.lease).key : undefined
+      const again = yield* fromRerun(run, row.name, { key }, { secrets, lease })
+      if (again !== undefined) return yield* settle(run, row, again)
       const reusable = Rows.reusable(Rows.spec(row), context.plan.reuse)
       const prResults = run.trust === "pr" || context.plan.reuse === "all"
 
@@ -1342,7 +1407,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
       const instead = yield* context.prepared
       if (instead !== null) return yield* settle(run, row, instead)
-      const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
 
       const history = yield* db(sql<{ file: string; duration_ms: number }>`select file, duration_ms from (
           select file, duration_ms, row_number() over (partition by file order by created_at desc) as n

@@ -41,6 +41,8 @@ export interface RunRow {
   /** Absent in rows read before migration 0016. */
   readonly planned_at?: number | null
   readonly tree?: string | null
+  /** The run this one reruns, unless forced; absent in rows read before migration 0019. */
+  readonly rerun_of?: string | null
 }
 
 export interface StepRow {
@@ -52,6 +54,8 @@ export interface StepRow {
   readonly position: number
   readonly key: string | null
   readonly reused_from: string | null
+  /** A keyed digest of the secrets the step was granted (Runs.ts `secretsDigest`); absent before migration 0019. */
+  readonly secrets_digest?: string | null
   readonly queued_at: number | null
   readonly started_at: number | null
   readonly finished_at: number | null

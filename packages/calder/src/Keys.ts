@@ -4,6 +4,13 @@ import { createHash, createHmac } from "node:crypto"
 export const placementToken = (key: string, project: string): string =>
   createHmac("sha256", key).update(project).digest("hex")
 
+/**
+ * What a rerun compares a step's secrets by (Runs.ts `fromRerun`): an HMAC under the controller's key, so
+ * the journal holds nothing that tells a short secret, such as a passcode, from a guess. Null without secrets.
+ */
+export const secretsDigest = (key: string, secrets: Record<string, string>): string | null =>
+  Object.keys(secrets).length === 0 ? null : createHmac("sha256", key).update(JSON.stringify(Object.entries(secrets).sort())).digest("hex")
+
 export const sha256 = (value: unknown): string =>
   createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex")
 

@@ -254,6 +254,13 @@ export const migrations = {
     // The unit template a persisted worker runs in, when it isn't its pool's (Jobs.ts `large`).
     yield* sql`alter table jobs add column template text`
   }),
+  "0019_rerun_of": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // The run a rerun repeats, whose passed steps it takes (Runs.ts `fromRerun`), and what a step's
+    // secrets were, keyed, so a rerun after a secret changed runs the step.
+    yield* sql`alter table runs add column rerun_of text`
+    yield* sql`alter table steps add column secrets_digest text`
+  }),
 }
 
 /**

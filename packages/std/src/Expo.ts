@@ -253,7 +253,9 @@ mv "$published" "$value"`
 /**
  * Publishes an exported update to the EAS Update channel `channel`, named `ota-<channel>`, for the
  * installed builds whose runtime version matches. It holds the lease `<project>#ota`, and runs every time its
- * rule does, since a revert has to ship too, although an update with its files went out before. It
+ * rule does, since a revert has to ship too, although an update with its files went out before, except in
+ * a rerun of a run where it published with the same key and secrets and no newer run published since
+ * (`calder rerun --force` publishes). It
  * warns when a reverted native change makes it go to an older runtime version. Its value is the update
  * of each platform.
  */

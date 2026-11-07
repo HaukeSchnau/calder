@@ -37,7 +37,10 @@ export function Palette({ route, onClose }: { readonly route: Route; readonly on
       const r = detail.run
       const label = `#${r.number}`
       if (isActive(r.status)) add("This run", `Cancel ${r.project} ${label}`, r.status, () => void cancel(r))
-      else add("This run", `Rerun ${r.project} ${label}`, `same revision, ${refOf(r)}`, () => void rerun(r))
+      else {
+        add("This run", `Rerun ${r.project} ${label}`, `what didn't pass, ${refOf(r)}`, () => void rerun(r))
+        add("This run", `Rerun every step of ${r.project} ${label}`, "deploys included", () => void rerun(r, true))
+      }
       const failed = detail.steps.find((s) => s.status === "failed" || s.status === "died")
       if (failed) add("This run", `Jump to the failure in ${failed.name}`, failed.error?.tag ?? "failed", () => go({ page: "run", id: r.id, step: failed.name }))
       if (detail.steps.some((s) => s.deploys)) add("This run", `Open the rollout of ${label}`, "deploy", () => go({ page: "rollout", id: r.id }))

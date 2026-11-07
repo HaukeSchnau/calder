@@ -334,7 +334,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
         if (!["queued", "planning", "running"].includes(row.status)) return yield* new Refused({ reason: `run is ${row.status}` })
         yield* runs.cancel(runId, "cancelled from the UI")
       }),
-    rerun: ({ runId }) =>
-      runs.rerun(runId).pipe(Effect.mapError((e) => (e.message.startsWith("no run") ? new NotFound({ what: runId }) : new Refused({ reason: e.message })))),
+    rerun: ({ runId, force }) =>
+      runs.rerun(runId, { force: force === true }).pipe(Effect.mapError((e) => (e.message.startsWith("no run") ? new NotFound({ what: runId }) : new Refused({ reason: e.message })))),
   }
 }))
