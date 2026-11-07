@@ -1,3 +1,6 @@
+import * as BunChildProcessSpawner from "@effect/platform-bun/BunChildProcessSpawner"
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
+import * as BunPath from "@effect/platform-bun/BunPath"
 import { describe, expect, it } from "@effect/vitest"
 import { vi } from "vitest"
 import { Effect, Layer } from "effect"
@@ -86,6 +89,30 @@ describe("Mirror", () => {
       yield* sweptOnce(state)
       expect(readdirSync(join(state, "mirrors"))).toEqual(["kept.git"])
       expect(readdirSync(join(state, "revs"))).toEqual(["kept"])
+    }).pipe(Effect.provide(sqlite)))
+
+  it.effect("fetches what calder check pushed outside the forge's branches", () =>
+    Effect.gen(function*() {
+      const state = mkdtempSync(join(tmpdir(), "calder-state-"))
+      const forge = mkdtempSync(join(tmpdir(), "calder-forge-"))
+      const work = join(forge, "work")
+      const git = (...args: ReadonlyArray<string>) => execFileSync("git", args, { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim()
+      git("init", "-q", "--bare", join(forge, "schnau", "app.git"))
+      git("init", "-q", "-b", "main", work)
+      git("-C", work, "commit", "-q", "--allow-empty", "-m", "base")
+      git("-C", work, "commit", "-q", "--allow-empty", "-m", "checked")
+      const checked = git("-C", work, "rev-parse", "HEAD")
+      git("-C", work, "push", "-q", join(forge, "schnau", "app.git"), "HEAD~1:refs/heads/main", `${checked}:refs/calder/check/x`)
+      const projects = Layer.succeed(Projects)({
+        get: (name) => ({ name, repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {} }),
+        all: () => [],
+        byRepo: () => Effect.die("unused"),
+      })
+      const processes = BunChildProcessSpawner.layer.pipe(Layer.provide([BunFileSystem.layer, BunPath.layer]))
+      yield* Effect.flatMap(Mirror.Mirror, (mirror) => mirror.fetch("app")).pipe(
+        Effect.provide(Mirror.layer.pipe(Layer.provide([config({ stateDir: state, gitea: { url: `file://${forge}`, tokenFile: "", webhookSecretFile: "" } }), projects, processes]))),
+      )
+      expect(git("--git-dir", join(state, "mirrors", "app.git"), "rev-parse", "refs/calder/check/x")).toBe(checked)
     }).pipe(Effect.provide(sqlite)))
 
   it.effect("removes revisions no run used for a day, unless a run of them is still going", () =>

@@ -188,7 +188,7 @@ const check = Command.make("check", {
     })
     // A background check runs on its own; its ref stays until the next check under the same key.
     if (background) return yield* Console.log(`${submitted.run.id} checks ${submitted.copy.sha.slice(0, 12)} in the background`)
-    const ended = yield* Cli.follow(client, submitted.run).pipe(Effect.ensuring(Check.drop(submitted.copy, submitted.remote, submitted.ref)))
+    const ended = yield* Cli.follow(client, submitted.run).pipe(Effect.ensuring(Check.drop(submitted.copy, submitted.remote, submitted.pushed)))
     if (ended.status !== "passed") return yield* Effect.fail(new Error(`the check ${ended.status}`))
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
     Command.withDescription("Run the working copy (jj or git) like a pull request, before pushing it"),

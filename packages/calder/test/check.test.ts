@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { vi } from "vitest"
-import { checkFiles, drop, push, target, workingCopy } from "../src/Check.ts"
+import { checkFiles, drop, gitRef, push, target, workingCopy } from "../src/Check.ts"
 import * as Exec from "../src/Exec.ts"
 
 const processes = BunChildProcessSpawner.layer.pipe(Layer.provide([BunFileSystem.layer, BunPath.layer]))
@@ -22,7 +22,7 @@ describe("calder check", () => {
     expect(target(["git@github.com:HaukeSchnau/t3code.git"], repos)).toBeUndefined()
   })
 
-  it.effect("leaves a jj workspace's bookmarks and commits as it found them", () =>
+  it.effect("leaves a jj workspace's bookmarks and commits as it found them, also for a workspace that fetches during the check", () =>
     Effect.gen(function*() {
       for (const [name, value] of Object.entries({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", JJ_CONFIG: "/dev/null", JJ_USER: "calder", JJ_EMAIL: "calder@test" })) {
         vi.stubEnv(name, value)
@@ -47,11 +47,15 @@ describe("calder check", () => {
       const copy = yield* workingCopy(work)
       // The remote's URL leads to it only through the repository's own settings, which the push keeps.
       yield* Exec.run(["git", "--git-dir", copy.gitDir, "config", `url.${remote}.insteadOf`, "https://forge.invalid/app.git"])
-      yield* push(copy, "https://forge.invalid/app.git", "calder/check/x")
-      expect(yield* Exec.run(["git", "--git-dir", remote, "rev-parse", "refs/heads/calder/check/x"])).toContain(copy.sha)
+      yield* push(copy, "https://forge.invalid/app.git", gitRef("calder/check/x"))
+      expect(yield* Exec.run(["git", "--git-dir", remote, "rev-parse", "refs/calder/check/x"])).toContain(copy.sha)
       expect(yield* log).toBe(before)
-      yield* drop(copy, "https://forge.invalid/app.git", "calder/check/x")
-      expect((yield* Exec.exec(["git", "--git-dir", remote, "rev-parse", "--verify", "-q", "refs/heads/calder/check/x"])).exitCode).not.toBe(0)
+      // Another workspace of the same repository fetches while the check runs. A bookmark it imported
+      // would, once the check deleted it, take the unbookmarked commit with it (F44).
+      yield* jj("git", "fetch")
+      expect(yield* log).toBe(before)
+      yield* drop(copy, "https://forge.invalid/app.git", gitRef("calder/check/x"))
+      expect((yield* Exec.exec(["git", "--git-dir", remote, "rev-parse", "--verify", "-q", "refs/calder/check/x"])).exitCode).not.toBe(0)
       yield* jj("git", "fetch")
       expect(yield* log).toBe(before)
     }).pipe(Effect.scoped, Effect.provide(processes)), { timeout: 60_000 })
