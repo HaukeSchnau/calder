@@ -8,7 +8,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { vi } from "vitest"
-import { checkFiles, drop, gitRef, push, target, workingCopy } from "../src/Check.ts"
+import { Refused } from "@calder-ci/api"
+import { checkFiles, type Client, drop, gitRef, push, submit, target, workingCopy } from "../src/Check.ts"
 import * as Exec from "../src/Exec.ts"
 
 const processes = BunChildProcessSpawner.layer.pipe(Layer.provide([BunFileSystem.layer, BunPath.layer]))
@@ -58,6 +59,31 @@ describe("calder check", () => {
       expect((yield* Exec.exec(["git", "--git-dir", remote, "rev-parse", "--verify", "-q", "refs/calder/check/x"])).exitCode).not.toBe(0)
       yield* jj("git", "fetch")
       expect(yield* log).toBe(before)
+    }).pipe(Effect.scoped, Effect.provide(processes)), { timeout: 60_000 })
+})
+
+describe("a refused check", () => {
+  it.effect("leaves no ref on the forge", () =>
+    Effect.gen(function*() {
+      for (const [name, value] of Object.entries({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "calder", GIT_AUTHOR_EMAIL: "calder@test", GIT_COMMITTER_NAME: "calder", GIT_COMMITTER_EMAIL: "calder@test" })) {
+        vi.stubEnv(name, value)
+      }
+      const dir = mkdtempSync(join(tmpdir(), "calder-check-refused-"))
+      yield* Effect.addFinalizer(() => Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))))
+      const remote = join(dir, "remote.git")
+      const work = join(dir, "work")
+      yield* Exec.run(["git", "init", "-q", "--bare", remote])
+      yield* Exec.run(["git", "init", "-q", work])
+      yield* Exec.run(["git", "-C", work, "commit", "-q", "--allow-empty", "-m", "base"])
+      yield* Exec.run(["git", "-C", work, "remote", "add", "origin", "https://forge.invalid/schnau/app.git"])
+      yield* Exec.run(["git", "-C", work, "config", `url.${remote}.pushInsteadOf`, "https://forge.invalid/schnau/app.git"])
+      const client = {
+        overview: () => Effect.succeed({ projects: [{ repo: "schnau/app" }] }),
+        check: () => Effect.fail(new Refused({ reason: "revision not found" })),
+      } as unknown as Client
+      const error = yield* Effect.flip(submit(client, work, { key: "x" }))
+      expect(error).toMatchObject({ _tag: "Refused" })
+      expect((yield* Exec.exec(["git", "--git-dir", remote, "for-each-ref", "refs/calder"])).stdout).toBe("")
     }).pipe(Effect.scoped, Effect.provide(processes)), { timeout: 60_000 })
 })
 

@@ -70,11 +70,11 @@ describe("a rerun", () => {
     Effect.gen(function*() {
       const token = join(mkdtempSync(join(tmpdir(), "calder-secret-")), "token")
       writeFileSync(token, "token-2")
-      // The test controller has no placement key.
-      const digest = (value: string) => secretsDigest("calder", { TOKEN: value })!
+      const digest = (value: string) => secretsDigest("placement key", { TOKEN: value })
       const { jobs } = yield* drive({
         steps: [deploy("server", [], ["TOKEN"]), deploy("ota"), deploy("tower", [], ["TOKEN"])],
         project: { secrets: { TOKEN: token } },
+        placementKey: "placement key",
         rerunOf: [
           // A rerun to ship a rotated token has to run the step that reads it.
           { name: "server", status: "passed", key: key("server"), lease: 1, secrets: digest("token-1") },
@@ -84,6 +84,23 @@ describe("a rerun", () => {
         ],
       })
       expect(jobs.toSorted()).toEqual(["ota", "server"])
+    }))
+
+  it.live("runs a step with secrets again on a controller without a key, which records no digest", () =>
+    Effect.gen(function*() {
+      const token = join(mkdtempSync(join(tmpdir(), "calder-secret-")), "token")
+      writeFileSync(token, "1234")
+      const { jobs, steps } = yield* drive({
+        steps: [deploy("server", [], ["TOKEN"]), deploy("ota")],
+        project: { secrets: { TOKEN: token } },
+        // What a controller without a key recorded before: an unkeyed hash, which gave the secret away.
+        rerunOf: [
+          { name: "server", status: "passed", key: key("server"), lease: 1, secrets: secretsDigest("calder", { TOKEN: "1234" }) },
+          { name: "ota", status: "passed", key: key("ota"), lease: 1 },
+        ],
+      })
+      expect(jobs).toEqual(["server"])
+      expect(steps.get("server")?.status).toBe("passed")
     }))
 
   it.live("runs a step again whose key changed, or an action whose inputs did", () =>

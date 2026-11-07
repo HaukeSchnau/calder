@@ -993,15 +993,18 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     },
   ) =>
     Effect.gen(function*() {
-      // Recorded for every step, so a rerun of this run can compare.
-      const digest = secretsDigest(config.placementKey ?? "calder", granted.secrets)
+      // Recorded for every step, so a rerun of this run can compare. Without the controller's key a digest
+      // would be an unkeyed hash, which gives a short secret away, so a step with secrets records none and
+      // runs again on every rerun.
+      const secrets = Object.keys(granted.secrets).length > 0
+      const digest = secrets && config.placementKey !== null ? secretsDigest(config.placementKey, granted.secrets) : null
       yield* db(sql`update steps set secrets_digest = ${digest} where run_id = ${run.id} and name = ${name}`)
       const of = run.rerun_of
       if (of == null) return undefined
       const earlier = yield* db(Rows.loadStep(of, name))
       if (earlier === undefined || !Rows.succeeded(earlier.status)) return undefined
       if ("key" in same && earlier.key !== same.key) return undefined
-      if ((earlier.secrets_digest ?? null) !== digest) return undefined
+      if (secrets ? digest === null || earlier.secrets_digest !== digest : (earlier.secrets_digest ?? null) !== null) return undefined
       // A newer run deployed the same step since, so what this one deployed no longer runs there.
       const origin = earlier.reused_from ?? of
       if (granted.lease !== undefined) {

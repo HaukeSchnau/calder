@@ -132,6 +132,9 @@ export const submit = (
     if (found === undefined) return yield* Effect.fail(new Error("no git remote points at a repository the controller knows"))
     const ref = `calder/check/${options.key ?? copy.sha.slice(0, 12)}`
     yield* push(copy, found.remote, gitRef(ref))
-    const run = yield* client.check({ repo: found.repo, ref, sha: copy.sha, ...(options.background === true ? { background: true } : {}) })
+    const run = yield* client.check({ repo: found.repo, ref, sha: copy.sha, ...(options.background === true ? { background: true } : {}) }).pipe(
+      // No run will follow the ref, so nothing else drops it.
+      Effect.onError(() => drop(copy, found.remote, gitRef(ref))),
+    )
     return { run, copy, remote: found.remote, pushed: gitRef(ref) }
   })
