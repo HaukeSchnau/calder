@@ -103,11 +103,18 @@ const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
     (scratch) => Effect.sync(() => rmSync(scratch, { recursive: true, force: true })),
   )
 
-/** Pushes the commit as `ref` with the user's own git credentials, replacing what the ref held. Leaves the repository's refs alone. */
-export const push = (copy: WorkingCopy, remote: string, ref: string) => pushFromScratch(copy, [remote, `+${copy.sha}:refs/heads/${ref}`])
+/**
+ * Where a check's commit goes on the forge: `refs/calder/check/<key>`, outside `refs/heads`, which
+ * `jj git fetch` (and git's default refspec) never fetches. Under `refs/heads` every workspace that
+ * fetched during the check imported it as a bookmark, and once the check deleted it, jj abandoned the
+ * commit, an agent's unbookmarked working copy among them (F44).
+ */
+export const gitRef = (ref: string) => `refs/${ref}`
 
-export const drop = (copy: WorkingCopy, remote: string, ref: string) =>
-  pushFromScratch(copy, [remote, "--delete", `refs/heads/${ref}`]).pipe(Effect.ignore)
+/** Pushes the commit as the git ref `ref` with the user's own git credentials, replacing what it held. Leaves the repository's refs alone. */
+export const push = (copy: WorkingCopy, remote: string, ref: string) => pushFromScratch(copy, [remote, `+${copy.sha}:${ref}`])
+
+export const drop = (copy: WorkingCopy, remote: string, ref: string) => pushFromScratch(copy, [remote, "--delete", ref]).pipe(Effect.ignore)
 
 /**
  * Pushes `dir`'s working copy and starts its check run. `key` names the ref (`calder/check/<key>`), so a
@@ -124,7 +131,7 @@ export const submit = (
     const found = target(copy.remotes, projects.map((p) => p.repo))
     if (found === undefined) return yield* Effect.fail(new Error("no git remote points at a repository the controller knows"))
     const ref = `calder/check/${options.key ?? copy.sha.slice(0, 12)}`
-    yield* push(copy, found.remote, ref)
+    yield* push(copy, found.remote, gitRef(ref))
     const run = yield* client.check({ repo: found.repo, ref, sha: copy.sha, ...(options.background === true ? { background: true } : {}) })
-    return { run, copy, remote: found.remote, ref }
+    return { run, copy, remote: found.remote, pushed: gitRef(ref) }
   })
