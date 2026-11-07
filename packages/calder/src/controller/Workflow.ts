@@ -18,13 +18,16 @@ export interface RunInput {
   readonly sha: string
   /** A pull request whose head lives in another repository. */
   readonly fork?: boolean
+  /** The run this one reruns, whose passed steps it takes instead of running them again. */
+  readonly rerunOf?: string
 }
 
 /** Starting, cancelling and repeating runs. */
 export class Runs extends Context.Service<Runs, {
   readonly create: (input: RunInput) => Effect.Effect<Domain.Run, RunError>
   readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
-  readonly rerun: (runId: string) => Effect.Effect<Domain.Run, RunError>
+  /** Runs a run's revision and event again: only what didn't pass, unless `force`. */
+  readonly rerun: (runId: string, options?: { readonly force?: boolean }) => Effect.Effect<Domain.Run, RunError>
   /**
    * `create`, unless a run of the same project, revision and event exists: what the webhook and the
    * catch-up after a restart use, so one push never starts two runs.
@@ -110,10 +113,10 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
       const id = `${input.project}-${number}`
       const now = Date.now()
       yield* db(sql`insert into runs (id, project, number, event, sha, branch, pr, title, commit_title, author, change_id, commit_time,
-          trust, status, created_at, trace_id, span_id, fork, tree)
+          trust, status, created_at, trace_id, span_id, fork, tree, rerun_of)
         values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
           ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
-          ${input.fork === true ? 1 : 0}, ${commit.tree === "" ? null : commit.tree})`)
+          ${input.fork === true ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`)
 
       const older = yield* db(Rows.replaced({ project: input.project, event, branch, pr, sha: input.sha }))
       yield* Effect.forEach(older, (id) => core.supersede(id, `superseded by #${number}`), { discard: true })
@@ -146,11 +149,17 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
       Effect.map(core.audit(project), (mismatches) =>
         mismatches.map((m) => ({ attr: m.attr, revision: "", at: Date.now(), recorded: m.recorded?.drv ?? null, evaluated: m.evaluated?.drv ?? null, missed: m.missed }))
       ),
-    rerun: (runId) =>
+    rerun: (runId, options = {}) =>
       Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
         if (row === undefined) return yield* new RunError({ message: `no run ${runId}` })
-        return yield* create({ project: row.project, event: JSON.parse(row.event) as Domain.Event, sha: row.sha, fork: row.fork === 1 })
+        return yield* create({
+          project: row.project,
+          event: JSON.parse(row.event) as Domain.Event,
+          sha: row.sha,
+          fork: row.fork === 1,
+          ...(options.force === true ? {} : { rerunOf: runId }),
+        })
       }),
   }
 }))

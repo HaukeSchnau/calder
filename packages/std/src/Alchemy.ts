@@ -126,7 +126,8 @@ const valueOf = <A>(stack: Stack<A>) =>
  * run that a newer one replaced doesn't deploy. On a push, it doesn't deploy once the branch moved
  * past its revision. The stack gets the lease's fencing token as `FLEET_FENCE` and the revision as
  * `CALDER_REVISION`. It runs every time its rule does, since Alchemy only changes what differs from its
- * state. Its value is the stack's `outputs`.
+ * state, except in a rerun of a run where it passed with the same key and secrets and no newer run
+ * deployed since (`calder rerun --force` runs it). Its value is the stack's `outputs`.
  */
 export const deploy = <A = void>(
   stack: Stack<A>,

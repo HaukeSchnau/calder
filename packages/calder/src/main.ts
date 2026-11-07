@@ -250,12 +250,18 @@ const projects = Command.make("projects", { url }, ({ url }) =>
     Command.withDescription("List the projects with the latest run of each default branch"),
   )
 
-const rerun = Command.make("rerun", { run: runId, url }, ({ run, url }) =>
+const rerun = Command.make("rerun", {
+  run: runId,
+  force: Flag.Boolean("force").pipe(Flag.withDescription("Run every step again, also those that passed, such as deploys")),
+  url,
+}, ({ run, force, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
-    const created = yield* client.rerun({ runId: run })
+    const created = yield* client.rerun({ runId: run, ...(force ? { force } : {}) })
     yield* Console.log(`${created.id}: ${created.commit.sha.slice(0, 12)} ${created.commit.title}`)
-  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(Command.withDescription("Run a run's revision and event again"))
+  }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
+    Command.withDescription("Run a run's revision and event again: the steps that didn't pass, and those that depend on them"),
+  )
 
 /** `calder merge <project> <pr>`: Calder merges the pull request once it is green and up to date with its base. */
 const merge = Command.make("merge", {

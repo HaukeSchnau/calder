@@ -18,7 +18,7 @@ import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
 import type { Job, JobEvent, JobResult, PlannedStep, PlanSpec } from "../src/Protocol.ts"
 import { config } from "./config.ts"
-import { insertRun, layer as sqlite } from "./sqlite.ts"
+import { insertRun, insertStep, layer as sqlite } from "./sqlite.ts"
 
 export const unused = () => Effect.die(new Error("not used by these tests"))
 
@@ -59,6 +59,18 @@ export interface Drive {
   readonly requisites?: ReadonlyArray<string>
   /** Runs beside the run, such as a newer run that supersedes it; the run's services stay up until it ends. */
   readonly meanwhile?: Effect.Effect<void, never, RunsCore | SqlClient.SqlClient>
+  /**
+   * Makes `app-2` a rerun of `app-1`, whose steps ended like this: `secrets` is the step's secrets
+   * digest, `lease` the newest run number whose step held the project's lease.
+   */
+  readonly rerunOf?: ReadonlyArray<{
+    readonly name: string
+    readonly status: string
+    readonly key?: string
+    readonly value?: unknown
+    readonly secrets?: string
+    readonly lease?: number
+  }>
 }
 
 /**
@@ -78,6 +90,7 @@ export const drive = ({
   project: configured = {},
   meanwhile = Effect.void,
   requisites,
+  rerunOf,
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -89,10 +102,16 @@ export const drive = ({
       yield* sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
         values (${taskKey(name, {}, null)}, 'app-1', ${name}, 'trusted', 'null', '{}', 1, 'passed')`
     }
+    for (const s of rerunOf ?? []) {
+      yield* insertStep("app-1", s.name, { status: s.status, ...(s.key === undefined ? {} : { key: s.key }) })
+      yield* sql`update steps set value = ${JSON.stringify(s.value ?? null)}, secrets_digest = ${s.secrets ?? null}
+        where run_id = 'app-1' and name = ${s.name}`
+      if (s.lease !== undefined) yield* sql`insert into lease_steps (project, step, run) values ('app', ${s.name}, ${s.lease})`
+    }
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
-        started_at, trace_id, span_id, plan)
+        started_at, trace_id, span_id, plan, rerun_of)
       values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, 'running', 2, 2, 't', 's',
-        ${JSON.stringify(plan)})`
+        ${JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"})`
     for (const [position, s] of plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`

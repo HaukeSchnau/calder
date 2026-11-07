@@ -27,7 +27,8 @@ export function useRunCommands() {
       if (exit._tag === "Success") toast(`Cancelled ${run.project} #${run.number}`)
       else toast(errorText(failureOf(exit)), "bad")
     },
-    rerun: async (run: Domain.Run) => started(await rerunRpc({ payload: { runId: run.id } })),
+    /** Runs the run's revision again: what didn't pass, or with `force` every step. */
+    rerun: async (run: Domain.Run, force = false) => started(await rerunRpc({ payload: { runId: run.id, ...(force ? { force } : {}) } })),
     trigger: async (project: string) => started(await triggerRpc({ payload: { project } })),
   }
 }

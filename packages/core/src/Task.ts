@@ -51,7 +51,9 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
   readonly platform?: Platform
   /**
    * `"never"`: the task runs every time, also where its rule reuses results, such as a task that checks
-   * the machine rather than the code. The rule's `reuse` still applies to its other steps.
+   * the machine rather than the code. The rule's `reuse` still applies to its other steps. A rerun
+   * (`calder rerun`) takes its result from the run it repeats where it passed there with the same key and
+   * secrets, unless `--force`.
    */
   readonly reuse?: "never"
   /**

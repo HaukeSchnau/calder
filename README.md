@@ -397,7 +397,10 @@ calder status <run>                    # a run's steps, how long each waited for
                                      # ones wait for, why failed ones failed, and links to outputs
 calder logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
                                      # until the step ends, or the run without a step
-calder rerun <run> | calder cancel <run>  # run ids look like studienbuch-12
+calder rerun <run> [--force]           # runs the revision again: steps that passed in the run, deploys and OTA
+                                     # updates included, keep their result unless their key, inputs or secrets
+                                     # changed or a newer run deployed them since; --force runs every step
+calder cancel <run>                    # run ids look like studienbuch-12
 calder audit <project>                 # evaluates the default branch head afresh and drops wrong footprint records
 calder controller --config <file>      # the service
 calder worker <job>                    # started by the controller in a systemd unit, or by an agent

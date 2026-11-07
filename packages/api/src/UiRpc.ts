@@ -99,5 +99,6 @@ export class UiRpcs extends RpcGroup.make(
   Rpc.make("merge", { payload: { project: Schema.String, pr: Schema.Number }, success: MergeRequest, error: Refused }),
   Rpc.make("merges", { payload: { project: Schema.String }, success: Schema.Array(MergeRequest) }),
   /** Runs the same revision and event again. */
-  Rpc.make("rerun", { payload: { runId: Schema.String }, success: Run, error: Schema.Union([NotFound, Refused]) }),
+  /** Runs a run's revision and event again, taking the steps that passed in it unless `force`. */
+  Rpc.make("rerun", { payload: { runId: Schema.String, force: Schema.optional(Schema.Boolean) }, success: Run, error: Schema.Union([NotFound, Refused]) }),
 ) {}
