@@ -59,6 +59,8 @@ export interface Drive {
   readonly requisites?: ReadonlyArray<string>
   /** Runs beside the run, such as a newer run that supersedes it; the run's services stay up until it ends. */
   readonly meanwhile?: Effect.Effect<void, never, RunsCore | SqlClient.SqlClient>
+  /** The controller's placement key, none by default. */
+  readonly placementKey?: string
   /**
    * Makes `app-2` a rerun of `app-1`, whose steps ended like this: `secrets` is the step's secrets
    * digest, `lease` the newest run number whose step held the project's lease.
@@ -91,6 +93,7 @@ export const drive = ({
   meanwhile = Effect.void,
   requisites,
   rerunOf,
+  placementKey,
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -125,7 +128,7 @@ export const drive = ({
     const statuses = new Map<string, string>()
     const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
     const services = Layer.mergeAll(
-      config(),
+      config(placementKey === undefined ? {} : { placementKey }),
       Live.layer,
       Layer.succeed(Agents)(makeAgents(null)),
       Layer.succeed(Cache)(cache),
