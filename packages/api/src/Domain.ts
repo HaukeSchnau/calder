@@ -302,6 +302,21 @@ export const AuditMismatch = Schema.Struct({
 })
 export type AuditMismatch = typeof AuditMismatch.Type
 
+/** Where a deploying project's default branch stands: what is deployed, how far the head is ahead, and the next retry. */
+export const Delivery = Schema.Struct({
+  /** The default branch's head. */
+  head: Schema.String,
+  /** The newest revision of the default branch whose deploying run passed; null without one in retention. */
+  revision: Schema.NullOr(Schema.String),
+  /** First-parent commits from it to the head, and when the oldest of them was made. Null at the head, or when unknown. */
+  behind: Schema.NullOr(Schema.Struct({ commits: Schema.Number, since: Schema.Number })),
+  /** The head's newest push run ended without deploying it, rather than still running toward it. */
+  stalled: Schema.Boolean,
+  /** The head's failed run Calder reruns at `at`, which is the head's `attempt`th failed run. Null when nothing is due. */
+  retry: Schema.NullOr(Schema.Struct({ runId: Schema.String, at: Schema.Number, attempt: Schema.Number })),
+})
+export type Delivery = typeof Delivery.Type
+
 export const Project = Schema.Struct({
   name: Schema.String,
   repo: Schema.String,
@@ -313,6 +328,8 @@ export const Project = Schema.Struct({
   history: Schema.Array(Schema.Struct({ id: Schema.String, status: RunStatus, durationMs: Schema.NullOr(Schema.Number) })),
   /** Footprint records audits found wrong in the last two weeks. Older controllers send none. */
   audits: Schema.optional(Schema.Array(AuditMismatch)),
+  /** For a project whose pushes deploy. Older controllers send none. */
+  delivery: Schema.optional(Schema.NullOr(Delivery)),
 })
 export type Project = typeof Project.Type
 

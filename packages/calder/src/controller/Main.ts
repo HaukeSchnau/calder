@@ -39,5 +39,6 @@ export const layer = (configPath: string) => {
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const runs = Workflow.layer.pipe(Layer.provideMerge(core))
   const merging = Merges.layer.pipe(Layer.provideMerge(runs))
-  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer, Web.layer, Health.layer, Delivery.layer).pipe(Layer.provide(merging))
+  const delivery = Delivery.layer.pipe(Layer.provideMerge(merging))
+  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer, Web.layer, Health.layer).pipe(Layer.provide(delivery))
 }

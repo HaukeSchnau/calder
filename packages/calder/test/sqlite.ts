@@ -75,10 +75,12 @@ export const insertStep = (runId: string, name: string, options: {
   readonly key?: string
   readonly reusedFrom?: string
   readonly error?: string
+  /** On a deploy's critical path (Rows.criticalPath). */
+  readonly critical?: boolean
 } = {}) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at, finished_at, key, reused_from, error_message)
-      values (${runId}, ${name}, 'task', ${options.status ?? "passed"}, '{}', 0, 's', ${options.started ?? null},
+      values (${runId}, ${name}, 'task', ${options.status ?? "passed"}, ${options.critical === true ? '{"critical":true}' : "{}"}, 0, 's', ${options.started ?? null},
         ${options.finished ?? null}, ${options.key ?? null}, ${options.reusedFrom ?? null}, ${options.error ?? null})`
   })

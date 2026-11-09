@@ -392,7 +392,8 @@ calder check [dir]                     # runs the working copy (jj or git) like 
 calder trigger <project> [--branch b]  # runs a branch head on the controller, follows it, and exits 1 unless
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
 calder runs [project] [--limit n]      # recent runs with their status, event, commit and age
-calder projects                        # the projects and the latest run of each default branch
+calder projects                        # the projects, the latest run of each default branch, and how far a
+                                     # deploying one's deploy is behind it
 calder status <run>                    # a run's steps, how long each waited for a slot and ran, what waiting
                                      # ones wait for, why failed ones failed, and links to outputs
 calder logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
@@ -465,6 +466,14 @@ prunes that run, so an alert on the gauge fires once per streak; in the fleet, i
 
 When the run of a merge on the default branch fails, Calder comments on the merged pull request that it isn't
 shipped yet, and edits that comment once a run that includes the merge passes.
+
+A project whose pushes deploy converges on its default branch's head. Its deployed revision is that of the newest
+passed push, or of a passed schedule or manual run that deploys (a nightly that only checks doesn't count).
+`calder projects`, the overview and the project's page say how many first-parent commits and how long the head is
+ahead of it. When the head's push run failed at a step on a deploy's critical path, such as the deploy or the build
+it ships, the controller reruns that run, which repeats only what didn't pass: 10 minutes after the first failure,
+then after twice the wait of the last, up to 6 hours, until it passes or the head moves on. A failed check isn't
+retried. `retryDeploys: false` in a project's configuration turns the reruns off.
 
 ## Layout
 

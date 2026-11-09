@@ -4,6 +4,7 @@ import { SqlClient } from "effect/sql"
 import type { Mismatch } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
+import { Delivery } from "./Delivery.ts"
 import * as Fleet from "./Fleet.ts"
 import { Gitea } from "./Gitea.ts"
 import { Jobs } from "./Jobs.ts"
@@ -32,6 +33,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   const runs = yield* Runs
   const merges = yield* Merges
   const enrolled = yield* Projects
+  const delivery = yield* Delivery
   const telemetry = yield* Telemetry.Telemetry
   const estimates = yield* Estimates.Estimates
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
@@ -200,6 +202,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
               defaultBranch: project.defaultBranch,
               main,
               deployments: yield* deployments(project),
+              delivery: delivery.status(name),
               audits: (yield* db(sql<{ attr: string; revision: string; detail: string; at: number }>`select attr, revision, detail, at
                 from audit_mismatches where project = ${name} and at > ${Date.now() - 14 * 86_400_000} order by at desc limit 20`)).map((row) => {
                 const m = JSON.parse(row.detail) as Mismatch

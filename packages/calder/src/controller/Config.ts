@@ -15,6 +15,8 @@ export const ProjectConfig = Schema.Struct({
    * build evaluations run in `calder-job-pr-large@`, which the host gives more.
    */
   largeEvaluations: Schema.optional(Schema.Boolean),
+  /** False keeps Calder from rerunning the default branch head's failed deploy (Delivery.ts). */
+  retryDeploys: Schema.optional(Schema.Boolean),
 })
 export type ProjectConfig = typeof ProjectConfig.Type
 

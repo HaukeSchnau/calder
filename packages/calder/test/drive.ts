@@ -160,6 +160,7 @@ export const drive = ({
         fetch: unused,
         hasPipeline: unused,
         commit: unused,
+        between: unused,
         contains: unused,
         pipelineDir: () => Effect.succeed("/calder"),
         flake: () => "git+file:///mirror",

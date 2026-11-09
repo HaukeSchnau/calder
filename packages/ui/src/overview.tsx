@@ -233,6 +233,7 @@ function ProjectRows({ project, hosts, recent }: { readonly project: Domain.Proj
         <span className="cell name">
           <a className="pname" href={href({ page: "project", name: project.name })}>{project.name}</a>
           {main ? <><span className="ref">{project.defaultBranch}</span><code>{shortSha(main.commit.sha)}</code><span className="ttl">{main.commit.title}</span></> : <span className="ttl">no runs yet</span>}
+          {project.delivery?.stalled ? <span className="bad">{project.delivery.behind ? `deploy ${project.delivery.behind.commits} behind` : "deploy behind"}</span> : null}
         </span>
         <span className="cell">{main ? <RunCell run={main} /> : null}</span>
         <span className="cell spk"><RunSpark history={project.history} /></span>
