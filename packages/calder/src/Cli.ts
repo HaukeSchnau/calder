@@ -57,6 +57,16 @@ export const span = (ms: number) => {
 
 export const ago = (ms: number) => `${span(ms)} ago`
 
+/** Where a project's deploys stand, for people: `deployed`, or how far behind and when Calder retries. */
+export const delivery = (d: Domain.Delivery | null | undefined, now: number) => {
+  if (d == null) return ""
+  if (d.revision === d.head) return "deployed"
+  const from = d.revision === null ? "nothing deployed in retention" : `deployed ${d.revision.slice(0, 12)}`
+  const behind = d.behind === null ? from : `${from}: ${d.behind.commits} commit${d.behind.commits === 1 ? "" : "s"} / ${span(now - d.behind.since)} behind`
+  if (!d.stalled) return `${behind}, deploying`
+  return d.retry === null ? `${behind}, stalled` : `${behind}, retry ${d.retry.attempt} in ${span(d.retry.at - now)}`
+}
+
 /** A duration for people: `12 s`, `1m 52s`. */
 export const took = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000))

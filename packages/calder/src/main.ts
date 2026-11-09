@@ -243,11 +243,12 @@ const projects = Command.make("projects", { url }, ({ url }) =>
         p.name,
         p.repo,
         p.defaultBranch,
-        ...(p.main === null ? ["no runs yet"] : [p.main.status, p.main.id, Cli.ago(now - p.main.createdAt)]),
+        ...(p.main === null ? ["no runs yet", "", ""] : [p.main.status, p.main.id, Cli.ago(now - p.main.createdAt)]),
+        Cli.delivery(p.delivery, now),
       ]))
     ) yield* Console.log(line)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
-    Command.withDescription("List the projects with the latest run of each default branch"),
+    Command.withDescription("List the projects with the latest run of each default branch, and how far a deploying one's deploy is behind it"),
   )
 
 const rerun = Command.make("rerun", {

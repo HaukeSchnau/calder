@@ -7,7 +7,7 @@ import { useState } from "react"
 import { Calder } from "./client.ts"
 import { useRunCommands } from "./commands.ts"
 import { isActive, overviewAtom, projectRunsAtom, runAtom } from "./data.ts"
-import { ago, count, dur, refOf, runDuration, shortSha, titleOf, totalSteps, when } from "./format.ts"
+import { ago, count, dur, plural, refOf, runDuration, shortSha, titleOf, totalSteps, when } from "./format.ts"
 import { hostsOf } from "./overview.tsx"
 import { href } from "./route.ts"
 import { graphOrder } from "./run.tsx"
@@ -38,6 +38,7 @@ export function ProjectPage({ name }: { readonly name: string }) {
           ({[...new Set(project.audits.map((a) => a.attr))].join(", ")}) and dropped them. Plans evaluate those attributes again.
         </p>
       ) : null}
+      {project?.delivery?.stalled ? <BehindWarning project={project} delivery={project.delivery} /> : null}
       <div className="proj-body">
         <Runs project={name} />
         <aside className="proj-steps">
@@ -46,6 +47,19 @@ export function ProjectPage({ name }: { readonly name: string }) {
         </aside>
       </div>
     </main>
+  )
+}
+
+function BehindWarning({ project, delivery }: { readonly project: Domain.Project; readonly delivery: Domain.Delivery }) {
+  const now = useNow()
+  const behind = delivery.behind
+  return (
+    <p className="audit-warn">
+      {delivery.revision
+        ? <>The deployed revision <code>{shortSha(delivery.revision)}</code> is {behind ? <>{plural(behind.commits, "commit")} and {ago(behind.since, now)} behind</> : "behind"} {project.defaultBranch}'s head <code>{shortSha(delivery.head)}</code>, whose run ended without deploying it.</>
+        : <>Nothing of {project.defaultBranch} was deployed in retention. Its head <code>{shortSha(delivery.head)}</code> ended without deploying.</>}
+      {delivery.retry ? <> Calder reruns <a href={href({ page: "run", id: delivery.retry.runId, step: null })}>{delivery.retry.runId}</a> at {when(delivery.retry.at, now)}.</> : null}
+    </p>
   )
 }
 

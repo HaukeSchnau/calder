@@ -31,6 +31,8 @@ export class Mirror extends Context.Service<Mirror, {
   readonly fetch: (project: string) => Effect.Effect<void, Exec.ExecError>
   readonly hasPipeline: (project: string, sha: string) => Effect.Effect<boolean>
   readonly commit: (project: string, sha: string) => Effect.Effect<CommitInfo, Exec.ExecError>
+  /** The first-parent commits from `from` (excluded) to `to`, newest first, with when each was made. */
+  readonly between: (project: string, from: string, to: string) => Effect.Effect<ReadonlyArray<{ readonly sha: string; readonly at: number }>, Exec.ExecError>
   /** Whether `revision` is `commit` or descends from it. False also when the mirror lacks either. */
   readonly contains: (project: string, revision: string, commit: string) => Effect.Effect<boolean>
   /** Extracts `.calder/` of a revision and links its `node_modules` to Calder's SDK. */
@@ -194,6 +196,13 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
     fetch,
     hasPipeline,
     commit,
+    between: (project, from, to) =>
+      git(project, ["log", "--first-parent", "--format=%H %ct", `${from}..${to}`]).pipe(
+        Effect.map((out) => out.split("\n").filter(Boolean).map((line) => {
+          const [sha, at] = line.split(" ")
+          return { sha: sha!, at: Number(at) * 1000 }
+        })),
+      ),
     contains: (project, revision, commit) =>
       git(project, ["merge-base", "--is-ancestor", commit, revision]).pipe(Effect.as(true), Effect.orElseSucceed(() => false)),
     pipelineDir: (project, sha) =>
