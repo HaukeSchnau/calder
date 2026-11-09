@@ -2,7 +2,7 @@ import { BunServices } from "@effect/platform-bun"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 import { spawn } from "node:child_process"
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Agent from "../src/Agent.ts"
@@ -38,4 +38,12 @@ describe("Agent", () => {
       expect(readdirSync(dir)).toEqual([])
       process.kill(other)
     }).pipe(Effect.provide(BunServices.layer)))
+
+  it("records a worker's pid after the directory was removed", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "calder-workers-")), ".workers")
+    Agent.recordPid(dir, "0123456789abcdef", 42)
+    rmSync(dir, { recursive: true })
+    Agent.recordPid(dir, "fedcba9876543210", 43)
+    expect(readFileSync(join(dir, "fedcba9876543210"), "utf8")).toBe("43")
+  })
 })

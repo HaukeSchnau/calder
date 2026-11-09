@@ -76,6 +76,12 @@ export const stopLeftovers = (dir: string) =>
     }
   })
 
+/** Records a worker's pid for `stopLeftovers`. Host cleanup may have removed the directory since the agent started. */
+export const recordPid = (dir: string, job: string, pid: number) => {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, job), String(pid))
+}
+
 /**
  * `calder agent`: runs workers on this host for the controller's jobs of this platform. Workers outlive
  * a lost connection; the agent reconnects and tells the controller which ones still run. Those an
@@ -135,7 +141,7 @@ export const run = (options: Options) =>
           detached: true,
           forceKillAfter: "10 seconds",
         }))
-        writeFileSync(join(pids, job), String(handle.pid))
+        recordPid(pids, job, handle.pid)
         return yield* handle.exitCode
       })).pipe(
         Effect.catchCause((cause) => Effect.logError(`worker ${job} failed to start`, cause).pipe(Effect.as(-1))),
