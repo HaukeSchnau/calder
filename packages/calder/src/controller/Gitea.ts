@@ -24,6 +24,7 @@ const PullState = Schema.Struct({
   head: Schema.Struct({ sha: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
   base: Schema.Struct({ ref: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
 })
+const MergedPull = Schema.Struct({ number: Schema.Number, merged: Schema.Boolean, merge_commit_sha: Schema.NullOr(Schema.String) })
 const ErrorBody = Schema.Struct({ message: Schema.optional(Schema.String) })
 const Repo = Schema.Struct({
   full_name: Schema.String,
@@ -68,6 +69,8 @@ export class Gitea extends Context.Service<Gitea, {
     readonly base: string
     readonly fork: boolean
   }>
+  /** The pull request that `sha` merged, if a merge of one made it. */
+  readonly mergedPull: (repo: string, sha: string) => Effect.Effect<number | null, HttpClientError.HttpClientError | Schema.SchemaError>
   /** Merges the base branch into the pull request's branch; fails with Gitea's message, such as a conflict. */
   readonly updatePull: (repo: string, number: number) => Effect.Effect<void, string>
   /**
@@ -184,6 +187,12 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
           fork: p.head.repo?.full_name !== p.base.repo?.full_name,
         })),
         Effect.orDie,
+      ),
+    mergedPull: (repo, sha) =>
+      get(`/repos/${repo}/commits/${sha}/pull`, MergedPull).pipe(
+        Effect.map((p): number | null => (p.merged && p.merge_commit_sha === sha ? p.number : null)),
+        // Gitea answers 404 for a commit no pull request merged, such as a direct push.
+        Effect.catchIf((e) => HttpClientError.isHttpClientError(e) && e.reason._tag === "StatusCodeError" && e.reason.response.status === 404, () => Effect.succeed(null)),
       ),
     updatePull: (repo, number) => attempt(`/repos/${repo}/pulls/${number}/update?style=merge`, {}),
     mergePull: (repo, number, sha) => attempt(`/repos/${repo}/pulls/${number}/merge`, { Do: "merge", head_commit_id: sha }),

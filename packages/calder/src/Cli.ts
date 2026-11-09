@@ -49,11 +49,13 @@ const distance = (a: string, b: string) => {
 export const closest = (typed: string, names: ReadonlyArray<string>) =>
   names.map((name) => ({ name, d: distance(typed, name) })).sort((x, y) => x.d - y.d).map((x) => x.name)
 
-export const ago = (ms: number) => {
+/** A coarse span of time: `40s`, `12m`, `5h`, `3d`. */
+export const span = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000))
-  const span = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 48 * 3600 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`
-  return `${span} ago`
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 48 * 3600 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`
 }
+
+export const ago = (ms: number) => `${span(ms)} ago`
 
 /** A duration for people: `12 s`, `1m 52s`. */
 export const took = (ms: number) => {

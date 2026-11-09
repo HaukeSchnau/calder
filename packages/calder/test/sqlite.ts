@@ -48,14 +48,24 @@ export const layer = Layer.effect(SqlClient.SqlClient)(Effect.gen(function*() {
 })).pipe(Layer.provide(Reactivity.layer))
 
 /** A finished run `<project>-<number>` of a push to main, created and finished `at`. */
-export const insertRun = (id: string, options: { readonly at: number; readonly event?: string }) =>
+export const insertRun = (id: string, options: {
+  readonly at: number
+  readonly event?: string
+  readonly branch?: string
+  readonly status?: string
+  readonly trust?: string
+  readonly sha?: string
+  readonly planned?: boolean
+  readonly error?: string
+}) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     const project = id.slice(0, id.lastIndexOf("-"))
-    yield* sql`insert into runs (id, project, number, event, sha, commit_title, author, commit_time, trust, status, created_at,
-        finished_at, trace_id, span_id, plan)
+    yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
+        finished_at, trace_id, span_id, plan, planned_at, error)
       values (${id}, ${project}, ${Number(id.slice(id.lastIndexOf("-") + 1))}, ${options.event ?? '{"_tag":"Push","branch":"main"}'},
-        ${id}, 'title', 'hauke', ${options.at}, 'trusted', 'passed', ${options.at}, ${options.at}, 't', 's', '{}')`
+        ${options.sha ?? id}, ${options.branch ?? null}, 'title', 'hauke', ${options.at}, ${options.trust ?? "trusted"}, ${options.status ?? "passed"},
+        ${options.at}, ${options.at}, 't', 's', '{}', ${options.planned === true ? options.at : null}, ${options.error ?? null})`
   })
 
 export const insertStep = (runId: string, name: string, options: {
@@ -64,10 +74,11 @@ export const insertStep = (runId: string, name: string, options: {
   readonly finished?: number
   readonly key?: string
   readonly reusedFrom?: string
+  readonly error?: string
 } = {}) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at, finished_at, key, reused_from)
+    yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at, finished_at, key, reused_from, error_message)
       values (${runId}, ${name}, 'task', ${options.status ?? "passed"}, '{}', 0, 's', ${options.started ?? null},
-        ${options.finished ?? null}, ${options.key ?? null}, ${options.reusedFrom ?? null})`
+        ${options.finished ?? null}, ${options.key ?? null}, ${options.reusedFrom ?? null}, ${options.error ?? null})`
   })

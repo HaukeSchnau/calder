@@ -7,9 +7,11 @@ import * as Catchup from "./Catchup.ts"
 import * as Comments from "./Comments.ts"
 import * as Config from "./Config.ts"
 import * as Db from "./Db.ts"
+import * as Delivery from "./Delivery.ts"
 import * as Egress from "./Egress.ts"
 import * as Fleet from "./Fleet.ts"
 import * as Gitea from "./Gitea.ts"
+import * as Health from "./Health.ts"
 import * as Http from "./Http.ts"
 import * as Jobs from "./Jobs.ts"
 import * as Leases from "./Leases.ts"
@@ -37,5 +39,5 @@ export const layer = (configPath: string) => {
   const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
   const runs = Workflow.layer.pipe(Layer.provideMerge(core))
   const merging = Merges.layer.pipe(Layer.provideMerge(runs))
-  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer, Web.layer).pipe(Layer.provide(merging))
+  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer, Web.layer, Health.layer, Delivery.layer).pipe(Layer.provide(merging))
 }

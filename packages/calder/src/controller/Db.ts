@@ -261,6 +261,16 @@ export const migrations = {
     yield* sql`alter table runs add column rerun_of text`
     yield* sql`alter table steps add column secrets_digest text`
   }),
+  "0020_delivery": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Merges whose run on the default branch failed, with Calder's comment on the pull request, until a
+    // run that includes them passes (Delivery.ts).
+    yield* sql`create table shipments (project text not null, sha text not null, pr integer not null, run_id text not null,
+      comment_id integer not null, shipped_run text, primary key (project, sha))`
+    // Where each step's newest failing streak started and when it ended, which outlives the runs retention prunes (Health.ts).
+    yield* sql`create table streak_starts (project text not null, step text not null, first_run text not null, since integer not null,
+      ended_at integer, primary key (project, step))`
+  }),
 }
 
 /**

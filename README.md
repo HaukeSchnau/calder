@@ -453,6 +453,19 @@ planned run stays whole. Extracted `.calder/` directories go after a day without
 `gcroots/` under the controller's state directory while a step of a run inside the window or a passed result names
 them, so Nix's garbage collector leaves them alone; reuse skips a result whose outputs left the store anyway.
 
+## When the default branch fails
+
+The controller exports the OTLP gauge `calder_failing_runs` every minute, one series per step that failed in the
+trusted runs of a default branch (pushes, schedules, manual runs, and the runs after a pull request closes):
+in how many of those runs in a row it failed, and 0 once it passed again. A blocked or skipped step neither fails
+nor passes, so a deploy blocked by a failed build counts the build. A run that fails before it plans counts as the
+step `(plan)`. A step stops counting once a newer run of the same event plans without it. The series' labels
+`since`, `first_run` and `url` say where the streak started and hold still while it lasts, also once retention
+prunes that run, so an alert on the gauge fires once per streak; in the fleet, infra's `CalderStepFailing` sends it to Telegram.
+
+When the run of a merge on the default branch fails, Calder comments on the merged pull request that it isn't
+shipped yet, and edits that comment once a run that includes the merge passes.
+
 ## Layout
 
 | Path | What |
