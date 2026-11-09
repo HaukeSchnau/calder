@@ -61,6 +61,21 @@ describe("Environments.project", () => {
       expect(push.get("deploy-beta")).toMatchObject({ after: ["lint", "serverSmoke"], gates: [] })
     }))
 
+  it.effect("with planDeploys, a same-repo pull request plans the stages pushes to the default branch deploy", () =>
+    Effect.gen(function*() {
+      const planning = Environments.project({
+        stack,
+        checks,
+        artifacts: { CALDER_BUNDLE: bundle },
+        environments: { beta: { on: { push: "main" } }, prod: { on: { manual: {} } } },
+        planDeploys: true,
+      })
+      const plan = yield* Calder.plan(planning, Event.pullRequest({ number: 5 }))
+      expect(plan.steps.map((s) => s.name).filter((name) => name.startsWith("plan-"))).toEqual(["plan-beta"])
+      // The stack may read what it deploys while it plans.
+      expect(plan.get("plan-beta")?.needs).toEqual(["deploy-install", "bundle"])
+    }))
+
   it.effect("a fork's pull request runs the checks and builds the bundle, but has no preview", () =>
     Effect.gen(function*() {
       const plan = yield* Calder.plan(project, Event.pullRequest({ number: 5, fork: true }))

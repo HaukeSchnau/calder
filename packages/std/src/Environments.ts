@@ -54,6 +54,12 @@ export interface Options<A> {
   readonly shared?: Files.Files
   /** A cron schedule that runs every check on the default branch without reusing anything. */
   readonly nightly?: string
+  /**
+   * Same-repo pull requests also plan each stage that pushes to the default branch deploy (`plan-<stage>`,
+   * `alchemy plan`), so one whose deploy can't work fails before it merges. Off by default while Alchemy's
+   * state store fails every plan (since 2026-11-06); default it to on once infra's and t3code's plans pass.
+   */
+  readonly planDeploys?: boolean
   /** More rules of the project, such as a mobile pipeline's. */
   readonly rules?: ReadonlyArray<On.Rule<"pr" | "trusted", any>>
 }
@@ -126,11 +132,15 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
     const { deployed, ready, last } = deploy(reads ? options : { ...options, stack: unread }, stage, environment)
     return ruleOf(environment.on, [deployed, ...(ready === undefined ? [] : [ready]), ...(environment.then?.(last) ?? [])])
   })
+  const plans = options.planDeploys !== true ? [] : Object.entries(options.environments).flatMap(([name, environment]) =>
+    "push" in environment.on && environment.on.push === branch ? [Alchemy.plan(options.stack, { stage: Alchemy.stageName(name), ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }) })] : []
+  )
   return Calder.project({
     ...(options.shared === undefined ? {} : { shared: options.shared }),
     rules: [
       On.pullRequest([...checks, ...artifacts]),
       ...previews,
+      ...(plans.length === 0 ? [] : [On.preview(plans)]),
       On.push(branch, checks),
       ...environments,
       ...(options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, [...checks, ...artifacts])]),

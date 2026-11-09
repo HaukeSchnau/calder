@@ -73,7 +73,7 @@ const quote = (words: ReadonlyArray<string>) => words.map((word) => `'${word.rep
  * value comes from. The CLI prints status lines before the outputs, an object, so the file keeps what
  * starts at the line `{`.
  */
-const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy") => {
+const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan") => {
   const config = stack.config === undefined ? "" : ` --config ${quote([stack.config])}`
   const outputs = verb === "deploy" ? stack.outputs : undefined
   return [
@@ -84,7 +84,8 @@ const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy") => {
     // so each command waited up to 3 s for npm. Remove this once Alchemy keeps that cache elsewhere.
     `if [ -n "\${CI_CACHE_ROOT:-}" ]; then mkdir -p .alchemy && ln -sfn "$CI_CACHE_ROOT/alchemy-version-check.json" .alchemy/version-check.json; fi`,
     stack.runner === "bun" ? `alchemy() { bun alchemy "$@"; }` : `alchemy() { node_modules/.bin/alchemy "$@"; }`,
-    `alchemy ${verb}${config} --stage "$1" --yes --env-file "$2"`,
+    // `plan` has no --yes: without it the CLI changes nothing, the state store included.
+    `alchemy ${verb}${config} --stage "$1"${verb === "plan" ? "" : " --yes"} --env-file "$2"`,
     ...(outputs === undefined
       ? []
       : [`alchemy state read ${quote([`${outputs.name}/`])}"$1"/output${config} --env-file "$2" | sed -n '/^{/,$p' > "$root"/${outputsFile}`]),
@@ -108,7 +109,7 @@ const command = (parts: ReadonlyArray<Part>) => {
   return cmd(Object.assign(strings, { raw: strings }) as unknown as TemplateStringsArray, ...values)
 }
 
-const run = <A>(stack: Stack<A>, verb: "deploy" | "destroy", stage: ReadonlyArray<Part>) =>
+const run = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan", stage: ReadonlyArray<Part>) =>
   command([
     { text: "bash -c " },
     script(stack, verb),
@@ -148,6 +149,21 @@ export const deploy = <A = void>(
     run: run(stack, "deploy", [{ text: stageName(options.stage) }]),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...valueOf(stack),
+  })
+
+/**
+ * `alchemy plan --stage <stage>`: what a deploy of the revision would change, without changing anything,
+ * so a pull request whose deploy can't work fails before it merges, such as one whose stack doesn't
+ * evaluate or whose provider or state store refuses it. It takes no lease and runs every time. A stack that
+ * reads the deploy's `artifacts` while it plans gets them too.
+ */
+export const plan = <A>(stack: Stack<A>, options: { readonly stage: string; readonly name?: string; readonly artifacts?: Artifacts }) =>
+  Task.make(options.name ?? `plan-${options.stage}`, {
+    ...shellOf(stack),
+    setup: stack.setup,
+    reuse: "never",
+    run: run(stack, "plan", [{ text: stageName(options.stage) }]),
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
   })
 
 /**

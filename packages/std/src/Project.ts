@@ -24,6 +24,12 @@ export interface StandardOptions {
    * host. The default branch deploys it before the promotion, so a release starts with them.
    */
   readonly placement?: Alchemy.Stack<unknown>
+  /**
+   * Same-repo pull requests also plan the placement (`placement-plan`, `alchemy plan`), so one whose deploy
+   * can't work fails before it merges. Off by default while Alchemy's state store fails every plan
+   * (since 2026-11-06); default it to on once infra's and t3code's plans pass.
+   */
+  readonly planDeploys?: boolean
   /** Steps that run on the default branch after the release is live, such as app store builds. */
   readonly afterDeploy?: (promote: Step.Step<unknown, unknown, Base, {}, { readonly deploy: true }>) => ReadonlyArray<Step.Any>
   readonly defaultBranch?: string
@@ -61,6 +67,9 @@ export const standard = (options: StandardOptions): Calder.Project => {
     ...shared,
     rules: [
       On.pullRequest([...checks, release]),
+      ...(options.placement === undefined || options.planDeploys !== true
+        ? []
+        : [On.preview([Alchemy.plan(options.placement, { stage: "prod", name: "placement-plan" })])]),
       On.push(branch, [promote, ...(options.afterDeploy?.(promote) ?? [])]),
       ...nightly,
     ],
@@ -83,6 +92,8 @@ export interface AlchemyOptions<A = void> {
   readonly shared?: Files.Files
   /** As in `standard`: a cron schedule that runs every check without reusing anything. */
   readonly nightly?: string
+  /** As in `standard`: same-repo pull requests plan the production stage. */
+  readonly planDeploys?: boolean
 }
 
 /**
@@ -102,6 +113,7 @@ export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project =>
     defaultBranch: branch,
     ...(options.shared === undefined ? {} : { shared: options.shared }),
     ...(options.nightly === undefined ? {} : { nightly: options.nightly }),
+    ...(options.planDeploys === undefined ? {} : { planDeploys: options.planDeploys }),
     // Previews wait for every check in its usual turn, unlike `previews.after`, which gates them.
     ...(options.previews === undefined ? {} : { rules: Environments.preview(options, { url: options.previews.url, after: checks }) }),
   })
