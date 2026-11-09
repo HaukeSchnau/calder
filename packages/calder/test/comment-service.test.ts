@@ -32,7 +32,7 @@ const setup = Effect.gen(function*() {
     Layer.succeed(Gitea)({
       comment: (_repo, _pr, body) => Effect.sync(() => (posted.push(body), posted.length)),
       status: unused, requiredChecks: unused, head: unused, pullTitle: unused, dispatch: unused, repos: unused, hasFile: unused, pull: unused,
-      updatePull: unused, mergePull: unused, openPulls: unused,
+      updatePull: unused, mergedPull: unused, mergePull: unused, openPulls: unused,
     }),
   ))))
   return { sql, service, posted }

@@ -23,7 +23,7 @@ const gitea = (files: ReadonlyArray<string>) =>
     repos: () => Effect.succeed([]),
     hasFile: (repo, ref, path) => Effect.succeed(files.includes(`${repo}@${ref}:${path}`)),
     pull: unused,
-    updatePull: unused,
+    updatePull: unused, mergedPull: unused,
     mergePull: unused,
     openPulls: unused,
   })

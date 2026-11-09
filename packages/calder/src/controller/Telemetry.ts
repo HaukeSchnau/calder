@@ -38,6 +38,8 @@ export const spanId = () => randomBytes(8).toString("hex")
 export class Telemetry extends Context.Service<Telemetry, {
   readonly exportSpan: (span: SpanData) => Effect.Effect<void>
   readonly log: (record: LogRecord) => Effect.Effect<void>
+  /** Sends a gauge's current points at once, each with its attributes as labels. */
+  readonly gauge: (name: string, description: string, points: ReadonlyArray<{ readonly attributes: Record<string, string>; readonly value: number }>) => Effect.Effect<void>
   /** Runs an effect as a child span of `parent`. */
   readonly span: <A, E, R>(parent: Parent, name: string, attributes: Record<string, string>, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly logs: (query: { readonly run: string; readonly step?: string }) => Effect.Effect<ReadonlyArray<Domain.LogLine>>
@@ -181,6 +183,23 @@ export const layer = Layer.effect(Telemetry)(Effect.gen(function*() {
   return {
     exportSpan,
     log: (record) => Effect.sync(() => void logs.push(record)),
+    gauge: (name, description, points) => {
+      if (points.length === 0) return Effect.void
+      const timeUnixNano = nanos(Date.now())
+      return post("/v1/metrics", {
+        resourceMetrics: [{
+          resource,
+          scopeMetrics: [{
+            scope: { name: "calder" },
+            metrics: [{
+              name,
+              description,
+              gauge: { dataPoints: points.map((p) => ({ attributes: attrs(p.attributes), timeUnixNano, asDouble: p.value })) },
+            }],
+          }],
+        }],
+      }, `${points.length} ${name} points`, Schedule.recurs(2))
+    },
     span: (parent, name, attributes, effect) =>
       Effect.gen(function*() {
         const start = Date.now()
