@@ -39,6 +39,15 @@ const execute = (step: ReturnType<typeof Alchemy.deploy<unknown>>, options: { re
 
 const rest = "deploy --stage prod --yes --env-file /secrets/cloudflare"
 
+describe("Alchemy.plan", () => {
+  it("plans the stage without --yes, so the CLI changes nothing", () => {
+    const step = Alchemy.plan({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod" })
+    expect(execute(step).calls).toEqual(["alchemy <root> plan --stage prod --env-file /secrets/cloudflare"])
+    if (step.def._tag !== "Task") throw new Error("not a task")
+    expect(step.def.lease).toBeUndefined()
+  })
+})
+
 describe("Alchemy.deploy", () => {
   it("starts the installed CLI, without pnpm checking the install again, or bun's", () => {
     const pnpm = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod" })

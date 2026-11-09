@@ -39,6 +39,13 @@ describe("Project.standard", () => {
       expect(plan.get("promote")?.after).toEqual(["artifact", "projectRelease", "qa", "placement"])
       const pr = yield* Calder.plan(project, Event.pullRequest({ number: 1 }))
       expect(pr.get("placement")).toBeUndefined()
+      expect(pr.get("placement-plan")).toBeUndefined()
+
+      // With planDeploys, a same-repo pull request plans the placement; a fork's doesn't.
+      const planning = Project.standard({ flake, checks: [qa], placement, planDeploys: true })
+      const same = yield* Calder.plan(planning, Event.pullRequest({ number: 1 }))
+      expect(same.get("placement-plan")?.preview).toBe(true)
+      expect((yield* Calder.plan(planning, Event.pullRequest({ number: 1, fork: true }))).get("placement-plan")).toBeUndefined()
     }))
 
   it.effect("a nightly run checks everything again and deploys nothing", () =>
