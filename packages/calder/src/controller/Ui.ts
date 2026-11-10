@@ -9,7 +9,7 @@ import * as Fleet from "./Fleet.ts"
 import { Gitea } from "./Gitea.ts"
 import { Jobs } from "./Jobs.ts"
 import { Leases } from "./Leases.ts"
-import { Live } from "./Live.ts"
+import { combine, Live } from "./Live.ts"
 import { Merges } from "./Merges.ts"
 import * as Rows from "./Rows.ts"
 import * as Telemetry from "./Telemetry.ts"
@@ -248,8 +248,13 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
       Stream.unwrap(Effect.gen(function*() {
         const row = yield* db(Rows.loadRun(runId))
         if (row === undefined) return Stream.fail(unknownRun(runId))
-        const recent = live.lines(runId, step)
-        const all = recent.length > 0 ? recent : yield* telemetry.logs({ run: runId, ...(step === undefined ? {} : { step }) })
+        // A step's lines are all live or all stored; a run's can be some of each. Live is read after
+        // storage answers, so the lines that arrive meanwhile are in the page and not lost before `follow`.
+        const all = step !== undefined && live.lines(runId, step).length > 0
+          ? live.lines(runId, step)
+          : yield* telemetry.logs({ run: runId, ...(step === undefined ? {} : { step }) }).pipe(
+            Effect.map((stored) => combine(live.lines(runId, step), stored)),
+          )
         const end = Math.min(before ?? all.length, all.length)
         const start = Math.max(0, end - (limit ?? 5000))
         const page = all.slice(start, end).map((line, i): Domain.LogEntry => ({ ...line, index: start + i }))

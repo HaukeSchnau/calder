@@ -18,6 +18,19 @@ interface Follower {
 }
 
 /**
+ * A run's or a step's lines: those `live` still keeps, and for every other step those `stored` has.
+ * Live keeps a step's output only for a while after it ends, so a run's later steps can still be
+ * there when its earlier ones are only in storage.
+ */
+export const combine = (
+  live: ReadonlyArray<Domain.LogLine>,
+  stored: ReadonlyArray<Domain.LogLine>,
+): ReadonlyArray<Domain.LogLine> => {
+  const kept = new Set(live.map((l) => l.step))
+  return [...live, ...stored.filter((l) => !kept.has(l.step))].sort((a, b) => a.timestamp - b.timestamp)
+}
+
+/**
  * What only exists while it happens: output of running steps and the change feed. Finished output
  * lives in VictoriaLogs; this keeps it a while after a step ends so the UI doesn't wait for ingestion.
  */
