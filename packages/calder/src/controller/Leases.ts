@@ -220,7 +220,7 @@ export const layer = Layer.effect(Leases)(Effect.gen(function*() {
   for (const h of adopted) if (h.lease !== null) jobs.get(h.job)!.lease = JSON.parse(h.lease) as Lease
   yield* Effect.forEach(holders.filter((h) => !adopted.includes(h)), (h) => store.released(h.project, h.job), { discard: true })
   const newest = yield* db(sql<Saved["newest"][number]>`select project, step, run from lease_steps`)
-  const leases = make(store, { newest, holders: adopted })
+  const leases = make(store, { newest, holders: adopted.map(({ lease: _, ...h }) => h) })
   yield* Effect.forEach(adopted, (h) => Scope.addFinalizer(jobs.get(h.job)!.scope, leases.release(h.project, h.job)), { discard: true })
   return leases
 }))
