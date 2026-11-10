@@ -3,7 +3,7 @@ import type { Domain } from "@calder-ci/api"
 import { Effect, Fiber, Stream } from "effect"
 import * as Live from "../src/controller/Live.ts"
 
-const line = (step: string, text: string): Domain.LogLine => ({ step, shard: null, stream: "stdout", level: "info", timestamp: 0, text })
+const line = (step: string, text: string, timestamp = 0): Domain.LogLine => ({ step, shard: null, stream: "stdout", level: "info", timestamp, text })
 
 const run = (status: Domain.RunStatus): Domain.Run => ({
   id: "calder-7",
@@ -43,4 +43,12 @@ describe("following a run's logs", () => {
       yield* live.publish({ _tag: "RunChanged", run: run("failed") })
       expect(yield* live.follow("calder-7").pipe(Stream.runCollect)).toEqual([])
     }).pipe(Effect.provide(Live.layer)))
+})
+
+describe("a run's lines", () => {
+  it("take each step from live while live keeps it, and the other steps from storage", () => {
+    const live = [line("mbp", "building mbp", 3)]
+    const stored = [line("lint", "not formatted", 1), line("mbp", "building mbp, as stored", 2)]
+    expect(Live.combine(live, stored).map((l) => l.text)).toEqual(["not formatted", "building mbp"])
+  })
 })

@@ -62,3 +62,17 @@ describe("following a run", () => {
       expect(yield* TestConsole.logLines).toContain("errored: no rule runs pushes to feature")
     }).pipe(Effect.provide(TestConsole.layer)))
 })
+
+describe("the steps a failed run names", () => {
+  const step = (name: string, kind: Domain.StepKind, status: Domain.StepStatus) => ({ name, kind, status }) as Domain.StepRun
+
+  it("are those that failed or died, not those blocked behind them", () => {
+    expect(Cli.failedSteps([
+      step("lint", "build", "failed"),
+      step("qa", "task", "died"),
+      step("deploy-mbp", "task", "blocked"),
+      step("mbp", "build", "passed"),
+      step("report", "output", "failed"),
+    ])).toEqual(["lint", "qa"])
+  })
+})

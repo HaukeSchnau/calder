@@ -391,13 +391,14 @@ calder plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref]
 calder check [dir]                     # runs the working copy (jj or git) like a pull request, before pushing
 calder trigger <project> [--branch b]  # runs a branch head on the controller, follows it, and exits 1 unless
   [--inputs '{"release":"ios"}']     # it passes; with --inputs a manual run of the On.manual rules they match
-calder runs [project] [--limit n]      # recent runs with their status, event, commit and age
+calder runs [project] [--limit n]      # recent runs with their status (and failed steps), event, commit and age
 calder projects                        # the projects, the latest run of each default branch, and how far a
                                      # deploying one's deploy is behind it
 calder status <run>                    # a run's steps, how long each waited for a slot and ran, what waiting
                                      # ones wait for, why failed ones failed, and links to outputs
-calder logs <run> [step] [-f]          # a step's output, or every step's with its name in front; -f follows
-                                     # until the step ends, or the run without a step
+calder logs <run> [step] [-f] [--all]  # a step's output, or every step's with its name in front; of a failed
+                                     # run only the failed steps', unless --all; -f follows until the step
+                                     # ends, or the run without a step
 calder rerun <run> [--force]           # runs the revision again: steps that passed in the run, deploys and OTA
                                      # updates included, keep their result unless their key, inputs or secrets
                                      # changed or a newer run deployed them since; --force runs every step
