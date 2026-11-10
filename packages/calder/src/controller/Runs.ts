@@ -1069,7 +1069,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* db(sql`update steps set status = 'queued', queued_at = ${Date.now()} where run_id = ${runId} and name = ${name}`)
       yield* publishStep(runId, name)
 
-      const inputs = Object.fromEntries([...spec.needs.filter((n) => !setups.includes(n)), ...spec.exits].map((n) => [n, outcomeOf(byName.get(n)!)]))
+      // An action reads the outcomes of its exits; a task's (`afterEnded`) only order it.
+      const read = [...spec.needs.filter((n) => !setups.includes(n)), ...(spec.action === null ? [] : spec.exits)]
+      const inputs = Object.fromEntries(read.map((n) => [n, outcomeOf(byName.get(n)!)]))
       const expected = Estimates.of(yield* estimates.steps(run.project), name)
       const plan = JSON.parse(run.plan ?? "{}") as PlanSpec
       // The dev shells the plan evaluated, which a task or setup enters without evaluating the flake again.

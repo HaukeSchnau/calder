@@ -15,7 +15,10 @@ export interface PlannedStep {
   readonly kind: Kind
   /** Steps whose values this one reads. */
   readonly needs: ReadonlyArray<string>
-  /** Steps whose outcome this one reads through `Step.exit`. It runs whether they pass or not. */
+  /**
+   * Steps this one runs after whatever their outcome: those an action reads through `Step.exit`, and a
+   * task's `afterEnded`.
+   */
   readonly exits: ReadonlyArray<string>
   /** Steps that must pass first, including the implicit required checks. */
   readonly after: ReadonlyArray<string>
@@ -188,7 +191,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
 
       const conflict = after.find((name) => exits.includes(name))
       if (conflict !== undefined) {
-        return fail(`"${step.name}" waits for "${conflict}" and reads its exit, which contradict each other`)
+        return fail(`"${step.name}" waits for "${conflict}" to pass and runs whatever its outcome, which contradict each other`)
       }
 
       const implicit: Array<string> = []
