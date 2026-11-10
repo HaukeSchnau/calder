@@ -29,6 +29,12 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
   /** Steps that must pass first. They don't enter the task's key. */
   readonly after?: ReadonlyArray<Step.Any>
   /**
+   * Steps that must end first, in any state: the task runs whether they passed, were skipped or failed,
+   * where `after` would skip or block it. For an order alone, such as a deploy that restarts the
+   * controller going last. They don't enter the task's key.
+   */
+  readonly afterEnded?: ReadonlyArray<Step.Any>
+  /**
    * Steps that must pass first like `after`, on the task's critical path: a deploy gated on them waits
    * for them in the latency lane, such as a preview on a smoke test of what it deploys. Keep them few
    * and quick; checks a deploy only waits for belong in `after`.
@@ -108,6 +114,7 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     each: options.each,
     after: [...(options.after ?? []), ...(options.gate ?? [])],
     gate: options.gate ?? [],
+    afterEnded: options.afterEnded ?? [],
     report: options.report,
     shards: options.shards === undefined ? undefined : { count: options.shards.count, split: options.shards.split },
     outputs: options.outputs ?? {},

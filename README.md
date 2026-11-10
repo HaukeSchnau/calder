@@ -114,7 +114,11 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   with which a task says it didn't do its work and that's no failure, such as a deploy to a host that is
   offline: the step is skipped, with the last line the command printed as the reason. A skipped step
   doesn't fail its run, but it isn't green either: its commit status is a warning, and the steps after it
-  are skipped too. A task or setup that fails says why the same way, after its exit code
+  are skipped too. A task's `afterEnded` lists steps it runs after only for the order: once they ended,
+  whether they passed, were reused, skipped, failed, died or were blocked, it runs, neither skipped nor
+  blocked by them; only cancelling the run cancels it. Like `after`, it pulls them into the run and leaves them out of its key. infra's deploy
+  of srv-2, which restarts Calder, goes after the other hosts' deploys that way, also when a host was
+  offline. A task or setup that fails says why the same way, after its exit code
   (`exited with 1: 3 previews are running (pr-3, pr-7, pr-9); close a PR or wait`), unless its report
   counted failing tests. Blank lines, color codes and a wrapper's note that the command failed (pnpm's
   `ELIFECYCLE`, just's `Recipe ... failed`, `exit status N`) don't count as the last line.
@@ -136,7 +140,7 @@ path; the controller marks it, and a fork's run has none. Among the projects und
 critical steps go first, and they may take one slot beyond the number, so a preview never queues behind a
 long check. A task's `gate`, steps it waits for like `after`, is on its critical path too, with what those
 read: `Environments.project`'s `previews.after` gates the preview, such as on a smoke test of what it
-deploys. Checks a deploy only waits for (`after`) take their turn like any other, so a push's checks don't
+deploys. Checks a deploy only waits for (`after`, `afterEnded`) take their turn like any other, so a push's checks don't
 jump the queue, and `Project.alchemy`'s previews wait for their checks that way. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
 comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
 

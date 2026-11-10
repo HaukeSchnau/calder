@@ -143,6 +143,19 @@ describe("Calder.plan", () => {
       expect(String(exit)).toContain("contradict each other")
     }))
 
+  it.effect("a task after others ended waits for them without passing or reading them", () =>
+    Effect.gen(function*() {
+      const deploy = (host: string, afterEnded: ReadonlyArray<Step.Any> = []) =>
+        Task.make(`deploy-${host}`, { run: cmd`deploy ${host}`, after: [qa], afterEnded, lease: true })
+      const others = [deploy("mbp"), deploy("m1")]
+      const last = deploy("srv-2", others)
+      const plan = yield* Calder.plan(Calder.project({ rules: [On.push("main", [last])] }), Event.push("main"))
+      expect(plan.get(last)).toMatchObject({ needs: [], after: ["qa"], exits: ["deploy-mbp", "deploy-m1"] })
+      expect(names(plan).indexOf("deploy-srv-2")).toBe(names(plan).length - 1)
+      // Pulled in like `after`, so the run deploys every host.
+      expect(plan.runs(others[0]!)).toBe(true)
+    }))
+
   it.effect("outputs are steps that depend on their task", () =>
     Effect.gen(function*() {
       const archive = Task.make("archive", { run: cmd`make`, outputs: { ipa: "build/app.ipa" }, inputs: Files.of("ios") })
