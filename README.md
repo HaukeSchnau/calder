@@ -469,6 +469,12 @@ step `(plan)`. A step stops counting once a newer run of the same event plans wi
 `since`, `first_run` and `url` say where the streak started and hold still while it lasts, also once retention
 prunes that run, so an alert on the gauge fires once per streak; in the fleet, infra's `CalderStepFailing` sends it to Telegram.
 
+It also exports `calder_step_last_passed`, one series per step of the newest planned run of each event on a
+default branch: the Unix time the step last passed or was reused in a trusted run, or the start of the retention
+window if it didn't. A deploy that passes only once its target runs the default branch's build (a host that
+already runs it, or one it just deployed) says through it how long the target has lagged: infra's
+`HostBehindMain` alerts on it.
+
 When the run of a merge on the default branch fails, Calder comments on the merged pull request that it isn't
 shipped yet, and edits that comment once a run that includes the merge passes.
 
