@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 import { vi } from "vitest"
-import { anchored, load, type Streak, streaks } from "../src/controller/Health.ts"
+import { anchored, lastPassed, load, type Streak, streaks } from "../src/controller/Health.ts"
 import { insertRun, insertStep, layer } from "./sqlite.ts"
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}))
@@ -105,5 +105,31 @@ describe("streaks", () => {
       }
       expect(streaks(yield* load("p", "main", 0, 2))).toEqual([])
       expect(streaks(yield* load("p", "main", 0, 2, ["nightly"]))).toEqual([{ step: "nightly", since: 2, firstRun: "p-2", runs: 1, endedAt: null, settled: true }])
+    }).pipe(Effect.provide(layer)))
+})
+
+describe("lastPassed", () => {
+  it.effect("says when each step of the newest runs last passed, from the window's start for one that didn't", () =>
+    Effect.gen(function*() {
+      yield* insertRun("p-1", { at: 10, branch: "main", planned: true })
+      yield* insertStep("p-1", "deploy-a", { status: "passed", finished: 11 })
+      yield* insertStep("p-1", "deploy-old", { status: "passed", finished: 11 })
+      yield* insertRun("p-2", { at: 20, branch: "main", planned: true, event: schedule })
+      yield* insertStep("p-2", "deploy-a", { status: "skipped", finished: 21 })
+      yield* insertStep("p-2", "deploy-b", { status: "skipped", finished: 21 })
+      yield* insertRun("p-3", { at: 30, branch: "main", planned: true })
+      yield* insertStep("p-3", "deploy-a", { status: "skipped", finished: 31 })
+      yield* insertStep("p-3", "deploy-b", { status: "skipped", finished: 31 })
+      // A pull request's run of the same branch doesn't count.
+      yield* insertRun("p-4", { at: 40, branch: "main", trust: "pr", planned: true })
+      yield* insertStep("p-4", "deploy-b", { status: "passed", finished: 41 })
+      // A weekly schedule's run doesn't hide the hourly one's steps.
+      yield* insertRun("p-5", { at: 50, branch: "main", planned: true, event: '{"_tag":"Schedule","cron":"17 7 * * 1"}' })
+      yield* insertStep("p-5", "skill-upstreams", { status: "passed", finished: 51 })
+      expect(yield* lastPassed("p", "main", 5)).toEqual([
+        { step: "deploy-a", at: 11 },
+        { step: "deploy-b", at: 5 },
+        { step: "skill-upstreams", at: 51 },
+      ])
     }).pipe(Effect.provide(layer)))
 })
