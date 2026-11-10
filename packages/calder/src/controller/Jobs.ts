@@ -349,9 +349,10 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
       const onStart = options.onStart ?? Effect.void
 
+      // A worker the next controller adopts keeps what its job's scope holds, such as the deploy lease.
       const cleanup = Effect.gen(function*() {
-        yield* Scope.close(job.scope, Exit.void)
         if (stopping && persisted) return
+        yield* Scope.close(job.scope, Exit.void)
         jobs.delete(id)
         if (existsSync(tokenFile)) rmSync(tokenFile)
         if (persisted) yield* db(sql`delete from jobs where id = ${id}`)

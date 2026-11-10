@@ -1,5 +1,5 @@
 import { BunSocket } from "@effect/platform-bun"
-import { Cause, Context, Data, Effect, Exit, Fiber, Layer, Predicate, Schedule, type Scope } from "effect"
+import { Cause, Clock, Context, Data, Duration, Effect, Exit, Fiber, Layer, Predicate, Schedule, type Scope } from "effect"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { type JobEvent, WorkerRpcs } from "../Protocol.ts"
 import * as Repo from "./Repo.ts"
@@ -11,26 +11,48 @@ export type Client = Effect.Success<typeof makeClient>
 class ControllerStopped extends Data.TaggedError("ControllerStopped")<{}> {}
 
 /**
+ * How long calls keep trying once the controller went away. A restarting controller adopts running
+ * workers, but it may first wait two minutes for an action to finish. A deploy of the controller's own
+ * host may then wait minutes for the new controller to answer, and switch back to the old one.
+ */
+const patience = "15 minutes"
+
+/** A try that lasted this long was taken by a controller, such as a wait for the deploy lease; a failure after it starts a new wait. */
+const taken = "1 minute"
+
+/**
  * Retries a call that a lost connection or a stopping controller cut short; the client reconnects on
  * its own. A controller that stalls past the client's 5-second ping drops the connection, and with it
- * every call in flight. A restarting controller adopts running workers, but it may first wait two
- * minutes for an action to finish, so calls keep trying for longer than that. The call runs in a fiber
- * of its own, so an interrupt that ends it came from the controller: the worker's own interruption
- * interrupts the wait for it instead.
+ * every call in flight. The call runs in a fiber of its own, so an interrupt that ends it came from the
+ * controller. Interrupting `reconnecting` interrupts the call, unless the caller made it uninterruptible:
+ * a deploy waits for the lease in the acquire of an `acquireRelease`, which only the lease's grant or
+ * a controller's answer ends.
  */
 export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-  Effect.gen(function*() {
-    const exit = yield* Fiber.await(yield* Effect.forkChild(call, { startImmediately: true }))
-    if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* new ControllerStopped()
-    return yield* exit
-  }).pipe(
-    Effect.retry({
-      while: (error) => Predicate.isTagged(error, "RpcClientError") || error instanceof ControllerStopped,
-      schedule: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("5 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
-    }),
-    Effect.catchIf((error): error is ControllerStopped => error instanceof ControllerStopped, () =>
-      Effect.die(new Error("the controller stopped while handling the call, and every try for 5 minutes"))),
-  )
+  Effect.suspend(() => {
+    // When the latest try began, and when the failures since the last try a controller took began.
+    let tried = 0
+    let since: number | undefined
+    return Effect.gen(function*() {
+      tried = yield* Clock.currentTimeMillis
+      const exit = yield* Fiber.await(yield* Effect.forkChild(call, { startImmediately: true }))
+      if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* new ControllerStopped()
+      return yield* exit
+    }).pipe(
+      Effect.retry({
+        while: (error) =>
+          Effect.gen(function*() {
+            if (!Predicate.isTagged(error, "RpcClientError") && !(error instanceof ControllerStopped)) return false
+            const now = yield* Clock.currentTimeMillis
+            if (since === undefined || now - tried >= Duration.toMillis(taken)) since = now
+            return now - since < Duration.toMillis(patience)
+          }),
+        schedule: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("5 seconds")]),
+      }),
+      Effect.catchIf((error): error is ControllerStopped => error instanceof ControllerStopped, () =>
+        Effect.die(new Error(`the controller stopped while handling the call, and every try for ${patience}`))),
+    )
+  })
 
 /** Retries a fetch from the controller, which crosses the internet for agents, where streams sometimes reset. */
 export const fetching = <A, E, R>(fetch: Effect.Effect<A, E, R>) =>
