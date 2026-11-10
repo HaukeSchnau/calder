@@ -364,7 +364,7 @@ function Inspector({ detail, step, onSelect, onTab }: {
         {step.needs.length + step.after.length + step.exits.length === 0 ? <p className="dim">Only the source at {shortSha(detail.run.commit.sha)}.</p> : (
           <Kv rows={[
             step.needs.length > 0 && ["needs", <span className="inps">{step.needs.map((n) => link(n))}</span>],
-            step.exits.length > 0 && ["reads", <span className="inps">{step.exits.map((n) => link(n))}</span>],
+            step.exits.length > 0 && [step.kind === "action" ? "reads" : "after ended", <span className="inps">{step.exits.map((n) => link(n))}</span>],
             step.after.length > 0 && ["after", <span className="inps">{step.after.map((n) => link(n, step.required.includes(n) ? <span className="req">required</span> : null))}</span>],
           ]} />
         )}

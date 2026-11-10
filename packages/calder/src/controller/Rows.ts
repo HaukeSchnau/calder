@@ -210,17 +210,21 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
 
 /**
  * Fills in what pending steps wait for, the steps they depend on that haven't settled, where the journal
- * holds no reason of its own.
+ * holds no reason of its own: those it runs after whatever their outcome (`exits`) to end, the others to pass.
  */
 export const withReasons = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray<Domain.StepRun> => {
   const byName = new Map(steps.map((s) => [s.name, s]))
-  return steps.map((step) => {
-    if (step.status !== "pending" || (step.waiting ?? null) !== null) return step
-    const open = [...step.needs, ...step.exits, ...step.after].filter((name) => {
+  const open = (names: ReadonlyArray<string>) =>
+    names.filter((name) => {
       const dep = byName.get(name)
       return dep !== undefined && !terminal(dep.status) && dep.kind !== "setup"
     })
-    return open.length === 0 ? step : { ...step, waiting: `${open.join(", ")} to pass` }
+  return steps.map((step) => {
+    if (step.status !== "pending" || (step.waiting ?? null) !== null) return step
+    const pass = open([...step.needs, ...step.after])
+    const end = open(step.exits).filter((name) => !pass.includes(name))
+    const reasons = [...(pass.length === 0 ? [] : [`${pass.join(", ")} to pass`]), ...(end.length === 0 ? [] : [`${end.join(", ")} to end`])]
+    return reasons.length === 0 ? step : { ...step, waiting: reasons.join("; ") }
   })
 }
 

@@ -120,6 +120,8 @@ export type Def =
     readonly after: ReadonlyArray<Step.Any>
     /** The steps among `after` on the task's critical path. */
     readonly gate: ReadonlyArray<Step.Any>
+    /** Steps that must end first, whatever their outcome. */
+    readonly afterEnded: ReadonlyArray<Step.Any>
     readonly report: ReportSpec | undefined
     readonly shards: { readonly count: number; readonly split: Files | undefined } | undefined
     readonly outputs: { readonly [name: string]: string }
@@ -191,7 +193,10 @@ export const timeout =
   (duration: Duration.Input) => <A, E, R, O, G>(self: Step<A, E, R, O, G>): Step<A, E | TimedOut, R, O, G> =>
     withPolicy(self, { _tag: "Timeout", duration: Duration.fromInputUnsafe(duration) }) as Step<A, E | TimedOut, R, O, G>
 
-/** Every step an edge leads to: needs, after, interpolated values and the task behind an output. */
+/**
+ * Every step an edge leads to: needs, after, interpolated values and the task behind an output. An `exit`
+ * edge waits for its step to end in any state: an action's `Step.exit`, or a task's `afterEnded`.
+ */
 export interface Dependency {
   readonly step: Step.Any
   readonly via: "needs" | "after" | "exit"
@@ -212,6 +217,7 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
         ...run.steps.map((s): Dependency => ({ step: s, via: "needs" })),
         ...Object.values(def.artifacts ?? {}).map((s): Dependency => ({ step: s, via: "needs" })),
         ...def.after.map((s): Dependency => ({ step: s, via: "after" })),
+        ...def.afterEnded.map((s): Dependency => ({ step: s, via: "exit" })),
       ]
     }
     case "Action":
