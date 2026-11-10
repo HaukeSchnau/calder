@@ -169,6 +169,27 @@ export const anchored = (project: string, list: ReadonlyArray<Streak>, now: numb
     return result
   })
 
+/**
+ * When each step of the default branch's pipeline last passed or was reused in a trusted run since `from`,
+ * or `from` for one that didn't. The steps are those of the newest planned run of each event, each cron
+ * its own, so a step that left the pipeline drops out. A deploy that passes only when its target runs the
+ * default branch's build says how long that target has lagged.
+ */
+export const lastPassed = (project: string, branch: string, from: number) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return yield* sql<{ step: string; at: number }>`with trusted as (
+        select id, created_at, planned_at, json_extract(event, '$._tag') || coalesce(json_extract(event, '$.cron'), '') as tag from runs
+        where project = ${project} and branch = ${branch} and trust = 'trusted' and created_at >= ${from}),
+      newest as (
+        select t.id from trusted t where t.planned_at is not null
+          and t.created_at = (select max(n.created_at) from trusted n where n.planned_at is not null and n.tag = t.tag)),
+      current as (select distinct name from steps where run_id in (select id from newest))
+      select c.name as step, coalesce((select max(s.finished_at) from steps s join trusted t on t.id = s.run_id
+          where s.name = c.name and s.status in ('passed', 'reused')), ${from}) as at
+      from current c order by c.name`
+  })
+
 /** A recovered streak's series stays at 0 this long, so the alert resolves even if a scrape missed the change. */
 const keepRecovered = 86_400_000
 
@@ -189,12 +210,17 @@ export const layer = Layer.effectDiscard(Effect.gen(function*() {
   const tick = Effect.gen(function*() {
     const now = Date.now()
     const points = []
+    const passes = []
     for (const project of projects.all()) {
       const open = yield* sql<{ step: string }>`select step from streak_starts where project = ${project.name} and ended_at is null`
-      const list = yield* load(project.name, project.defaultBranch, now - config.retention.days * 86_400_000, 30, open.map((row) => row.step)).pipe(
+      const from = now - config.retention.days * 86_400_000
+      const list = yield* load(project.name, project.defaultBranch, from, 30, open.map((row) => row.step)).pipe(
         Effect.flatMap((runs) => anchored(project.name, streaks(runs), now)),
         Effect.provideService(SqlClient.SqlClient, sql),
       )
+      for (const { step, at } of yield* lastPassed(project.name, project.defaultBranch, from).pipe(Effect.provideService(SqlClient.SqlClient, sql))) {
+        passes.push({ attributes: { project: project.name, step }, value: Math.floor(at / 1000) })
+      }
       for (const streak of list) {
         if (streak.endedAt !== null && now - streak.endedAt > keepRecovered) continue
         points.push({
@@ -210,6 +236,7 @@ export const layer = Layer.effectDiscard(Effect.gen(function*() {
       }
     }
     yield* telemetry.gauge("calder.failing_runs", "Runs of the default branch in a row in which the step failed; 0 once it passed again", points)
+    yield* telemetry.gauge("calder.step.last_passed", "Unix seconds when the step last passed in a trusted run of the default branch; the retention window's start if it didn't", passes)
   }).pipe(Effect.catchCause((cause) => Effect.logWarning("exporting failing steps failed", cause)))
 
   yield* tick.pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.delay("20 seconds"), Effect.forkScoped)
