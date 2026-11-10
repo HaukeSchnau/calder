@@ -40,7 +40,8 @@ export class Gitea extends Context.Service<Gitea, {
 export class Cache extends Context.Service<Cache, {
   /**
    * Readies a release for the hosts it goes to. When one of them isn't the controller's host, the fleet's
-   * binary cache gets the release's closure and keeps it as the project's release.
+   * binary cache gets the release's closure and keeps it as the project's release. Only while the step
+   * holds the project's deploy lease (`Fleet.deploying`); outside it the step dies.
    */
   readonly publish: (path: StorePath) => Effect.Effect<void>
 }>()("@calder-ci/core/Cache") {

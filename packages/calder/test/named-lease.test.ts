@@ -70,7 +70,7 @@ describe("a task with a named lease", () => {
       const jobs = new Map<string, ActiveJob>()
       let head = "rev-10"
       let fence = 0
-      const leases = Leases.make({ nextFence: () => Effect.sync(() => ++fence), held: () => Effect.void, released: () => Effect.void })
+      const leases = Leases.make({ nextFence: () => Effect.sync(() => ++fence), held: () => Effect.void, released: () => Effect.void, kept: () => Effect.void })
       const services = Layer.mergeAll(
         config(),
         Layer.succeed(Jobs)({ authorize: (id: string) => Effect.succeed(jobs.get(id)!) } as unknown as Jobs["Service"]),

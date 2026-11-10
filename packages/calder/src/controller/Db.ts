@@ -271,6 +271,11 @@ export const migrations = {
     yield* sql`create table streak_starts (project text not null, step text not null, first_run text not null, since integer not null,
       ended_at integer, primary key (project, step))`
   }),
+  "0021_lease_holder_leases": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // What the holder deploys (Jobs.ts `Lease`), as JSON, so a restarted controller gives it back to the adopted worker's job.
+    yield* sql`alter table lease_holders add column lease text`
+  }),
 }
 
 /**

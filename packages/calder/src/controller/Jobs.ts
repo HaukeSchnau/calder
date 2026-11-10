@@ -19,6 +19,16 @@ export interface Sample {
   readonly memoryBytes: number
 }
 
+/**
+ * What a job deploys while it holds a deploy lease: the lease, its app and its promotion endpoints, which
+ * a task that deploys through its own tool has none of (null).
+ */
+export interface Lease {
+  readonly project: string
+  readonly app: string
+  readonly targets: ReadonlyArray<string> | null
+}
+
 export interface ActiveJob {
   readonly id: string
   readonly tokenHash: string
@@ -33,11 +43,8 @@ export interface ActiveJob {
   readonly samples: Array<Sample>
   /** Closes when the job ends, however it ends, which releases what the job holds, such as its deploy lease. */
   readonly scope: Scope.Closeable
-  /**
-   * Set by the RPC server while the job holds a deploy lease: the project, its app and its promotion
-   * endpoints, which a task that deploys through its own tool has none of (null).
-   */
-  lease: { readonly project: string; readonly app: string; readonly targets: ReadonlyArray<string> | null } | undefined
+  /** Set by the RPC server while the job holds a deploy lease, and by Leases for an adopted worker that holds one. */
+  lease: Lease | undefined
 }
 
 export interface Usage {
@@ -349,9 +356,10 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
       const onStart = options.onStart ?? Effect.void
 
+      // A worker the next controller adopts keeps what its job's scope holds, such as the deploy lease.
       const cleanup = Effect.gen(function*() {
-        yield* Scope.close(job.scope, Exit.void)
         if (stopping && persisted) return
+        yield* Scope.close(job.scope, Exit.void)
         jobs.delete(id)
         if (existsSync(tokenFile)) rmSync(tokenFile)
         if (persisted) yield* db(sql`delete from jobs where id = ${id}`)
