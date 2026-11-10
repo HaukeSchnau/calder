@@ -122,7 +122,7 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const active = yield* trusted(job, token)
         if (Cache.hashOf(path) === undefined) return yield* Effect.die(new Error(`not a store path: ${path}`))
         const lease = active.lease
-        if (lease === undefined || active.spec._tag !== "Step") return
+        if (lease === undefined || active.spec._tag !== "Step") return yield* refuse("publishing a release needs the project's lease (Fleet.deploying)")
         // A task's stack decides where it deploys, so the artifacts it declares always go to the cache,
         // each kept as that artifact's release of the step; a pull request's previews keep none. A
         // promotion's targets say whether a host other than this one substitutes the release.
@@ -181,11 +181,13 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         // matter to it: asking them would wait up to a minute for one that doesn't answer.
         if (task) {
           active.lease = { project: key, app: project, targets: null }
+          yield* leases.keep(key, active.id, active.lease)
           return { _tag: "Held" as const, fence: grant.fence, targets: [], unreachable: [] }
         }
         const app = yield* appOf(run.id, project)
         const { targets, unreachable } = yield* fleet.deployTargets(projects.get(project)!, app)
         active.lease = { project, app, targets }
+        yield* leases.keep(key, active.id, active.lease)
         return { _tag: "Held" as const, fence: grant.fence, targets: targets.map(Fleet.hostOf), unreachable: unreachable.map(Fleet.hostOf) }
       }),
     fleetRelease: ({ job, token }) =>

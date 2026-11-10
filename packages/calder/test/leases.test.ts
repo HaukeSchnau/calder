@@ -17,6 +17,7 @@ const memory = () => {
         holders.set(project, { ...holder, project, fence: f })
       }),
     released: (project, job) => Effect.sync(() => void (holders.get(project)?.job === job && holders.delete(project))),
+    kept: () => Effect.void,
   }
   const saved = (): Leases.Saved => ({ newest: [...newest.values()], holders: [...holders.values()] })
   return { store, saved }

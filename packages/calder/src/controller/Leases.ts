@@ -1,7 +1,7 @@
 import { Context, Deferred, Effect, Layer, Scope, Semaphore } from "effect"
 import { SqlClient } from "effect/sql"
 import * as Counters from "./Counters.ts"
-import { Jobs } from "./Jobs.ts"
+import { Jobs, type Lease } from "./Jobs.ts"
 
 export type Grant =
   | { readonly _tag: "Held"; readonly fence: number }
@@ -38,6 +38,8 @@ export interface Store {
   /** Records the holder, and its run as the newest whose step held the lease. */
   readonly held: (project: string, holder: Holder, fence: number) => Effect.Effect<void>
   readonly released: (project: string, job: string) => Effect.Effect<void>
+  /** Records what the holder deploys. */
+  readonly kept: (project: string, job: string, lease: Lease) => Effect.Effect<void>
 }
 
 /** What the store kept, so a restart neither lets an older deploy in nor starts a second one beside a running one. */
@@ -60,6 +62,8 @@ export class Leases extends Context.Service<Leases, {
   readonly release: (project: string, job: string) => Effect.Effect<void>
   readonly holder: (project: string) => Holder | undefined
   readonly fenceOf: (project: string, job: string) => number | undefined
+  /** Records what the holder deploys, so the job of its adopted worker has it after a restart. */
+  readonly keep: (project: string, job: string, lease: Lease) => Effect.Effect<void>
 }>()("calder/controller/Leases") {}
 
 /** How long a staleness check may take before the run counts as current, so a slow Gitea delays no deploy for long. */
@@ -187,6 +191,7 @@ export const make = (store: Store, saved: Saved = { newest: [], holders: [] }): 
     release,
     holder: (project) => states.get(project)?.holder,
     fenceOf: (project, job) => fences.get(`${project}/${job}`),
+    keep: (project, job, lease) => fences.has(`${project}/${job}`) ? store.kept(project, job, lease) : Effect.void,
   }
 }
 
@@ -204,11 +209,15 @@ export const layer = Layer.effect(Leases)(Effect.gen(function*() {
           values (${project}, ${holder.job}, ${holder.run}, ${holder.step}, ${fence})`
       }))),
     released: (project, job) => db(sql`delete from lease_holders where project = ${project} and job = ${job}`).pipe(Effect.asVoid),
+    kept: (project, job, lease) =>
+      db(sql`update lease_holders set lease = ${JSON.stringify(lease)} where project = ${project} and job = ${job}`).pipe(Effect.asVoid),
   }
 
-  // A holder whose worker the restart adopted keeps the lease until that worker ends; the others are gone.
-  const holders = yield* db(sql<Saved["holders"][number]>`select project, job, run, step, fence from lease_holders`)
+  // A holder whose worker the restart adopted keeps the lease until that worker ends, and its job what it
+  // deploys; the others are gone.
+  const holders = yield* db(sql<Saved["holders"][number] & { lease: string | null }>`select project, job, run, step, fence, lease from lease_holders`)
   const adopted = holders.filter((h) => jobs.get(h.job) !== undefined)
+  for (const h of adopted) if (h.lease !== null) jobs.get(h.job)!.lease = JSON.parse(h.lease) as Lease
   yield* Effect.forEach(holders.filter((h) => !adopted.includes(h)), (h) => store.released(h.project, h.job), { discard: true })
   const newest = yield* db(sql<Saved["newest"][number]>`select project, step, run from lease_steps`)
   const leases = make(store, { newest, holders: adopted })
