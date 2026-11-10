@@ -110,7 +110,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   newer run held the lease, an older run's step is skipped instead of running; another step of a newer run,
   or the same step still waiting for its turn, replaces nothing, so a deploy that waits for a slow build
   still happens when its turn comes. Deploys of the same run take the lease in turn. Who holds the lease
-  and the newest run of each step survive a restart of the controller. `skipCode: n` marks the exit code
+  and the newest run of each step survive a restart of the controller, and a step waiting for the lease asks the next one.
+  `skipCode: n` marks the exit code
   with which a task says it didn't do its work and that's no failure, such as a deploy to a host that is
   offline: the step is skipped, with the last line the command printed as the reason. A skipped step
   doesn't fail its run, but it isn't green either: its commit status is a warning, and the steps after it

@@ -1,5 +1,5 @@
 import { BunSocket } from "@effect/platform-bun"
-import { Context, Effect, Layer, Predicate, Schedule, type Scope } from "effect"
+import { Cause, Context, Data, Effect, Exit, Fiber, Layer, Predicate, Schedule, type Scope } from "effect"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { type JobEvent, WorkerRpcs } from "../Protocol.ts"
 import * as Repo from "./Repo.ts"
@@ -7,17 +7,30 @@ import * as Repo from "./Repo.ts"
 const makeClient = RpcClient.make(WorkerRpcs)
 export type Client = Effect.Success<typeof makeClient>
 
+/** The controller stopped while it handled a call: Effect's RpcServer interrupts its handlers and sends the interrupt back. */
+class ControllerStopped extends Data.TaggedError("ControllerStopped")<{}> {}
+
 /**
- * Retries a call that a lost connection cut short; the client reconnects on its own. A controller
- * that stalls past the client's 5-second ping drops the connection, and with it every call in flight.
- * A restarting controller adopts running workers, but it may first wait two minutes for an action to
- * finish, so calls keep trying for longer than that.
+ * Retries a call that a lost connection or a stopping controller cut short; the client reconnects on
+ * its own. A controller that stalls past the client's 5-second ping drops the connection, and with it
+ * every call in flight. A restarting controller adopts running workers, but it may first wait two
+ * minutes for an action to finish, so calls keep trying for longer than that. The call runs in a fiber
+ * of its own, so an interrupt that ends it came from the controller: the worker's own interruption
+ * interrupts the wait for it instead.
  */
-export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>) =>
-  call.pipe(Effect.retry({
-    while: (error) => Predicate.isTagged(error, "RpcClientError"),
-    schedule: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("5 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
-  }))
+export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+  Effect.gen(function*() {
+    const exit = yield* Fiber.await(yield* Effect.forkChild(call, { startImmediately: true }))
+    if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* new ControllerStopped()
+    return yield* exit
+  }).pipe(
+    Effect.retry({
+      while: (error) => Predicate.isTagged(error, "RpcClientError") || error instanceof ControllerStopped,
+      schedule: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("5 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
+    }),
+    Effect.catchIf((error): error is ControllerStopped => error instanceof ControllerStopped, () =>
+      Effect.die(new Error("the controller stopped while handling the call, and every try for 5 minutes"))),
+  )
 
 /** Retries a fetch from the controller, which crosses the internet for agents, where streams sometimes reset. */
 export const fetching = <A, E, R>(fetch: Effect.Effect<A, E, R>) =>
