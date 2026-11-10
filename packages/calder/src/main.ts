@@ -222,10 +222,25 @@ const runs = Command.make("runs", {
     if (listed.runs.length === 0) {
       return yield* Console.log(Option.match(project, { onNone: () => "no runs yet", onSome: (p) => `no runs of ${p}; calder projects lists the projects` }))
     }
+    const failed = yield* Effect.forEach(
+      listed.runs,
+      (r) =>
+        r.status === "failed"
+          ? client.run({ id: r.id }).pipe(Effect.map((d) => Cli.failedSteps(d.steps)), Effect.orElseSucceed(() => []))
+          : Effect.succeed([]),
+      { concurrency: 5 },
+    )
     const now = Date.now()
     for (
       const line of Cli.table(
-        listed.runs.map((r) => [r.id, r.status, Event.describe(r.event), r.commit.sha.slice(0, 12), Cli.ago(now - r.createdAt), r.title ?? r.commit.title]),
+        listed.runs.map((r, i) => [
+          r.id,
+          failed[i]!.length > 0 ? `${r.status}: ${failed[i]!.join(", ")}` : r.status,
+          Event.describe(r.event),
+          r.commit.sha.slice(0, 12),
+          Cli.ago(now - r.createdAt),
+          r.title ?? r.commit.title,
+        ]),
       )
     ) yield* Console.log(line)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
@@ -306,10 +321,17 @@ const status = Command.make("status", { run: runId, url }, ({ run, url }) =>
     ),
   )
 
-/** `calder logs <run> [step]`: the output of a step, or of every step with its name in front. */
+/**
+ * `calder logs <run> [step]`: the output of a step, or of every step with its name in front. Of a run
+ * that failed, only the steps that failed, unless `--all`.
+ */
 const logs = Command.make("logs", {
   run: runId,
   step: Argument.String("step").pipe(Argument.withDescription("Only this step's output"), Argument.optional),
+  all: Flag.Boolean("all").pipe(
+    Flag.withDescription("Of a run that failed, print every step's output, not only the failed steps'"),
+    Flag.withDefault(false),
+  ),
   follow: Flag.Boolean("follow").pipe(
     Flag.withDescription("Keep printing new lines until the step ends, or the run without a step"),
     Flag.withAlias("f"),
@@ -317,21 +339,27 @@ const logs = Command.make("logs", {
   ),
   limit: Flag.Int("limit").pipe(Flag.withDescription("How many of the last lines so far to print (default 5000)"), Flag.optional),
   url,
-}, ({ run, step, follow, limit, url }) =>
+}, ({ run, step, all, follow, limit, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
-    const one = Option.getOrUndefined(step)
-    yield* client.logs({
-      runId: run,
-      follow,
-      ...(one === undefined ? {} : { step: one }),
-      ...Option.match(limit, { onNone: () => ({}), onSome: (n) => ({ limit: n }) }),
-    }).pipe(Stream.runForEach((line) => {
-      const where = [one === undefined ? line.step : null, line.shard === null ? null : `#${line.shard}`].filter((x) => x !== null).join(" ")
-      return Console.log(`${where === "" ? "" : `${where} | `}${line.stream === "calder" ? "[calder] " : ""}${line.text}`)
-    }))
+    const print = (one: string | undefined, prefixed: boolean) =>
+      client.logs({
+        runId: run,
+        follow,
+        ...(one === undefined ? {} : { step: one }),
+        ...Option.match(limit, { onNone: () => ({}), onSome: (n) => ({ limit: n }) }),
+      }).pipe(Stream.runForEach((line) => {
+        const where = [prefixed ? line.step : null, line.shard === null ? null : `#${line.shard}`].filter((x) => x !== null).join(" ")
+        return Console.log(`${where === "" ? "" : `${where} | `}${line.stream === "calder" ? "[calder] " : ""}${line.text}`)
+      }))
+    if (Option.isSome(step)) return yield* print(step.value, false)
+    const detail = yield* client.run({ id: run })
+    const failed = detail.run.status === "failed" && !all ? Cli.failedSteps(detail.steps) : []
+    if (failed.length === 0) return yield* print(undefined, true)
+    yield* Console.error(`${run} failed in ${failed.join(", ")}; --all prints every step`)
+    for (const name of failed) yield* print(name, true)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
-    Command.withDescription("Print a step's output, or every step's with its name in front"),
+    Command.withDescription("Print a step's output, or every step's with its name in front; of a failed run, the failed steps'"),
   )
 
 const cancel = Command.make("cancel", { run: runId, url }, ({ run, url }) =>

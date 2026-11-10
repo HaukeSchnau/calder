@@ -88,6 +88,10 @@ export const timings = (steps: ReadonlyArray<Domain.StepRun>, now: number) =>
       : s.error !== null && s.status !== "passed" ? s.error.message.split("\n")[0]! : "",
   ])
 
+/** The steps that made a run fail: those that failed or died, not those blocked behind them. */
+export const failedSteps = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray<string> =>
+  steps.filter((s) => s.kind !== "output" && (s.status === "failed" || s.status === "died")).map((s) => s.name)
+
 /** Rows as lines with their columns padded to line up. */
 export const table = (rows: ReadonlyArray<ReadonlyArray<string>>) => {
   const widths = rows.reduce<Array<number>>((w, row) => row.map((cell, i) => Math.max(w[i] ?? 0, cell.length)), [])
