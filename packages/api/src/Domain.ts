@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 export const Trust = Schema.Literals(["pr", "trusted"])
 export type Trust = typeof Trust.Type
@@ -356,6 +356,8 @@ export const Overview = Schema.Struct({
     compatibility: Schema.Number,
     /** Has the controller's compatibility version; other agents get no jobs. */
     current: Schema.Boolean,
+    /** Takes evaluation jobs only, for any platform. */
+    evaluator: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   })),
 })
 export type Overview = typeof Overview.Type

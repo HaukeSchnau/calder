@@ -36,7 +36,14 @@ const worker = Command.make("worker", { job: Argument.String("job").pipe(Argumen
   Worker.run(
     job,
     process.env.CALDER_URL !== undefined && process.env.CALDER_TOKEN !== undefined && process.env.CALDER_WORKSPACES !== undefined
-      ? { remote: { url: process.env.CALDER_URL, workspaces: process.env.CALDER_WORKSPACES }, token: process.env.CALDER_TOKEN }
+      ? {
+        remote: {
+          url: process.env.CALDER_URL,
+          workspaces: process.env.CALDER_WORKSPACES,
+          ...(process.env.CALDER_EVALUATOR_STORE === undefined ? {} : { store: process.env.CALDER_EVALUATOR_STORE }),
+        },
+        token: process.env.CALDER_TOKEN,
+      }
       : {
         socket: process.env.CALDER_SOCKET ?? "/run/calder/worker.sock",
         tokenFile: process.env.CALDER_TOKEN_FILE ?? `/run/calder/jobs/${job}.token`,
@@ -57,6 +64,12 @@ const agent = Command.make("agent", {
     Flag.withDescription("A command whose lease subcommand prints ready once the host admits a job"),
     Flag.optional,
   ),
+  evaluator: Flag.String("evaluator").pipe(
+    Flag.withDescription(
+      "Take the controller's evaluation jobs only, no tasks, and push the derivations they evaluate to this store, the controller's (such as ssh-ng://nix-ssh@controller)",
+    ),
+    Flag.optional,
+  ),
 }, (flags) =>
   Agent.run({
     ...flags,
@@ -64,6 +77,7 @@ const agent = Command.make("agent", {
     calder: [process.argv[0]!, process.argv[1]!],
     slotsFile: Option.getOrNull(flags.slotsFile),
     admission: Option.getOrNull(flags.admission),
+    evaluator: Option.getOrNull(flags.evaluator),
   })).pipe(Command.withDescription("Run the controller's jobs for this host's platform"))
 
 const gen = Command.make("gen", { dir: repository }, ({ dir }) =>

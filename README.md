@@ -148,7 +148,10 @@ step's usual time scaled by that count against the median count of its last ten 
 usual time. So a pull request that changes one file and rebuilds six derivations of a host goes before an
 older run's rebuild of the whole host. A project plans one run at a time, so a long plan leaves the other plan slots to other projects and two
 large evaluations never share the jobs' memory. A push to the default branch goes before every plan that
-isn't one, so it waits for at most the plan that runs. A plan that takes longer than 30 minutes is stopped
+isn't one, so it waits for at most the plan that runs. A push to another branch that no push rule names,
+such as a pull request's branch, whose pull request has a run of its own, ends without waiting for a plan
+slot: the controller keeps which branches the push rules of each `.calder/` tree name from its trusted
+runs, and for a tree it hasn't seen, a job that only loads ci.ts tells it. A plan that takes longer than 30 minutes is stopped
 and ends its run. A job whose systemd unit timed out starting, such as when a loaded host keeps the unit's
 start step past systemd's timeout, never ran its code, so it starts again after 15 s, 30 s and 60 s, saying
 so in its log, before its step dies with the unit's result. A unit that failed to start otherwise doesn't
@@ -240,7 +243,8 @@ manual runs) and same-repo pull requests: a push or manual run of another branch
 in the trusted worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
 changes. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
 runs and forks' runs take only trusted runs' records, since a pull request's ci.ts runs in the worker
-that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing.
+that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing. A
+same-repo pull request's build evaluation on an evaluator agent records as trusted, since no ci.ts runs there.
 Every night, and on `calder audit <project>`, the controller evaluates each default branch's head afresh,
 through the mirror and without the recorder, as plans did before records, and drops the records that
 disagree. It logs each as `footprint record wrong:` with the runs whose plans took it (infra alerts on
@@ -292,19 +296,24 @@ export default Environments.project({
 `Project.alchemy` is the same with one environment, the production stage the default branch deploys once
 the checks passed, and previews after the checks. The project's
 secret `env` is a dotenv file of the providers' credentials, which the CLI reads with `--env-file`.
-The CLI is the installed `node_modules/.bin/alchemy`, not `pnpm exec alchemy`, which checks the install
+Alchemy's CLI caches the bearer token of a Cloudflare state store but never writes that cache when `CI`
+is set, so in Calder each command fetched it again through a preview Worker, 5 s of each casa-crema command.
+With `ALCHEMY_STATE_STORE_URL` and `ALCHEMY_STATE_STORE_TOKEN` in the env file, the store's workers.dev
+URL and token, each command starts from a cache the step writes into an `ALCHEMY_HOME` of its own, which
+it removes when the command ends; Alchemy's run log stays in the job's HOME. A token the store refuses
+makes the CLI fetch it as before; a URL that doesn't answer fails the command. Every command runs with
+`DO_NOT_TRACK=1`, which turns Alchemy's telemetry off. The CLI is the installed `node_modules/.bin/alchemy`, not `pnpm exec alchemy`, which checks the install
 again first; a Bun repository sets `runner: "bun"` and installs with `Bun.install`, and its steps run
 `bun alchemy`. Trusted tasks keep Node's compile cache in their workspace slot (`NODE_COMPILE_CACHE`), so the
 CLI doesn't compile itself from scratch on every deploy. A stack whose package has its own lockfile in a
 directory, such as a website in `site/`, sets `dir` on the stack and on its install, and the CLI runs
 there.
 
-A stack with `outputs` makes what it returns, an object, the value of its deploys: after deploying,
-the step reads it with `alchemy state read <name>/<stage>/output` and decodes it with the schema,
-which leaves out secrets such as tokens. A preview's `url` gets the outputs as its second argument.
-Reading them takes a second CLI process, 16 s of casa-crema's deploy. So an environment's deploy reads
-them only when its `readiness` or `then` does; `Project.alchemy`'s production deploy has neither.
-Previews always read them for their link.
+A stack with `outputs` makes what it returns, an object, the value of its deploys, which the UI shows:
+after deploying, the step reads it from the state store with the env file's token, one request, and
+decodes it with the schema, which leaves out secrets such as tokens. Without a token, or with one the
+store refuses, it reads them with `alchemy state read <name>/<stage>/output`, a second CLI process that
+took 16 s of casa-crema's deploy. A preview's `url` gets the outputs as its second argument.
 
 ```ts
 export default Project.alchemy({
@@ -441,10 +450,43 @@ calder audit <project>                 # evaluates the default branch head afres
 calder controller --config <file>      # the service
 calder worker <job>                    # started by the controller in a systemd unit, or by an agent
 calder agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
+  [--evaluator <store>]              # with --evaluator, evaluates builds for the controller instead
                                      # runs the controller's jobs for this host's platform
 ```
 
 `calder <command> --help` describes each argument and flag.
+
+An evaluator agent (`calder agent --evaluator <store>`) takes the controller's build evaluations, the job
+the first build a plan left unevaluated starts, and nothing else: no task or setup of its platform. Evaluation
+needs a fast host more than any other job: infra's 25 builds took 648 s to evaluate on srv-2 under Calder and
+111 s on dev-hauke. While one is connected, every run that isn't a fork's evaluates there, in a slot of the
+agent's rather than the project's plan slot. The worker runs no `.calder/ci.ts`: only Calder's evaluator
+and `nix eval`, in which the flake's Nix runs in pure evaluation, with the builds an import from a derivation
+needs. Only report lines carrying a tag the evaluator draws for each `nix eval` count, so the flake's own code
+can't trace one. It evaluates a full mirror of the project that the
+agent keeps under `<workspaces>/.mirrors` and fetches from the controller, and fetches the flake's inputs from
+other repositories of the forge from the controller's mirrors too, as a local evaluation does, so Nix gets the same source and
+`revCount`, and so the same derivations, as from the controller's mirror. It then pushes the derivations
+with their closure to `<store>`, the controller's store (`nix copy --derivation --to`), which sends only what
+the controller lacks: 8 s for infra's builds when it lacks nothing, 322 s for their whole closure of 51,000
+paths. Pulling them from the controller took longer than 12 minutes, since it asks for each path in turn. The
+evaluation counts once every derivation is valid in the controller's store. When the push failed, the agent's
+job died, a derivation is missing, or no evaluator agent took the job within two minutes, the controller
+evaluates the builds itself and says so in the step's log. Builds the agent couldn't evaluate, such as one that
+imports another system's build or outgrew the agent's memory, the controller evaluates after it, and a build
+that evaluates alone after a failed evaluation of them together always does so on the controller. The agent's
+log says which Nix it evaluates with, and warns when its version or import-from-derivation setting differs from
+the controller's, since the controller's plans then can't take its records. Its pull requests' and trusted
+runs' evaluations keep separate caches.
+Attribute paths reach Nix as data, never as part of the expression, and a plan whose steps name a path
+outside the grammar (names of letters, digits and `_'+-`, or those and `.` in double quotes) fails. An
+attribute whose reported `drvPath` or `outPath` isn't a path in the store didn't evaluate, wherever it was
+evaluated, and the controller drops an agent's evaluation that reports one, since those paths go to Nix
+commands as arguments. Since no
+ci.ts runs in its worker, and a record holds only where the files its evaluation read are the same, what an
+evaluator agent records for a same-repo pull request
+counts as trusted: the default branch's run after the merge, of the same tree, takes every build from those
+records instead of evaluating again.
 
 An agent gets jobs only while it has the controller's compatibility version (`compatibility` in
 `packages/calder/src/Protocol.ts`), so deploying the controller stalls agents only when that version
@@ -452,7 +494,10 @@ changed. The UI lists each agent's version and Calder build and marks an agent o
 incompatible. A reconnecting agent reports the workers it still runs, and the controller stops those it
 doesn't know, such as jobs from before its restart, before it gives that agent new jobs. An agent that
 restarts stops the workers its earlier run left behind before it takes jobs, from the pids it keeps in
-`<workspaces>/.workers`.
+`<workspaces>/.workers`. A controller that stops leaves its own workers running too: the next one adopts
+the steps' workers and stops the others, such as plans. Stopping them itself would wait on `systemctl stop`,
+which needs polkit, and the host switch that restarts the controller stops polkit at the same moment, so
+srv-2's controller hung until systemd killed it two minutes later.
 
 The controller wakes agents whose hosts sleep while idle. Its config's `agents.wake` lists them, each
 with its `name`, `platform` and the `command` that wakes its host, such as

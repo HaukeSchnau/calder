@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs"
 import { basename, join } from "node:path"
 import * as Exec from "../Exec.ts"
+import { only } from "../StorePaths.ts"
 import { hashOf } from "./Cache.ts"
 import * as Rows from "./Rows.ts"
 
@@ -19,7 +20,7 @@ export const root = (stateDir: string, path: string) =>
     const link = join(roots(stateDir), basename(path))
     if (hashOf(path) === undefined || existsSync(link)) return Effect.void
     mkdirSync(roots(stateDir), { recursive: true })
-    return Exec.run(["nix-store", "--add-root", link, "--realise", path]).pipe(Effect.asVoid)
+    return Exec.run(["nix-store", "--add-root", link, "--realise", ...only([path])]).pipe(Effect.asVoid)
   })
 
 /** Where each run's derivations have their roots, one directory per run. */
@@ -43,7 +44,7 @@ export const rootDerivations = (stateDir: string, runId: string, drvs: ReadonlyA
     const missing = [...new Set(drvs)].filter((drv) => drv.endsWith(".drv") && hashOf(drv) !== undefined && !held.has(drv))
     if (missing.length === 0) return
     const root = (some: ReadonlyArray<string>) =>
-      Exec.run(["nix", "--extra-experimental-features", "nix-command", "build", "--out-link", join(dir, randomUUID().slice(0, 8)), ...some])
+      Exec.run(["nix", "--extra-experimental-features", "nix-command", "build", "--out-link", join(dir, randomUUID().slice(0, 8)), "--", ...only(some)])
     yield* root(missing).pipe(
       Effect.catch((e) => missing.length === 1 ? Effect.fail(e) : Effect.forEach(missing, (drv) => root([drv]), { discard: true })),
     )

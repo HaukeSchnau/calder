@@ -12,7 +12,7 @@ const build = (name: string, system: string): PlannedStep => ({
   kind: "build",
   needs: [],
   detail: `checks.${system}.${name}`,
-  build: { attr: `checks.${system}.${name}`, drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}`, system },
+  build: { attr: `checks.${system}.${name}`, drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system },
 })
 
 describe("builds", () => {
@@ -35,7 +35,7 @@ describe("builds", () => {
         ...build(name, "x86_64-linux"),
         build: { attr: `checks.x86_64-linux.${name}`, drv: null, out: null, system },
       })
-      const derivation = (name: string, system = "x86_64-linux") => ({ drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}`, system })
+      const derivation = (name: string, system = "x86_64-linux") => ({ drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system })
       const asked: Array<unknown> = []
       const { status, jobs, steps, plan } = yield* drive({
         steps: [
@@ -44,8 +44,8 @@ describe("builds", () => {
         ],
         // The order the plan would have evaluated them in.
         plan: { deferred: ["mac", "lib", "app", "docs", "huge"].map((name) => `checks.x86_64-linux.${name}`) },
-        cache: { has: (out) => Effect.succeed(out === "/nix/store/docs"), publish: () => Effect.void },
-        value: (name) => `/nix/store/${name}`,
+        cache: { has: (out) => Effect.succeed(out === "/nix/store/00000000000000000000000000000000-docs"), publish: () => Effect.void },
+        value: (name) => `/nix/store/00000000000000000000000000000000-${name}`,
         result: (_step, job) => {
           if (job.evaluate === undefined) return undefined
           asked.push(job.evaluate)
@@ -61,7 +61,7 @@ describe("builds", () => {
       expect(status).toBe("failed")
       expect(asked).toEqual([{
         builds: ["mac", "lib", "app", "docs", "huge"].map((name) => ({ name, attr: `checks.x86_64-linux.${name}` })),
-        planned: [{ name: "planned", drv: "/nix/store/planned.drv" }],
+        planned: [{ name: "planned", drv: "/nix/store/00000000000000000000000000000000-planned.drv" }],
       }])
       expect(jobs.filter((j) => j.endsWith("evaluates"))).toHaveLength(1)
       // The output that exists is reused, the build too large to evaluate fails without a job, and a build
@@ -94,7 +94,7 @@ describe("builds", () => {
           const name = job.evaluate.builds[0]!.name
           return {
             _tag: "Evaluated",
-            derivations: { [name]: name === "c" ? null : { drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}`, system: "x86_64-linux" } },
+            derivations: { [name]: name === "c" ? null : { drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system: "x86_64-linux" } },
             tooLarge: {},
             uses: {},
             errors: name === "c" ? { c: "assertion 'false' failed" } : {},
@@ -103,7 +103,7 @@ describe("builds", () => {
       })
       expect(status).toBe("failed")
       expect(jobs.filter((j) => j.endsWith("evaluates")).toSorted()).toEqual(["a evaluates", "a evaluates", "a evaluates", "b evaluates", "c evaluates"])
-      expect(derivations.toSorted()).toEqual(["/nix/store/a.drv", "/nix/store/b.drv"])
+      expect(derivations.toSorted()).toEqual(["/nix/store/00000000000000000000000000000000-a.drv", "/nix/store/00000000000000000000000000000000-b.drv"])
       expect(steps.get("c")).toMatchObject({ status: "failed", error: { tag: "EvaluationFailed", message: "c did not evaluate: assertion 'false' failed" } })
     }))
 
@@ -119,7 +119,7 @@ describe("builds", () => {
           : job.evaluate.builds.length > 1 ? { _tag: "Died", message: "out of memory" }
           : {
             _tag: "Evaluated",
-            derivations: Object.fromEntries(job.evaluate.builds.map(({ name: n }) => [n, { drv: `/nix/store/${n}.drv`, out: `/nix/store/${n}`, system: "x86_64-linux" }])),
+            derivations: Object.fromEntries(job.evaluate.builds.map(({ name: n }) => [n, { drv: `/nix/store/00000000000000000000000000000000-${n}.drv`, out: `/nix/store/00000000000000000000000000000000-${n}`, system: "x86_64-linux" }])),
             tooLarge: {},
             uses: {},
           },

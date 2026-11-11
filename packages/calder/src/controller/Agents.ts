@@ -9,6 +9,8 @@ interface Connection {
   readonly platform: string
   slots: number
   readonly compatibility: number
+  /** Takes evaluation jobs only. */
+  readonly evaluator: boolean
   readonly orders: Queue.Queue<AgentOrder, Cause.Done>
 }
 
@@ -26,7 +28,11 @@ interface Placed {
 interface Waiter {
   readonly job: { readonly id: string; readonly token: string }
   readonly platform: string
+  /** An evaluation job, which only evaluator agents take, whatever their platform. */
+  readonly evaluation: boolean
   readonly placed: Deferred.Deferred<Placed>
+  /** Completes when the job stops waiting without an agent: the last evaluator agent left. */
+  readonly abandoned: Deferred.Deferred<void>
   readonly onWaiting: (reason: string) => Effect.Effect<void>
   readonly onLog: (text: string) => Effect.Effect<void>
 }
@@ -63,6 +69,8 @@ export interface AgentUsage {
   readonly compatibility: number
   /** Whether it has the controller's compatibility version; only such agents get jobs. */
   readonly current: boolean
+  /** Whether it takes evaluation jobs only (`calder agent --evaluator`). */
+  readonly evaluator: boolean
 }
 
 /** How long an agent may stay away before the jobs it ran count as lost. */
@@ -78,13 +86,18 @@ export class Agents extends Context.Service<Agents, {
    * lost. Without `wait`, a job no agent can take right now returns -2 at once. `onPlaced` runs once an
    * agent took the job. While the job waits, the hosts of its platform's sleepers that are away are
    * woken; `onWaiting` hears what the job waits for whenever that changes, and `onLog` how the wakes go.
+   * An `evaluation` job goes to an evaluator agent of any platform, and only evaluator agents take one.
+   * `onPlaced` hears the agent's name.
    */
   readonly run: (
     job: { readonly id: string; readonly token: string },
     platform: string,
     options?: {
       readonly wait?: boolean
-      readonly onPlaced?: Effect.Effect<void>
+      readonly onPlaced?: (agent: string) => Effect.Effect<void>
+      readonly evaluation?: boolean
+      /** Gives up with -2 once no agent took the job in this time. */
+      readonly within?: Duration.Input
       readonly onWaiting?: (reason: string) => Effect.Effect<void>
       readonly onLog?: (text: string) => Effect.Effect<void>
     },
@@ -96,6 +109,7 @@ export class Agents extends Context.Service<Agents, {
     readonly running: ReadonlyArray<string>
     readonly build: string
     readonly compatibility: number
+    readonly evaluator?: boolean
   }) => Stream.Stream<AgentOrder, Unauthorized>
   readonly exited: (auth: { readonly token: string; readonly name: string }, job: string, code: number) => Effect.Effect<void, Unauthorized>
   readonly offer: (auth: { readonly token: string; readonly name: string }, slots: number) => Effect.Effect<void, Unauthorized>
@@ -114,21 +128,27 @@ export const make = (secret: string | null, version: number = compatibility, sle
   // Bumped on every connect, so a grace timer knows whether its agent came back.
   const generations = new Map<string, number>()
   // Every agent seen since start, so a missing one stays visible.
-  const seen = new Map<string, { readonly platform: string; slots: number; readonly build: string; readonly compatibility: number }>()
+  const seen = new Map<
+    string,
+    { readonly platform: string; slots: number; readonly build: string; readonly compatibility: number; readonly evaluator: boolean }
+  >()
 
   const check = (auth: { readonly token: string; readonly name: string }) =>
     secret !== null && auth.token === secret ? Effect.void : Effect.fail(new Unauthorized({ reason: "wrong agent token" }))
 
+  const evaluatorConnected = () => [...connections.values()].some((c) => c.evaluator && c.compatibility === version)
+
   const on = (agent: string) => [...placed.values()].filter((p) => p.agent === agent)
 
-  const takes = (c: Connection, platform: string) => {
+  const takes = (c: Connection, waiter: Pick<Waiter, "platform" | "evaluation">) => {
     const jobs = on(c.name)
-    return c.platform === platform && c.compatibility === version && jobs.length < c.slots && !jobs.some((p) => p.stopping)
+    const kind = waiter.evaluation ? c.evaluator : !c.evaluator && c.platform === waiter.platform
+    return kind && c.compatibility === version && jobs.length < c.slots && !jobs.some((p) => p.stopping)
   }
 
   const assign = Effect.gen(function*() {
     for (const waiter of [...waiters]) {
-      const agent = [...connections.values()].find((c) => takes(c, waiter.platform))
+      const agent = [...connections.values()].find((c) => takes(c, waiter))
       if (agent === undefined) continue
       waiters.splice(waiters.indexOf(waiter), 1)
       const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>(), stopping: false }
@@ -148,18 +168,18 @@ export const make = (secret: string | null, version: number = compatibility, sle
     })
 
   /** What a job of `platform` waits for: an agent, and how the wakes of the platform's sleepers went. */
-  const reason = (platform: string) =>
-    [`an agent of ${platform} to take it`, ...sleepers.flatMap((s) => {
+  const reason = (platform: string, evaluation = false) =>
+    evaluation ? "an evaluator agent to take it" : [`an agent of ${platform} to take it`, ...sleepers.flatMap((s) => {
       const wake = wakes.get(s.name)
       return s.platform !== platform || wake === undefined || wake.connected ? [] : [wake.failure ?? `waking ${s.name}`]
     })].join("; ")
 
   /** Tells the jobs that wait for `platform` what happened, and what they wait for now. */
   const tell = (platform: string, text: string) =>
-    Effect.forEach(waiters.filter((w) => w.platform === platform), (w) =>
+    Effect.forEach(waiters.filter((w) => w.platform === platform && !w.evaluation), (w) =>
       Effect.suspend(() =>
         // A job an agent took meanwhile no longer waits.
-        waiters.includes(w) ? Effect.andThen(w.onLog(text), w.onWaiting(reason(platform))) : Effect.void
+        waiters.includes(w) ? Effect.andThen(w.onLog(text), w.onWaiting(reason(platform, w.evaluation))) : Effect.void
       ), { discard: true })
 
   /**
@@ -214,24 +234,41 @@ export const make = (secret: string | null, version: number = compatibility, sle
         const waiter: Waiter = {
           job,
           platform,
+          evaluation: options?.evaluation === true,
           placed: Deferred.makeUnsafe<Placed>(),
+          abandoned: Deferred.makeUnsafe<void>(),
           onWaiting: options?.onWaiting ?? (() => Effect.void),
           onLog: options?.onLog ?? (() => Effect.void),
         }
         waiters.push(waiter)
         yield* assign
         const waits = waiters.includes(waiter)
-        if (waits && options?.wait === false) {
+        // An evaluation no evaluator agent can take runs on the controller instead of waiting.
+        if (waits && (options?.wait === false || (waiter.evaluation && !evaluatorConnected()))) {
           waiters.splice(waiters.indexOf(waiter), 1)
           return -2
         }
-        if (waits) yield* waiter.onWaiting(reason(platform))
-        // While the job waits, no connected agent of its platform has a free slot.
-        const rousing = rouse(platform).pipe(Effect.andThen(Effect.sleep(wakeCheck)), Effect.forever)
-        const p = yield* (waits ? Effect.raceFirst(Deferred.await(waiter.placed), rousing) : Deferred.await(waiter.placed)).pipe(
+        if (waits) yield* waiter.onWaiting(reason(platform, waiter.evaluation))
+        // While the job waits, no connected agent of its platform has a free slot. Sleepers take no evaluations.
+        const rousing = waiter.evaluation ? Effect.never : rouse(platform).pipe(Effect.andThen(Effect.sleep(wakeCheck)), Effect.forever)
+        const given = Deferred.await(waiter.abandoned).pipe(
+          options?.within === undefined ? (e) => e : Effect.raceFirst(Effect.sleep(options.within)),
+          Effect.as(undefined),
+        )
+        const p = yield* (waits ? Effect.raceFirst(Effect.raceFirst(Deferred.await(waiter.placed), rousing), given) : Deferred.await(waiter.placed)).pipe(
           Effect.onInterrupt(() => Effect.sync(() => waiters.includes(waiter) && waiters.splice(waiters.indexOf(waiter), 1))),
         )
-        if (options?.onPlaced !== undefined) yield* options.onPlaced
+        if (p === undefined) {
+          // Placed in the same instant: it runs after all.
+          if (!waiters.includes(waiter)) {
+            const placedNow = yield* Deferred.await(waiter.placed)
+            if (options?.onPlaced !== undefined) yield* options.onPlaced(placedNow.agent)
+            return yield* Deferred.await(placedNow.exited)
+          }
+          waiters.splice(waiters.indexOf(waiter), 1)
+          return -2
+        }
+        if (options?.onPlaced !== undefined) yield* options.onPlaced(p.agent)
         return yield* Deferred.await(p.exited)
       }),
     stop: (job) =>
@@ -251,9 +288,17 @@ export const make = (secret: string | null, version: number = compatibility, sle
             if (previous !== undefined) Queue.endUnsafe(previous.orders)
             const generation = (generations.get(auth.name) ?? 0) + 1
             generations.set(auth.name, generation)
-            const connection: Connection = { name: auth.name, platform: agent.platform, slots: agent.slots, compatibility: agent.compatibility, orders }
+            const evaluator = agent.evaluator === true
+            const connection: Connection = {
+              name: auth.name,
+              platform: agent.platform,
+              slots: agent.slots,
+              compatibility: agent.compatibility,
+              evaluator,
+              orders,
+            }
             connections.set(auth.name, connection)
-            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility })
+            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility, evaluator })
             const unknown = agent.running.filter((job) => !placed.has(job))
             for (const job of unknown) placed.set(job, { agent: auth.name, exited: Deferred.makeUnsafe<number>(), stopping: true })
             for (const [job, p] of [...placed]) {
@@ -262,7 +307,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
               if (!agent.running.includes(job)) yield* finish(job, -1)
               else if (p.stopping) Queue.offerUnsafe(orders, { _tag: "Stop", job })
             }
-            yield* Effect.logInfo(`agent ${auth.name} (${agent.platform}, ${agent.slots} slots) connected`)
+            yield* Effect.logInfo(`agent ${auth.name} (${agent.platform}, ${agent.slots} slots${evaluator ? ", evaluations only" : ""}) connected`)
             const woken = wakes.get(auth.name)
             if (woken !== undefined && !woken.connected) {
               woken.connected = true
@@ -285,6 +330,9 @@ export const make = (secret: string | null, version: number = compatibility, sle
                 if (connections.get(auth.name) !== connection) return
                 connections.delete(auth.name)
                 yield* Effect.logInfo(`agent ${auth.name} disconnected`)
+                if (!evaluatorConnected()) {
+                  for (const w of waiters.filter((w) => w.evaluation)) yield* Deferred.succeed(w.abandoned, undefined)
+                }
                 yield* Effect.sleep(reconnectGrace).pipe(
                   Effect.andThen(Effect.gen(function*() {
                     if (generations.get(auth.name) !== generation) return

@@ -7,6 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join } from "node:path"
 import * as Exec from "../Exec.ts"
+import { only } from "../StorePaths.ts"
+import { nixSettings } from "../NixSettings.ts"
 import { link, sdkPath } from "../Gen.ts"
 import type { Job as JobSpec, JobResult, Outcome, RunInfo } from "../Protocol.ts"
 import * as Values from "../Values.ts"
@@ -92,7 +94,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
       const out: Array<string> = []
       said = []
       const exitCode = yield* Exec.stream(
-        ["nix", "build", "--no-link", "--print-out-paths", "--log-format", "internal-json", "-L", ref],
+        ["nix", "build", "--no-link", "--print-out-paths", "--log-format", "internal-json", "-L", "--", ref],
         { env: env(job.run, step.name) },
         (stream, line) =>
           Effect.gen(function*() {
@@ -153,7 +155,8 @@ export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =
     const recorder = yield* Resolve.recorder(job.run, repo)
     const attrs = [...new Set(what.builds.map((b) => b.attr))]
     yield* say(`evaluating the ${attrs.length} builds the plan left for when the first of them runs`)
-    const evaluated = yield* Resolve.derivations(job.run, attrs, undefined, say, undefined, { recorder }).pipe(
+    if ((yield* Job).remote !== null) yield* say(contextNote(yield* nixSettings.pipe(Effect.orElseSucceed(() => null)), what.controller))
+    const evaluated = yield* Resolve.derivations(job.run, attrs, evaluationCache((yield* Job).remote, job.run.trust), say, undefined, { recorder }).pipe(
       // Loading the flake alone outgrew the memory: so would every build's.
       Effect.catchTag("TooLarge", (e) => Effect.succeed({ derivations: new Map(), errors: new Map(), tooLarge: new Map(attrs.map((a) => [a, e])) } as Resolve.Evaluated)),
     )
@@ -176,6 +179,57 @@ export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =
       })),
       ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
     } satisfies JobResult
+  }).pipe(Effect.flatMap((result) => pushed(result)))
+
+/**
+ * What an evaluator agent's log says about its Nix: the version, import-from-derivation setting and
+ * `NIX_CONFIG` hash it evaluates with, and a warning when they differ from the controller's, under which trusted runs' plans
+ * look for records. Then the default branch's run after a merge evaluates again what the pull request did.
+ */
+export const contextNote = (
+  agent: { readonly nix: string; readonly ifd: string; readonly config: string } | null,
+  controller: { readonly nix: string; readonly ifd: string; readonly config: string } | undefined,
+) => {
+  if (agent === null) return "could not read this agent's Nix version"
+  const describe = (s: typeof agent) => `${s.nix}, allow-import-from-derivation ${s.ifd}, NIX_CONFIG ${s.config}`
+  const mine = `this agent evaluates with ${describe(agent)}`
+  if (controller === undefined || (controller.nix === agent.nix && controller.ifd === agent.ifd && controller.config === agent.config)) return mine
+  return `${mine}; warning: the controller has ${describe(controller)}, ` +
+    "so its runs can't take what this evaluation records and evaluate these builds again"
+}
+
+/**
+ * Where an evaluation caches what attributes evaluated to. On an agent, pull requests' and trusted runs'
+ * evaluations of one revision read the same mirror, so each trust keeps its own cache: a trusted run
+ * would otherwise take what a pull request's evaluation put there without checking it. Local workers
+ * of each pool run as their own user, with a home of their own.
+ */
+export const evaluationCache = (remote: { readonly workspaces: string } | null, trust: RunInfo["trust"]) =>
+  remote === null ? undefined : join(remote.workspaces, ".cache", trust)
+
+/**
+ * On an evaluator agent: pushes the derivations an evaluation got, with what they depend on, to the
+ * controller's store, whose builds realise them. Pushing computes the closure here and sends only what
+ * the controller lacks: 8 s for infra's 25 builds when it lacks nothing, 322 s for their whole 51k-path
+ * closure. Pulling from the controller asked for each path in turn and copied nothing in 12 minutes.
+ */
+export const pushed = (result: Extract<JobResult, { _tag: "Evaluated" }>) =>
+  Effect.gen(function*() {
+    const { remote, log } = yield* Job
+    if (remote === null) return result as JobResult
+    if (remote.store === undefined) {
+      return { _tag: "Died", message: "this agent has no store to push derivations to (calder agent --evaluator)" } satisfies JobResult
+    }
+    const drvs = [...new Set(Object.values(result.derivations).flatMap((d) => (d === null ? [] : [d.drv])))]
+    if (drvs.length === 0) return result
+    const started = Date.now()
+    const copy = yield* Exec.exec(["nix", "--extra-experimental-features", "nix-command", "copy", "--derivation", "--to", remote.store, "--", ...only(drvs)])
+    if (copy.exitCode !== 0) {
+      const why = copy.stderr.trim().split("\n").slice(-3).join(" ")
+      return { _tag: "Died", message: `pushing the derivations to the controller's store failed: ${why}` } satisfies JobResult
+    }
+    yield* log("calder", `pushed the derivations of ${drvs.length} builds to the controller's store in ${Math.round((Date.now() - started) / 1000)} s`)
+    return result
   })
 
 // ----------------------------------------------------------------------------------------------- task
@@ -570,7 +624,7 @@ const fetchInputs = (self: Job["Service"], values: Record<string, unknown>) =>
       const match = typeof value === "string" ? storePath.exec(value) : null
       if (match === null || existsSync(value as string)) return
       const path = value as string
-      if ((yield* Exec.exec(["nix-store", "--realise", path])).exitCode === 0) return
+      if ((yield* Exec.exec(["nix-store", "--realise", ...only([path])])).exitCode === 0) return
       const dir = mkdtempSync(join(tmpdir(), "calder-input-"))
       const response = yield* Effect.tryPromise(() =>
         fetch(`${self.remote!.url}/store?path=${encodeURIComponent(path)}`, {
