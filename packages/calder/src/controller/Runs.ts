@@ -237,8 +237,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
   // lands in a workspace that is still in use.
   for (const adopted of jobs.adopted()) {
-    const { spec } = adopted
-    const pool: Pool = spec.run.trust === "pr" ? "pr" : "trusted"
+    const { spec, pool } = adopted
     const index = spec.workspace === null ? null : Number(/slot-(\d+)$/.exec(spec.workspace)?.[1] ?? Number.NaN)
     const key = `local/${pool}/${spec.run.project}`
     if (index !== null && !Number.isNaN(index)) {
@@ -290,7 +289,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   const repoOf = (project: string) => projects.get(project)!.repo
   const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`
-  const poolOf = (run: Rows.RunRow): Pool => (run.trust === "pr" ? "pr" : "trusted")
+  const poolOf = (run: Rows.RunRow): Pool => (run.trust === "trusted" ? "trusted" : run.fork === 1 ? "fork" : "pr")
   const largeEvaluations = (run: Rows.RunRow) => projects.get(run.project)?.largeEvaluations === true
 
   const publishRun = (runId: string) =>
@@ -451,7 +450,17 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
-      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run, projects.get(run.project)?.defaultBranch)) }
+      const earlier = yield* db(Rows.earlierPlan(run, projects.get(run.project)?.defaultBranch))
+      const job: Job = {
+        _tag: "Plan",
+        run: runInfo(run, pipelineDir.dir),
+        requiredChecks: required,
+        earlier: earlier === null ? null : {
+          revision: earlier.revision,
+          derivations: earlier.derivations,
+          ...(earlier.app === undefined ? {} : { app: earlier.app }),
+        },
+      }
       const claim: Slots.Claim = {
         project: run.project,
         expected: 0,
@@ -506,13 +515,22 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       })
       if (built.length > 0) return yield* unplanned(run, built[0]!)
 
-      // Footprints go to their own tables, not into the stored plan.
-      const { recorded, mismatches: _, ...planned_ } = result.plan
+      // Footprints go to their own tables, not into the stored plan, and only the controller says what a trusted run may take.
+      const { recorded, mismatches: _, trusted: _claimed, ...planned_ } = result.plan
       if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
       for (const [attr, evaluation] of Object.entries(result.plan.fromRecords ?? {})) {
         yield* db(sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`)
       }
-      const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
+      // What the reused plan took from records, this run took too, so the audit lists it with that plan's run.
+      const reused = result.plan.reused
+      if (reused !== undefined && earlier !== null && reused.revision === earlier.revision && reused.attrs.length > 0) {
+        yield* db(sql`insert into run_records (run_id, attr, evaluation) select ${run.id}, attr, evaluation from run_records
+          where run_id = ${earlier.run} and ${sql.in("attr", reused.attrs)} on conflict do nothing`)
+      }
+      const trusted = run.trust === "pr" && run.fork === 0 && event._tag === "PullRequest"
+        ? yield* db(Rows.trustedAttrs(run.project, result.plan, earlier))
+        : undefined
+      const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1), ...(trusted === undefined ? {} : { trusted }) }
       if (tree !== null && spec.pushes !== undefined) yield* rememberPushes(run, tree, spec.pushes)
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
@@ -864,8 +882,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly evaluates?: boolean
       /** A build evaluation for an evaluator agent (Jobs `evaluation`). */
       readonly evaluation?: boolean
-      /** The run is a fork's, whose evaluations Jobs keeps off agents. */
-      readonly fork?: boolean
     },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
@@ -929,7 +945,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           agent: options.remote === true,
           offload: options.offload === true,
           evaluation: options.evaluation === true,
-          ...(options.fork === undefined ? {} : { fork: options.fork }),
           adoptable: !options.action,
           onWaiting: (reason) => waiting(run.id, row.name, reason),
         })
@@ -1164,7 +1179,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           critical,
           remote: true,
           evaluation: true,
-          fork: run.fork === 1,
         }, { tests: [], attempts: 0 })
         if (stopped(r)) return { ...r, records: [] as Kept }
         const odder = r.result._tag === "Evaluated"
@@ -1239,7 +1253,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           }
         }), run.fork === 1)
         const attrs = Object.fromEntries(plan.steps.flatMap((s) => (s.build === null || !(s.name in derivations) ? [] : [[s.build.attr, derivations[s.name] ?? null]])))
-        yield* sql`update runs set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs } })} where id = ${run.id}`
+        // Evaluated at this revision, like the plan's own evaluations, so a trusted run may take them too.
+        const trusted = plan.trusted === undefined ? {} : { trusted: [...new Set([...plan.trusted, ...Object.keys(attrs)])].sort() }
+        yield* sql`update runs set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
+          where id = ${run.id}`
         const updated = steps.filter((s, i) => JSON.stringify(s) !== JSON.stringify(plan.steps[i]))
         for (const s of updated) yield* sql`update steps set spec = ${JSON.stringify(s)} where run_id = ${run.id} and name = ${s.name}`
         return updated.map((s) => s.name)

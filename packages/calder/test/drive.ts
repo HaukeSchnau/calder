@@ -57,6 +57,8 @@ export interface Drive {
   readonly unplanned?: boolean
   /** Fills the database before the workflow starts. */
   readonly seed?: Effect.Effect<void, unknown, SqlClient.SqlClient>
+  /** Reads the database once the run's steps settled, returned as `read`. */
+  readonly read?: Effect.Effect<unknown, unknown, SqlClient.SqlClient>
   /** Changes `app-2`'s step rows before the workflow starts, such as to resume a step after a restart. */
   readonly resume?: Effect.Effect<void, unknown, SqlClient.SqlClient>
   /** The project's configuration besides its name and repository. */
@@ -82,8 +84,6 @@ export interface Drive {
   readonly adoptedEvaluations?: ReadonlyArray<string>
   /** An evaluator agent (`calder agent --evaluator`) is connected. */
   readonly evaluator?: boolean
-  /** `app-2` is a fork's pull request run. */
-  readonly fork?: boolean
   /** What `nix-store --check-validity --print-invalid` finds valid, such as an evaluator agent's derivations; without it, the store answers nothing. */
   readonly valid?: (path: string) => boolean
   /**
@@ -116,6 +116,7 @@ export const drive = ({
   plan: extra = {},
   unplanned = false,
   seed = Effect.void,
+  read = Effect.void,
   resume = Effect.void,
   project: configured = {},
   meanwhile = Effect.void,
@@ -128,7 +129,6 @@ export const drive = ({
   statusDelay = () => undefined,
   evaluator = false,
   adoptedEvaluations = [],
-  fork = false,
   valid,
 }: Drive) =>
   Effect.gen(function*() {
@@ -148,10 +148,11 @@ export const drive = ({
         where run_id = 'app-1' and name = ${s.name}`
       if (s.lease !== undefined) yield* sql`insert into lease_steps (project, step, run) values ('app', ${s.name}, ${s.lease})`
     }
+    const fork = event._tag === "PullRequest" && event.fork ? 1 : 0
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, plan, rerun_of, fork)
       values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
-        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"}, ${fork ? 1 : 0})`
+        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"}, ${fork})`
     for (const [position, s] of unplanned ? [] : plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`
@@ -161,9 +162,12 @@ export const drive = ({
     const jobs: Array<string> = []
     /** Every command Calder ran, with its arguments. */
     const commands: Array<ReadonlyArray<string>> = []
+    /** The plan job the controller ran, with the earlier plan it handed the worker. */
+    let planJob: Extract<Job, { _tag: "Plan" }> | undefined
     const adopted = adoptedEvaluations.length === 0 ? [] : [{
       id: "adopted",
       startedAt: 1,
+      pool: trust === "trusted" ? "trusted" as const : fork === 1 ? "fork" as const : "pr" as const,
       spec: {
         _tag: "Step",
         run: { id: "app-2", project: "app", trust },
@@ -171,7 +175,7 @@ export const drive = ({
         evaluate: { builds: adoptedEvaluations.map((name) => ({ name, attr: name })), planned: [] },
       } as unknown as Extract<Job, { _tag: "Step" }>,
     }]
-    /** The pool each step's job ran in. */
+    /** The pool each step's job ran in, and the plan's as `plan`. */
     const pools = new Map<string, string>()
     /** The jobs that ran in the larger pull-request unit. */
     const large: Array<string> = []
@@ -279,6 +283,8 @@ export const drive = ({
           Effect.gen(function*() {
             if (job._tag === "Plan") {
               jobs.push(job.rules === true ? "rules" : "plan")
+              pools.set(job.rules === true ? "rules" : "plan", options.pool)
+              if (job.rules !== true) planJob = job
               return { result: { _tag: "Planned", plan }, usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "job-plan" }
             }
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
@@ -328,5 +334,5 @@ export const drive = ({
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
     const records = yield* sql<{ attr: string; trust: string }>`select attr, trust from evaluations order by id`
     const trusted = yield* Rows.records({ project: "app", trust: "trusted", fork: 0 })
-    return { status, jobs, statuses, history, steps, pools, large, evaluations, records, trusted, commands, plan: stored }
+    return { status, jobs, statuses, history, steps, pools, large, evaluations, records, trusted, commands, plan: stored, planJob, read: yield* read }
   }).pipe(Effect.provide(sqlite))

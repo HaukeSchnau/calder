@@ -27,12 +27,14 @@ describe("a pull request's preview", () => {
       expect(pools.get("summary")).toBe("pr")
     }))
 
-  it.live("from a fork runs every action sandboxed", () =>
+  it.live("from a fork runs every action sandboxed, in the forks' own pool", () =>
     Effect.gen(function*() {
       const { pools } = yield* drive({
-        steps: [action("preview-url", true)],
+        steps: [action("preview-url", true), action("summary", false)],
         event: { _tag: "PullRequest", number: 5, base: "main", head: "feature", fork: true },
       })
-      expect(pools.get("preview-url")).toBe("pr")
+      // A same-repo pull request's jobs never read what a fork's job wrote, so the default branch may take their plans.
+      expect(pools.get("preview-url")).toBe("fork")
+      expect(pools.get("summary")).toBe("fork")
     }))
 })

@@ -70,6 +70,17 @@ describe("starting a worker's unit", () => {
       expect(starts()).toBe(1)
     }))
 
+  it.effect("says the host lacks the pool's unit, such as forks' on a host from before they had their own", () =>
+    Effect.gen(function*() {
+      // Without the unit the host also lacks its polkit grant, and systemd asks polkit first.
+      const denied = { exitCode: 1, stderr: "Failed to start calder-job-fork@0a1b.service: Interactive authentication required.\n" }
+      const { starts, run } = starting([{ answer: denied, unit: "" }])
+      expect(yield* run).toBe("the host has no calder-job-fork@ unit the controller may start: Interactive authentication required")
+      expect(starts()).toBe(1)
+      const refused = { exitCode: 1, stderr: "Failed to start calder-job-fork-large@0a1b.service: Access denied\n" }
+      expect(yield* starting([{ answer: refused, unit: "" }]).run).toBe("the host has no calder-job-fork-large@ unit the controller may start: Access denied")
+    }))
+
   it.effect("stops waiting when the job is cancelled, also where the job itself may not be interrupted", () =>
     Effect.gen(function*() {
       const { starts, run } = starting([timeout, { answer: started, unit: "success" }])
@@ -98,10 +109,9 @@ describe("starting a worker's unit", () => {
 describe("agents", () => {
   it("take trusted jobs and same-repo pull requests' evaluations, never a fork's or other pull-request work", () => {
     expect(Jobs.refusedOnAgents({ pool: "trusted" })).toBe(false)
-    expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true, fork: false })).toBe(false)
-    expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true, fork: true })).toBe(true)
-    // A caller that doesn't say whether the run is a fork's gets the sandbox.
-    expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true })).toBe(true)
+    expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true })).toBe(false)
+    expect(Jobs.refusedOnAgents({ pool: "fork", evaluation: true })).toBe(true)
+    expect(Jobs.refusedOnAgents({ pool: "fork" })).toBe(true)
     expect(Jobs.refusedOnAgents({ pool: "pr" })).toBe(true)
   })
 })

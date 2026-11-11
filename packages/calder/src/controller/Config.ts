@@ -12,7 +12,7 @@ export const ProjectConfig = Schema.Struct({
   secrets: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /**
    * The flake needs more memory to evaluate than a pull request's job gets: its pull requests' plans and
-   * build evaluations run in `calder-job-pr-large@`, which the host gives more.
+   * build evaluations run in `calder-job-pr-large@` (a fork's in `calder-job-fork-large@`), which the host gives more.
    */
   largeEvaluations: Schema.optional(Schema.Boolean),
   /** False keeps Calder from rerunning the default branch head's failed deploy (Delivery.ts). */
@@ -71,7 +71,7 @@ export const ConfigSchema = Schema.Struct({
     tempo: Schema.NullOr(Schema.String),
   }),
   jobs: Schema.Struct({
-    /** systemd: template units per pool with their own users. process: child processes, for development. */
+    /** systemd: template units per pool (`calder-job-pr@`, `-fork@`, `-trusted@`) with their own users. process: child processes, for development. */
     mode: Schema.Literals(["systemd", "process"]),
     slots: Schema.Struct({ plans: Schema.Number, builds: Schema.Number, tasks: Schema.Number, actions: Schema.Number }),
   }),
