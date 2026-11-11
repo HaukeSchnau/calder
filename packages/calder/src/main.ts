@@ -268,15 +268,22 @@ const projects = Command.make("projects", { url }, ({ url }) =>
 
 const rerun = Command.make("rerun", {
   run: runId,
-  force: Flag.Boolean("force").pipe(Flag.withDescription("Run every step again, also those that passed, such as deploys")),
+  force: Flag.Boolean("force").pipe(
+    Flag.withDescription("Start a new run of the revision that runs every step again, also those that passed, such as deploys"),
+    Flag.withDefault(false),
+  ),
   url,
 }, ({ run, force, url }) =>
   Effect.gen(function*() {
     const client = yield* Remote.client
     const created = yield* client.rerun({ runId: run, ...(force ? { force } : {}) })
-    yield* Console.log(`${created.id}: ${created.commit.sha.slice(0, 12)} ${created.commit.title}`)
+    yield* Console.log(created.id === run
+      ? `${run} runs its failed steps again, and what they blocked`
+      : `${created.id}: ${created.commit.sha.slice(0, 12)} ${created.commit.title}`)
   }).pipe(Effect.scoped, Effect.provide(Remote.layer(url)))).pipe(
-    Command.withDescription("Run a run's revision and event again: the steps that didn't pass, and those that depend on them"),
+    Command.withDescription(
+      "Run a run's failed steps again in the same run, also while it runs, with what they blocked; a run without a failed step runs again as a new run",
+    ),
   )
 
 /** `calder merge <project> <pr>`: Calder merges the pull request once it is green and up to date with its base. */

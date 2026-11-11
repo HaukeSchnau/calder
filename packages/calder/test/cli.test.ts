@@ -3,6 +3,7 @@ import type { Domain } from "@calder-ci/api"
 import { Event } from "@calder-ci/core"
 import { Effect, Stream } from "effect"
 import { TestConsole } from "effect/testing"
+import { spawnSync } from "node:child_process"
 import * as Cli from "../src/Cli.ts"
 
 const queued: Domain.Run = {
@@ -74,5 +75,14 @@ describe("the steps a failed run names", () => {
       step("mbp", "build", "passed"),
       step("report", "output", "failed"),
     ])).toEqual(["lint", "qa"])
+  })
+})
+
+describe("calder rerun", () => {
+  const main = new URL("../src/main.ts", import.meta.url).pathname
+  it.skipIf(spawnSync("bun", ["--version"]).status !== 0)("takes a run without --force", () => {
+    // Port 9 refuses the connection, after the arguments parsed.
+    const ran = spawnSync("bun", [main, "rerun", "app-1", "--url", "http://127.0.0.1:9"], { encoding: "utf8", timeout: 60_000 })
+    expect(`${ran.stdout}${ran.stderr}`).not.toContain("Missing required flag")
   })
 })
