@@ -282,22 +282,47 @@ describe("Agents", () => {
       expect([yield* Fiber.join(task), yield* Fiber.join(evaluation), yield* Fiber.join(another)]).toEqual([0, 0, 0])
     }))
 
-  it.effect("an evaluation no evaluator agent takes within its time, or once the last one left, gives up", () =>
+  it.effect("an evaluation waits behind a busy evaluator, and gives up once the evaluators stall or the last one left", () =>
     Effect.gen(function*() {
       const agents = Agents.make("secret", 1)
       // With no evaluator connected it doesn't wait at all.
       expect(yield* agents.run({ id: "none", token: "t" }, "aarch64-linux", { evaluation: true, within: "2 minutes" })).toBe(-2)
 
-      // A busy evaluator: the job waits for its slot, at most two minutes.
+      // A busy evaluator: the job waits for its slot past two minutes, and gets it once the slot frees.
       const dev = yield* connect(agents, { name: "dev-hauke", platform: "x86_64-linux", evaluator: true })
       const busy = yield* Effect.forkChild(agents.run({ id: "busy", token: "tb" }, "aarch64-linux", { evaluation: true }))
       yield* ticks
       const waiting = yield* Effect.forkChild(agents.run({ id: "late", token: "tl" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
       yield* ticks
-      yield* TestClock.adjust("119 seconds")
+      yield* TestClock.adjust("5 minutes")
       expect(waiting.pollUnsafe()).toBeUndefined()
-      yield* TestClock.adjust("1 second")
-      expect(yield* Fiber.join(waiting)).toBe(-2)
+      yield* agents.exited({ token: "secret", name: "dev-hauke" }, "busy", 0)
+      yield* ticks
+      expect(dev.orders.map((o) => o._tag === "Start" ? o.job : o._tag)).toEqual(["busy", "late"])
+      yield* agents.exited({ token: "secret", name: "dev-hauke" }, "late", 0)
+      expect(yield* Fiber.join(waiting)).toBe(0)
+      yield* Fiber.join(busy)
+
+      // A job the evaluator has run for longer than the cap no longer counts as progress, such as a hung evaluation.
+      const hung = yield* Effect.forkChild(agents.run({ id: "hung", token: "th" }, "aarch64-linux", { evaluation: true }))
+      yield* ticks
+      const behind = yield* Effect.forkChild(agents.run({ id: "behind", token: "tbh" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      yield* ticks
+      yield* TestClock.adjust("14 minutes")
+      expect(behind.pollUnsafe()).toBeUndefined()
+      yield* TestClock.adjust("3 minutes")
+      expect(yield* Fiber.join(behind)).toBe(-2)
+      yield* agents.exited({ token: "secret", name: "dev-hauke" }, "hung", 0)
+      yield* Fiber.join(hung)
+
+      // An evaluator that offers no slots and runs nothing has stalled: the job gives up after two minutes.
+      yield* agents.offer({ token: "secret", name: "dev-hauke" }, 0)
+      const stalled = yield* Effect.forkChild(agents.run({ id: "stalled", token: "ts" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      yield* ticks
+      yield* TestClock.adjust("119 seconds")
+      expect(stalled.pollUnsafe()).toBeUndefined()
+      yield* TestClock.adjust("15 seconds")
+      expect(yield* Fiber.join(stalled)).toBe(-2)
 
       // The last evaluator leaving ends the wait at once.
       const left = yield* Effect.forkChild(agents.run({ id: "left", token: "tx" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
@@ -305,8 +330,6 @@ describe("Agents", () => {
       yield* Fiber.interrupt(dev.fiber)
       yield* ticks
       expect(yield* Fiber.join(left)).toBe(-2)
-      expect(dev.orders.map((o) => o._tag === "Start" ? o.job : o._tag)).toEqual(["busy"])
-      yield* Fiber.interrupt(busy)
     }))
 
   it.effect("agents need the secret", () =>

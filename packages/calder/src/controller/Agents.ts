@@ -17,6 +17,8 @@ interface Connection {
 interface Placed {
   readonly agent: string
   readonly exited: Deferred.Deferred<number>
+  /** When the agent got the job. */
+  readonly at: number
   /**
    * The controller wants the worker gone: it stopped the job, or never knew it (the worker ran across
    * a restart). Its workspace may belong to another job already, so its agent gets no new jobs until
@@ -73,6 +75,9 @@ export interface AgentUsage {
   readonly evaluator: boolean
 }
 
+/** How long an evaluator's job counts as progress for the evaluations waiting behind it: 3x infra's 5 minutes. */
+export const evaluationCap = "15 minutes"
+
 /** How long an agent may stay away before the jobs it ran count as lost. */
 const reconnectGrace = "5 minutes"
 
@@ -96,7 +101,7 @@ export class Agents extends Context.Service<Agents, {
       readonly wait?: boolean
       readonly onPlaced?: (agent: string) => Effect.Effect<void>
       readonly evaluation?: boolean
-      /** Gives up with -2 once no agent took the job in this time. */
+      /** Gives up with -2 once no evaluator agent ran a job for this long without taking this one. */
       readonly within?: Duration.Input
       readonly onWaiting?: (reason: string) => Effect.Effect<void>
       readonly onLog?: (text: string) => Effect.Effect<void>
@@ -137,6 +142,17 @@ export const make = (secret: string | null, version: number = compatibility, sle
     secret !== null && auth.token === secret ? Effect.void : Effect.fail(new Unauthorized({ reason: "wrong agent token" }))
 
   const evaluatorConnected = () => [...connections.values()].some((c) => c.evaluator && c.compatibility === version)
+  /**
+   * Whether a connected evaluator agent runs a job, so the evaluations waiting for it make progress: one
+   * that the agent took less than `evaluationCap` ago and that isn't being stopped. A hung evaluation
+   * would otherwise keep every waiting one from the controller until its worker's limit.
+   */
+  const evaluatorBusy = (now: number) =>
+    [...connections.values()].some((c) => {
+      const jobs = on(c.name)
+      return c.evaluator && c.compatibility === version && !jobs.some((p) => p.stopping) &&
+        jobs.some((p) => now - p.at < Duration.toMillis(evaluationCap))
+    })
 
   const on = (agent: string) => [...placed.values()].filter((p) => p.agent === agent)
 
@@ -151,7 +167,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
       const agent = [...connections.values()].find((c) => takes(c, waiter))
       if (agent === undefined) continue
       waiters.splice(waiters.indexOf(waiter), 1)
-      const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>(), stopping: false }
+      const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>(), at: yield* Clock.currentTimeMillis, stopping: false }
       placed.set(waiter.job.id, p)
       Queue.offerUnsafe(agent.orders, { _tag: "Start", job: waiter.job.id, token: waiter.job.token })
       yield* Deferred.succeed(waiter.placed, p)
@@ -251,8 +267,22 @@ export const make = (secret: string | null, version: number = compatibility, sle
         if (waits) yield* waiter.onWaiting(reason(platform, waiter.evaluation))
         // While the job waits, no connected agent of its platform has a free slot. Sleepers take no evaluations.
         const rousing = waiter.evaluation ? Effect.never : rouse(platform).pipe(Effect.andThen(Effect.sleep(wakeCheck)), Effect.forever)
+        // An evaluation gives up only once the evaluators stalled for `within`: none runs a job, such as
+        // one that offers no slots. Behind a busy one it waits, since its own turn there comes sooner than
+        // the controller's evaluation: infra-1036 gave up after 2 minutes behind another run's 5-minute
+        // evaluation, and srv-2 then took 10.
+        const stalled = (within: Duration.Input) =>
+          Effect.gen(function*() {
+            let since = yield* Clock.currentTimeMillis
+            while (true) {
+              yield* Effect.sleep(wakeCheck)
+              const now = yield* Clock.currentTimeMillis
+              if (evaluatorBusy(now)) since = now
+              else if (now - since >= Duration.toMillis(within)) return
+            }
+          })
         const given = Deferred.await(waiter.abandoned).pipe(
-          options?.within === undefined ? (e) => e : Effect.raceFirst(Effect.sleep(options.within)),
+          options?.within === undefined ? (e) => e : Effect.raceFirst(stalled(options.within)),
           Effect.as(undefined),
         )
         const p = yield* (waits ? Effect.raceFirst(Effect.raceFirst(Deferred.await(waiter.placed), rousing), given) : Deferred.await(waiter.placed)).pipe(
@@ -300,7 +330,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
             connections.set(auth.name, connection)
             seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility, evaluator })
             const unknown = agent.running.filter((job) => !placed.has(job))
-            for (const job of unknown) placed.set(job, { agent: auth.name, exited: Deferred.makeUnsafe<number>(), stopping: true })
+            for (const job of unknown) placed.set(job, { agent: auth.name, exited: Deferred.makeUnsafe<number>(), at: 0, stopping: true })
             for (const [job, p] of [...placed]) {
               if (p.agent !== auth.name) continue
               // Workers that exited while the agent was away can't report it any more.

@@ -489,8 +489,10 @@ with their closure to `<store>`, the controller's store (`nix copy --derivation 
 the controller lacks: 8 s for infra's builds when it lacks nothing, 322 s for their whole closure of 51,000
 paths. Pulling them from the controller took longer than 12 minutes, since it asks for each path in turn. The
 evaluation counts once every derivation is valid in the controller's store. When the push failed, the agent's
-job died, a derivation is missing, or no evaluator agent took the job within two minutes, the controller
-evaluates the builds itself and says so in the step's log. Builds the agent couldn't evaluate, such as one that
+job died, a derivation is missing, no evaluator agent is connected, or the connected ones ran no job for two
+minutes without taking this one (one that offers no slots, say), the controller evaluates the builds itself and
+says so in the step's log. Behind a busy evaluator it waits, since its turn there comes sooner than the
+controller's own evaluation would end. Builds the agent couldn't evaluate, such as one that
 imports another system's build or outgrew the agent's memory, the controller evaluates after it, and a build
 that evaluates alone after a failed evaluation of them together always does so on the controller. The agent's
 log says which Nix it evaluates with, and warns when its version or import-from-derivation setting differs from

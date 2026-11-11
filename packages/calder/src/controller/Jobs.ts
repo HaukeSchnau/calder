@@ -74,7 +74,7 @@ export interface Adopted {
 export const refusedOnAgents = (options: { readonly pool: Pool; readonly evaluation?: boolean }) =>
   options.pool === "fork" || (options.pool === "pr" && options.evaluation !== true)
 
-/** How long an evaluation waits for an evaluator agent to take it before the controller evaluates it. */
+/** How long the evaluator agents may run nothing while an evaluation waits, before the controller evaluates it. */
 export const evaluatorWait = "2 minutes"
 
 export class Jobs extends Context.Service<Jobs, {
@@ -454,7 +454,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
                 message: code === -1
                   ? "the agent lost the worker"
                   : code === -2
-                  ? options.evaluation === true ? `no evaluator agent took it within ${evaluatorWait}` : "no agent had a free slot"
+                  ? options.evaluation === true ? "no evaluator agent could take it" : "no agent had a free slot"
                   : `the worker exited with ${code} on the agent without a result`,
               })),
             )
