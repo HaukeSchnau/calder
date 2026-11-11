@@ -497,7 +497,7 @@ shipped yet, and edits that comment once a run that includes the merge passes.
 
 ## Reruns and the merge queue
 
-`calder rerun <run>`, and the UI's rerun, run what failed again in the same run: each failed or died step and
+`calder rerun <run>`, the UI's Rerun and, on a run that still runs, its Rerun failed, run what failed again in the same run: each failed or died step and
 each step downstream of one that ended without passing, such as one it blocked, go back to pending, and the
 run's log of each says why. Steps that passed keep their result, and a step that hasn't started yet waits for
 what runs again instead of being blocked by it. This works while the run still runs, so a build that lost

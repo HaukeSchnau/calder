@@ -65,6 +65,8 @@ export interface Drive {
   readonly requisites?: ReadonlyArray<string>
   /** Runs beside the run, such as a newer run that supersedes it; the run's services stay up until it ends. */
   readonly meanwhile?: Effect.Effect<void, never, RunsCore | Workflow.Runs | SqlClient.SqlClient>
+  /** How long Gitea takes to take a commit status, none by default. */
+  readonly statusDelay?: (context: string, state: string, description: string) => number | undefined
   /** The controller's placement key, none by default. */
   readonly placementKey?: string
   /** The controller's state directory, one that doesn't exist by default. */
@@ -109,6 +111,7 @@ export const drive = ({
   placementKey,
   stateDir,
   nix,
+  statusDelay = () => undefined,
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -143,6 +146,8 @@ export const drive = ({
     /** The jobs that ran in the larger pull-request unit. */
     const large: Array<string> = []
     const statuses = new Map<string, string>()
+    /** Every commit status Calder reported, in order, as `context: state: description`. */
+    const history: Array<string> = []
     const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
     const services = Layer.mergeAll(
       config({ ...(placementKey === undefined ? {} : { placementKey }), ...(stateDir === undefined ? {} : { stateDir }) }),
@@ -189,7 +194,14 @@ export const drive = ({
       }),
       Layer.succeed(Telemetry)({ exportSpan: () => Effect.void, log: () => Effect.void, gauge: () => Effect.void, span: (_parent, _name, _attributes, effect) => effect, logs: unused, trace: unused }),
       Layer.succeed(Gitea)({
-        status: (_repo, _sha, status) => Effect.sync(() => void statuses.set(status.context, `${status.state}: ${status.description}`)),
+        status: (_repo, _sha, status) => {
+          const record = Effect.sync(() => {
+            statuses.set(status.context, `${status.state}: ${status.description}`)
+            history.push(`${status.context}: ${status.state}: ${status.description}`)
+          })
+          const delay = statusDelay(status.context, status.state, status.description)
+          return delay === undefined ? record : Effect.sleep(delay).pipe(Effect.andThen(record))
+        },
         requiredChecks: () => Effect.succeed([]),
         head: unused,
         pullTitle: unused,
@@ -247,5 +259,5 @@ export const drive = ({
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
-    return { status, jobs, statuses, steps, pools, large, plan: stored }
+    return { status, jobs, statuses, history, steps, pools, large, plan: stored }
   }).pipe(Effect.provide(sqlite))

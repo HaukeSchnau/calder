@@ -117,8 +117,11 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
           for (const n of known) done.set(n, Deferred.makeUnsafe<void>())
           yield* Effect.forEach(known, (n) => FiberSet.run(fibers, launch(n)), { discard: true })
         })
-      entry.relaunch = relaunch
-      yield* Effect.forEach(plan.steps, (s) => FiberSet.run(fibers, launch(s.name)), { discard: true })
+      // Under the lock, so a rerun either finds the relaunch or comes before the steps start, never both.
+      yield* lock(runId).withPermits(1)(Effect.gen(function*() {
+        yield* Effect.forEach(plan.steps, (s) => FiberSet.run(fibers, launch(s.name)), { discard: true })
+        entry.relaunch = relaunch
+      }))
       // Steps the driver ran again because what blocked them passed, so a step blocked for another reason runs once.
       const reconciled = new Set<string>()
       while (true) {
@@ -129,7 +132,7 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
           const again = (yield* core.unblocked(runId)).filter((n) => !reconciled.has(n))
           if (again.length > 0) {
             for (const n of again) reconciled.add(n)
-            const reset = yield* core.retry(runId, "what blocked it passed when it ran again", again)
+            const reset = yield* core.retry(runId, "what blocked it passed when it ran again", { only: again, quiet: true })
             yield* relaunch(reset)
             return false
           }
@@ -218,7 +221,9 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
         if (row === undefined) return yield* new RunError({ message: `no run ${runId}` })
         if (options.force !== true && row.plan !== null && row.status !== "cancelled") {
           const reason = options.reason ?? "calder rerun"
-          const retried = yield* lock(runId).withPermits(1)(Effect.gen(function*() {
+          // The steps it reset run again even when the caller goes away, such as a CLI interrupted while
+          // Gitea is slow to take the statuses that say so: left pending, they would only end cancelled.
+          const retried = yield* Effect.uninterruptible(lock(runId).withPermits(1)(Effect.gen(function*() {
             const names = yield* core.retry(runId, reason)
             if (names.length === 0) return names
             const entry = driving.get(runId)
@@ -226,7 +231,7 @@ export const layer = Layer.effect(Runs)(Effect.gen(function*() {
             // A driver that hasn't launched its steps yet runs the reset ones with the rest.
             else if (entry === undefined) yield* start(runId)
             return names
-          }))
+          })))
           if (retried.length > 0) return Rows.run((yield* db(Rows.loadRun(runId)))!)
           if (!Domain.ended.has(row.status)) return yield* new RunError({ message: `nothing of ${runId} failed so far, so there is nothing to run again yet` })
         }

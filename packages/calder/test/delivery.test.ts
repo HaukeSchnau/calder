@@ -147,6 +147,51 @@ describe("converge", () => {
     }).pipe(Effect.provide(Layer.merge(layer, services)))
   })
 
+  it.effect("reruns no older failed run of the head while one that ran again in place still runs", () => {
+    const { reruns, services } = fakes()
+    return Effect.gen(function*() {
+      yield* failedHead()
+      const sql = yield* SqlClient.SqlClient
+      // p-3 errored before it planned, so p-2 was rerun in place and runs again.
+      yield* sql`update runs set status = 'running', finished_at = null, retries = 1 where id = 'p-2'`
+      yield* insertRun("p-3", { at: 2 * hour, branch: "main", sha: "m2", status: "errored" })
+      expect(yield* converge(project, 10 * hour)).toMatchObject({ stalled: false, retry: null })
+      expect(reruns).toEqual([])
+    }).pipe(Effect.provide(Layer.merge(layer, services)))
+  })
+
+  it.effect("tells a merge's pull request it shipped when its failed run passed once it ran again in place", () => {
+    const { comments, services } = fakes()
+    return Effect.gen(function*() {
+      yield* insertRun("p-1", { at: 1, branch: "main", sha: "m2", status: "failed", planned: true })
+      yield* insertStep("p-1", "deploy", { status: "failed" })
+      yield* Effect.provide(tick(10), Layer.succeed(Gitea)({
+        mergedPull: () => Effect.succeed(7),
+        comment: (_repo: string, pr: number, body: string, existing: number | null) =>
+          Effect.sync(() => {
+            comments.push({ pr, body, existing })
+            return existing ?? 100
+          }),
+      } as unknown as Gitea["Service"]))
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`update runs set status = 'passed', finished_at = 20, retries = 1 where id = 'p-1'`
+      yield* tick(30)
+      expect(comments.at(-1)?.body).toBe("**Shipped.** [run 1](http://calder.test/#/run/p-1) passed with this merge when it ran again.")
+    }).pipe(Effect.provide(Layer.merge(layer, services)))
+  })
+
+  it.effect("waits its backoff from the try that ended last, also when that is an older one that ran again in place", () => {
+    const { services } = fakes()
+    return Effect.gen(function*() {
+      yield* failedHead()
+      const sql = yield* SqlClient.SqlClient
+      yield* insertRun("p-3", { at: 2 * hour, branch: "main", sha: "m2", status: "errored" })
+      // p-3 errored before it planned; p-2 then ran again in place and failed at 3h.
+      yield* sql`update runs set retries = 1, finished_at = ${3 * hour} where id = 'p-2'`
+      expect((yield* converge(project, 3 * hour + 1))?.retry).toEqual({ runId: "p-2", at: 3 * hour + backoff(3), attempt: 3 })
+    }).pipe(Effect.provide(Layer.merge(layer, services)))
+  })
+
   it.effect("leaves a failed check and a project that opts out to people", () => {
     const { reruns, services } = fakes()
     return Effect.gen(function*() {

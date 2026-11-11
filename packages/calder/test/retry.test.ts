@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Schedule } from "effect"
+import { Effect, Fiber, Schedule } from "effect"
 import { SqlClient } from "effect/sql"
 import { vi } from "vitest"
-import { retryable } from "../src/controller/Runs.ts"
+import { retryable, RunsCore } from "../src/controller/Runs.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import type { JobResult, PlannedStep } from "../src/Protocol.ts"
 import { drive, step } from "./drive.ts"
@@ -144,5 +144,63 @@ describe("a rerun in place", () => {
         }),
       })
       expect(refused).toContain("nothing of app-2 failed so far")
+    }))
+
+  it.live("of a step whose row ended while its attempt still reports it waits for that attempt, so its failure lands before the retry", () =>
+    Effect.gen(function*() {
+      const { status, history } = yield* drive({
+        steps: [task("b"), task("c", ["b"])],
+        result: failingOnce("b"),
+        // Gitea takes a while to take b's failure, which the step reports after its row ended.
+        statusDelay: (context, state) => (context === "calder/b" && state === "failure" ? 300 : undefined),
+        meanwhile: Effect.gen(function*() {
+          yield* until(statusOf("b"), (s) => s === "failed")
+          yield* rerun
+          yield* until(runOf, (r) => r.status === "passed")
+        }),
+      })
+      expect(status).toBe("passed")
+      const ofB = history.filter((h) => h.startsWith("calder/b: "))
+      expect(ofB.indexOf("calder/b: pending: runs again")).toBeGreaterThan(ofB.findIndex((h) => h.startsWith("calder/b: failure")))
+      expect(ofB.at(-1)).toMatch(/^calder\/b: success/)
+    }))
+
+  it.live("that the driver makes itself neither counts as a retry nor tells Gitea", () =>
+    Effect.gen(function*() {
+      let retries: number | undefined
+      const { statuses } = yield* drive({
+        steps: [task("b")],
+        result: () => failed,
+        meanwhile: Effect.gen(function*() {
+          yield* until(runOf, (r) => r.status === "failed")
+          const core = yield* RunsCore
+          yield* core.retry("app-2", "a test", { only: ["b"], quiet: true })
+          retries = (yield* runOf).retries
+          // No driver runs b again here; the run ends as it was.
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`update runs set status = 'failed' where id = 'app-2'`.pipe(Effect.orDie)
+        }),
+      })
+      expect(retries).toBe(0)
+      expect(statuses.get("calder/b")).toMatch(/^failure/)
+    }))
+
+  it.live("runs the steps it reset again when whoever asked for it goes away while Gitea is slow to hear of it", () =>
+    Effect.gen(function*() {
+      const { status, jobs } = yield* drive({
+        steps: [task("b")],
+        result: failingOnce("b"),
+        statusDelay: (_context, _state, description) => (description === "runs again" ? 300 : undefined),
+        meanwhile: Effect.gen(function*() {
+          yield* until(runOf, (r) => r.status === "failed")
+          // The CLI's connection drops while the rerun waits for Gitea.
+          const asked = yield* Effect.forkChild(rerun)
+          yield* Effect.sleep("50 millis")
+          yield* Fiber.interrupt(asked)
+          yield* until(runOf, (r) => r.status === "passed")
+        }),
+      })
+      expect(status).toBe("passed")
+      expect(jobs).toEqual(["b", "b"])
     }))
 })

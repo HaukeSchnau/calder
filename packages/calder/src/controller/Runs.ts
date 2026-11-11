@@ -90,7 +90,15 @@ export class RunsCore extends Context.Service<RunsCore, {
    * failed or died step with what ended without success downstream of it (`retryable`). Reopens a run
    * that ended. Returns the steps it reset; its driver has to run them (Workflow.ts).
    */
-  readonly retry: (runId: string, reason: string, only?: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>>
+  readonly retry: (
+    runId: string,
+    reason: string,
+    options?: {
+      readonly only?: ReadonlyArray<string>
+      /** Neither counts as a retry of the run nor tells Gitea and the step's log, such as for a step the driver runs again itself. */
+      readonly quiet?: boolean
+    },
+  ) => Effect.Effect<ReadonlyArray<string>>
   /** Blocked steps none of whose dependencies failed, died or is blocked any more, such as after a retry passed. */
   readonly unblocked: (runId: string) => Effect.Effect<ReadonlyArray<string>>
 }>()("calder/controller/RunsCore") {}
@@ -193,12 +201,16 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return latch
       },
       drop: (runId: string) => runs.delete(runId),
+      /** The latch if one exists, without making one. */
+      peek: (runId: string, name: string) => runs.get(runId)?.get(name),
       /** A step that runs again opens its latch anew. */
       reset: (runId: string, name: string) => void runs.get(runId)?.delete(name),
     }
   }
   /** Opens when `step` of the step returned. */
   const stepped = latches()
+  /** The latch of each step whose `step` runs right now, by run and step. */
+  const attempts = new Map<string, Deferred.Deferred<void>>()
   /** Opens when a task that starts from the setup runs. */
   const wanted = latches()
 
@@ -1111,8 +1123,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       } satisfies Settled
     })
 
-  const step = (runId: string, name: string) =>
-    Effect.gen(function*() {
+  const step = (runId: string, name: string) => {
+    // The latch of this attempt. A step's row ends before its Gitea status and telemetry do, so a retry
+    // (`retry`) waits for this attempt to return before it puts the step back and opens a new latch.
+    const latch = stepped.get(runId, name)
+    const attempt = `${runId}\0${name}`
+    return Effect.gen(function*() {
+      attempts.set(attempt, latch)
       const run = yield* db(Rows.loadRun(runId))
       const row = yield* db(Rows.loadStep(runId, name))
       if (run === undefined || row === undefined) return "died" as const
@@ -1452,8 +1469,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           return yield* settle(run, row, { status: "died", error: { tag: "Died", message: `Calder failed to run the step: ${String(cause)}`, json: null } })
         })
       ),
-      Effect.tap(() => Deferred.succeed(stepped.get(runId, name), undefined)),
+      Effect.ensuring(Effect.suspend(() => {
+        if (attempts.get(attempt) === latch) attempts.delete(attempt)
+        return Deferred.succeed(latch, undefined)
+      })),
     )
+  }
 
   type TaskSpec = NonNullable<PlannedStep["task"]>
   type TestRow = Extract<JobEvent, { _tag: "Tests" }>["results"][number]
@@ -1733,35 +1754,49 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* publishRun(runId)
     })
 
-  const retry = (runId: string, reason: string, only?: ReadonlyArray<string>) =>
+  const retry = (runId: string, reason: string, options: { readonly only?: ReadonlyArray<string>; readonly quiet?: boolean } = {}) =>
     Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
       if (run === undefined || run.plan === null || run.status === "cancelled") return []
-      const rows = yield* db(Rows.loadSteps(runId))
-      const names = only ?? retryable(rows.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })))
-      const reset = rows.filter((r) => names.includes(r.name) && Rows.terminal(r.status))
-      if (reset.length === 0) return []
-      const picked = reset.map((r) => r.name)
-      yield* db(sql.withTransaction(Effect.gen(function*() {
+      const ended = (yield* db(Rows.loadSteps(runId))).filter((r) => Rows.terminal(r.status))
+      const names = options.only ?? retryable(ended.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })))
+      // An attempt whose row ended still reports it; its status would land after the retry's.
+      yield* Effect.forEach(names, (n) => {
+        const tail = attempts.get(`${runId}\0${n}`)
+        return tail === undefined ? Effect.void : Deferred.await(tail)
+      }, { discard: true })
+      const reset = yield* db(sql.withTransaction(Effect.gen(function*() {
+        const rows = (yield* Rows.loadSteps(runId)).filter((r) => names.includes(r.name) && Rows.terminal(r.status))
+        if (rows.length === 0) return []
+        const reopened = yield* sql`update runs set status = 'running', finished_at = null, error = null,
+            retries = retries + ${options.quiet === true ? 0 : 1}
+          where id = ${runId} and status != 'cancelled' returning id`
+        if (reopened.length === 0) return []
+        const picked = rows.map((r) => r.name)
+        // A build counts its infrastructure attempts on from `attempts` (`step`), so one that runs again gets them all again.
         yield* sql`update steps set status = 'pending', started_at = null, finished_at = null, queued_at = null, waiting = null,
             value = null, outputs = null, reused_from = null, error_tag = null, error_message = null, error_json = null, excerpt = null,
             contradicts = null, tests_passed = null, tests_failed = null, tests_skipped = null, tests_flaky = null,
-            files_total = null, files_ran = null, files_flaky = null
+            files_total = null, files_ran = null, files_flaky = null,
+            attempts = 0
           where run_id = ${runId} and ${sql.in("name", picked)}`
         yield* sql`delete from tests where run_id = ${runId} and ${sql.in("step", picked)}`
         yield* sql`delete from shards where run_id = ${runId} and ${sql.in("step", picked)} and status != 'passed'`
-        yield* sql`update runs set status = 'running', finished_at = null, error = null, retries = retries + 1 where id = ${runId}`
+        return rows
       })))
+      if (reset.length === 0) return []
       // A batch evaluation that ended gave what it could; a build that still lacks its derivation evaluates again.
       const evaluated = evaluations.get(runId)
       if (evaluated !== undefined && Deferred.isDoneUnsafe(evaluated)) evaluations.delete(runId)
       for (const r of reset) {
         stepped.reset(runId, r.name)
-        yield* logTo(run, r.name, r.span_id, null)({ _tag: "Log", stream: "calder", text: `runs again: ${reason}`, timestamp: Date.now() })
         yield* publishStep(runId, r.name)
+        if (options.quiet === true) continue
+        yield* logTo(run, r.name, r.span_id, null)({ _tag: "Log", stream: "calder", text: `runs again: ${reason}`, timestamp: Date.now() })
         if (r.kind !== "output") yield* status(run, `calder/${r.name}`, "pending", "runs again")
       }
-      yield* status(run, "calder", "pending", `running again: ${picked.join(", ")}`)
+      const picked = reset.map((r) => r.name)
+      if (options.quiet !== true) yield* status(run, "calder", "pending", `running again: ${picked.join(", ")}`)
       yield* publishRun(runId)
       return picked
     })

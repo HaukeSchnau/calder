@@ -89,6 +89,20 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
           return null
         })
 
+      const runs = yield* db(sql<{ id: string; status: string }>`select id, status from runs
+        where project = ${row.project} and pr = ${row.pr} and sha = ${pull.sha} order by created_at desc limit 1`)
+      const run = runs[0]
+      const pending = run === undefined || ["queued", "planning", "running"].includes(run.status)
+      // A failed run keeps the request, before anything updates its head: a rerun of that run that passes,
+      // or a new push whose run does, merges it. Meanwhile it holds no base, so the others go on.
+      if (!pending && run.status !== "passed") {
+        const held = `its run ${run.id} ${run.status}; Calder merges this once a rerun of it or a run of a new push passes`
+        if (row.message === held && row.status === "waiting") return null
+        yield* settle(row, "waiting", held)
+        if (row.message !== held) yield* gitea.comment(repo, row.pr, `Calder didn't merge this yet: ${held}.`, null)
+        return null
+      }
+
       yield* mirror.fetch(row.project).pipe(Effect.ignore)
       const base = yield* gitea.head(repo, pull.base)
       if (!(yield* contains(row.project, base, pull.sha))) {
@@ -97,21 +111,9 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
         yield* settle(row, "updating", null)
         return holds
       }
-      const runs = yield* db(sql<{ id: string; status: string }>`select id, status from runs
-        where project = ${row.project} and pr = ${row.pr} and sha = ${pull.sha} order by created_at desc limit 1`)
-      const run = runs[0]
-      if (run === undefined || ["queued", "planning", "running"].includes(run.status)) {
+      if (pending) {
         if (row.message !== null) yield* db(sql`update merges set message = null where project = ${row.project} and pr = ${row.pr}`)
         return row.status === "updating" ? holds : null
-      }
-      // A failed run keeps the request: a rerun that passes, or a new push whose run does, merges it. The
-      // request no longer holds its base, so the others go on meanwhile.
-      if (run.status !== "passed") {
-        const held = `its run ${run.id} ${run.status}; Calder merges this once a rerun of it or a run of a new push passes`
-        if (row.message === held && row.status === "waiting") return null
-        yield* settle(row, "waiting", held)
-        if (row.message !== held) yield* gitea.comment(repo, row.pr, `Calder didn't merge this yet: ${held}.`, null)
-        return null
       }
       const merged = yield* gitea.mergePull(repo, row.pr, pull.sha).pipe(Effect.as(null), Effect.catch((message) => Effect.succeed(message)))
       if (merged !== null) return yield* fail(`Gitea refused the merge: ${merged}`)
