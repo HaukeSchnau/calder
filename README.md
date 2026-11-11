@@ -450,7 +450,10 @@ changed. The UI lists each agent's version and Calder build and marks an agent o
 incompatible. A reconnecting agent reports the workers it still runs, and the controller stops those it
 doesn't know, such as jobs from before its restart, before it gives that agent new jobs. An agent that
 restarts stops the workers its earlier run left behind before it takes jobs, from the pids it keeps in
-`<workspaces>/.workers`.
+`<workspaces>/.workers`. A controller that stops leaves its own workers running too: the next one adopts
+the steps' workers and stops the others, such as plans. Stopping them itself would wait on `systemctl stop`,
+which needs polkit, and the host switch that restarts the controller stops polkit at the same moment, so
+srv-2's controller hung until systemd killed it two minutes later.
 
 The controller wakes agents whose hosts sleep while idle. Its config's `agents.wake` lists them, each
 with its `name`, `platform` and the `command` that wakes its host, such as
