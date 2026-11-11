@@ -324,12 +324,47 @@ describe("Agents", () => {
       yield* TestClock.adjust("15 seconds")
       expect(yield* Fiber.join(stalled)).toBe(-2)
 
-      // The last evaluator leaving ends the wait at once.
-      const left = yield* Effect.forkChild(agents.run({ id: "left", token: "tx" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      // An evaluator that loses the controller for a few seconds keeps the evaluations waiting for it, as
+      // does a new one in that time; once none came back for 30 seconds, they give up.
+      // An evaluator that comes back within the grace keeps them, also when it drops again soon after: the
+      // first drop's timer then does nothing, and the second drop has a grace of its own.
+      const flapping = yield* Effect.forkChild(agents.run({ id: "flapping", token: "tf" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
       yield* ticks
       yield* Fiber.interrupt(dev.fiber)
       yield* ticks
+      yield* TestClock.adjust("10 seconds")
+      const again = yield* connect(agents, { name: "dev-hauke", platform: "x86_64-linux", evaluator: true, slots: 0 })
+      yield* ticks
+      yield* TestClock.adjust("10 seconds")
+      yield* Fiber.interrupt(again.fiber)
+      yield* ticks
+      yield* TestClock.adjust("15 seconds")
+      expect(flapping.pollUnsafe()).toBeUndefined()
+      const dev2 = yield* connect(agents, { name: "dev-hauke", platform: "x86_64-linux", evaluator: true })
+      yield* ticks
+      expect(dev2.orders.map((o) => o._tag === "Start" ? o.job : o._tag)).toEqual(["flapping"])
+      yield* agents.exited({ token: "secret", name: "dev-hauke" }, "flapping", 0)
+      expect(yield* Fiber.join(flapping)).toBe(0)
+      yield* agents.offer({ token: "secret", name: "dev-hauke" }, 0)
+
+      const left = yield* Effect.forkChild(agents.run({ id: "left", token: "tx" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      yield* ticks
+      const back = yield* Effect.forkChild(agents.run({ id: "back", token: "tbk" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      yield* ticks
+      yield* Fiber.interrupt(dev2.fiber)
+      yield* ticks
+      yield* TestClock.adjust("10 seconds")
+      expect(left.pollUnsafe()).toBeUndefined()
+      // Asked while the evaluator is away for a moment, an evaluation waits too.
+      const meanwhile = yield* Effect.forkChild(agents.run({ id: "meanwhile", token: "tm" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      yield* ticks
+      expect(meanwhile.pollUnsafe()).toBeUndefined()
+      yield* TestClock.adjust("25 seconds")
       expect(yield* Fiber.join(left)).toBe(-2)
+      expect(yield* Fiber.join(back)).toBe(-2)
+      expect(yield* Fiber.join(meanwhile)).toBe(-2)
+      // Long gone, an evaluation doesn't wait at all.
+      expect(yield* agents.run({ id: "later", token: "tla" }, "aarch64-linux", { evaluation: true, within: "2 minutes" })).toBe(-2)
     }))
 
   it.effect("agents need the secret", () =>
