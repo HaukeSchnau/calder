@@ -1,5 +1,5 @@
 import type { FlakeRef } from "./Flake.ts"
-import type { BuildFailed, StorePath } from "./Calder.ts"
+import type { BuildFailed, Infrastructure, StorePath } from "./Calder.ts"
 import { make, type Step } from "./Step.ts"
 
 /**
@@ -9,5 +9,5 @@ import { make, type Step } from "./Step.ts"
 export const build = (
   ref: FlakeRef<"packages" | "checks" | "attr">,
   options: { readonly name?: string } = {},
-): Step<StorePath, BuildFailed> =>
-  make("build", options.name ?? [ref.name, ...(ref.path ?? [])].join("."), { _tag: "Build", ref }) as Step<StorePath, BuildFailed>
+): Step<StorePath, BuildFailed | Infrastructure> =>
+  make("build", options.name ?? [ref.name, ...(ref.path ?? [])].join("."), { _tag: "Build", ref }) as Step<StorePath, BuildFailed | Infrastructure>

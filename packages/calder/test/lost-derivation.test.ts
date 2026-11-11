@@ -50,3 +50,76 @@ echo /nix/store/00000000000000000000000000000000-app
       expect(readFileSync(join(bin, "calls"), "utf8")).toBe("build\neval\nbuild\n")
     }))
 })
+
+describe("a build that couldn't reach its builder", () => {
+  it.live("fails as an infrastructure failure, naming the builder", () =>
+    Effect.gen(function*() {
+      const bin = mkdtempSync(join(tmpdir(), "calder-ssh-"))
+      // Nix as srv-2's had it in infra-887, when the SSH connection to the Mac builder dropped.
+      writeFileSync(
+        join(bin, "nix"),
+        `#!/usr/bin/env bash
+echo "@nix {\\"action\\":\\"msg\\",\\"level\\":0,\\"msg\\":\\"cannot build on 'ssh-ng://hauke@100.83.228.36': error: failed to start SSH connection to '100.83.228.36'\\"}" >&2
+echo "@nix {\\"action\\":\\"msg\\",\\"level\\":0,\\"msg\\":\\"error: Cannot build '${drv}'. Reason: platform mismatch\\"}" >&2
+exit 1
+`,
+        { mode: 0o755 },
+      )
+      const path = process.env.PATH
+      process.env.PATH = `${bin}:${path}`
+      const result = yield* Steps.build(job, app, "packages.x86_64-linux.app").pipe(
+        Effect.provideService(Job, self),
+        Effect.provide(processes),
+        Effect.ensuring(Effect.sync(() => void (process.env.PATH = path))),
+      )
+      expect(result._tag).toBe("Failed")
+      expect(result._tag === "Failed" ? [result.tag, result.message] : null).toEqual([
+        "Infrastructure",
+        "nix build packages.x86_64-linux.app failed: the builder 100.83.228.36 could not be reached: failed to start SSH connection",
+      ])
+    }))
+})
+
+const fakeNix = (script: string) =>
+  Effect.gen(function*() {
+    const bin = mkdtempSync(join(tmpdir(), "calder-nix-"))
+    writeFileSync(join(bin, "nix"), `#!/usr/bin/env bash\n${script}`, { mode: 0o755 })
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    return yield* Steps.build(job, app, "packages.x86_64-linux.app").pipe(
+      Effect.provideService(Job, self),
+      Effect.provide(processes),
+      Effect.ensuring(Effect.sync(() => void (process.env.PATH = path))),
+    )
+  })
+/** A line of Nix's internal JSON log on stderr. */
+const nixLine = (json: object) => `echo '@nix ${JSON.stringify(json)}' >&2`
+
+describe("a build that failed for real", () => {
+  it.live("isn't an infrastructure failure because its own log mentions a lost connection", () =>
+    Effect.gen(function*() {
+      // A VM test that printed "Broken pipe" and then timed out.
+      const result = yield* fakeNix([
+        nixLine({ action: "result", id: 1, type: 101, fields: ["vm: write: Broken pipe"] }),
+        nixLine({ action: "msg", level: 0, msg: `error: Cannot build '${drv}'.\n       Reason: 1 dependency failed.` }),
+        "exit 1",
+      ].join("\n"))
+      expect(result._tag === "Failed" ? result.tag : result._tag).toBe("BuildFailed")
+      const timedOut = yield* fakeNix([
+        nixLine({ action: "result", id: 1, type: 101, fields: ["vm: write: Broken pipe"] }),
+        nixLine({ action: "msg", level: 0, msg: "error: timed out after 3600 seconds" }),
+        "exit 1",
+      ].join("\n"))
+      expect(timedOut._tag === "Failed" ? timedOut.tag : timedOut._tag).toBe("BuildFailed")
+    }))
+
+  it.live("isn't an infrastructure failure when evaluating a lost derivation again gives another one", () =>
+    Effect.gen(function*() {
+      const result = yield* fakeNix([
+        `if [ "$1" = eval ]; then printf '%s' /nix/store/11111111111111111111111111111111-app.drv; exit 0; fi`,
+        nixLine({ action: "msg", level: 0, msg: `error: failed to obtain derivation of '${drv}'` }),
+        "exit 1",
+      ].join("\n"))
+      expect(result._tag === "Failed" ? result.tag : result._tag).toBe("BuildFailed")
+    }))
+})

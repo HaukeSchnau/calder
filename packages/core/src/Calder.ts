@@ -98,6 +98,20 @@ export class BuildFailed extends Failure<BuildFailed>("@calder-ci/core")("BuildF
   }
 }
 
+/**
+ * A build that failed because Nix couldn't reach or use a builder or its store, such as a remote builder
+ * whose SSH connection dropped, rather than because a derivation failed to build. `cause` says what.
+ */
+export class Infrastructure extends Failure<Infrastructure>("@calder-ci/core")("Infrastructure", {
+  attr: Schema.String,
+  drv: Schema.optional(Schema.String),
+  cause: Schema.String,
+}) {
+  override get message() {
+    return `nix build ${this.attr} failed: ${this.cause}`
+  }
+}
+
 export const ProjectTypeId = "~@calder-ci/core/Project" as const
 
 export interface Project {

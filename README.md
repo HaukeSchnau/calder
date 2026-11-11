@@ -33,6 +33,17 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   Builds for another system than the controller's, which Nix sends to remote builders, take build
   slots of their own per system, as many per builder host of it (`/etc/nix/machines`) as the
   controller has, so a remote builder that admits nothing stalls only its system's builds.
+  A build that fails because Nix couldn't reach or use a builder or its store, such as a remote builder
+  whose SSH connection dropped or a derivation the store lost, fails with `Infrastructure` and the cause
+  (`the builder 100.83.228.36 could not be reached: failed to start SSH connection`) rather than
+  `BuildFailed`. It runs again after 30 s and again after 2 minutes, without its slot while it waits, and
+  its log says so; only a third such failure fails the step. A derivation that failed to build is never an
+  infrastructure failure, even when an unreachable builder shows up beside it. A run's derivations, those
+  of its builds and of the dev shells its plan evaluated, have garbage collector roots in
+  `derivations/<run>` under the controller's state directory from when its plan or its builds' evaluation
+  has them until it ends, so a build that waits hours for a slot still finds its derivation; Nix's nightly
+  collection on srv-2 once deleted one that infra-909's mbp build had waited 100 minutes for. A derivation
+  the store lost anyway is evaluated again before the build gives up.
   Flake inputs that name another project's repository (`git+ssh` or `git+https` on the forge) come
   from Calder's mirror of it, in plans, builds and tasks alike, so a flake with private inputs
   evaluates without credentials, also in a pull request's sandbox. Agents fetch inputs themselves.

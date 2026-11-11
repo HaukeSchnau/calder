@@ -12,7 +12,7 @@ import * as Live from "../src/controller/Live.ts"
 import { Mirror } from "../src/controller/Mirror.ts"
 import { type Project, Projects } from "../src/controller/Projects.ts"
 import * as Rows from "../src/controller/Rows.ts"
-import { layerCore, type RunsCore } from "../src/controller/Runs.ts"
+import { InfrastructureRetries, layerCore, type RunsCore } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
@@ -57,6 +57,8 @@ export interface Drive {
   readonly unplanned?: boolean
   /** Fills the database before the workflow starts. */
   readonly seed?: Effect.Effect<void, unknown, SqlClient.SqlClient>
+  /** Changes `app-2`'s step rows before the workflow starts, such as to resume a step after a restart. */
+  readonly resume?: Effect.Effect<void, unknown, SqlClient.SqlClient>
   /** The project's configuration besides its name and repository. */
   readonly project?: Partial<Project>
   /** What `nix-store --query --requisites` answers; any other query of the store finds nothing. */
@@ -65,6 +67,10 @@ export interface Drive {
   readonly meanwhile?: Effect.Effect<void, never, RunsCore | SqlClient.SqlClient>
   /** The controller's placement key, none by default. */
   readonly placementKey?: string
+  /** The controller's state directory, one that doesn't exist by default. */
+  readonly stateDir?: string
+  /** Collects the `nix` commands Calder runs, which then succeed; without it they aren't found. */
+  readonly nix?: Array<ReadonlyArray<string>>
   /**
    * Makes `app-2` a rerun of `app-1`, whose steps ended like this: `secrets` is the step's secrets
    * digest, `lease` the newest run number whose step held the project's lease.
@@ -95,11 +101,14 @@ export const drive = ({
   plan: extra = {},
   unplanned = false,
   seed = Effect.void,
+  resume = Effect.void,
   project: configured = {},
   meanwhile = Effect.void,
   requisites,
   rerunOf,
   placementKey,
+  stateDir,
+  nix,
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -126,6 +135,7 @@ export const drive = ({
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`
     }
+    yield* resume
 
     const jobs: Array<string> = []
     /** The pool each step's job ran in. */
@@ -135,7 +145,8 @@ export const drive = ({
     const statuses = new Map<string, string>()
     const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
     const services = Layer.mergeAll(
-      config(placementKey === undefined ? {} : { placementKey }),
+      config({ ...(placementKey === undefined ? {} : { placementKey }), ...(stateDir === undefined ? {} : { stateDir }) }),
+      Layer.succeed(InfrastructureRetries)(["5 millis", "5 millis"]),
       Live.layer,
       Layer.succeed(Agents)(makeAgents(null)),
       Layer.succeed(Cache)(cache),
@@ -144,10 +155,12 @@ export const drive = ({
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
         ChildProcessSpawner.make((command) => {
           const answers = ChildProcess.isStandardCommand(command) && requisites !== undefined && command.args[1] === "--requisites"
-          return ChildProcess.isStandardCommand(command) && command.command === "nix-store"
+          const collected = ChildProcess.isStandardCommand(command) && command.command === "nix" && nix !== undefined
+          if (collected) nix.push(command.args)
+          return ChildProcess.isStandardCommand(command) && (command.command === "nix-store" || collected)
             ? Effect.succeed(ChildProcessSpawner.makeHandle({
               pid: ChildProcessSpawner.ProcessId(1),
-              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answers ? 0 : 1)),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answers || collected ? 0 : 1)),
               isRunning: Effect.succeed(false),
               kill: () => Effect.void,
               stdin: Sink.drain,
