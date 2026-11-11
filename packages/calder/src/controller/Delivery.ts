@@ -68,7 +68,7 @@ export const converge = (project: Project, now: number) =>
     )
     const behind = ahead.length === 0 ? null : { commits: ahead.length, since: ahead.at(-1)!.at }
 
-    const tries = yield* sql<{ id: string; status: Domain.RunStatus; finished_at: number | null }>`select id, status, finished_at from runs
+    const tries = yield* sql<{ id: string; status: Domain.RunStatus; finished_at: number | null; retries: number }>`select id, status, finished_at, retries from runs
       where ${pushes} and sha = ${head} order by created_at desc`
     const last = tries[0]
     const stalled = last !== undefined && Domain.ended.has(last.status)
@@ -79,11 +79,12 @@ export const converge = (project: Project, now: number) =>
     // A rerun that failed before it planned, such as when its plan's worker died, repeats the last one that ran.
     const ran = last.status === "failed" ? last : tries.find((t) => t.status === "failed")
     if (ran === undefined || !(yield* critical(ran.id, true))) return state
-    const attempt = tries.filter((t) => t.status === "failed" || t.status === "errored").length
+    // A rerun runs a failed run's steps again in the same run, so each of its retries is an attempt too.
+    const attempt = tries.filter((t) => t.status === "failed" || t.status === "errored").reduce((sum, t) => sum + 1 + t.retries, 0)
     const at = last.finished_at + backoff(attempt)
     if (now < at) return { ...state, retry: { runId: ran.id, at, attempt } }
-    const again = yield* runs.rerun(ran.id)
-    yield* Effect.logInfo(`${project.name}'s deploy of ${head.slice(0, 12)} failed ${attempt} times; rerunning ${ran.id} as ${again.id}`)
+    const again = yield* runs.rerun(ran.id, { reason: `the deploy of the head failed ${attempt} times; Calder retries it` })
+    yield* Effect.logInfo(`${project.name}'s deploy of ${head.slice(0, 12)} failed ${attempt} times; rerunning ${ran.id}${again.id === ran.id ? " in place" : ` as ${again.id}`}`)
     return state
   })
 

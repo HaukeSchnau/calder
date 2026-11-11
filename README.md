@@ -415,9 +415,14 @@ calder status <run>                    # a run's steps, how long each waited for
 calder logs <run> [step] [-f] [--all]  # a step's output, or every step's with its name in front; of a failed
                                      # run only the failed steps', unless --all; -f follows until the step
                                      # ends, or the run without a step
-calder rerun <run> [--force]           # runs the revision again: steps that passed in the run, deploys and OTA
-                                     # updates included, keep their result unless their key, inputs or secrets
-                                     # changed or a newer run deployed them since; --force runs every step
+calder rerun <run> [--force]           # runs the run's failed steps again in the same run, also while it still
+                                     # runs, with the steps they blocked; passed steps keep their result. A run
+                                     # with no failed step runs again as a new run, whose steps that passed in
+                                     # it, deploys and OTA updates included, keep their result unless their key,
+                                     # inputs or secrets changed or a newer run deployed them since; --force
+                                     # starts a new run that runs every step
+calder merge <project> <pr>            # merges the pull request once its run on its head passes and the head
+                                     # contains its base
 calder cancel <run>                    # run ids look like studienbuch-12
 calder audit <project>                 # evaluates the default branch head afresh and drops wrong footprint records
 calder controller --config <file>      # the service
@@ -490,12 +495,29 @@ already runs it, or one it just deployed) says through it how long the target ha
 When the run of a merge on the default branch fails, Calder comments on the merged pull request that it isn't
 shipped yet, and edits that comment once a run that includes the merge passes.
 
+## Reruns and the merge queue
+
+`calder rerun <run>`, and the UI's rerun, run what failed again in the same run: each failed or died step and
+each step downstream of one that ended without passing, such as one it blocked, go back to pending, and the
+run's log of each says why. Steps that passed keep their result, and a step that hasn't started yet waits for
+what runs again instead of being blocked by it. This works while the run still runs, so a build that lost
+its connection to a remote builder runs again at once and not after the run's other steps ended, and after
+it ended, which reopens it. A run that has no failed step, or that was cancelled or never planned, runs again
+as a new run instead, and `--force` always starts a new run that runs everything.
+
+`calder merge <project> <pr>` queues a pull request. Calder merges it once the newest run of its head passed
+and its head contains its base; a pull request behind its base gets the base merged in first. A run that
+fails keeps the request: Calder says so once on the pull request and merges it once a rerun of that run
+passes, or the run of a new push does. Meanwhile the request doesn't hold its base, so other requests merge.
+A conflict or a merge Gitea refuses ends the request with a comment.
+
 A project whose pushes deploy converges on its default branch's head. Its deployed revision is that of the newest
 passed push, or of a passed schedule or manual run that deploys (a nightly that only checks doesn't count).
 `calder projects`, the overview and the project's page say how many first-parent commits and how long the head is
 ahead of it. When the head's push run failed at a step on a deploy's critical path, such as the deploy or the build
 it ships, the controller reruns that run, which repeats only what didn't pass: 10 minutes after the first failure,
-then after twice the wait of the last, up to 6 hours, until it passes or the head moves on. A failed check isn't
+then after twice the wait of the last, up to 6 hours, until it passes or the head moves on. Each rerun of a run in
+place counts as a failure of its own. A failed check isn't
 retried. `retryDeploys: false` in a project's configuration turns the reruns off.
 
 ## Layout

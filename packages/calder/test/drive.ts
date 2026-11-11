@@ -64,7 +64,7 @@ export interface Drive {
   /** What `nix-store --query --requisites` answers; any other query of the store finds nothing. */
   readonly requisites?: ReadonlyArray<string>
   /** Runs beside the run, such as a newer run that supersedes it; the run's services stay up until it ends. */
-  readonly meanwhile?: Effect.Effect<void, never, RunsCore | SqlClient.SqlClient>
+  readonly meanwhile?: Effect.Effect<void, never, RunsCore | Workflow.Runs | SqlClient.SqlClient>
   /** The controller's placement key, none by default. */
   readonly placementKey?: string
   /** The controller's state directory, one that doesn't exist by default. */
@@ -239,9 +239,10 @@ export const drive = ({
     )
     const status = yield* Effect.gen(function*() {
       const beside = yield* Effect.forkChild(meanwhile)
-      const status = yield* ended
+      yield* ended
       yield* Fiber.join(beside)
-      return status
+      // What runs beside may run the run again, such as a rerun once it ended.
+      return yield* ended
     }).pipe(Effect.provide(Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provide(services))))
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))

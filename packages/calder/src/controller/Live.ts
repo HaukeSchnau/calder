@@ -81,6 +81,9 @@ export const layer = Layer.effect(Live)(Effect.gen(function*() {
           ended.add(runId)
           setTimeout(() => ended.delete(runId), 15 * 60_000)
           for (const f of followers) if (f.runId === runId) f.end()
+        } else if (change._tag === "RunChanged") {
+          // A run that ended runs again after a rerun.
+          ended.delete(change.run.id)
         }
         return PubSub.publish(pubsub, { ...change, seq: ++seq } as Domain.Change)
       }).pipe(Effect.asVoid),

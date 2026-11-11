@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
+import { SqlClient } from "effect/sql"
 import { vi } from "vitest"
 import { backoff, converge, tick } from "../src/controller/Delivery.ts"
 import { Gitea } from "../src/controller/Gitea.ts"
@@ -132,6 +133,17 @@ describe("converge", () => {
       expect((yield* converge(project, 3 * hour + 1))?.retry).toEqual({ runId: "p-3", at: 3 * hour + backoff(3), attempt: 3 })
       expect(backoff(2)).toBe(20 * 60_000)
       expect(backoff(10)).toBe(6 * hour)
+    }).pipe(Effect.provide(Layer.merge(layer, services)))
+  })
+
+  it.effect("counts each time a rerun ran the head's run again in place as an attempt", () => {
+    const { services } = fakes()
+    return Effect.gen(function*() {
+      yield* failedHead()
+      const sql = yield* SqlClient.SqlClient
+      // Two reruns in place, after which p-2 failed again: the next waits as long as for a third failed run.
+      yield* sql`update runs set retries = 2, finished_at = ${2 * hour} where id = 'p-2'`
+      expect((yield* converge(project, 2 * hour + 1))?.retry).toEqual({ runId: "p-2", at: 2 * hour + backoff(3), attempt: 3 })
     }).pipe(Effect.provide(Layer.merge(layer, services)))
   })
 

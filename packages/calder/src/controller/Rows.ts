@@ -43,6 +43,8 @@ export interface RunRow {
   readonly tree?: string | null
   /** The run this one reruns, unless forced; absent in rows read before migration 0019. */
   readonly rerun_of?: string | null
+  /** How often the run ran its failed steps again in place; absent in rows read before migration 0023. */
+  readonly retries?: number
 }
 
 export interface StepRow {
