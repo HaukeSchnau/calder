@@ -47,6 +47,22 @@ describe("an infrastructure failure of a build", () => {
     ])).toBe("the builder 100.83.228.36 could not be reached: failed to start SSH connection")
   })
 
+  it("is a builder's connection that dropped in the middle of the build", () => {
+    // calder-672's sleeper on the Mac builder, whose SSH connection from srv-2 was killed 20 s in.
+    expect(infrastructure([
+      "this derivation will be built:",
+      "these 25 paths will be fetched (9.3 MiB download, 49.8 MiB unpacked):",
+      "error: Nix daemon disconnected unexpectedly (maybe it crashed?)",
+      "error: Cannot build '/nix/store/2i46gkrrwr08pxp6bf2y0b0jym5b5arg-calder-demo-sleeper-a11faf1c.drv'.\n       Reason: builder failed with exit code 1.",
+    ])).toBe("Nix lost its connection to a Nix daemon, its own or a builder's, in the middle of the build")
+    // A derivation that failed for real on the builder says so, also when another connection dropped beside it.
+    expect(infrastructure([
+      "error: build of '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tests.drv' on 'ssh-ng://haukeschnau@100.83.228.36' failed: Cannot build '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tests.drv'.\n       Reason: builder failed with exit code 2.",
+      "error: Nix daemon disconnected unexpectedly (maybe it crashed?)",
+      "error: Cannot build '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tests.drv'.\n       Reason: builder failed with exit code 1.",
+    ])).toBe(null)
+  })
+
   it("isn't a derivation that failed to build, even with an unreachable builder beside it", () => {
     expect(infrastructure([
       "cannot build on 'ssh-ng://haukeschnau@100.83.228.36': error: failed to start SSH connection to '100.83.228.36'",

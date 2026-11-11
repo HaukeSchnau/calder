@@ -34,7 +34,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   slots of their own per system, as many per builder host of it (`/etc/nix/machines`) as the
   controller has, so a remote builder that admits nothing stalls only its system's builds.
   A build that fails because Nix couldn't reach or use a builder or its store, such as a remote builder
-  whose SSH connection dropped or a derivation the store lost, fails with `Infrastructure` and the cause
+  whose SSH connection failed or dropped in the middle of the build (Nix then says its daemon disconnected,
+  and the build hook exits 1 after it) or a derivation the store lost, fails with `Infrastructure` and the cause
   (`the builder 100.83.228.36 could not be reached: failed to start SSH connection`) rather than
   `BuildFailed`. It runs again after 30 s and again after 2 minutes, without its slot while it waits, and
   its log says so; only a third such failure fails the step. A derivation that failed to build is never an
