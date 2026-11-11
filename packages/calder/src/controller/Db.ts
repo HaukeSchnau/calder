@@ -286,6 +286,11 @@ export const migrations = {
     // How often a run ran its failed steps again in place (Runs.ts `retry`), which a deploy's backoff counts (Delivery.ts).
     yield* sql`alter table runs add column retries integer not null default 0`
   }),
+  "0024_steps_to_build": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // How many derivations a build's dry run said it would build, which sizes later builds of the step (Runs.ts `sized`).
+    yield* sql`alter table steps add column to_build integer`
+  }),
 }
 
 /**

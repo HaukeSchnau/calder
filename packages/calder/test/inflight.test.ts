@@ -32,4 +32,16 @@ describe("InFlight", () => {
       yield* flights.flying(["k"], Effect.fail("boom")).pipe(Effect.ignore)
       expect(flights.has("k")).toBe(false)
     }))
+  it.effect("keeps a key a second job marked in flight until that job lands too", () =>
+    Effect.gen(function*() {
+      const flights = InFlight.make()
+      const first = yield* flights.mark(["drv"])
+      const second = yield* flights.mark(["drv"])
+      const waiter = yield* Effect.forkChild(flights.landing(["drv"]))
+      yield* first
+      expect(flights.has("drv")).toBe(true)
+      yield* second
+      expect(flights.has("drv")).toBe(false)
+      yield* Fiber.join(waiter)
+    }))
 })

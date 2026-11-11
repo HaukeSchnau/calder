@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect, Fiber } from "effect"
 import { TestClock } from "effect/testing"
+import { sized, toBuild } from "../src/controller/Runs.ts"
 import * as Slots from "../src/controller/Slots.ts"
 
 const minutes = (n: number) => n * 60_000
@@ -70,19 +71,50 @@ describe("Slots", () => {
       expect(order.slice(2)).toEqual(["infra-main", "infra-pr-3", "infra-pr-4"])
     }))
 
-  it.effect("runs a project's older runs first, shortest first within a run", () =>
+  it.effect("runs a newer run's short step of a project before an older run's long one, and the older run first when they score the same", () =>
     Effect.gen(function*() {
-      const slots = Slots.make({ capacity: 1 })
+      const slots = Slots.make({ capacity: 1, now: () => 0 })
       const { order, hold, job } = yield* harness(slots)
-      yield* job("busy", { project: "t3code", expected: 0, run: 0 })
+      yield* job("busy", { project: "infra", expected: 0, run: 0 })
       yield* Effect.yieldNow
-      yield* job("new-static", { project: "t3code", expected: minutes(1), run: 20 })
-      yield* job("old-shard", { project: "t3code", expected: minutes(10), run: 10 })
-      yield* job("old-smoke", { project: "t3code", expected: minutes(2), run: 10 })
+      // A whole-fleet rebuild's m1 of an older run, and a one-file pull request's m1 of a newer one.
+      yield* job("fleet-m1", { project: "infra", expected: minutes(100), run: 10 })
+      yield* job("one-file-m1", { project: "infra", expected: minutes(6), run: 20 })
+      yield* job("new-lint", { project: "infra", expected: minutes(1), run: 20 })
+      yield* job("old-lint", { project: "infra", expected: minutes(1), run: 10 })
       yield* Effect.yieldNow
       yield* Deferred.succeed(hold, undefined)
       yield* Effect.yieldNow
-      expect(order).toEqual(["busy", "old-smoke", "old-shard", "new-static"])
+      expect(order).toEqual(["busy", "old-lint", "new-lint", "one-file-m1", "fleet-m1"])
+    }))
+
+  it.effect("counts as ahead only the waiters that go first", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 1, now: () => 0 })
+      const { hold, job } = yield* harness(slots)
+      yield* job("busy", { project: "infra", expected: 0, run: 0, label: "infra-1 busy" })
+      yield* job("fleet-m1", { project: "infra", expected: minutes(100), run: 10 })
+      yield* Effect.yieldNow
+      expect(slots.waitsFor({ project: "infra", expected: minutes(6), run: 20 })).toBe("1 of 1 busy: infra-1 busy")
+      expect(slots.waitsFor({ project: "infra", expected: minutes(200), run: 20 })).toBe("1 of 1 busy: infra-1 busy; 1 ahead")
+      yield* Deferred.succeed(hold, undefined)
+    }))
+
+  it.effect("ages a project's long step forward past a newer run's short one once it waited long enough", () =>
+    Effect.gen(function*() {
+      let clock = 0
+      const slots = Slots.make({ capacity: 1, now: () => clock })
+      const { order, hold, job } = yield* harness(slots)
+      yield* job("busy", { project: "infra", expected: 0, run: 0 })
+      yield* Effect.yieldNow
+      yield* job("fleet-m1", { project: "infra", expected: minutes(100), run: 10 })
+      yield* Effect.yieldNow
+      clock = minutes(95)
+      yield* job("one-file-m1", { project: "infra", expected: minutes(6), run: 20 })
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(hold, undefined)
+      yield* Effect.yieldNow
+      expect(order).toEqual(["busy", "fleet-m1", "one-file-m1"])
     }))
 
   it.effect("ages waiting steps, so a long one waiting long enough beats a fresh short one", () =>
@@ -115,6 +147,25 @@ describe("Slots", () => {
       yield* giveBack[1]!
       yield* Effect.yieldNow
       expect(order).toEqual(["new"])
+      yield* Deferred.succeed(hold, undefined)
+    }))
+
+  it.effect("starts background work that waited only for claims withdrawn or given up", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 3, maxPerProject: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      yield* job("infra-1 plan", { project: "infra", expected: 0, run: 1 })
+      yield* Effect.yieldNow
+      // infra's next plans wait for the project's one plan slot; a check waits behind them.
+      yield* job("infra-2 plan", { project: "infra", expected: 0, run: 2, owner: "infra-2" })
+      const given = yield* job("infra-3 plan", { project: "infra", expected: 0, run: 3 })
+      yield* job("check", { project: "t3code", expected: 0, run: 4, background: true })
+      yield* Effect.yieldNow
+      expect(order).toEqual(["infra-1 plan"])
+      slots.withdraw("infra-2")
+      yield* Fiber.interrupt(given)
+      yield* Effect.yieldNow
+      expect(order).toEqual(["infra-1 plan", "check"])
       yield* Deferred.succeed(hold, undefined)
     }))
 
@@ -243,4 +294,23 @@ describe("Slots", () => {
       expect(order.slice(4)).toEqual(["t3code-2"])
       for (const hold of holds.values()) yield* Deferred.succeed(hold, undefined)
     }))
+})
+
+describe("a build's expected time", () => {
+  it("follows how many derivations it would build against how many the step usually builds, never above its usual time", () => {
+    const usual = minutes(50)
+    // infra's m1 for a one-file change builds 6 derivations; its last builds, after flake updates, 300.
+    expect(sized(usual, 6, 300)).toBe(minutes(1))
+    expect(sized(usual, 900, 300)).toBe(usual)
+    expect(sized(usual, 0, 300)).toBe(0)
+    expect(sized(usual, null, 300)).toBe(usual)
+    expect(sized(usual, 6, undefined)).toBe(usual)
+  })
+
+  it("reads the count from nix-store's dry run", () => {
+    expect(toBuild("these 12 derivations will be built:\n  /nix/store/a.drv\nthese 3 paths will be fetched (1 MiB download):\n")).toBe(12)
+    expect(toBuild("this derivation will be built:\n  /nix/store/a.drv\n")).toBe(1)
+    expect(toBuild("this path will be fetched (74.2 KiB download, 273.0 KiB unpacked):\n  /nix/store/b\n")).toBe(0)
+    expect(toBuild("")).toBe(null)
+  })
 })

@@ -5,7 +5,7 @@ export interface Claim {
   readonly project: string
   /** Expected run time in ms: shorter goes first, and waiting earns the same amount back. */
   readonly expected: number
-  /** When the step's run was created: within a project, older runs go first. */
+  /** When the step's run was created: between claims that score the same, the older run goes first. */
   readonly run: number
   /** Work nobody waits for, such as checks of agents' snapshots: it gets a slot only while no other step wants one and another stays free. */
   readonly background?: boolean
@@ -16,6 +16,8 @@ export interface Claim {
   readonly critical?: boolean
   /** Who asks, such as `studienbuch-21 lint`, for the reason others wait. */
   readonly label?: string
+  /** The run it waits for, whose claims `withdraw` takes out of the queue when the run is superseded. */
+  readonly owner?: string
 }
 
 interface Waiter extends Claim {
@@ -34,12 +36,14 @@ interface Holder {
 }
 
 /**
- * A pool of slots. A project's waiting steps go in run order, the shortest of a run first, so runs
- * reach a verdict instead of all advancing slowly. Across projects the step expected to finish soonest
- * goes first, minus the time it has waited, so short checks report quickly and long ones still start.
- * `perProject` keeps one project from holding every slot while another project waits; while nobody
- * else waits, it may use them all. `maxPerProject` holds even then. Critical claims go before all others
- * and have `lane` slots beyond `capacity` to themselves.
+ * A pool of slots. The waiting step expected to finish soonest goes first, minus the time it has waited,
+ * within a project as across projects, so short work reports quickly and long work still starts once it
+ * has waited as long as it is expected to take. Within a project that used to be run order, older runs
+ * first, which kept infra's one-file pull requests behind whole-fleet rebuilds of older runs; between
+ * claims that score the same, the older run still goes first. `perProject` keeps one project from
+ * holding every slot while another project waits; while nobody else waits, it may use them all.
+ * `maxPerProject` holds even then. Critical claims go before all others and have `lane` slots beyond
+ * `capacity` to themselves.
  */
 export const make = (options: {
   readonly capacity: number
@@ -71,7 +75,9 @@ export const make = (options: {
     return holder
   }
 
-  const inRunOrder = (a: Waiter, b: Waiter) => a.run - b.run || a.expected - b.expected || a.seq - b.seq
+  /** Lower goes first: what the claim is expected to take less what it has waited, then the older run. */
+  const before = (a: Waiter, b: Waiter, at: number) =>
+    (a.expected - (at - a.since)) - (b.expected - (at - b.since)) || a.run - b.run || a.seq - b.seq
 
   /**
    * Whether a claim may have a slot now: background work leaves one free and yields to the rest, critical
@@ -90,22 +96,21 @@ export const make = (options: {
     while (true) {
       const ready = waiters.filter(eligible)
       if (ready.length === 0) return
-      // Each project's front is its critical work first, then its oldest run's shortest step.
+      const at = now()
+      // Each project's front is its critical work first, then the claim that goes first by `before`.
       const fronts = new Map<string, Waiter>()
       for (const waiter of ready) {
         const front = fronts.get(waiter.project)
-        const before = front === undefined ||
-          (waiter.critical === true) !== (front.critical === true) ? waiter.critical === true : inRunOrder(waiter, front) < 0
-        if (front === undefined || before) fronts.set(waiter.project, waiter)
+        const first = front === undefined ||
+          ((waiter.critical === true) !== (front.critical === true) ? waiter.critical === true : before(waiter, front, at) < 0)
+        if (first) fronts.set(waiter.project, waiter)
       }
       // A project over its share goes only when no other project's front fits; critical work goes first among those that do.
       const fitting = [...fronts.values()].filter((w) => fits(w.project))
       const pool = fitting.length > 0 ? fitting : [...fronts.values()]
       const critical = pool.filter((w) => w.critical === true)
       const candidates = critical.length > 0 ? critical : pool
-      const at = now()
-      const score = (w: Waiter) => w.expected - (at - w.since)
-      const next = candidates.reduce((best, w) => (score(w) < score(best) || (score(w) === score(best) && w.seq < best.seq) ? w : best))
+      const next = candidates.reduce((best, w) => (before(w, best, at) < 0 ? w : best))
       waiters.splice(waiters.indexOf(next), 1)
       holding.set(next.granted, take(next))
       Deferred.doneUnsafe(next.granted, Effect.void)
@@ -138,7 +143,8 @@ export const make = (options: {
             const index = waiters.indexOf(waiter)
             if (index >= 0) {
               waiters.splice(index, 1)
-              return Effect.void
+              // Background work may have waited only for this claim.
+              return Effect.sync(grant)
             }
             // Granted just as we were interrupted: hand the slot on.
             const holder = holding.get(waiter.granted)
@@ -153,8 +159,11 @@ export const make = (options: {
   const waitsFor = (claim: Claim): string | null => {
     const mine = waiters.find((w) => w.claim === claim)
     if (mine === undefined && eligible(claim) && fits(claim.project) && !waiters.some(eligible)) return null
+    // The waiters the queue's order puts first: critical ones, then by `before`.
+    const at = now()
+    const self = mine ?? { ...claim, claim, seq: seq, since: at, granted: undefined as never }
     const ahead = waiters.filter((w) =>
-      w !== mine && (mine === undefined || w.seq < mine.seq) && (claim.critical === true ? w.critical === true : true)
+      w !== mine && ((w.critical === true) !== (self.critical === true) ? w.critical === true : before(w, self, at) < 0)
     ).length
     // A check doesn't count the critical work in the lane, since the lane is beyond the capacity.
     const inLane = Math.min(lane, holders.filter((h) => h.critical).length)
@@ -205,6 +214,15 @@ export const make = (options: {
      */
     reserve: (project: string, label?: string) => release(take({ project, label: label ?? `${project} (adopted)` })),
     usage: () => ({ running: holders.length, waiting: waiters.length, capacity: options.capacity }),
+    /**
+     * Takes the waiting claims of run `owner` out of the queue at once, so no slot goes to them and none
+     * counts as waiting. Their callers still wait until interrupted.
+     */
+    withdraw: (owner: string) => {
+      for (let i = waiters.length - 1; i >= 0; i--) if (waiters[i]!.owner === owner) waiters.splice(i, 1)
+      // Background work may have waited only for those claims.
+      grant()
+    },
     /**
      * Why `claim` would wait for a slot right now, such as `3 of 3 busy: t3code-452 test-server, ...`, or
      * null when it would get one at once.

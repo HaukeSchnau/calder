@@ -37,23 +37,25 @@ const activeStatuses = ["queued", "planning", "running"] as const
 export const InfrastructureRetries = Context.Reference<ReadonlyArray<Duration.Input>>("calder/controller/InfrastructureRetries", {
   defaultValue: () => ["30 seconds", "2 minutes"],
 })
-/** How often a superseded run's running build asks whether a run that goes on needs it. */
+/** How often a superseded run's running build asks again whether it should stop. */
 const neededEvery = "30 seconds"
-
 /**
- * Whether a superseded run's running build of `drv` is of no use to the runs that go on (Rows `liveBuilds`):
- * none of them builds `drv`, and none depends on a derivation the build is building right now (`building`).
- * `closure` holds what the runs that go on build and depend on, or null where it couldn't be read. Stopping
- * a build makes the Nix daemon stop what it builds for it, so a dependency both closures share, such as a
- * test suite hours into its run, would start over in the newer run's build. A run of the project that may
- * still add builds keeps every build, and so does a closure that couldn't be read.
+ * How a build's expected time follows what it would build: the step's usual time, scaled by how many
+ * derivations it builds against how many it usually builds, never above the usual time. Every run's
+ * `m1` build has the same estimate otherwise, so a pull request that changes one file would queue
+ * behind an older run's rebuild of the whole host. Nothing to build expects nothing; without a count
+ * or a history of counts it is the usual time.
  */
-export const obsolete = (
-  drv: string,
-  live: { readonly unknown: boolean; readonly drvs: ReadonlyArray<string> },
-  building: ReadonlyArray<string>,
-  closure: ReadonlySet<string> | null,
-) => !live.unknown && !live.drvs.includes(drv) && (building.length === 0 || (closure !== null && !building.some((d) => closure.has(d))))
+export const sized = (estimate: number, building: number | null, typical: number | undefined) =>
+  building === null ? estimate : building === 0 ? 0 : typical === undefined || typical <= 0 ? estimate : estimate * Math.min(1, building / typical)
+
+/** How many derivations `nix-store --realise --dry-run` says it would build, or null when it didn't say. */
+export const toBuild = (stderr: string) => {
+  if (/^this derivation will be built:/m.test(stderr)) return 1
+  const many = /^these (\d+) derivations will be built:/m.exec(stderr)
+  if (many !== null) return Number(many[1])
+  return /will be fetched|^don't know how to build/m.test(stderr) ? 0 : null
+}
 
 const short = (sha: string) => sha.slice(0, 12)
 
@@ -81,8 +83,8 @@ export class RunsCore extends Context.Service<RunsCore, {
   readonly finish: (runId: string) => Effect.Effect<void>
   readonly cancel: (runId: string, reason: string) => Effect.Effect<void>
   /**
-   * Cancels a run a newer one replaces: its waiting work never starts, but jobs already running finish
-   * and keep their results, which the newer run reuses or waits for.
+   * Cancels a run a newer one replaces: its waiting work never starts, and its running jobs stop, except
+   * deploys, which finish, and builds the runs that go on may still want (`execute`'s `stops`).
    */
   readonly supersede: (runId: string, reason: string) => Effect.Effect<void>
   /**
@@ -174,6 +176,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     // Agents limit themselves; this only orders their jobs.
     agents: Slots.make({ capacity: 64 }),
   }
+  /** Every pool, the remote builds' of each system included. */
+  const pools = () => [slots.plans, slots.builds, ...slots.remoteBuilds.values(), slots.tasks, slots.actions, slots.agents]
   const cancels = new Map<string, Deferred.Deferred<string>>()
   const signal = (map: Map<string, Deferred.Deferred<string>>) => (runId: string) => {
     let d = map.get(runId)
@@ -225,6 +229,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   }
 
   const { flying, landing, has: inFlight } = InFlight.make()
+  /** Derivations a build job builds right now, in any run: a build of the same one waits for it without a slot. */
+  const builds = InFlight.make()
   const workspaces = new Map<string, Set<number>>()
   // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
   // lands in a workspace that is still in use.
@@ -424,6 +430,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         // plan that runs, which the timeout bounds.
         critical: event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch,
         label: `${run.id}'s plan`,
+        owner: run.id,
       }
       const log = logTo(run, "plan", run.span_id, null)
       const waits = slots.plans.waitsFor(claim)
@@ -796,10 +803,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
       /**
-       * Completes once the job's work is of no use to the runs that go on, given the derivations it builds
-       * right now. A started job of a superseded run then stops; without it, a started job runs on.
+       * Whether a started build of a superseded run should stop now, asked when the run is superseded and
+       * every 30 s after. Other started jobs stop at once, freeing their slots, except deploys.
        */
-      readonly obsolete?: (building: () => ReadonlyArray<string>) => Effect.Effect<void>
+      readonly stops?: Effect.Effect<boolean>
+      /** Marks the key, such as the derivation a build builds, as in flight while the job runs, once it started. */
+      readonly flies?: string
       /** The pool when it isn't the run's, such as a preview's trusted job in a pull-request run. */
       readonly pool?: Pool
       /** Whether the job is on a deploy's or preview's critical path, when the step's own spec doesn't say. */
@@ -810,14 +819,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
     Effect.gen(function*() {
-      /** The derivations the job's Nix builds right now, by activity. */
-      const building = new Map<number, string>()
       const onEvent = (event: JobEvent) =>
         Effect.gen(function*() {
-          if (event._tag === "Activity" && event.activity.type === "build" && event.activity.drv) {
-            if (event.activity.end === null) building.set(event.activity.id, event.activity.drv)
-            else building.delete(event.activity.id)
-          }
           yield* logTo(run, row.name, row.span_id, options.shard)(event)
           if (event._tag === "Tests") collect.tests.push(...event.results)
           if (event._tag === "Attempt") collect.attempts = Math.max(collect.attempts, event.attempt)
@@ -834,7 +837,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             })
           }
         })
+      let landed: Effect.Effect<void> = Effect.void
       const started = Effect.gen(function*() {
+        if (options.flies !== undefined) landed = yield* builds.mark([options.flies])
         yield* db(sql`update steps set status = 'running', started_at = coalesce(started_at, ${Date.now()}), attempts = max(attempts, 1),
           waiting = null where run_id = ${run.id} and name = ${row.name}`)
         yield* publishStep(run.id, row.name)
@@ -853,6 +858,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       })
       const pool = options.pool ?? poolOf(run)
       const running = Effect.scoped(Effect.gen(function*() {
+        // A slot that went to the job just as its run was superseded or cancelled: it never starts, and the
+        // race below settles it as withdrawn or cancelled, giving the slot back.
+        if (!options.action && (Deferred.isDoneUnsafe(supersedeSignal(run.id)) || Deferred.isDoneUnsafe(cancelSignal(run.id)))) {
+          return yield* Effect.never
+        }
         const ws = options.workspace ? (yield* workspace(pool, run.project, options.remote === true)).path : null
         const done = yield* jobs.run(job(ws), {
           pool,
@@ -881,22 +891,42 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         background,
         critical: options.critical ?? Rows.spec(row).critical === true,
         label: `${run.id} ${row.name}`,
+        // An action waits on after its run was superseded, since nothing interrupts it.
+        ...(options.action ? {} : { owner: run.id }),
       }
-      const work = reattached ??
-        options.slots.with(claim, running, (busy) => waiting(run.id, row.name, `${options.what}: ${busy}`))
+      const work = (reattached ??
+        options.slots.with(claim, running, (busy) => waiting(run.id, row.name, `${options.what}: ${busy}`))).pipe(
+          Effect.ensuring(Effect.suspend(() => landed)),
+        )
       if (options.action) return yield* work
       const none = { usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "", startedAt: null }
       const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
         Effect.map((reason) => ({ ...none, result: { _tag: "Died", message: reason } satisfies JobResult, cancelled: true as const })),
       )
-      const withdrawal = options.withdraw === undefined
-        ? Deferred.await(supersedeSignal(run.id))
-        : Effect.raceFirst(Deferred.await(options.withdraw), Deferred.await(supersedeSignal(run.id)))
-      const withdrawn = withdrawal.pipe(
-        Effect.andThen(Effect.suspend(() => startedAt === null ? Effect.void : options.obsolete?.(() => [...building.values()]) ?? Effect.never)),
-        Effect.as({ ...none, result: { _tag: "Died", message: "withdrawn" } satisfies JobResult, withdrawn: true as const }),
+      const withdrawn = { ...none, result: { _tag: "Died", message: "withdrawn" } satisfies JobResult, withdrawn: true as const }
+      // A superseded run's job stops, also once it started, so its slot goes to the runs that go on:
+      // infra-891's builds, superseded, held both of the Macs' slots for 25 minutes while the rerun of
+      // another pull request waited for one. A deploy finishes, like an action: stopping one mid-switch
+      // would leave its host half switched.
+      const deploys = Rows.deploys(Rows.spec(row))
+      const superseded = Deferred.await(supersedeSignal(run.id)).pipe(
+        Effect.flatMap((reason) =>
+          Effect.gen(function*() {
+            if (startedAt === null) return withdrawn
+            if (deploys) return yield* Effect.never
+            if (options.stops !== undefined) {
+              while (!(yield* options.stops)) yield* Effect.sleep(neededEvery)
+            }
+            yield* logTo(run, row.name, row.span_id, options.shard)({ _tag: "Log", stream: "calder", text: `stopped: ${reason}`, timestamp: Date.now() })
+            return withdrawn
+          })
+        ),
       )
-      return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, withdrawn))
+      // Withdrawn shards that started finish, so a rerun repeats only what failed.
+      const unwanted = options.withdraw === undefined ? Effect.never : Deferred.await(options.withdraw).pipe(
+        Effect.andThen(Effect.suspend(() => (startedAt === null ? Effect.succeed(withdrawn) : Effect.never))),
+      )
+      return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, Effect.raceFirst(superseded, unwanted)))
     })
 
   /**
@@ -1238,18 +1268,39 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           }
         }
         const { drv, system } = build
+        // Another run builds the same derivation right now, such as the run this one replaced: this build
+        // waits for it without a slot and takes its output, or builds itself if it stopped or failed.
+        while (drv !== null && builds.has(drv)) {
+          yield* waiting(runId, name, "another run's build of the same derivation")
+          const ended = yield* Effect.raceFirst(
+            builds.landing([drv]).pipe(Effect.as(false)),
+            Effect.raceFirst(Deferred.await(cancelSignal(runId)), Deferred.await(supersedeSignal(runId))).pipe(Effect.as(true)),
+          )
+          yield* waiting(runId, name, null)
+          if (ended) return yield* settle(run, row, { status: "cancelled" })
+          if (build.out !== null && (yield* available(build.out))) {
+            yield* share(run, name, build.out)
+            return yield* settle(run, row, { status: "reused", value: build.out, key: drv })
+          }
+        }
         // A rerun of a run that ended has no roots left; one the plan made holds already.
         if (drv !== null) yield* rootDerivations(run, [drv])
         const once = () =>
-          execute(run, row, () => stepJob({ derivation: drv }), {
-            slots: buildSlots(system),
-            what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`,
-            expected,
-            action: false,
-            shard: null,
-            workspace: false,
-            ...(drv === null ? {} : { obsolete: obsoleteBuild(run, name, drv) }),
-          }, collect)
+          Effect.gen(function*() {
+            return yield* execute(run, row, () => stepJob({ derivation: drv }), {
+              slots: buildSlots(system),
+              what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`,
+              // Sized only when it would wait: the order of the queue is all it changes.
+              expected: drv === null ||
+                  buildSlots(system).waitsFor({ project: run.project, expected, run: run.created_at, critical: spec.critical === true }) === null
+                ? expected
+                : yield* buildExpected(run, name, drv, expected),
+              action: false,
+              shard: null,
+              workspace: false,
+              ...(drv === null ? {} : { flies: drv, stops: stopsBuild(run.project, drv, buildSlots(system)) }),
+            }, collect)
+          })
         // A build the controller restarted in the middle of goes on from the attempt it was at.
         let attempt = Math.max(1, row.attempts)
         let r = yield* once()
@@ -1618,30 +1669,36 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     })
 
   /**
-   * Completes once a build of `drv` is `obsolete` for the runs that go on, saying so in the step's log.
-   * Superseded runs' builds otherwise ran on for whoever would reuse them: infra-587's and 588's builds of
-   * srv-1's old closure held every build slot for hours, while srv-1 of the run that replaced them, another
-   * derivation, waited. It asks again every 30 s, since a newer run that still plans or evaluates may need
-   * the same derivation, and the build may move on to what the newer runs need.
+   * Whether a superseded run's running build of `drv` should stop. Not while a run that goes on builds the
+   * same derivation, which waits for it (`builds`): stopping would make that run build it from the start.
+   * Otherwise it stops when another claim waits for its slots, or when no run of the project may still
+   * want it, that is none still plans or has builds left to evaluate. A run that replaces it is created and
+   * supersedes it before it plans, so while nobody waits for the slot, the build runs on until that run
+   * knows what it builds.
    */
-  const obsoleteBuild = (run: Rows.RunRow, name: string, drv: string) => (building: () => ReadonlyArray<string>) =>
+  const stopsBuild = (project: string, drv: string, pool: Slots.Slots) =>
+    Effect.map(db(Rows.liveBuilds(project)), (live) => !live.drvs.includes(drv) && (pool.usage().waiting > 0 || !live.unknown))
+
+  /**
+   * A build's expected time for its slot's queue (`sized`): how many derivations it would build, which
+   * the step keeps, against the median of what its last ten builds counted. The dry run asks the binary
+   * caches, so it gets 30 s before the step's usual time counts instead.
+   */
+  const buildExpected = (run: Rows.RunRow, name: string, drv: string, estimate: number) =>
     Effect.gen(function*() {
-      while (true) {
-        const live = yield* db(Rows.liveBuilds(run.project))
-        const now = building()
-        const asks = !live.unknown && !live.drvs.includes(drv) && now.length > 0 && live.drvs.length > 0
-        const closure = !asks ? new Set<string>() : yield* Exec.run(["nix-store", "--query", "--requisites", ...live.drvs]).pipe(
-          Effect.map((out) => new Set(out.split("\n").filter(Boolean))),
-          Effect.provideService(Exec.SpawnerTag, spawner),
-          Effect.orElseSucceed(() => null),
-        )
-        if (obsolete(drv, live, now, closure)) break
-        yield* Effect.sleep(neededEvery)
-      }
-      const row = yield* db(Rows.loadStep(run.id, name))
-      if (row === undefined) return
-      const text = `stopped this superseded run's build: no run that goes on builds ${drv} or what it was building`
-      yield* logTo(run, name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
+      const dry = yield* Exec.exec(["nix-store", "--realise", "--dry-run", drv]).pipe(
+        Effect.provideService(Exec.SpawnerTag, spawner),
+        Effect.timeout("30 seconds"),
+        Effect.orElseSucceed(() => null),
+      )
+      const count = dry === null || dry.exitCode !== 0 ? null : toBuild(dry.stderr)
+      if (count === null) return estimate
+      const before = yield* db(sql<{ to_build: number }>`select steps.to_build from steps join runs on runs.id = steps.run_id
+        where runs.project = ${run.project} and steps.name = ${name} and steps.to_build > 0 and steps.run_id != ${run.id}
+        order by runs.created_at desc limit 10`)
+      yield* db(sql`update steps set to_build = ${count} where run_id = ${run.id} and name = ${name}`)
+      const counts = before.map((r) => r.to_build).sort((a, b) => a - b)
+      return sized(estimate, count, counts[Math.floor(counts.length / 2)])
     })
 
   /** Roots the run's derivations until it ends (Outputs `rootDerivations`); a build whose derivation is gone evaluates it again. */
@@ -1750,6 +1807,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const rows = yield* db(sql<{ id: string }>`update runs set status = 'cancelled', error = ${reason}
         where id = ${runId} and ${sql.in("status", activeStatuses)} returning id`)
       if (rows.length === 0) return
+      // Before the signal: the run's queued claims leave the queues at once, so no slot goes to them and
+      // none counts as a claim waiting for a superseded build's slot (`stopsBuild`).
+      for (const pool of pools()) pool.withdraw(runId)
       yield* Deferred.succeed(supersedeSignal(runId), reason)
       yield* publishRun(runId)
     })
