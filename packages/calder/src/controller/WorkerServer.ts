@@ -100,11 +100,14 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const active = yield* jobs.authorize(job, token)
         // A worker whose connection dropped before the answer sends the batch again, and the first try may
         // have arrived: on srv-2, while the controller stalled, heartbeats reached the log up to four times.
-        if (batch !== undefined) {
-          if (batch <= (active.batch ?? 0)) return
-          active.batch = batch
-        }
-        yield* Effect.forEach(events, active.onEvent, { discard: true })
+        // The drop also interrupts this handler, so a batch it took is logged whole or the retry would lose the rest.
+        yield* Effect.uninterruptible(Effect.gen(function*() {
+          if (batch !== undefined) {
+            if (batch <= (active.batch ?? 0)) return
+            active.batch = batch
+          }
+          yield* Effect.forEach(events, active.onEvent, { discard: true })
+        }))
       }),
     finish: ({ job, token, result }) =>
       Effect.gen(function*() {

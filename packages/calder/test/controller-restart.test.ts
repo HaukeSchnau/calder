@@ -207,7 +207,8 @@ describe("a controller restart", () => {
     Effect.gen(function*() {
       const { client, auth, srv2, after } = yield* restarted
       const logged: Array<string> = []
-      yield* after.jobs.reattach(srv2, (event) => Effect.sync(() => void (event._tag === "Log" && logged.push(event.text)))).pipe(Effect.forkChild)
+      const reattached = yield* after.jobs.reattach(srv2, (event) => Effect.sync(() => void (event._tag === "Log" && logged.push(event.text))))
+        .pipe(Effect.forkChild)
       yield* Effect.yieldNow
       const send = (batch: number, text: string) =>
         client.events({ ...auth(srv2), events: [{ _tag: "Log", stream: "calder", text, timestamp: 1 }], batch })
@@ -216,6 +217,8 @@ describe("a controller restart", () => {
       yield* send(1, "Still evaluating after 7 min 0 s")
       yield* send(2, "Still evaluating after 10 min 0 s")
       expect(logged).toEqual(["Still evaluating after 7 min 0 s", "Still evaluating after 10 min 0 s"])
+      yield* Deferred.succeed(after.jobs.get(srv2)!.result, { _tag: "Skipped", reason: "deployed" })
+      yield* Fiber.join(reattached)
     }).pipe(Effect.provide(sqlite), Effect.scoped))
 
   it.effect("gives each loss of the controller a fresh 15 minutes, once a controller took a try for a minute", () =>
