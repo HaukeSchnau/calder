@@ -455,7 +455,8 @@ const defaultCacheDir = join(homedir(), ".cache", "calder")
 /**
  * Gives the job's process, and so every Nix command of it, Nix's caches, configuration (nix.conf, the flake
  * registry), data (the flake settings someone trusted) and state in a fresh directory, removed when the scope
- * closes, and no global git configuration. A plan's or build evaluation's job runs Nix in a pull request's
+ * closes, and git commands no global git configuration (Nix's libgit2 may still read the home's
+ * ~/.gitconfig, which can't change the objects it reads). A plan's or build evaluation's job runs Nix in a pull request's
  * pool's home, which every same-repo pull request's job may write to: a nix.conf left there could change
  * what the flake evaluates to, and a fetcher cache entry could map a revision another push will have to a
  * source put in the store, which the plan then evaluates as that revision's (`recorder`). A trusted run may
