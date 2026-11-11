@@ -114,6 +114,9 @@ export const Mismatch = Schema.Struct({
 })
 export type Mismatch = typeof Mismatch.Type
 
+/** The attribute a plan reads the app's name from, which records and reused plans name like a derivation's. */
+export const appAttr = "lib.project.project"
+
 export const PlanSpec = Schema.Struct({
   version: Schema.Literal(1),
   /** The app the release deploys as (`lib.project.project`), when the flake declares one. */
@@ -137,13 +140,16 @@ export const PlanSpec = Schema.Struct({
   fromRecords: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   /** The builds the plan left unevaluated, by attribute, in the order to evaluate them. */
   deferred: Schema.optional(Schema.Array(Schema.String)),
-  /** The revision of the earlier plan of the same tree whose derivations the plan took. */
-  reused: Schema.optional(Schema.String),
   /**
-   * Set by the controller on a same-repo pull request's plan that took only what a trusted run takes
-   * (Rows.ts `trustedInputs`), which a trusted run of its tree may then take.
+   * The earlier plan of the same tree the plan took derivations from: its revision and the attributes it
+   * took, `appAttr` among them when it took the app's name too.
    */
-  trustedInputs: Schema.optional(Schema.Boolean),
+  reused: Schema.optional(Schema.Struct({ revision: Schema.String, attrs: Schema.Array(Schema.String) })),
+  /**
+   * Set by the controller on a same-repo pull request's plan: the attributes a trusted run of its tree may
+   * take from it, `appAttr` among them when it may take the app's name (Rows.ts `trustedAttrs`).
+   */
+  trusted: Schema.optional(Schema.Array(Schema.String)),
 })
 export type PlanSpec = typeof PlanSpec.Type
 
@@ -190,7 +196,8 @@ export const PlanJob = Schema.TaggedStruct("Plan", {
   earlier: Schema.optional(Schema.NullOr(Schema.Struct({
     revision: Schema.String,
     derivations: Schema.Record(Schema.String, Schema.NullOr(Derivation)),
-    app: Schema.NullOr(Schema.String),
+    /** Absent when the run may not take that plan's app name, which the plan then evaluates. */
+    app: Schema.optional(Schema.NullOr(Schema.String)),
   }))),
   /** The newest footprint records per attribute this run may trust. Older controllers send none. */
   records: Schema.optional(Records),

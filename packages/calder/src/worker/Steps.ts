@@ -202,10 +202,10 @@ export const contextNote = (
  * Where an evaluation caches what attributes evaluated to. On an agent, pull requests' and trusted runs'
  * evaluations of one revision read the same mirror, so each trust keeps its own cache: a trusted run
  * would otherwise take what a pull request's evaluation put there without checking it. Local workers
- * of each pool run as their own user, with a home of their own.
+ * of each pool run as their own user, with a home of their own (Resolve.ts `localCache`).
  */
 export const evaluationCache = (remote: { readonly workspaces: string } | null, trust: RunInfo["trust"]) =>
-  remote === null ? undefined : join(remote.workspaces, ".cache", trust)
+  remote === null ? Resolve.localCache(trust) : join(remote.workspaces, ".cache", trust)
 
 /**
  * On an evaluator agent: pushes the derivations an evaluation got, with what they depend on, to the

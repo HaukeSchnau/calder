@@ -9,9 +9,10 @@ import { SqlClient } from "effect/sql"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { vi } from "vitest"
 import * as Rows from "../src/controller/Rows.ts"
-import type { Records, RunInfo } from "../src/Protocol.ts"
+import { appAttr, type Records, type RunInfo } from "../src/Protocol.ts"
 import * as Footprint from "../src/worker/Footprint.ts"
 import { byDependencies, evaluationContext, fromRecords, ownReads, recorder, resolve, vetted } from "../src/worker/Resolve.ts"
+import { drive, step } from "./drive.ts"
 import { memoryRepo } from "./memoryRepo.ts"
 import { layer as sqlite } from "./sqlite.ts"
 import { askedAttrs, reportTag } from "./expression.ts"
@@ -302,8 +303,86 @@ describe("a plan of a tree another plan evaluated", () => {
       expect(evaluated).toEqual(["devShells.x86_64-linux.ci"])
       expect(spec.steps.find((s) => s.name === "host")?.build).toEqual({ attr: "checks.x86_64-linux.host", ...hostDrv })
       expect(spec.derivations).toEqual({ "checks.x86_64-linux.host": hostDrv, "devShells.x86_64-linux.ci": shellDrv })
-      expect(spec.reused).toBe(pullRequest.revision)
+      expect(spec.reused).toEqual({ revision: pullRequest.revision, attrs: ["checks.x86_64-linux.host", appAttr] })
       expect(spec.app).toBe("app")
+    }))
+
+  it.live("of a merge takes what its pull request's last push evaluated, and evaluates the dev shell that push took from its first push's record", () =>
+    Effect.gen(function*() {
+      const hostAttr = "checks.x86_64-linux.host"
+      const shellAttr = "devShells.x86_64-linux.ci"
+      const hostDrv = { drv: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host.drv", out: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host", system: "x86_64-linux" }
+      const recordedShell = { drv: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-shell.drv", out: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-shell", system: "x86_64-linux" }
+      const freshShell = { drv: "/nix/store/ssssssssssssssssssssssssssssssss-shell.drv", out: "/nix/store/ssssssssssssssssssssssssssssssss-shell", system: "x86_64-linux" }
+      const check = { ...step, name: "check", kind: "action", needs: [], detail: "check", action: { deploy: false, secrets: [], preview: false } } as const
+      const pullRequest = { _tag: "PullRequest", number: 5, base: "main", head: "feature", fork: false } as const
+      const sql = <A>(f: (sql: SqlClient.SqlClient) => Effect.Effect<A, unknown>) => Effect.flatMap(SqlClient.SqlClient, f)
+
+      // The first push evaluated the dev shell in the pull requests' pool, which recorded it as the pull request's.
+      // The second push, of the tree the merge has, took that record and evaluated the host.
+      const second = yield* drive({
+        steps: [check],
+        event: pullRequest,
+        unplanned: true,
+        seed: sql((sql) => sql`insert into evaluations (id, project, attr, footprint, count, digest, derivation, trust, run_id, created_at)
+          values (1, 'app', ${shellAttr}, 1, 1, 'd', ${JSON.stringify(recordedShell)}, 'pr', 'app-0', 1)`),
+        plan: { app: "app", derivations: { [hostAttr]: hostDrv, [shellAttr]: recordedShell }, fromRecords: { [shellAttr]: 1 } },
+      })
+      expect(second.plan.trusted).toEqual([hostAttr, appAttr])
+
+      const merge = yield* drive({
+        steps: [check],
+        unplanned: true,
+        seed: sql((sql) => sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status,
+            created_at, trace_id, span_id, plan, fork, tree)
+          values ('app-0', 'app', 0, ${JSON.stringify(pullRequest)}, ${"1".repeat(40)}, 'feature', 't', 'h', 0, 'pr', 'passed', 0, 't', 's',
+            ${JSON.stringify(second.plan)}, 0, 'tree-1')`),
+        resume: sql((sql) => sql`update runs set tree = 'tree-1' where id = 'app-2'`),
+      })
+      const earlier = merge.planJob!.earlier!
+      expect(earlier).toEqual({ revision: "1".repeat(40), derivations: { [hostAttr]: hostDrv }, app: "app" })
+
+      const dir = mkdtempSync(join(tmpdir(), "calder-earlier-"))
+      writeFileSync(join(dir, "h-host.drv"), `Derive([("out","/nix/store/h-host","","")],[],[],"x86_64-linux","/bin/sh",[],[])`)
+      const { spawner, evaluated } = answering({
+        "git --git-dir": { stdout: "1761609600" },
+        "nix-store --check-validity": {},
+        "nix-store --query": { stdout: join(dir, "h-host.drv") },
+      }, () => freshShell)
+      const flake = Flake.make({ devShells: ["ci"] })
+      const deploy = Task.make("deploy", { shell: flake.devShells.ci, run: cmd`deploy` })
+      const host = Nix.build(Flake.attr(hostAttr), { name: "host" })
+      const project = Calder.project({ rules: [On.push("main", [host, deploy])] })
+      const run = { id: "app-2", project: "app", number: 2, revision: "b", branch: "main", trust: "trusted", event: Event.push("main"),
+        flake: "git+file:///mirror", mirror: "/mirror", mirrors: {}, pipelineDir: "", system: "x86_64-linux" } satisfies RunInfo
+      const spec = yield* Effect.gen(function*() {
+        return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" }), earlier)
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      expect(evaluated).toEqual([shellAttr])
+      expect(spec.derivations).toEqual({ [hostAttr]: hostDrv, [shellAttr]: freshShell })
+      expect(spec.reused).toEqual({ revision: "1".repeat(40), attrs: [hostAttr, appAttr] })
+    }))
+
+  it.effect("evaluates the app's name when the controller handed it none, as to a merge whose pull request took it from another's record", () =>
+    Effect.gen(function*() {
+      const hostDrv = { drv: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host.drv", out: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host", system: "x86_64-linux" }
+      const { spawner, evaluated } = answering({
+        "git --git-dir": { stdout: "1761609600" },
+        "nix-store --check-validity": {},
+        "nix-store --query": {},
+        "nix eval": { stdout: "evaluated" },
+      }, () => hostDrv)
+      const host = Nix.build(Flake.attr("checks.x86_64-linux.host"), { name: "host" })
+      const project = Calder.project({ rules: [On.push("main", [host])] })
+      const run = { id: "app-2", project: "app", number: 2, revision: "b", branch: "main", trust: "trusted", event: Event.push("main"),
+        flake: "git+file:///mirror", mirror: "/mirror", mirrors: {}, pipelineDir: "", system: "x86_64-linux" } satisfies RunInfo
+      const pullRequest = { revision: "1".repeat(40), derivations: { "checks.x86_64-linux.host": hostDrv } }
+      const spec = yield* Effect.gen(function*() {
+        return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" }), pullRequest)
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      expect(evaluated).toEqual([])
+      expect(spec.app).toBe("evaluated")
+      expect(spec.reused).toEqual({ revision: pullRequest.revision, attrs: ["checks.x86_64-linux.host"] })
     }))
 })
 

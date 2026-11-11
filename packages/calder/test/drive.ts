@@ -57,6 +57,8 @@ export interface Drive {
   readonly unplanned?: boolean
   /** Fills the database before the workflow starts. */
   readonly seed?: Effect.Effect<void, unknown, SqlClient.SqlClient>
+  /** Reads the database once the run's steps settled, returned as `read`. */
+  readonly read?: Effect.Effect<unknown, unknown, SqlClient.SqlClient>
   /** Changes `app-2`'s step rows before the workflow starts, such as to resume a step after a restart. */
   readonly resume?: Effect.Effect<void, unknown, SqlClient.SqlClient>
   /** The project's configuration besides its name and repository. */
@@ -114,6 +116,7 @@ export const drive = ({
   plan: extra = {},
   unplanned = false,
   seed = Effect.void,
+  read = Effect.void,
   resume = Effect.void,
   project: configured = {},
   meanwhile = Effect.void,
@@ -159,6 +162,8 @@ export const drive = ({
     const jobs: Array<string> = []
     /** Every command Calder ran, with its arguments. */
     const commands: Array<ReadonlyArray<string>> = []
+    /** The plan job the controller ran, with the earlier plan it handed the worker. */
+    let planJob: Extract<Job, { _tag: "Plan" }> | undefined
     const adopted = adoptedEvaluations.length === 0 ? [] : [{
       id: "adopted",
       startedAt: 1,
@@ -279,6 +284,7 @@ export const drive = ({
             if (job._tag === "Plan") {
               jobs.push(job.rules === true ? "rules" : "plan")
               pools.set(job.rules === true ? "rules" : "plan", options.pool)
+              if (job.rules !== true) planJob = job
               return { result: { _tag: "Planned", plan }, usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "job-plan" }
             }
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
@@ -328,5 +334,5 @@ export const drive = ({
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
     const records = yield* sql<{ attr: string; trust: string }>`select attr, trust from evaluations order by id`
     const trusted = yield* Rows.records({ project: "app", trust: "trusted", fork: 0 })
-    return { status, jobs, statuses, history, steps, pools, large, evaluations, records, trusted, commands, plan: stored }
+    return { status, jobs, statuses, history, steps, pools, large, evaluations, records, trusted, commands, plan: stored, planJob, read: yield* read }
   }).pipe(Effect.provide(sqlite))

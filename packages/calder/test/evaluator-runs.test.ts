@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect } from "effect"
 import { vi } from "vitest"
-import type { Job, JobResult, PlannedStep } from "../src/Protocol.ts"
+import { appAttr, type Job, type JobResult, type PlannedStep } from "../src/Protocol.ts"
 import { RunsCore } from "../src/controller/Runs.ts"
 import { drive, step } from "./drive.ts"
 
@@ -88,6 +88,17 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
         result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
       })
       expect(records).toEqual([{ attr: "checks.aarch64-linux.srv-1", trust: "pr" }])
+    }))
+
+  it.live("of a same-repo pull request gives a trusted run of its tree the builds it evaluated, like the plan's own evaluations", () =>
+    Effect.gen(function*() {
+      const { plan } = yield* drive({
+        steps: [deferred("srv-1")],
+        event: pullRequest,
+        plan: { trusted: [appAttr] },
+        result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
+      })
+      expect(plan.trusted).toEqual(["checks.aarch64-linux.srv-1", appAttr])
     }))
 
   it.live("evaluates here when the agent's derivations didn't reach this store", () =>

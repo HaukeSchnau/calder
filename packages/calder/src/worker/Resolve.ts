@@ -8,7 +8,7 @@ import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import { nixSettings } from "../NixSettings.ts"
 import { malformed, only } from "../StorePaths.ts"
-import type { Mismatch, PlannedStep, PlanSpec, Records, RunInfo } from "../Protocol.ts"
+import { appAttr, type Mismatch, type PlannedStep, type PlanSpec, type Records, type RunInfo } from "../Protocol.ts"
 import { Job } from "./Client.ts"
 import * as Footprint from "./Footprint.ts"
 import * as Heartbeat from "./Heartbeat.ts"
@@ -308,7 +308,8 @@ export const fromEarlier = (
 export interface Earlier {
   readonly revision: string
   readonly derivations: Readonly<Record<string, Derivation | null>>
-  readonly app: string | null
+  /** Absent when this run may not take it. */
+  readonly app?: string | null | undefined
 }
 
 /** What a plan evaluated: each attribute's derivation, null for one that throws, and Nix's reason for those that failed. */
@@ -335,7 +336,7 @@ export interface Evaluated {
 export const derivations = (
   run: RunInfo,
   attrs: ReadonlyArray<string>,
-  cacheDir = defaultCacheDir,
+  cacheDir: string | null = defaultCacheDir,
   log: Log = () => Effect.void,
   memory: Memory = jobMemory(),
   options: {
@@ -362,7 +363,7 @@ export const derivations = (
 const derivationsOf = (
   run: RunInfo,
   attrs: ReadonlyArray<string>,
-  cacheDir: string,
+  cacheDir: string | null,
   log: Log,
   memory: Memory,
   options: Parameters<typeof derivations>[5] & object,
@@ -408,22 +409,23 @@ const derivationsOf = (
 type Log = (text: string) => Effect.Effect<void>
 
 /** The app the flake's `lib.project` declares, or null; cached like the derivations. */
-export const appOf = (run: RunInfo, cacheDir = defaultCacheDir, recorder?: Recorder, fresh = false) =>
+export const appOf = (run: RunInfo, cacheDir: string | null = defaultCacheDir, recorder?: Recorder, fresh = false) =>
   cached(run, cacheDir, (entry) =>
     Effect.gen(function*() {
       if (entry?.app !== undefined && !fresh) return { result: { app: entry.app, recorded: undefined }, entry: {} }
+      const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
       if (recorder === undefined) {
-        const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`]).pipe(
+        const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`], { env: { ...process.env, ...ownNix(scratch) } }).pipe(
           Effect.map((name) => name.trim() || null),
           Effect.orElseSucceed(() => null),
+          Effect.ensuring(Effect.sync(() => rmSync(scratch, { recursive: true, force: true }))),
         )
         return { result: { app, recorded: undefined }, entry: { app } }
       }
       // Recorded like an attribute, so a plan whose footprint of it holds needs no Nix for it either.
-      const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
       const expr = `let p = (builtins.getFlake ${nixString(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`
       const out = yield* Exec.exec([...straced(join(scratch, "trace")), "nix", "eval", "--json", "--expr", expr], {
-        env: { ...process.env, NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") },
+        env: { ...process.env, ...ownNix(scratch) },
       }).pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })))
       const trace = yield* Effect.sync(() => {
         try {
@@ -449,19 +451,38 @@ export const appOf = (run: RunInfo, cacheDir = defaultCacheDir, recorder?: Recor
       return { result: { app, recorded }, entry: { app } }
     }))
 
-/** The attribute a plan reads the app's name from, recorded like the derivations. */
-const appAttr = "lib.project.project"
-
 const defaultCacheDir = join(homedir(), ".cache", "calder")
+
+/**
+ * What a plan's or build evaluation's `nix eval` gets in its environment beside the worker's: Nix's caches
+ * and user configuration in `scratch`, where nothing else wrote. An empty fetcher cache keeps a cached hash
+ * of a copied path from hiding that the evaluation read its files, or mapping the revision to a source
+ * another job put in the store. A pull request's pool's home is one every same-repo pull request's job may
+ * write to, and a nix.conf or flake registry left there could change the derivations a merge then takes.
+ * Nix 2.34 reads NIX_CACHE_HOME before XDG_CACHE_HOME, and NIX_USER_CONF_FILES before XDG_CONFIG_HOME.
+ */
+const ownNix = (scratch: string) => ({
+  NIX_CACHE_HOME: join(scratch, "cache"),
+  XDG_CACHE_HOME: join(scratch, "cache"),
+  NIX_USER_CONF_FILES: join(scratch, "nix.conf"),
+  XDG_CONFIG_HOME: join(scratch, "config"),
+})
+
+/**
+ * The cache of a local worker's evaluations, or null for none: a pull request's pool's home is one every
+ * same-repo pull request's ci.ts may write to, so a cached derivation could be one forged for a revision
+ * its author knew would come, which this plan would report as its own and a merge then take.
+ */
+export const localCache = (trust: RunInfo["trust"]) => (trust === "pr" ? null : defaultCacheDir)
 
 /** Hands `use` what the repository's cache file holds for this revision, under the repository's lock, and writes back what it adds. */
 const cached = <A, E, R>(
   run: RunInfo,
-  cacheDir: string,
+  cacheDir: string | null,
   use: (entry: Cached | undefined) => Effect.Effect<{ readonly result: A; readonly entry: Partial<Cached> }, E, R>,
 ) =>
   Effect.gen(function*() {
-    if (!/[?&]rev=/.test(run.flake)) return (yield* use(undefined)).result
+    if (cacheDir === null || !/[?&]rev=/.test(run.flake)) return (yield* use(undefined)).result
     mkdirSync(cacheDir, { recursive: true })
     const file = join(cacheDir, `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`)
     return yield* Effect.acquireUseRelease(
@@ -627,14 +648,12 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
       report = i: x: let v = builtins.toJSON [i (one x)]; in builtins.seq v (${mark} (builtins.trace "calder-derivation-${tag} \${v}" null));
       in builtins.seq (builtins.seq f (builtins.trace "calder-flake-${tag}" null))
         (builtins.foldl' (_: x: x) null (builtins.genList (i: report i (at (builtins.elemAt paths i))) ${paths.length}))`
-    const scratch = recorder === undefined ? undefined : mkdtempSync(join(tmpdir(), "calder-footprint-"))
+    const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
     const nix = ["nix", "eval", "--json", "--log-format", "internal-json", "--expr", expr]
-    const argv = scratch === undefined ? nix : [...straced(join(scratch, "trace")), ...nix]
-    // An empty fetcher cache, so no cached hash of a copied path hides that the evaluation read its files.
-    // Nix 2.34 reads NIX_CACHE_HOME before XDG_CACHE_HOME.
+    const argv = recorder === undefined ? nix : [...straced(join(scratch, "trace")), ...nix]
     const fetching = yield* FetchEnv
     // The worker's environment, which strace needs to find nix, and only then what fetching adds.
-    const env = { env: { ...process.env, ...fetching, ...(scratch === undefined ? {} : { NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") }) } }
+    const env = { env: { ...process.env, ...fetching, ...ownNix(scratch) } }
     const got: Array<Derivation | null> = []
     /** Attributes whose report wasn't a derivation's paths, by index, with why. */
     const refused = new Map<number, string>()
@@ -728,7 +747,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     }
     const heartbeat = (id: number) =>
       Effect.gen(function*() {
-        const trace = scratch === undefined ? undefined : join(scratch, "trace")
+        const trace = recorder === undefined ? undefined : join(scratch, "trace")
         const look = (daemon: string | null) => Heartbeat.sample(id, { resident: memory.resident, trace, daemon })
         // Nix's CPU time counts from its start, before which only strace may run.
         let before: Heartbeat.Sample = { ...look(null), cpu: 0 }
@@ -755,11 +774,11 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
       Effect.catchTag("Stopped", () => Effect.succeed("over" as const)),
       // A signal, such as the kernel's OOM killer's SIGKILL, fails the exit code rather than giving one.
       Effect.catchTag("PlatformError", (e) => /receipt of signal/.test(String(e.cause ?? e.message)) ? Effect.succeed("killed" as const) : Effect.fail(e)),
-      Effect.ensuring(Effect.sync(() => scratch === undefined ? undefined : rmSync(join(scratch, "cache"), { recursive: true, force: true }))),
+      Effect.ensuring(Effect.sync(() => rmSync(join(scratch, "cache"), { recursive: true, force: true }))),
     )
-    const trace = scratch === undefined ? undefined : yield* Effect.sync(() => {
+    const trace = yield* Effect.sync(() => {
       try {
-        return Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder!.source, recorder!.nonce)
+        return recorder === undefined ? undefined : Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder.source, recorder.nonce)
       } catch {
         return undefined
       } finally {
@@ -1344,7 +1363,8 @@ export const resolve = (
     const lastSystem = new Map((records?.evaluations ?? []).toReversed().flatMap((e) => (e.derivation === null ? [] : [[e.attr, e.derivation.system] as const])))
     const ordered = (some: ReadonlyArray<string>) => Effect.map(lastClosures(some, records), (closures) => byDependencies(some, closures, ownReads(records)))
     const rest = yield* ordered(unknown)
-    const needsApp = !(reused !== undefined && earlier !== undefined) && (audit || heldApp === undefined)
+    const appEarlier = reused !== undefined && earlier?.app !== undefined
+    const needsApp = !appEarlier && (audit || heldApp === undefined)
     // An audit evaluates exactly as plans did before footprints, through the mirror and without the
     // recorder, so a record and its check never share a way of evaluating.
     const recording = !audit && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined
@@ -1353,13 +1373,13 @@ export const resolve = (
     // shells now. An attribute too large to evaluate would swap as much in its build.
     const result = reused !== undefined && rest.length === 0
       ? { derivations: new Map<string, Derivation | null>(), errors: new Map<string, string>(), tooLarge: new Map<string, TooLarge>(), recorded: undefined }
-      : yield* derivations(run, rest, undefined, log, undefined, { recorder: recording, fresh: audit }).pipe(
+      : yield* derivations(run, rest, localCache(run.trust), log, undefined, { recorder: recording, fresh: audit }).pipe(
       Effect.catchIf(
         (e) => e._tag !== "TooLarge",
         (e) =>
           log(`the flake did not load, so only the dev shells are evaluated: ${
             e._tag === "CommandFailed" ? e.stderr.trim().split("\n").slice(-3).join(" ") : e.message
-          }`).pipe(Effect.andThen(derivations(run, shells.filter((shell) => rest.includes(shell)), undefined, log))).pipe(
+          }`).pipe(Effect.andThen(derivations(run, shells.filter((shell) => rest.includes(shell)), localCache(run.trust), log))).pipe(
             Effect.retry({ times: 2, schedule: Schedule.exponential("2 seconds"), while: (e) => e._tag !== "TooLarge" }),
           ),
       ),
@@ -1506,12 +1526,12 @@ export const resolve = (
         }
       }), { concurrency: 4 })
 
-    const appTaken = !(reused !== undefined && earlier !== undefined) && heldApp !== undefined && !audit
-    const named = reused !== undefined && earlier !== undefined
-      ? { app: earlier.app, recorded: undefined }
+    const appTaken = !appEarlier && heldApp !== undefined && !audit
+    const named = appEarlier
+      ? { app: earlier!.app!, recorded: undefined }
       : appTaken
       ? { app: heldApp.app, recorded: undefined }
-      : yield* appOf(run, undefined, recording, audit)
+      : yield* appOf(run, localCache(run.trust), recording, audit)
     const recorded = merge(result.recorded, named.recorded)
     const wrong = !audit ? [] : [...taken].flatMap(([attr, { derivation, id }]) => {
       const fresh = result.derivations.get(attr)
@@ -1545,7 +1565,7 @@ export const resolve = (
       ...(recorded === undefined ? {} : { recorded }),
       ...(audit ? { mismatches } : {}),
       ...(order.length === 0 ? {} : { deferred: order }),
-      ...(reused === undefined ? {} : { reused: earlier!.revision }),
+      ...(reused === undefined ? {} : { reused: { revision: earlier!.revision, attrs: [...reused.keys(), ...(appEarlier ? [appAttr] : [])] } }),
       // Which record gave each attribute this plan took, the app's name included, so a wrong record's
       // deploys can be listed and the controller knows whose records the plan trusted.
       ...(fromRecordIds.length === 0 ? {} : { fromRecords: Object.fromEntries(fromRecordIds) }),

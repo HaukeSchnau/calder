@@ -2,7 +2,7 @@ import type { Domain } from "@calder-ci/api"
 import { Array as Arr, Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import { Calder } from "@calder-ci/core"
-import type { PlannedStep, PlanSpec, Records } from "../Protocol.ts"
+import { appAttr, type PlannedStep, type PlanSpec, type Records } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 
 /**
@@ -264,52 +264,66 @@ export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): 
 const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) => run.trust === "trusted" || run.fork === 1
 
 /**
- * The newest plan of another commit with the run's tree that the run trusts. A same-repo pull request takes
+ * The newest plan of another commit with the run's tree that the run trusts, with the attributes of it a
+ * trusted run may take (`trusted`, `appAttr` among them for the app's name). A same-repo pull request takes
  * the plans of runs that may write records (`writesRecords`): the default branch's, same-repo pull requests'
- * and checks'. A trusted run and a fork's take only the default branch's and those of same-repo pull requests
- * whose plans took nothing a trusted run wouldn't take (`trustedInputs`): with the same tree, a pull request
- * ran the default branch's ci.ts, in a pool no fork's job writes to. A push of another branch runs that
- * branch's ci.ts in the trusted worker, so its plan could be forged. `trusted` says whether a trusted run
- * would take the plan. Of those the run takes, the newest a trusted run would take comes first.
+ * and checks'. A push of another branch runs that branch's ci.ts in the trusted worker, so its plan could be
+ * forged.
+ *
+ * A trusted run and a fork's take every attribute of the default branch's plans, and of a same-repo pull
+ * request's plan the attributes the controller marked (`trustedAttrs`): with the same tree, the pull request
+ * ran the default branch's ci.ts, in a pool no fork's job writes to. They never take a check's plan.
+ *
+ * No run takes a plan that took a record an audit found wrong. Of the plans a run takes, the newest a trusted
+ * run would take whole comes first, so a pull request's plan that reuses it stays one a trusted run takes.
  */
 export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
   Effect.gen(function*() {
     if (run.tree == null) return null
     const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ sha: string; plan: string; event: string; trust: Domain.Trust; fork: number }>`select sha, plan, event, trust, fork
+    const rows = yield* sql<{ id: string; sha: string; plan: string; event: string; trust: Domain.Trust; fork: number }>`select id, sha, plan, event,
+        trust, fork
       from runs where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha} and plan is not null
+        and not exists (select 1 from run_records r join audit_mismatches m on m.project = runs.project
+          and json_extract(m.detail, '$.record') = r.evaluation where r.run_id = runs.id)
       order by created_at desc limit 20`
     const candidates = rows.filter((r) => writesRecords(r, defaultBranch)).flatMap((row) => {
       const spec = JSON.parse(row.plan) as PlanSpec
-      const trusted = row.trust === "trusted" || ((JSON.parse(row.event) as Domain.Event)._tag === "PullRequest" && spec.trustedInputs === true)
-      return spec.derivations !== undefined && (trusted || !trustedOnly(run))
-        ? [{ revision: row.sha, derivations: spec.derivations, app: spec.app, trusted }]
-        : []
+      if (spec.derivations === undefined) return []
+      const all = [...Object.keys(spec.derivations), appAttr]
+      const trusted = row.trust === "trusted" ? all : (JSON.parse(row.event) as Domain.Event)._tag === "PullRequest" ? spec.trusted ?? [] : []
+      const whole = all.every((attr) => trusted.includes(attr))
+      const plan = { run: row.id, revision: row.sha, trusted, whole }
+      if (!trustedOnly(run)) return [{ ...plan, derivations: spec.derivations, app: spec.app }]
+      const derivations = Object.fromEntries(Object.entries(spec.derivations).filter(([attr]) => trusted.includes(attr)))
+      return Object.keys(derivations).length === 0 ? [] : [{ ...plan, derivations, ...(trusted.includes(appAttr) ? { app: spec.app } : {}) }]
     })
-    // A trusted plan first, so a pull request's plan that reuses it stays one a trusted run takes.
-    return candidates.find((c) => c.trusted) ?? candidates[0] ?? null
+    return candidates.find((c) => c.whole) ?? candidates[0] ?? null
   }).pipe(Effect.orDie)
 
 /**
- * Whether a same-repo pull request's plan took only what a trusted run takes, so a trusted run of its tree
- * may take the plan (`earlierPlan`): trusted footprint records (`taken`, by attribute), which are trusted
- * runs' and an evaluator agent's (`keepRecords`), and the earlier plan it reused (`reused`, its revision) only
- * if a trusted run would take that one too.
+ * The attributes of a same-repo pull request's plan that a trusted run of its tree may take (`earlierPlan`),
+ * `appAttr` among them for the app's name: those the plan evaluated, those it took from trusted footprint
+ * records (`fromRecords`), which are trusted runs' and an evaluator agent's (`keepRecords`), and those it took
+ * from the earlier plan it reused (`reused`) that a trusted run may take of that one. The worker that planned
+ * ran the pull request's ci.ts, so only the controller says this.
  */
-export const trustedInputs = (
+export const trustedAttrs = (
   project: string,
-  taken: Readonly<Record<string, number>> | undefined,
-  reused: string | undefined,
-  earlier: { readonly revision: string; readonly trusted: boolean } | null,
+  plan: Pick<PlanSpec, "derivations" | "fromRecords" | "reused">,
+  earlier: { readonly revision: string; readonly trusted: ReadonlyArray<string> } | null,
 ) =>
   Effect.gen(function*() {
-    if (reused !== undefined && (earlier === null || earlier.revision !== reused || !earlier.trusted)) return false
-    const ids = [...new Set(Object.values(taken ?? {}))]
-    if (ids.length === 0) return true
+    const taken = plan.fromRecords ?? {}
+    const ids = [...new Set(Object.values(taken))]
     const sql = yield* SqlClient.SqlClient
-    const [row] = yield* sql<{ n: number }>`select count(*) as n from evaluations where project = ${project}
-      and trust = 'trusted' and ${sql.in("id", ids)}`
-    return row!.n === ids.length
+    const trustedIds = new Set(ids.length === 0 ? [] : (yield* sql<{ id: number }>`select id from evaluations where project = ${project}
+      and trust = 'trusted' and ${sql.in("id", ids)}`).map((row) => row.id))
+    const { reused } = plan
+    const reusedTrusted = (attr: string) => earlier !== null && reused!.revision === earlier.revision && earlier.trusted.includes(attr)
+    return [...new Set([...Object.keys(plan.derivations ?? {}), appAttr])].filter((attr) =>
+      attr in taken ? trustedIds.has(taken[attr]!) : reused?.attrs.includes(attr) === true ? reusedTrusted(attr) : true
+    ).sort()
   }).pipe(Effect.orDie)
 
 /** The footprint records a run may trust (`trustedOnly`), newest first, with their footprints. */

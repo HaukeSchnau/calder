@@ -455,7 +455,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         _tag: "Plan",
         run: runInfo(run, pipelineDir.dir),
         requiredChecks: required,
-        earlier: earlier === null ? null : { revision: earlier.revision, derivations: earlier.derivations, app: earlier.app },
+        earlier: earlier === null ? null : {
+          revision: earlier.revision,
+          derivations: earlier.derivations,
+          ...(earlier.app === undefined ? {} : { app: earlier.app }),
+        },
       }
       const claim: Slots.Claim = {
         project: run.project,
@@ -512,14 +516,21 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (built.length > 0) return yield* unplanned(run, built[0]!)
 
       // Footprints go to their own tables, not into the stored plan, and only the controller says what a trusted run may take.
-      const { recorded, mismatches: _, trustedInputs: _claimed, ...planned_ } = result.plan
+      const { recorded, mismatches: _, trusted: _claimed, ...planned_ } = result.plan
       if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
       for (const [attr, evaluation] of Object.entries(result.plan.fromRecords ?? {})) {
         yield* db(sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`)
       }
-      const trustedInputs = run.trust === "pr" && run.fork === 0 && event._tag === "PullRequest" &&
-        (yield* db(Rows.trustedInputs(run.project, result.plan.fromRecords, result.plan.reused, earlier)))
-      const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1), ...(trustedInputs ? { trustedInputs } : {}) }
+      // What the reused plan took from records, this run took too, so the audit lists it with that plan's run.
+      const reused = result.plan.reused
+      if (reused !== undefined && earlier !== null && reused.revision === earlier.revision && reused.attrs.length > 0) {
+        yield* db(sql`insert into run_records (run_id, attr, evaluation) select ${run.id}, attr, evaluation from run_records
+          where run_id = ${earlier.run} and ${sql.in("attr", reused.attrs)} on conflict do nothing`)
+      }
+      const trusted = run.trust === "pr" && run.fork === 0 && event._tag === "PullRequest"
+        ? yield* db(Rows.trustedAttrs(run.project, result.plan, earlier))
+        : undefined
+      const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1), ...(trusted === undefined ? {} : { trusted }) }
       if (tree !== null && spec.pushes !== undefined) yield* rememberPushes(run, tree, spec.pushes)
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
@@ -1242,7 +1253,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           }
         }), run.fork === 1)
         const attrs = Object.fromEntries(plan.steps.flatMap((s) => (s.build === null || !(s.name in derivations) ? [] : [[s.build.attr, derivations[s.name] ?? null]])))
-        yield* sql`update runs set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs } })} where id = ${run.id}`
+        // Evaluated at this revision, like the plan's own evaluations, so a trusted run may take them too.
+        const trusted = plan.trusted === undefined ? {} : { trusted: [...new Set([...plan.trusted, ...Object.keys(attrs)])].sort() }
+        yield* sql`update runs set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
+          where id = ${run.id}`
         const updated = steps.filter((s, i) => JSON.stringify(s) !== JSON.stringify(plan.steps[i]))
         for (const s of updated) yield* sql`update steps set spec = ${JSON.stringify(s)} where run_id = ${run.id} and name = ${s.name}`
         return updated.map((s) => s.name)

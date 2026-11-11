@@ -189,11 +189,18 @@ unless they mention that commit (`self.rev`, `self.shortRev`, `self.lastModified
 or its day) or the flake's sources read `revCount`, and evaluates only the attributes that plan didn't, such
 as the dev shells of the deploys a pull request doesn't run. Same-repo pull requests take the plans of the
 default branch's runs (its pushes, schedules and manual runs), of same-repo pull requests and of checks.
-Trusted runs and forks' runs take those of the default branch's runs and of same-repo pull requests whose
-plans took only trusted footprint records and earlier plans only such as these, never a fork's or a check's:
-a pull request runs its own ci.ts in the worker that plans, which with the same tree is the default branch's,
-and a push of another branch runs that branch's ci.ts in the trusted worker. So `calder merge`'s merge evaluates only what its pull request's rules didn't need. Put the revision into what a deploy hands the
-service rather than into a build, and a merge reuses the pull request's builds too.
+Trusted runs and forks' runs take the default branch's plans and never a fork's or a check's. Of a same-repo
+pull request's plan they take only the attributes the controller marked: those the plan evaluated, those it
+took from trusted footprint records, and those it took from an earlier plan that were marked there. A pull
+request runs its own ci.ts in the worker that plans, and with the same tree that ci.ts is the default
+branch's. A pull request's record, such as one its first push made, holds for later trees too, whose ci.ts
+may differ, so an attribute taken from it isn't marked, and the merge evaluates it again. A push of another
+branch runs that branch's ci.ts in the trusted worker, so no trusted run takes its plan. So `calder merge`'s
+merge evaluates only what its pull request's rules didn't need or took from a pull request's records. Put
+the revision into what a deploy hands the service rather than into a build, and a merge reuses the pull
+request's builds too. A pull request's evaluations on the controller cache no derivations and read no
+nix.conf, flake registry or fetcher cache from their pool's home, which every same-repo pull request's job
+can write to.
 
 The attributes a plan needs share one `nix eval` while they fit 80% of the plan job's memory (its
 systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once it holds more than
@@ -253,8 +260,9 @@ requests too; forks record nothing. Trusted runs record as trusted, and so does 
 build evaluation on an evaluator agent, since no ci.ts runs there.
 Every night, and on `calder audit <project>`, the controller evaluates each default branch's head afresh,
 through the mirror and without the recorder, as plans did before records, and drops the records that
-disagree. It logs each as `footprint record wrong:` with the runs whose plans took it (infra alerts on
-that line), and the project's page shows it for two weeks.
+disagree. It logs each as `footprint record wrong:` with the runs whose plans took it, those that reused
+such a plan among them (infra alerts on that line), and the project's page shows it for two weeks. No
+run reuses a plan that took a record the audit found wrong.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch
