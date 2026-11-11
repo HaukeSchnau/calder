@@ -291,19 +291,24 @@ export default Environments.project({
 `Project.alchemy` is the same with one environment, the production stage the default branch deploys once
 the checks passed, and previews after the checks. The project's
 secret `env` is a dotenv file of the providers' credentials, which the CLI reads with `--env-file`.
-The CLI is the installed `node_modules/.bin/alchemy`, not `pnpm exec alchemy`, which checks the install
+Alchemy's CLI caches the bearer token of a Cloudflare state store but never writes that cache when `CI`
+is set, so in Calder each command fetched it again through a preview Worker, 5 s of each casa-crema command.
+With `ALCHEMY_STATE_STORE_URL` and `ALCHEMY_STATE_STORE_TOKEN` in the env file, the store's workers.dev
+URL and token, each command starts from a cache the step writes into an `ALCHEMY_HOME` of its own, which
+it removes when the command ends; Alchemy's run log stays in the job's HOME. A token the store refuses
+makes the CLI fetch it as before; a URL that doesn't answer fails the command. Every command runs with
+`DO_NOT_TRACK=1`, which turns Alchemy's telemetry off. The CLI is the installed `node_modules/.bin/alchemy`, not `pnpm exec alchemy`, which checks the install
 again first; a Bun repository sets `runner: "bun"` and installs with `Bun.install`, and its steps run
 `bun alchemy`. Trusted tasks keep Node's compile cache in their workspace slot (`NODE_COMPILE_CACHE`), so the
 CLI doesn't compile itself from scratch on every deploy. A stack whose package has its own lockfile in a
 directory, such as a website in `site/`, sets `dir` on the stack and on its install, and the CLI runs
 there.
 
-A stack with `outputs` makes what it returns, an object, the value of its deploys: after deploying,
-the step reads it with `alchemy state read <name>/<stage>/output` and decodes it with the schema,
-which leaves out secrets such as tokens. A preview's `url` gets the outputs as its second argument.
-Reading them takes a second CLI process, 16 s of casa-crema's deploy. So an environment's deploy reads
-them only when its `readiness` or `then` does; `Project.alchemy`'s production deploy has neither.
-Previews always read them for their link.
+A stack with `outputs` makes what it returns, an object, the value of its deploys, which the UI shows:
+after deploying, the step reads it from the state store with the env file's token, one request, and
+decodes it with the schema, which leaves out secrets such as tokens. Without a token, or with one the
+store refuses, it reads them with `alchemy state read <name>/<stage>/output`, a second CLI process that
+took 16 s of casa-crema's deploy. A preview's `url` gets the outputs as its second argument.
 
 ```ts
 export default Project.alchemy({
