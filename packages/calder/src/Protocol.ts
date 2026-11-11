@@ -137,6 +137,13 @@ export const PlanSpec = Schema.Struct({
   fromRecords: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   /** The builds the plan left unevaluated, by attribute, in the order to evaluate them. */
   deferred: Schema.optional(Schema.Array(Schema.String)),
+  /** The revision of the earlier plan of the same tree whose derivations the plan took. */
+  reused: Schema.optional(Schema.String),
+  /**
+   * Set by the controller on a same-repo pull request's plan that took only what a trusted run takes
+   * (Rows.ts `trustedInputs`), which a trusted run of its tree may then take.
+   */
+  trustedInputs: Schema.optional(Schema.Boolean),
 })
 export type PlanSpec = typeof PlanSpec.Type
 
@@ -177,8 +184,8 @@ export const PlanJob = Schema.TaggedStruct("Plan", {
   run: RunInfo,
   requiredChecks: Schema.Array(Schema.String),
   /**
-   * The newest plan of another commit with the same root tree, from a run this one may reuse (a trusted
-   * run or a same-repo pull request's), whose derivations the plan takes unless they mention that commit.
+   * The newest plan of another commit with the same root tree, from a run this one may reuse (Rows.ts
+   * `earlierPlan`), whose derivations the plan takes unless they mention that commit.
    */
   earlier: Schema.optional(Schema.NullOr(Schema.Struct({
     revision: Schema.String,

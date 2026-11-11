@@ -266,9 +266,10 @@ const readsCommit = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) 
 
 /**
  * The derivations an earlier commit with the same root tree evaluated to (`Earlier`, which the controller
- * hands a plan from runs this run may reuse), when they cover `attrs`, are still in the store, and don't
- * mention that commit. A merge of a pull request that was up to date then evaluates nothing: t3code
- * planned its merges in two minutes, mostly evaluating.
+ * hands a plan from runs this run may reuse), of those of `attrs` it evaluated, when they are still in the
+ * store and don't mention that commit. A merge of a pull request that was up to date then evaluates only
+ * what the pull request's rules didn't need, such as the dev shells of its deploys: t3code planned its
+ * merges in two minutes, mostly evaluating.
  */
 export const fromEarlier = (
   earlier: Earlier,
@@ -282,14 +283,15 @@ export const fromEarlier = (
   log: Log = () => Effect.void,
 ) =>
   Effect.gen(function*() {
-    if (!attrs.every((attr) => attr in earlier.derivations) || Option.isNone(revision.committed)) return undefined
+    const covered = attrs.filter((attr) => attr in earlier.derivations)
+    if (covered.length === 0 || Option.isNone(revision.committed)) return undefined
     const counting = [...revision.nix].find(([, text]) => text.includes("revCount"))
     if (counting !== undefined) {
       yield* log(`${counting[0]} reads revCount, which differs for every commit, so the flake is evaluated again`)
       return undefined
     }
     const committed = revision.committed.value
-    const drvs = attrs.flatMap((attr) => (earlier.derivations[attr] ? [earlier.derivations[attr].drv] : []))
+    const drvs = covered.flatMap((attr) => (earlier.derivations[attr] ? [earlier.derivations[attr].drv] : []))
     if (only(drvs).length !== drvs.length) return undefined
     if (drvs.length > 0 && (yield* Exec.exec(["nix-store", "--check-validity", ...only(drvs)])).exitCode !== 0) return undefined
     const short = earlier.revision.slice(0, 12)
@@ -297,8 +299,9 @@ export const fromEarlier = (
       yield* log(`${short} has the same tree, but its derivations mention that commit, so the flake is evaluated again`)
       return undefined
     }
-    yield* log(`${short} has the same tree, and its derivations don't mention that commit, so this plan reuses them`)
-    return new Map(attrs.map((attr) => [attr, earlier.derivations[attr] ?? null]))
+    const which = covered.length === attrs.length ? "them" : `${covered.length} of the ${attrs.length} attributes`
+    yield* log(`${short} has the same tree, and its derivations don't mention that commit, so this plan reuses ${which}`)
+    return new Map(covered.map((attr) => [attr, earlier.derivations[attr] ?? null]))
   })
 
 /** What an earlier plan of the same tree evaluated, from a run this one may reuse. */
@@ -1324,18 +1327,19 @@ export const resolve = (
     const at = Footprint.tree(yield* repo.entries)
     const context = options.records === undefined ? undefined : yield* evaluationContext(run.system)
     const records = context === undefined ? undefined : options.records
-    const taken = records === undefined || reused !== undefined
+    const unreused = attrs.filter((attr) => reused?.has(attr) !== true)
+    const taken = records === undefined || unreused.length === 0
       ? new Map<string, { readonly derivation: Derivation | null; readonly id: number | undefined }>()
-      : yield* inStore(fromRecords(records, attrs, at, context!))
+      : yield* inStore(fromRecords(records, unreused, at, context!))
     const held = new Map([...taken].map(([attr, h]) => [attr, h.derivation]))
     const heldApp = records === undefined ? undefined : appFromRecords(records, at, context!)
-    const known = audit ? new Map<string, Derivation | null>() : held
+    const known = audit ? new Map<string, Derivation | null>() : new Map([...(reused ?? []), ...held])
     // Builds whose footprints changed are evaluated together once the run's first of them runs, which
     // records their footprints (see Runs.ts `evaluation`). The plan evaluates only dev shells, which task
     // keys need now, and an audit everything.
     const unknown = attrs.filter((attr) => !known.has(attr) && (audit || shells.includes(attr)))
     const deferred = attrs.filter((attr) => !known.has(attr) && !unknown.includes(attr))
-    if (deferred.length > 0 && reused === undefined) yield* log(`left ${deferred.length} builds to evaluate when the first of them runs`)
+    if (deferred.length > 0) yield* log(`left ${deferred.length} builds to evaluate when the first of them runs`)
     // Until then, a deferred build waits for a build slot of the system its last record built for.
     const lastSystem = new Map((records?.evaluations ?? []).toReversed().flatMap((e) => (e.derivation === null ? [] : [[e.attr, e.derivation.system] as const])))
     const ordered = (some: ReadonlyArray<string>) => Effect.map(lastClosures(some, records), (closures) => byDependencies(some, closures, ownReads(records)))
@@ -1343,12 +1347,12 @@ export const resolve = (
     const needsApp = !(reused !== undefined && earlier !== undefined) && (audit || heldApp === undefined)
     // An audit evaluates exactly as plans did before footprints, through the mirror and without the
     // recorder, so a record and its check never share a way of evaluating.
-    const recording = reused === undefined && !audit && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined
+    const recording = !audit && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined
     if (held.size > 0 && !audit) yield* log(`took ${held.size} of ${attrs.length} attributes from footprints that hold at this commit`)
     // When the flake fails to load, builds evaluate on their own when they run, but keys need the dev
     // shells now. An attribute too large to evaluate would swap as much in its build.
-    const result = reused !== undefined
-      ? { derivations: reused, errors: new Map<string, string>(), tooLarge: new Map<string, TooLarge>(), recorded: undefined }
+    const result = reused !== undefined && rest.length === 0
+      ? { derivations: new Map<string, Derivation | null>(), errors: new Map<string, string>(), tooLarge: new Map<string, TooLarge>(), recorded: undefined }
       : yield* derivations(run, rest, undefined, log, undefined, { recorder: recording, fresh: audit }).pipe(
       Effect.catchIf(
         (e) => e._tag !== "TooLarge",
@@ -1536,6 +1540,7 @@ export const resolve = (
       ...(recorded === undefined ? {} : { recorded }),
       ...(audit ? { mismatches } : {}),
       ...(order.length === 0 ? {} : { deferred: order }),
+      ...(reused === undefined ? {} : { reused: earlier!.revision }),
       // Which record gave each attribute this plan took, so a wrong record's deploys can be listed.
       ...(taken.size === 0 || audit ? {} : {
         fromRecords: Object.fromEntries([...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id]]))),

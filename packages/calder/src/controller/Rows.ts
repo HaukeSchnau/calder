@@ -257,17 +257,20 @@ export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): 
 }
 
 /**
- * Whether a run takes only trusted runs' plans and records. A trusted run and a fork's do, since a pull
- * request's ci.ts runs in the worker that plans and records and could forge either. A same-repo pull
- * request also takes those of same-repo pull requests.
+ * Whether a run takes only trusted runs' records, and only plans a trusted run takes (`earlierPlan`). A
+ * trusted run and a fork's do, since a pull request's ci.ts runs in the worker that plans and records and
+ * could forge either. A same-repo pull request also takes those of same-repo pull requests.
  */
 const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) => run.trust === "trusted" || run.fork === 1
 
 /**
- * The newest plan of another commit with the run's tree that the run trusts, by the rules for records: of
- * trusted runs only the default branch's (`writesRecords`), and for a same-repo pull request also those of
- * same-repo pull requests (`trustedOnly`). A push of another branch runs that branch's ci.ts in the trusted
- * worker, so its plan could be forged.
+ * The newest plan of another commit with the run's tree that the run trusts. A same-repo pull request takes
+ * the plans of runs that may write records (`writesRecords`): the default branch's, same-repo pull requests'
+ * and checks'. A trusted run and a fork's take only the default branch's and those of same-repo pull requests
+ * whose plans took nothing a trusted run wouldn't take (`trustedInputs`): with the same tree, a pull request
+ * ran the default branch's ci.ts, in a pool no fork's job writes to. A push of another branch runs that
+ * branch's ci.ts in the trusted worker, so its plan could be forged. `trusted` says whether a trusted run
+ * would take the plan.
  */
 export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
   Effect.gen(function*() {
@@ -276,11 +279,35 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
     const rows = yield* sql<{ sha: string; plan: string; event: string; trust: Domain.Trust; fork: number }>`select sha, plan, event, trust, fork
       from runs where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha} and plan is not null
       order by created_at desc limit 20`
-    for (const row of rows.filter((r) => writesRecords(r, defaultBranch) && (r.trust === "trusted" || !trustedOnly(run)))) {
+    for (const row of rows.filter((r) => writesRecords(r, defaultBranch))) {
       const spec = JSON.parse(row.plan) as PlanSpec
-      if (spec.derivations !== undefined) return { revision: row.sha, derivations: spec.derivations, app: spec.app }
+      const trusted = row.trust === "trusted" || ((JSON.parse(row.event) as Domain.Event)._tag === "PullRequest" && spec.trustedInputs === true)
+      if (spec.derivations !== undefined && (trusted || !trustedOnly(run))) {
+        return { revision: row.sha, derivations: spec.derivations, app: spec.app, trusted }
+      }
     }
     return null
+  }).pipe(Effect.orDie)
+
+/**
+ * Whether a same-repo pull request's plan took only what a trusted run takes, so a trusted run of its tree
+ * may take the plan (`earlierPlan`): footprint records of trusted runs (`taken`, by attribute), and the
+ * earlier plan it reused (`reused`, its revision) only if a trusted run would take that one too.
+ */
+export const trustedInputs = (
+  project: string,
+  taken: Readonly<Record<string, number>> | undefined,
+  reused: string | undefined,
+  earlier: { readonly revision: string; readonly trusted: boolean } | null,
+) =>
+  Effect.gen(function*() {
+    if (reused !== undefined && (earlier === null || earlier.revision !== reused || !earlier.trusted)) return false
+    const ids = [...new Set(Object.values(taken ?? {}))]
+    if (ids.length === 0) return true
+    const sql = yield* SqlClient.SqlClient
+    const [row] = yield* sql<{ n: number }>`select count(*) as n from evaluations where project = ${project}
+      and trust = 'trusted' and ${sql.in("id", ids)}`
+    return row!.n === ids.length
   }).pipe(Effect.orDie)
 
 /** The footprint records a run may trust (`trustedOnly`), newest first, with their footprints. */

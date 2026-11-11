@@ -199,10 +199,11 @@ describe("derivations", () => {
         writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1-${mark}")])`)
         expect(yield* take(["a", "b"])).toBeUndefined()
       }
-      // Nor does a plan that didn't evaluate every attribute this one needs, nor one of a flake that reads
-      // revCount, nor one whose commit can't be read.
+      // Of a plan that didn't evaluate every attribute this one needs, it takes those it did; none of a flake
+      // that reads revCount, nor of one whose commit can't be read.
       writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`)
-      expect(yield* take(["a", "c"])).toBeUndefined()
+      expect(yield* take(["a", "c"])).toEqual(new Map([["a", drv("a")]]))
+      expect(yield* take(["c"])).toBeUndefined()
       expect(yield* take(["a", "b"], { nix: new Map([["nix/version.nix", "self: \"0.${toString self.revCount}\""]]) })).toBeUndefined()
       expect(yield* take(["a", "b"], { committed: Option.none() })).toBeUndefined()
       expect(yield* take(["a", "b"])).toBeDefined()

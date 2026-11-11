@@ -66,19 +66,18 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
       expect(trusted?.evaluations.map((e) => e.attr)).toEqual(["checks.aarch64-linux.srv-1"])
     }))
 
-  it.live("stays in the pull-request sandbox for a fork's pull request, whose records count for none but pull requests", () =>
+  it.live("stays in the forks' sandbox for a fork's pull request, whose records count for none but pull requests", () =>
     Effect.gen(function*() {
       const { evaluations, jobs, pools } = yield* drive({
         steps: [deferred("srv-1")],
         event: { ...pullRequest, fork: true },
-        fork: true,
         evaluator: true,
         valid: () => true,
         result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
       })
       expect(evaluations).toEqual([])
       expect(jobs[0]).toBe("srv-1 evaluates")
-      expect(pools.get("srv-1")).toBe("pr")
+      expect(pools.get("srv-1")).toBe("fork")
     }))
 
   it.live("keeps a same-repo pull request's records its own when it evaluated here", () =>

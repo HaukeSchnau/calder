@@ -11,7 +11,11 @@ import { compatibility, Unauthorized } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 
-export type Pool = "pr" | "trusted"
+/**
+ * Who a job runs as. Forks' pull requests get a pool of their own, so nothing a fork's job leaves in its
+ * home or workspaces reaches a same-repo pull request's job, whose plan the default branch may take.
+ */
+export type Pool = "pr" | "fork" | "trusted"
 
 export interface Sample {
   readonly timestamp: number
@@ -34,7 +38,7 @@ export interface ActiveJob {
   readonly tokenHash: string
   readonly spec: Job
   readonly pool: Pool
-  /** The systemd unit template of a local worker: its pool's, or the larger pull-request one (`large`). */
+  /** The systemd unit template of a local worker: its pool's, or its larger one (`large`). */
   readonly template: string
   /** Runs on an agent, which fetches over HTTP what local workers read from disk. */
   readonly remote: boolean
@@ -56,6 +60,7 @@ export interface Usage {
 export interface Adopted {
   readonly id: string
   readonly spec: Extract<Job, { readonly _tag: "Step" }>
+  readonly pool: Pool
   readonly startedAt: number
 }
 
@@ -64,8 +69,8 @@ export interface Adopted {
  * pull-request work there could read and change what trusted work keeps. A same-repo pull request's
  * evaluation runs none of its code, only Calder's evaluator, so it may; a fork's may not.
  */
-export const refusedOnAgents = (options: { readonly pool: Pool; readonly evaluation?: boolean; readonly fork?: boolean }) =>
-  options.pool === "pr" && (options.evaluation !== true || options.fork !== false)
+export const refusedOnAgents = (options: { readonly pool: Pool; readonly evaluation?: boolean }) =>
+  options.pool === "fork" || (options.pool === "pr" && options.evaluation !== true)
 
 /** How long an evaluation waits for an evaluator agent to take it before the controller evaluates it. */
 export const evaluatorWait = "2 minutes"
@@ -79,7 +84,7 @@ export class Jobs extends Context.Service<Jobs, {
     readonly pool: Pool
     /**
      * A pull request's plan or build evaluation of a project whose flake needs more memory: runs in
-     * `calder-job-pr-large@`, which the host gives more than `calder-job-pr@`.
+     * `calder-job-pr-large@` (a fork's in `calder-job-fork-large@`), which the host gives more than `calder-job-pr@`.
      */
     readonly large?: boolean
     readonly onEvent: (event: JobEvent) => Effect.Effect<void>
@@ -98,8 +103,6 @@ export class Jobs extends Context.Service<Jobs, {
      * runs no ci.ts, only Calder's evaluator and pure `nix eval`, so a same-repo pull request's may go too.
      */
     readonly evaluation?: boolean
-    /** Whether the run is a fork's. An evaluation goes to an agent only when this says it isn't. */
-    readonly fork?: boolean
     /** Hears what a job that waits for an agent waits for, whenever that changes. */
     readonly onWaiting?: (reason: string) => Effect.Effect<void>
     /** A local step that may outlive a restart of the controller, which adopts it instead of stopping it. */
@@ -153,6 +156,9 @@ export const startUnit = <E, R>(
       }
       const unitResult = (yield* result) || "unknown"
       const line = stderr.trim().split("\n")[0]!.replace(/\.$/, "") || `systemctl exited with ${exitCode}`
+      // A host that doesn't define a pool's template, such as one from before forks had their own, runs none of its jobs.
+      const missing = /^Failed to start \S+: Unit ([\w-]+)@\S* not found$/.exec(line)
+      if (missing !== null) return `the host defines no ${missing[1]}@ unit to run the job in`
       const said = /^Job for (\S+) failed because (.+)$/.exec(line)
       const cause = said?.[2] ?? line
       const where = said === null ? `result ${unitResult}` : `result ${unitResult}, ${said[1]}`
@@ -205,7 +211,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
   }
   const exec = (argv: ReadonlyArray<string>) => Exec.exec(argv).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
 
-  const templateOf = (pool: Pool, large: boolean) => `calder-job-${pool}${large && pool === "pr" ? "-large" : ""}`
+  const templateOf = (pool: Pool, large: boolean) => `calder-job-${pool}${large && pool !== "trusted" ? "-large" : ""}`
   const unit = (template: string, id: string) => `${template}@${id}.service`
 
   const groupOf = (pool: Pool) => groupId(`calder-${pool}`)
@@ -301,7 +307,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const sink = { buffer: [] as Array<JobEvent>, target: undefined as ((event: JobEvent) => Effect.Effect<void>) | undefined }
       sinks.set(row.id, sink)
       settledOf.set(row.id, Deferred.makeUnsafe<void>())
-      adoptable.set(row.id, { id: row.id, spec, startedAt: row.created_at })
+      adoptable.set(row.id, { id: row.id, spec, pool: row.pool, startedAt: row.created_at })
       jobs.set(row.id, {
         id: row.id,
         tokenHash: row.token_hash,
@@ -317,7 +323,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       })
     }
     const listed = yield* exec(["systemctl", "list-units", "--all", "--plain", "--no-legend", "calder-job-pr@*.service", "calder-job-pr-large@*.service",
-      "calder-job-trusted@*.service"])
+      "calder-job-fork@*.service", "calder-job-fork-large@*.service", "calder-job-trusted@*.service"])
     const kept = new Set([...adoptable.values()].map((a) => unit(jobs.get(a.id)!.template, a.id)))
     const orphans = listed.stdout.split("\n").map((l) => l.trim().split(/\s+/)[0] ?? "").filter((u) => u.startsWith("calder-job-") && !kept.has(u))
     if (orphans.length > 0) yield* exec(["systemctl", "stop", ...orphans]).pipe(Effect.ignore)

@@ -237,8 +237,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
   // lands in a workspace that is still in use.
   for (const adopted of jobs.adopted()) {
-    const { spec } = adopted
-    const pool: Pool = spec.run.trust === "pr" ? "pr" : "trusted"
+    const { spec, pool } = adopted
     const index = spec.workspace === null ? null : Number(/slot-(\d+)$/.exec(spec.workspace)?.[1] ?? Number.NaN)
     const key = `local/${pool}/${spec.run.project}`
     if (index !== null && !Number.isNaN(index)) {
@@ -290,7 +289,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   const repoOf = (project: string) => projects.get(project)!.repo
   const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`
-  const poolOf = (run: Rows.RunRow): Pool => (run.trust === "pr" ? "pr" : "trusted")
+  const poolOf = (run: Rows.RunRow): Pool => (run.trust === "trusted" ? "trusted" : run.fork === 1 ? "fork" : "pr")
   const largeEvaluations = (run: Rows.RunRow) => projects.get(run.project)?.largeEvaluations === true
 
   const publishRun = (runId: string) =>
@@ -451,7 +450,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
-      const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run, projects.get(run.project)?.defaultBranch)) }
+      const earlier = yield* db(Rows.earlierPlan(run, projects.get(run.project)?.defaultBranch))
+      const job: Job = {
+        _tag: "Plan",
+        run: runInfo(run, pipelineDir.dir),
+        requiredChecks: required,
+        earlier: earlier === null ? null : { revision: earlier.revision, derivations: earlier.derivations, app: earlier.app },
+      }
       const claim: Slots.Claim = {
         project: run.project,
         expected: 0,
@@ -506,13 +511,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       })
       if (built.length > 0) return yield* unplanned(run, built[0]!)
 
-      // Footprints go to their own tables, not into the stored plan.
-      const { recorded, mismatches: _, ...planned_ } = result.plan
+      // Footprints go to their own tables, not into the stored plan, and only the controller says what a trusted run may take.
+      const { recorded, mismatches: _, trustedInputs: _claimed, ...planned_ } = result.plan
       if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
       for (const [attr, evaluation] of Object.entries(result.plan.fromRecords ?? {})) {
         yield* db(sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`)
       }
-      const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
+      const trustedInputs = run.trust === "pr" && run.fork === 0 && event._tag === "PullRequest" &&
+        (yield* db(Rows.trustedInputs(run.project, result.plan.fromRecords, result.plan.reused, earlier)))
+      const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1), ...(trustedInputs ? { trustedInputs } : {}) }
       if (tree !== null && spec.pushes !== undefined) yield* rememberPushes(run, tree, spec.pushes)
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
@@ -864,8 +871,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly evaluates?: boolean
       /** A build evaluation for an evaluator agent (Jobs `evaluation`). */
       readonly evaluation?: boolean
-      /** The run is a fork's, whose evaluations Jobs keeps off agents. */
-      readonly fork?: boolean
     },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
@@ -929,7 +934,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           agent: options.remote === true,
           offload: options.offload === true,
           evaluation: options.evaluation === true,
-          ...(options.fork === undefined ? {} : { fork: options.fork }),
           adoptable: !options.action,
           onWaiting: (reason) => waiting(run.id, row.name, reason),
         })
@@ -1164,7 +1168,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           critical,
           remote: true,
           evaluation: true,
-          fork: run.fork === 1,
         }, { tests: [], attempts: 0 })
         if (stopped(r)) return { ...r, records: [] as Kept }
         const odder = r.result._tag === "Evaluated"

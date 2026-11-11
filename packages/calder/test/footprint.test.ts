@@ -276,6 +276,37 @@ describe("a plan with builds whose footprints changed", () => {
     }))
 })
 
+describe("a plan of a tree another plan evaluated", () => {
+  it.effect("takes the derivations that plan has and evaluates only the rest, such as a merge the dev shells of its deploys", () =>
+    Effect.gen(function*() {
+      const dir = mkdtempSync(join(tmpdir(), "calder-earlier-"))
+      const hostDrv = { drv: join(dir, "h-host.drv"), out: "/nix/store/h-host", system: "x86_64-linux" }
+      writeFileSync(hostDrv.drv, `Derive([("out","/nix/store/h-host","","")],[],[],"x86_64-linux","/bin/sh",[],[])`)
+      const shellDrv = { drv: "/nix/store/ssssssssssssssssssssssssssssssss-shell.drv", out: "/nix/store/ssssssssssssssssssssssssssssssss-shell", system: "x86_64-linux" }
+      const { spawner, evaluated } = answering({
+        "git --git-dir": { stdout: "1761609600" },
+        "nix-store --check-validity": {},
+        "nix-store --query": { stdout: (argv) => argv.at(-1)! },
+      }, () => shellDrv)
+      const flake = Flake.make({ devShells: ["ci"] })
+      const deploy = Task.make("deploy", { shell: flake.devShells.ci, run: cmd`deploy` })
+      const host = Nix.build(Flake.attr("checks.x86_64-linux.host"), { name: "host" })
+      const project = Calder.project({ rules: [On.push("main", [host, deploy])] })
+      const run = { id: "app-2", project: "app", number: 2, revision: "b", branch: "main", trust: "trusted", event: Event.push("main"),
+        flake: "git+file:///mirror", mirror: "/mirror", mirrors: {}, pipelineDir: "", system: "x86_64-linux" } satisfies RunInfo
+      // The pull request's rules built the host and ran no task, so its plan has no dev shell.
+      const pullRequest = { revision: "1".repeat(40), derivations: { "checks.x86_64-linux.host": hostDrv }, app: "app" }
+      const spec = yield* Effect.gen(function*() {
+        return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" }), pullRequest)
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      expect(evaluated).toEqual(["devShells.x86_64-linux.ci"])
+      expect(spec.steps.find((s) => s.name === "host")?.build).toEqual({ attr: "checks.x86_64-linux.host", ...hostDrv })
+      expect(spec.derivations).toEqual({ "checks.x86_64-linux.host": hostDrv, "devShells.x86_64-linux.ci": shellDrv })
+      expect(spec.reused).toBe(pullRequest.revision)
+      expect(spec.app).toBe("app")
+    }))
+})
+
 describe("what a record may be trusted with", () => {
   it.effect("trusts no attribute that read a store path built from the source, or whose deriver Nix doesn't know", () =>
     Effect.gen(function*() {

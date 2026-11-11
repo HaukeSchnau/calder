@@ -82,8 +82,6 @@ export interface Drive {
   readonly adoptedEvaluations?: ReadonlyArray<string>
   /** An evaluator agent (`calder agent --evaluator`) is connected. */
   readonly evaluator?: boolean
-  /** `app-2` is a fork's pull request run. */
-  readonly fork?: boolean
   /** What `nix-store --check-validity --print-invalid` finds valid, such as an evaluator agent's derivations; without it, the store answers nothing. */
   readonly valid?: (path: string) => boolean
   /**
@@ -128,7 +126,6 @@ export const drive = ({
   statusDelay = () => undefined,
   evaluator = false,
   adoptedEvaluations = [],
-  fork = false,
   valid,
 }: Drive) =>
   Effect.gen(function*() {
@@ -148,10 +145,11 @@ export const drive = ({
         where run_id = 'app-1' and name = ${s.name}`
       if (s.lease !== undefined) yield* sql`insert into lease_steps (project, step, run) values ('app', ${s.name}, ${s.lease})`
     }
+    const fork = event._tag === "PullRequest" && event.fork ? 1 : 0
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, plan, rerun_of, fork)
       values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
-        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"}, ${fork ? 1 : 0})`
+        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"}, ${fork})`
     for (const [position, s] of unplanned ? [] : plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`
@@ -164,6 +162,7 @@ export const drive = ({
     const adopted = adoptedEvaluations.length === 0 ? [] : [{
       id: "adopted",
       startedAt: 1,
+      pool: trust === "trusted" ? "trusted" as const : fork === 1 ? "fork" as const : "pr" as const,
       spec: {
         _tag: "Step",
         run: { id: "app-2", project: "app", trust },
@@ -171,7 +170,7 @@ export const drive = ({
         evaluate: { builds: adoptedEvaluations.map((name) => ({ name, attr: name })), planned: [] },
       } as unknown as Extract<Job, { _tag: "Step" }>,
     }]
-    /** The pool each step's job ran in. */
+    /** The pool each step's job ran in, and the plan's as `plan`. */
     const pools = new Map<string, string>()
     /** The jobs that ran in the larger pull-request unit. */
     const large: Array<string> = []
@@ -279,6 +278,7 @@ export const drive = ({
           Effect.gen(function*() {
             if (job._tag === "Plan") {
               jobs.push(job.rules === true ? "rules" : "plan")
+              pools.set(job.rules === true ? "rules" : "plan", options.pool)
               return { result: { _tag: "Planned", plan }, usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "job-plan" }
             }
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
