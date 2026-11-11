@@ -132,8 +132,10 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
     return ruleOf(environment.on, [deployed, ...(ready === undefined ? [] : [ready]), ...(environment.then?.(last) ?? [])])
   })
   const plans = options.planDeploys === false ? [] : Object.entries(options.environments).flatMap(([name, environment]) =>
-    "push" in environment.on && environment.on.push === branch ? [Alchemy.plan(options.stack, { stage: Alchemy.stageName(name), ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }) })] : []
-  )
+    "push" in environment.on && On.matchesBranch(environment.on.push, branch)
+      ? [Alchemy.plan(options.stack, { stage: Alchemy.stageName(name), ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }) })]
+      : []
+  ).filter((plan) => !namesTarget(options.rules, plan.name))
   return Calder.project({
     ...(options.shared === undefined ? {} : { shared: options.shared }),
     rules: [
@@ -147,3 +149,7 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
     ],
   })
 }
+
+/** Whether a project's own rules already list a step with this name, which a generated one would collide with. */
+const namesTarget = (rules: ReadonlyArray<On.Rule<"pr" | "trusted", any>> | undefined, name: string) =>
+  (rules ?? []).some((rule) => rule.targets.some((target) => target.name === name))
