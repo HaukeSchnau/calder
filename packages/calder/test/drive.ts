@@ -16,7 +16,7 @@ import { InfrastructureRetries, layerCore, type RunsCore } from "../src/controll
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
-import type { Job, JobEvent, JobResult, PlannedStep, PlanSpec } from "../src/Protocol.ts"
+import { compatibility, type Job, type JobEvent, type JobResult, type PlannedStep, type PlanSpec } from "../src/Protocol.ts"
 import { config } from "./config.ts"
 import { insertRun, insertStep, layer as sqlite } from "./sqlite.ts"
 
@@ -76,6 +76,17 @@ export interface Drive {
   /** Collects the `nix` commands Calder runs, which then succeed; without it they aren't found. */
   readonly nix?: Array<ReadonlyArray<string>>
   /**
+   * Evaluation workers this controller adopted from the one before its restart: local jobs of `app-2`'s
+   * steps whose `evaluate` lists the steps given, which reattaching ends with `result`.
+   */
+  readonly adoptedEvaluations?: ReadonlyArray<string>
+  /** An evaluator agent (`calder agent --evaluator`) is connected. */
+  readonly evaluator?: boolean
+  /** `app-2` is a fork's pull request run. */
+  readonly fork?: boolean
+  /** What `nix-store --check-validity --print-invalid` finds valid, such as an evaluator agent's derivations; without it, the store answers nothing. */
+  readonly valid?: (path: string) => boolean
+  /**
    * Makes `app-2` a rerun of `app-1`, whose steps ended like this: `secrets` is the step's secrets
    * digest, `lease` the newest run number whose step held the project's lease.
    */
@@ -115,6 +126,10 @@ export const drive = ({
   planSlots,
   nix,
   statusDelay = () => undefined,
+  evaluator = false,
+  adoptedEvaluations = [],
+  fork = false,
+  valid,
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -134,9 +149,9 @@ export const drive = ({
       if (s.lease !== undefined) yield* sql`insert into lease_steps (project, step, run) values ('app', ${s.name}, ${s.lease})`
     }
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
-        started_at, trace_id, span_id, plan, rerun_of)
+        started_at, trace_id, span_id, plan, rerun_of, fork)
       values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
-        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"})`
+        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"}, ${fork ? 1 : 0})`
     for (const [position, s] of unplanned ? [] : plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`
@@ -144,10 +159,24 @@ export const drive = ({
     yield* resume
 
     const jobs: Array<string> = []
+    /** Every command Calder ran, with its arguments. */
+    const commands: Array<ReadonlyArray<string>> = []
+    const adopted = adoptedEvaluations.length === 0 ? [] : [{
+      id: "adopted",
+      startedAt: 1,
+      spec: {
+        _tag: "Step",
+        run: { id: "app-2", project: "app", trust },
+        step: adoptedEvaluations[0]!,
+        evaluate: { builds: adoptedEvaluations.map((name) => ({ name, attr: name })), planned: [] },
+      } as unknown as Extract<Job, { _tag: "Step" }>,
+    }]
     /** The pool each step's job ran in. */
     const pools = new Map<string, string>()
     /** The jobs that ran in the larger pull-request unit. */
     const large: Array<string> = []
+    /** The jobs that went to an evaluator agent (Jobs `evaluation`). */
+    const evaluations: Array<string> = []
     const statuses = new Map<string, string>()
     /** Every commit status Calder reported, in order, as `context: state: description`. */
     const history: Array<string> = []
@@ -160,13 +189,37 @@ export const drive = ({
       }),
       Layer.succeed(InfrastructureRetries)(["5 millis", "5 millis"]),
       Live.layer,
-      Layer.succeed(Agents)(makeAgents(null)),
+      Layer.succeed(Agents)({
+        ...makeAgents(null),
+        usage: () =>
+          evaluator
+            ? [{ name: "dev-hauke", platform: "x86_64-linux", slots: 2, running: 0, connected: true, build: "b", compatibility, current: true, evaluator: true }]
+            : [],
+      }),
       Layer.succeed(Cache)(cache),
       Layer.succeed(Comments)({ note: unused, touch: () => Effect.void }),
       // Only the store answers, holding nothing, so a build's output exists only where `cache` has it.
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
         ChildProcessSpawner.make((command) => {
+          if (ChildProcess.isStandardCommand(command)) commands.push([command.command, ...command.args])
           const answers = ChildProcess.isStandardCommand(command) && requisites !== undefined && command.args[1] === "--requisites"
+          const checks = ChildProcess.isStandardCommand(command) && valid !== undefined && command.args[0] === "--check-validity" && command.args[1] === "--print-invalid"
+          if (checks) {
+            const invalid = (command as ChildProcess.StandardCommand).args.filter((a) => a.startsWith("/nix/store/") && !valid!(a))
+            return Effect.succeed(ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              stdin: Sink.drain,
+              stdout: Stream.make(new TextEncoder().encode(invalid.join("\n"))),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+              unref: Effect.succeed(Effect.void),
+            }))
+          }
           const collected = ChildProcess.isStandardCommand(command) && command.command === "nix" && nix !== undefined
           if (collected) nix.push(command.args)
           return ChildProcess.isStandardCommand(command) && (command.command === "nix-store" || collected)
@@ -197,7 +250,7 @@ export const drive = ({
         contains: unused,
         pipelineDir: () => Effect.succeed("/calder"),
         flake: () => "git+file:///mirror",
-        byUrl: () => ({}),
+        byUrl: () => ({ "ssh://git@gitea.test/schnau/lib.git": "/state/mirrors/lib.git" }),
       }),
       Layer.succeed(Telemetry)({ exportSpan: () => Effect.void, log: () => Effect.void, gauge: () => Effect.void, span: (_parent, _name, _attributes, effect) => effect, logs: unused, trace: unused }),
       Layer.succeed(Gitea)({
@@ -231,6 +284,7 @@ export const drive = ({
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
             if (job._tag === "Step") pools.set(job.step, options.pool)
             if (options.large === true) large.push(jobs.at(-1) ?? "plan")
+            if (options.evaluation === true) evaluations.push(jobs.at(-1) ?? "plan")
             yield* options.onStart ?? Effect.void
             if (job._tag === "Step") yield* work(job.step, options.onEvent)
             return {
@@ -240,9 +294,15 @@ export const drive = ({
               id: `job-${jobs.length}`,
             }
           }),
-        adopted: () => [],
-        reattach: unused,
-        settled: unused,
+        adopted: () => adopted,
+        reattach: (id) =>
+          Effect.gen(function*() {
+            const job = adopted.find((a) => a.id === id)!
+            adopted.splice(adopted.indexOf(job), 1)
+            jobs.push(`${job.spec.step} evaluates (adopted)`)
+            return { result: result(job.spec.step, job.spec) ?? { _tag: "Died", message: "no result" }, usage: { cpuSeconds: null, memoryPeakBytes: null }, id }
+          }),
+        settled: () => Effect.never,
         authorize: unused,
         get: () => undefined,
         active: () => [],
@@ -266,5 +326,7 @@ export const drive = ({
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
-    return { status, jobs, statuses, history, steps, pools, large, plan: stored }
+    const records = yield* sql<{ attr: string; trust: string }>`select attr, trust from evaluations order by id`
+    const trusted = yield* Rows.records({ project: "app", trust: "trusted", fork: 0 })
+    return { status, jobs, statuses, history, steps, pools, large, evaluations, records, trusted, commands, plan: stored }
   }).pipe(Effect.provide(sqlite))

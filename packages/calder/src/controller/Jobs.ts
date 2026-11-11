@@ -59,6 +59,17 @@ export interface Adopted {
   readonly startedAt: number
 }
 
+/**
+ * Whether a job may not run on an agent, which runs every worker as one user in one workspace directory:
+ * pull-request work there could read and change what trusted work keeps. A same-repo pull request's
+ * evaluation runs none of its code, only Calder's evaluator, so it may; a fork's may not.
+ */
+export const refusedOnAgents = (options: { readonly pool: Pool; readonly evaluation?: boolean; readonly fork?: boolean }) =>
+  options.pool === "pr" && (options.evaluation !== true || options.fork !== false)
+
+/** How long an evaluation waits for an evaluator agent to take it before the controller evaluates it. */
+export const evaluatorWait = "2 minutes"
+
 export class Jobs extends Context.Service<Jobs, {
   /**
    * Runs a job in a worker and waits for its result. Interrupting stops the worker, unless the job is
@@ -82,6 +93,13 @@ export class Jobs extends Context.Service<Jobs, {
     readonly agent?: boolean
     /** Taken only by an agent with a free slot right now; otherwise the job comes back `Lost`. */
     readonly offload?: boolean
+    /**
+     * A build evaluation for an evaluator agent (`calder agent --evaluator`) of any platform. Its worker
+     * runs no ci.ts, only Calder's evaluator and pure `nix eval`, so a same-repo pull request's may go too.
+     */
+    readonly evaluation?: boolean
+    /** Whether the run is a fork's. An evaluation goes to an agent only when this says it isn't. */
+    readonly fork?: boolean
     /** Hears what a job that waits for an agent waits for, whenever that changes. */
     readonly onWaiting?: (reason: string) => Effect.Effect<void>
     /** A local step that may outlive a restart of the controller, which adopts it instead of stopping it. */
@@ -320,10 +338,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const token = randomBytes(32).toString("hex")
       const result = yield* Deferred.make<JobResult>()
       const platform = options.platform ?? config.system
-      const remote = options.agent === true || platform !== config.system
-      // An agent runs every worker as one user in one workspace directory, so pull-request work there
-      // could read and change what trusted work keeps.
-      if (remote && options.pool === "pr") {
+      const remote = options.agent === true || options.evaluation === true || platform !== config.system
+      if (remote && refusedOnAgents(options)) {
         const refused: JobResult = { _tag: "Died", message: "agents only take jobs of trusted runs" }
         return { result: refused, usage: { cpuSeconds: null, memoryPeakBytes: null }, id }
       }
@@ -408,13 +424,17 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         const log = (text: string) => options.onEvent({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
         // An offloaded job never waits: no agent takes it, and it runs here.
         if (options.offload !== true) {
-          const stale = agents.usage().filter((a) => a.connected && !a.current && a.platform === platform)
+          const evaluation = options.evaluation === true
+          const stale = agents.usage().filter((a) => a.connected && !a.current && (evaluation ? a.evaluator : a.platform === platform))
           const why = stale.map((a) => `; ${a.name} has compatibility version ${a.compatibility}, not ${compatibility}, and gets no jobs`).join("")
-          yield* log(`waiting for a ${platform} agent${why}`)
+          yield* log(`waiting for ${evaluation ? "an evaluator" : `a ${platform}`} agent${why}`)
         }
         const exited = yield* agents.run({ id, token }, platform, {
           wait: options.offload !== true,
-          onPlaced: onStart,
+          evaluation: options.evaluation === true,
+          // The controller evaluates what no evaluator agent takes soon, as it did without one.
+          ...(options.evaluation === true ? { within: evaluatorWait } : {}),
+          onPlaced: (agent) => Effect.andThen(options.evaluation === true ? log(`evaluating on ${agent}`) : Effect.void, onStart),
           ...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
           onLog: log,
         }).pipe(
@@ -425,7 +445,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
                 message: code === -1
                   ? "the agent lost the worker"
                   : code === -2
-                  ? "no agent had a free slot"
+                  ? options.evaluation === true ? `no evaluator agent took it within ${evaluatorWait}` : "no agent had a free slot"
                   : `the worker exited with ${code} on the agent without a result`,
               })),
             )

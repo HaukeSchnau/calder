@@ -14,6 +14,7 @@ import * as Footprint from "../src/worker/Footprint.ts"
 import { byDependencies, evaluationContext, fromRecords, ownReads, recorder, resolve, vetted } from "../src/worker/Resolve.ts"
 import { memoryRepo } from "./memoryRepo.ts"
 import { layer as sqlite } from "./sqlite.ts"
+import { askedAttrs, reportTag } from "./expression.ts"
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}))
 
@@ -100,7 +101,7 @@ describe("footprints", () => {
 describe("records", () => {
   const at = files({ "flake.nix": "1", "flake.lock": "2", "src/app.ts": "3" })
   const entries = [["flake.nix", "read"], ["flake.lock", "read"]] as const
-  const drv = { drv: "/nix/store/x-shell.drv", out: "/nix/store/x-shell", system: "aarch64-linux" }
+  const drv = { drv: "/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell.drv", out: "/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell", system: "aarch64-linux" }
   const records = {
     footprints: [{ id: "1", revision: "a".repeat(40), entries: [...entries] }],
     evaluations: [{ id: 7, attr: "devShells.aarch64-linux.ci", footprint: "1", count: 2, digest: Footprint.digest(at, entries, 2, "nix 2.34"), derivation: drv }],
@@ -158,11 +159,11 @@ describe("records", () => {
       const keep = (id: string, trust: "pr" | "trusted", fork: 0 | 1, derivation: typeof drv, event = push("main")) =>
         Rows.keepRecords({ project: "app", id, trust, fork, event }, "main", { ...records, evaluations: [{ ...records.evaluations[0]!, derivation }] })
       yield* keep("app-1", "trusted", 0, drv)
-      yield* keep("app-2", "pr", 0, { ...drv, drv: "/nix/store/y-shell.drv" }, JSON.stringify({ _tag: "PullRequest", number: 1 }))
-      yield* keep("app-3", "pr", 1, { ...drv, drv: "/nix/store/z-fork.drv" }, JSON.stringify({ _tag: "PullRequest", number: 2 }))
+      yield* keep("app-2", "pr", 0, { ...drv, drv: "/nix/store/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy-shell.drv" }, JSON.stringify({ _tag: "PullRequest", number: 1 }))
+      yield* keep("app-3", "pr", 1, { ...drv, drv: "/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-fork.drv" }, JSON.stringify({ _tag: "PullRequest", number: 2 }))
       // A push or manual run of another branch runs that branch's ci.ts in the trusted worker: it keeps nothing.
-      yield* keep("app-4", "trusted", 0, { ...drv, drv: "/nix/store/b-branch.drv" }, push("feature"))
-      yield* keep("app-5", "trusted", 0, { ...drv, drv: "/nix/store/m-branch.drv" }, JSON.stringify({ _tag: "Manual", inputs: {}, branch: "feature" }))
+      yield* keep("app-4", "trusted", 0, { ...drv, drv: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-branch.drv" }, push("feature"))
+      yield* keep("app-5", "trusted", 0, { ...drv, drv: "/nix/store/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm-branch.drv" }, JSON.stringify({ _tag: "Manual", inputs: {}, branch: "feature" }))
       expect((yield* sql<{ run_id: string }>`select run_id from evaluations order by id`).map((r) => r.run_id)).toEqual(["app-1", "app-2"])
       const keeps = (event: unknown) => Rows.writesRecords({ fork: 0, trust: "trusted", event: JSON.stringify(event) }, "main")
       expect(keeps({ _tag: "Schedule", cron: "0 * * * *" })).toBe(true)
@@ -172,10 +173,10 @@ describe("records", () => {
       const newest = (trust: "pr" | "trusted", fork: 0 | 1) =>
         Effect.map(Rows.records({ project: "app", trust, fork }), (r) => r?.evaluations.map((e) => e.derivation?.drv))
       // A pull request's ci.ts runs in the worker that records, so what it recorded never reaches a trusted run.
-      expect(yield* newest("trusted", 0)).toEqual(["/nix/store/x-shell.drv"])
-      expect(yield* newest("pr", 1)).toEqual(["/nix/store/x-shell.drv"])
+      expect(yield* newest("trusted", 0)).toEqual(["/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell.drv"])
+      expect(yield* newest("pr", 1)).toEqual(["/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell.drv"])
       // A same-repo pull request takes both, newest first.
-      expect(yield* newest("pr", 0)).toEqual(["/nix/store/y-shell.drv", "/nix/store/x-shell.drv"])
+      expect(yield* newest("pr", 0)).toEqual(["/nix/store/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy-shell.drv", "/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell.drv"])
     }).pipe(Effect.provide(sqlite)))
 })
 
@@ -210,13 +211,14 @@ const answering = (answers: Record<string, { readonly code?: number; readonly st
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
       const argv = ChildProcess.isStandardCommand(command) ? [command.command, ...command.args] : []
-      const reports = [...(argv.at(-1) ?? "").matchAll(/\(report (\d+) f\.(\S+)\)/g)]
+      const reports = askedAttrs(argv.at(-1) ?? "").map((attr, i) => [attr, String(i), attr] as const)
       let stderr: Stream.Stream<Uint8Array> = Stream.empty
       let code = 1
       let stdout = ""
       if (argv[1] === "eval" && reports.length > 0 && evaluate !== undefined) {
         evaluated.push(...reports.map((m) => m[2]!))
-        stderr = Stream.make(line("trace: calder-flake"), ...reports.map((m) => line(`trace: calder-derivation ${JSON.stringify([Number(m[1]), evaluate(m[2]!)])}`)))
+        const tag = reportTag(argv.at(-1) ?? "")
+        stderr = Stream.make(line(`trace: calder-flake-${tag}`), ...reports.map((m) => line(`trace: calder-derivation-${tag} ${JSON.stringify([Number(m[1]), evaluate(m[2]!)])}`)))
         code = 0
       } else {
         const answer = answers[argv.slice(0, 2).join(" ")]
@@ -244,7 +246,7 @@ const answering = (answers: Record<string, { readonly code?: number; readonly st
 describe("a plan with builds whose footprints changed", () => {
   it.effect("evaluates only dev shells and leaves the builds for the build slots of the systems they last built for", () =>
     Effect.gen(function*() {
-      const shellDrv = { drv: "/nix/store/s-shell.drv", out: "/nix/store/s-shell", system: "x86_64-linux" }
+      const shellDrv = { drv: "/nix/store/ssssssssssssssssssssssssssssssss-shell.drv", out: "/nix/store/ssssssssssssssssssssssssssssssss-shell", system: "x86_64-linux" }
       const { spawner, evaluated } = answering({
         "nix --version": { stdout: "nix (Nix) 2.34.9" },
         "nix config": { stdout: "true" },
@@ -261,7 +263,7 @@ describe("a plan with builds whose footprints changed", () => {
         footprints: [{ id: "f", revision: "a", entries: [["flake.nix", "read"]] }],
         evaluations: [{
           attr: "checks.x86_64-linux.host", footprint: "f", count: 1, digest: "of another flake.nix",
-          derivation: { drv: "/nix/store/h-host.drv", out: "/nix/store/h-host", system: "aarch64-darwin" },
+          derivation: { drv: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host.drv", out: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host", system: "aarch64-darwin" },
         }],
       }
       const spec = yield* Effect.gen(function*() {
@@ -280,20 +282,20 @@ describe("what a record may be trusted with", () => {
       const dir = mkdtempSync(join(tmpdir(), "calder-ifd-"))
       // `gen = derivation { src = self; … }` and `import gen`: its output's deriver names the source.
       const gen = join(dir, "gen.drv")
-      writeFileSync(gen, `Derive([("out","/nix/store/g-gen","","")],[],["${src}"],"x86_64-linux","/bin/sh",[],[])`)
+      writeFileSync(gen, `Derive([("out","/nix/store/gggggggggggggggggggggggggggggggg-gen","","")],[],["${src}"],"x86_64-linux","/bin/sh",[],[])`)
       const plain = join(dir, "plain.drv")
-      writeFileSync(plain, `Derive([("out","/nix/store/p-plain","","")],[],[],"x86_64-linux","/bin/sh",[],[])`)
-      const derivers: Record<string, string> = { "/nix/store/g-gen": gen, "/nix/store/p-plain": plain }
+      writeFileSync(plain, `Derive([("out","/nix/store/pppppppppppppppppppppppppppppppp-plain","","")],[],[],"x86_64-linux","/bin/sh",[],[])`)
+      const derivers: Record<string, string> = { "/nix/store/gggggggggggggggggggggggggggggggg-gen": gen, "/nix/store/pppppppppppppppppppppppppppppppp-plain": plain }
       // A JSON file the evaluation wrote with builtins.toFile has no deriver but is addressed by its text.
       const json = join(dir, "inventory.json")
       writeFileSync(json, "{}")
       // A copy of the whole source under another name has the source's NAR hash.
-      const copy = "/nix/store/c-src"
+      const copy = "/nix/store/cccccccccccccccccccccccccccccccc-src"
       // A derivation whose input is `builtins.toFile "rev" self.rev`: a text file in its closure names the commit.
       const rev = join(dir, "rev")
       writeFileSync(rev, `${src}`)
       const reads = join(dir, "reads-rev.drv")
-      writeFileSync(reads, `Derive([("out","/nix/store/r-reads","","")],[],["${rev}"],"x86_64-linux","/bin/sh",[],[])`)
+      writeFileSync(reads, `Derive([("out","/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-reads","","")],[],["${rev}"],"x86_64-linux","/bin/sh",[],[])`)
       const requisites: Record<string, ReadonlyArray<string>> = { [reads]: [reads, rev] }
       const { spawner } = answering({
         "nix-store --query": {
@@ -302,25 +304,25 @@ describe("what a record may be trusted with", () => {
         "nix path-info": {
           stdout: JSON.stringify({
             [json]: { ca: "text:sha256:x", references: [], narHash: "sha256-json=" },
-            "/nix/store/u-unknown": { ca: null },
+            "/nix/store/uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu-unknown": { ca: null },
             [copy]: { ca: "fixed:r:sha256:y", references: [], narHash: "sha256-source=" },
             [rev]: { ca: "text:sha256:z", references: [], narHash: "sha256-rev=" },
           }),
         },
       })
       const recorder = {
-        source: src, url: "", revision: "a", at: files({}), marks: [src], pinned: new Set(["/nix/store/n-nixpkgs"]),
+        source: src, url: "", revision: "a", at: files({}), marks: [src], pinned: new Set(["/nix/store/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-nixpkgs"]),
         context: "nix", nonce, narHash: "sha256-source=", read: () => Effect.succeed(new Map<string, string>()),
       }
       const candidate = (attr: string, outside: ReadonlyArray<string>) => ({ attr, index: 0, count: 0, entries: [], derivation: null, outside })
       const kept = yield* vetted(recorder, [
-        candidate("imports-gen", ["/nix/store/g-gen"]),
-        candidate("reads-unknown", ["/nix/store/u-unknown"]),
-        candidate("reads-nixpkgs", ["/nix/store/n-nixpkgs"]),
-        candidate("reads-plain", ["/nix/store/p-plain"]),
+        candidate("imports-gen", ["/nix/store/gggggggggggggggggggggggggggggggg-gen"]),
+        candidate("reads-unknown", ["/nix/store/uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu-unknown"]),
+        candidate("reads-nixpkgs", ["/nix/store/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-nixpkgs"]),
+        candidate("reads-plain", ["/nix/store/pppppppppppppppppppppppppppppppp-plain"]),
         candidate("reads-a-written-file", [json]),
         candidate("reads-a-copy-of-the-source", [copy]),
-        { ...candidate("builds-from-the-commit's-rev", []), derivation: { drv: reads, out: "/nix/store/r-reads", system: "x86_64-linux" } },
+        { ...candidate("builds-from-the-commit's-rev", []), derivation: { drv: reads, out: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-reads", system: "x86_64-linux" } },
       ]).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
       expect(kept.map((c) => c.attr)).toEqual(["reads-nixpkgs", "reads-plain", "reads-a-written-file"])
     }))
@@ -329,8 +331,8 @@ describe("what a record may be trusted with", () => {
     Effect.gen(function*() {
       // As with `self ? submodules`, the record's evaluation (through path:) and the mirror's disagree.
       const attr = "packages.x86_64-linux.app"
-      const recordedDrv = { drv: "/nix/store/r-app.drv", out: "/nix/store/r-app", system: "x86_64-linux" }
-      const freshDrv = { drv: "/nix/store/f-app.drv", out: "/nix/store/f-app", system: "x86_64-linux" }
+      const recordedDrv = { drv: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app.drv", out: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app", system: "x86_64-linux" }
+      const freshDrv = { drv: "/nix/store/ffffffffffffffffffffffffffffffff-app.drv", out: "/nix/store/ffffffffffffffffffffffffffffffff-app", system: "x86_64-linux" }
       const { spawner, evaluated } = answering({
         "nix --version": { stdout: "nix (Nix) 2.34.9" },
         "nix config": { stdout: "true" },

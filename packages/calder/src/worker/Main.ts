@@ -10,7 +10,7 @@ import * as Egress from "./Egress.ts"
 import * as Load from "./Load.ts"
 import * as Redact from "./Redact.ts"
 import * as Repo from "./Repo.ts"
-import { resolve } from "./Resolve.ts"
+import { FetchEnv, lock as lockFile, resolve } from "./Resolve.ts"
 import * as Steps from "./Steps.ts"
 
 const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
@@ -53,8 +53,44 @@ const pipelineDir = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
     return join(root, ".calder")
   })
 
-const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
+/**
+ * The run as an evaluator agent's worker evaluates it: from a full mirror of the project in the agent's
+ * workspaces, fetched from the controller, so Nix gets the same source, `lastModified` and `revCount`, and
+ * so the same derivations, as from the controller's mirror. A shallow copy would lack `revCount`.
+ */
+export const evaluatedRun = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
   Effect.gen(function*() {
+    const job = yield* Client.Job
+    if (job.remote === null) return spec.run
+    const dir = join(job.remote.workspaces, ".mirrors")
+    mkdirSync(dir, { recursive: true })
+    const mirror = join(dir, `${spec.run.project}.git`)
+    const git = (args: ReadonlyArray<string>) => Exec.run(["git", "--git-dir", mirror, ...args], { env: Client.gitEnv(job) })
+    // Jobs of one project share the mirror; a fetch holds it.
+    yield* Effect.acquireRelease(lockFile(`${mirror}.lock`), (path) => Effect.sync(() => rmSync(path, { force: true })))
+    if (!existsSync(join(mirror, "HEAD"))) {
+      yield* git(["init", "-q", "--bare"])
+      // Objects of every revision fetched stay, though no ref points at them.
+      yield* git(["config", "gc.auto", "0"])
+    }
+    const has = yield* git(["cat-file", "-e", `${spec.run.revision}^{commit}`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
+    // One ref, moved to the latest revision fetched, so the next fetch sends only what is new: Nix
+    // evaluates a commit by its id, and the mirror never collects garbage.
+    if (!has) yield* Client.fetching(git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", spec.run.mirror, `+${spec.run.revision}:refs/calder/last`]))
+    return { ...spec.run, mirror, flake: `git+file://${mirror}?rev=${spec.run.revision}` }
+  }).pipe(Effect.scoped)
+
+export const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
+  Effect.gen(function*() {
+    // An evaluation runs no ci.ts, only Calder's evaluator, so nothing of a pull request's code runs in
+    // its worker: what it records counts like a trusted run's when it ran on an evaluator agent.
+    if (spec.evaluate !== undefined) {
+      const job = yield* Client.Job
+      const run = yield* evaluatedRun(spec)
+      // Nix fetches the flake's forge inputs from the controller's mirrors, like a local evaluation.
+      const fetching = job.remote === null ? {} : Client.evaluationEnv(spec.run.mirrors, job)
+      return yield* Steps.evaluate({ ...spec, run }, spec.evaluate).pipe(Effect.provideService(FetchEnv, fetching))
+    }
     const project = yield* Load.project(yield* pipelineDir(spec).pipe(Effect.orDie))
     const step = yield* Load.step(project, spec.step)
     const def = step.def
@@ -63,9 +99,7 @@ const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
     }
     switch (def._tag) {
       case "Build":
-        return spec.evaluate === undefined
-          ? yield* Steps.build(spec, step, Flake.attrPath(def.ref, spec.run.system))
-          : yield* Steps.evaluate(spec, spec.evaluate)
+        return yield* Steps.build(spec, step, Flake.attrPath(def.ref, spec.run.system))
       case "Setup":
         return yield* Steps.setup(spec, step)
       case "Task":

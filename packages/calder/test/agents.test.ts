@@ -11,7 +11,8 @@ const ticks = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }))
 
 const connect = (
   agents: Agents.Agents["Service"],
-  { running = [], compatibility = 1, name = "mac-a", slots = 1, platform = "aarch64-darwin" }: {
+  { running = [], compatibility = 1, name = "mac-a", slots = 1, platform = "aarch64-darwin", evaluator = false }: {
+    evaluator?: boolean
     running?: ReadonlyArray<string>
     compatibility?: number
     name?: string
@@ -21,7 +22,7 @@ const connect = (
 ) =>
   Effect.gen(function*() {
     const orders: Array<AgentOrder> = []
-    const fiber = yield* agents.connect({ ...auth, name }, { platform, slots, running, build: "b1", compatibility }).pipe(
+    const fiber = yield* agents.connect({ ...auth, name }, { platform, slots, running, build: "b1", compatibility, evaluator }).pipe(
       Stream.runForEach((order) => Effect.sync(() => orders.push(order))),
       Effect.forkChild,
     )
@@ -85,7 +86,7 @@ describe("Agents", () => {
       yield* Fiber.interrupt(before.fiber)
 
       yield* connect(agents, { running: ["a"] })
-      expect(agents.usage()).toEqual([{ name: "mac-a", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true }])
+      expect(agents.usage()).toEqual([{ name: "mac-a", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true, evaluator: false }])
 
       const again = yield* connect(agents)
       expect(yield* Fiber.join(kept)).toBe(-1)
@@ -167,7 +168,7 @@ describe("Agents", () => {
     Effect.gen(function*() {
       const agents = Agents.make("secret", 1)
       const started: Array<string> = []
-      const onPlaced = (job: string) => Effect.sync(() => void started.push(job))
+      const onPlaced = (job: string) => () => Effect.sync(() => void started.push(job))
       expect(yield* agents.run({ id: "a", token: "ta" }, "aarch64-darwin", { wait: false, onPlaced: onPlaced("a") })).toBe(-2)
 
       const waiting = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-darwin", { onPlaced: onPlaced("b") }))
@@ -248,6 +249,64 @@ describe("Agents", () => {
       expect(a.log).toEqual(["waking tower", "tower didn't connect within 3 minutes of waking it", "waking tower"])
       expect(woken.count).toBe(2)
       expect(a.reasons.at(-1)).toBe(waking)
+    }))
+
+  it.effect("an evaluator agent takes evaluation jobs of any platform and no tasks, and other agents no evaluations", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", 1)
+      // dev-hauke's evaluator, x86_64-linux too, offers no slot yet.
+      const dev = yield* connect(agents, { name: "dev-hauke", platform: "x86_64-linux", slots: 0, evaluator: true })
+      const reasons: Array<string> = []
+      const task = yield* Effect.forkChild(agents.run({ id: "task", token: "tt" }, "x86_64-linux"))
+      const evaluation = yield* Effect.forkChild(
+        agents.run({ id: "eval", token: "te" }, "aarch64-linux", { evaluation: true, onWaiting: (r) => Effect.sync(() => void reasons.push(r)) }),
+      )
+      yield* ticks
+      expect(reasons).toEqual(["an evaluator agent to take it"])
+      // An x86_64-linux agent that isn't an evaluator takes the task, never the evaluation.
+      const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux", slots: 2 })
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "task", token: "tt" }])
+      // The evaluator takes the evaluation once it has a slot, and no task.
+      yield* agents.offer({ ...auth, name: "dev-hauke" }, 2)
+      yield* ticks
+      expect(dev.orders).toEqual([{ _tag: "Start", job: "eval", token: "te" }])
+      const another = yield* Effect.forkChild(agents.run({ id: "task2", token: "t2" }, "x86_64-linux"))
+      yield* ticks
+      expect(dev.orders).toHaveLength(1)
+      expect(tower.orders.at(-1)).toEqual({ _tag: "Start", job: "task2", token: "t2" })
+      expect(agents.usage().find((a) => a.name === "dev-hauke")?.evaluator).toBe(true)
+
+      yield* agents.exited({ ...auth, name: "dev-hauke" }, "eval", 0)
+      yield* agents.exited({ ...auth, name: "tower" }, "task", 0)
+      yield* agents.exited({ ...auth, name: "tower" }, "task2", 0)
+      expect([yield* Fiber.join(task), yield* Fiber.join(evaluation), yield* Fiber.join(another)]).toEqual([0, 0, 0])
+    }))
+
+  it.effect("an evaluation no evaluator agent takes within its time, or once the last one left, gives up", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", 1)
+      // With no evaluator connected it doesn't wait at all.
+      expect(yield* agents.run({ id: "none", token: "t" }, "aarch64-linux", { evaluation: true, within: "2 minutes" })).toBe(-2)
+
+      // A busy evaluator: the job waits for its slot, at most two minutes.
+      const dev = yield* connect(agents, { name: "dev-hauke", platform: "x86_64-linux", evaluator: true })
+      const busy = yield* Effect.forkChild(agents.run({ id: "busy", token: "tb" }, "aarch64-linux", { evaluation: true }))
+      yield* ticks
+      const waiting = yield* Effect.forkChild(agents.run({ id: "late", token: "tl" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      yield* ticks
+      yield* TestClock.adjust("119 seconds")
+      expect(waiting.pollUnsafe()).toBeUndefined()
+      yield* TestClock.adjust("1 second")
+      expect(yield* Fiber.join(waiting)).toBe(-2)
+
+      // The last evaluator leaving ends the wait at once.
+      const left = yield* Effect.forkChild(agents.run({ id: "left", token: "tx" }, "aarch64-linux", { evaluation: true, within: "2 minutes" }))
+      yield* ticks
+      yield* Fiber.interrupt(dev.fiber)
+      yield* ticks
+      expect(yield* Fiber.join(left)).toBe(-2)
+      expect(dev.orders.map((o) => o._tag === "Start" ? o.job : o._tag)).toEqual(["busy"])
+      yield* Fiber.interrupt(busy)
     }))
 
   it.effect("agents need the secret", () =>

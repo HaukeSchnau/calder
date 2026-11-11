@@ -2,10 +2,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core"
-import { type Duration, Effect, Option, Schedule, Schema } from "effect"
+import { Context, type Duration, Effect, Option, Schedule, Schema } from "effect"
 import { randomBytes } from "node:crypto"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
+import { nixSettings } from "../NixSettings.ts"
+import { malformed, only } from "../StorePaths.ts"
 import type { Mismatch, PlannedStep, PlanSpec, Records, RunInfo } from "../Protocol.ts"
 import { Job } from "./Client.ts"
 import * as Footprint from "./Footprint.ts"
@@ -251,7 +253,9 @@ interface Cached {
 const readsCommit = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     if (drvs.length === 0) return false
-    const closure = (yield* Exec.run(["nix-store", "--query", "--requisites", ...drvs])).split("\n").filter((p) => p.endsWith(".drv"))
+    // A path nix-store wasn't asked about can't be shown not to.
+    if (only(drvs).length !== drvs.length) return true
+    const closure = (yield* Exec.run(["nix-store", "--query", "--requisites", ...only(drvs)])).split("\n").filter((p) => p.endsWith(".drv"))
     return yield* Effect.try(() =>
       closure.some((drv) => {
         const text = readFileSync(drv, "utf8")
@@ -286,7 +290,8 @@ export const fromEarlier = (
     }
     const committed = revision.committed.value
     const drvs = attrs.flatMap((attr) => (earlier.derivations[attr] ? [earlier.derivations[attr].drv] : []))
-    if (drvs.length > 0 && (yield* Exec.exec(["nix-store", "--check-validity", ...drvs])).exitCode !== 0) return undefined
+    if (only(drvs).length !== drvs.length) return undefined
+    if (drvs.length > 0 && (yield* Exec.exec(["nix-store", "--check-validity", ...only(drvs)])).exitCode !== 0) return undefined
     const short = earlier.revision.slice(0, 12)
     if (yield* readsCommit(drvs, marksOf(earlier.revision, committed))) {
       yield* log(`${short} has the same tree, but its derivations mention that commit, so the flake is evaluated again`)
@@ -339,6 +344,26 @@ export const derivations = (
     readonly heartbeat?: Heartbeat.Cadence
   } = {},
 ) =>
+  Effect.suspend(() => {
+    // An attribute path outside the grammar (Flake.components) never reaches Nix: it evaluates to nothing.
+    const refused = attrs.filter((attr) => Flake.components(attr) === null)
+    const valid = attrs.filter((attr) => !refused.includes(attr))
+    return Effect.map(derivationsOf(run, valid, cacheDir, log, memory, options), (result): Evaluated =>
+      refused.length === 0 ? result : {
+        ...result,
+        derivations: new Map([...result.derivations, ...refused.map((attr) => [attr, null] as const)]),
+        errors: new Map([...result.errors, ...refused.map((attr) => [attr, `${attr} is not an attribute path Calder evaluates`] as const)]),
+      })
+  })
+
+const derivationsOf = (
+  run: RunInfo,
+  attrs: ReadonlyArray<string>,
+  cacheDir: string,
+  log: Log,
+  memory: Memory,
+  options: Parameters<typeof derivations>[5] & object,
+) =>
   attrs.length === 0 ? Effect.succeed<Evaluated>({ derivations: new Map(), errors: new Map(), tooLarge: new Map() }) : cached(run, cacheDir, (entry) =>
     Effect.gen(function*() {
       const known = entry?.derivations ?? {}
@@ -349,9 +374,10 @@ export const derivations = (
         ? []
         : attrs.filter((attr) => attr in known && (known[attr] === null || known[attr]?.system !== undefined))
       const drvs = cachedHere.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
-      const invalid = drvs.length === 0 ? new Set<string>() : new Set(
-        (yield* Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...drvs])).stdout.split("\n").filter(Boolean),
-      )
+      const invalid = drvs.length === 0 ? new Set<string>() : new Set([
+        ...drvs.filter((d) => only([d]).length === 0),
+        ...(yield* Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...only(drvs)])).stdout.split("\n").filter(Boolean),
+      ])
       const hits = new Map(cachedHere.filter((attr) => !known[attr] || !invalid.has(known[attr].drv)).map((attr) => [attr, known[attr] ?? null]))
       const missing = attrs.filter((attr) => !hits.has(attr))
       if (missing.length === 0) return { result: { derivations: hits, errors: new Map(), tooLarge: new Map() } as Evaluated, entry: {} }
@@ -392,7 +418,7 @@ export const appOf = (run: RunInfo, cacheDir = defaultCacheDir, recorder?: Recor
       }
       // Recorded like an attribute, so a plan whose footprint of it holds needs no Nix for it either.
       const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
-      const expr = `let p = (builtins.getFlake ${JSON.stringify(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`
+      const expr = `let p = (builtins.getFlake ${nixString(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`
       const out = yield* Exec.exec([...straced(join(scratch, "trace")), "nix", "eval", "--json", "--expr", expr], {
         env: { ...process.env, NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") },
       }).pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })))
@@ -558,6 +584,16 @@ const ansi = /\x1b\[[0-9;]*m/g
 const resProgress = 105
 
 /**
+ * What Nix's fetches of the flake and its inputs get in their environment beside the worker's: on an
+ * evaluator agent, the git configuration that fetches forge inputs from the controller with the job's
+ * token (Client `evaluationEnv`). Only those Nix commands see the token.
+ */
+export const FetchEnv = Context.Reference<Record<string, string>>("calder/worker/FetchEnv", { defaultValue: () => ({}) })
+
+/** `text` as a Nix string literal: JSON's quoting leaves `${` to Nix's interpolation. */
+export const nixString = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$\{/g, "\\${")}"`
+
+/**
  * One `nix eval` that evaluates `attrs` in order and reports each derivation on stderr as it gets it, so
  * what it got counts even when it stops before the end. `error` is Nix's when it failed on the attribute
  * after those it got. Reports out of order, or missing although Nix succeeded, mean the expression no longer works with
@@ -569,21 +605,36 @@ const resProgress = 105
 const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, beat: Beat, recorder?: Recorder) =>
   Effect.gen(function*() {
     const unexpected = (what: string) => new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: 0, stderr: `nix eval gave ${what}` })
-    const reports = attrs.map((attr, i) => `(report ${i} f.${attr})`).join(" ")
+    // The attribute paths go to Nix as data, a JSON string it parses and walks, never as code: a
+    // pipeline's names must not be able to report a derivation for another attribute.
+    // Only lines with this evaluator's tag report: the flake's own code can't know it, so can't forge one.
+    const tag = randomBytes(8).toString("hex")
+    const paths = attrs.map((attr) => {
+      const parts = Flake.components(attr)
+      if (parts === null) throw new Error(`${attr} is not an attribute path Calder evaluates`)
+      return parts
+    })
     // Under the recorder, a lookup of a marker that doesn't exist follows each attribute, after its value.
     const mark = recorder === undefined ? "" : `builtins.seq (builtins.pathExists "\${f.outPath}/.calder-derivation-${recorder.nonce}-\${toString i}")`
-    const expr = `let f = builtins.getFlake ${JSON.stringify(recorder?.url ?? flake)};
+    const expr = `let f = builtins.getFlake ${nixString(recorder?.url ?? flake)};
+      paths = builtins.fromJSON ${nixString(JSON.stringify(paths))};
+      at = path: builtins.foldl' (x: name: builtins.getAttr name x) f path;
       one = x: let t = builtins.tryEval (builtins.seq x.drvPath x); in
         if t.success then { drv = t.value.drvPath; out = t.value.outPath; system = t.value.system; } else null;
-      report = i: x: let v = builtins.toJSON [i (one x)]; in builtins.seq v (${mark} (builtins.trace "calder-derivation \${v}" null));
-      in builtins.seq (builtins.seq f (builtins.trace "calder-flake" null)) (builtins.foldl' (_: x: x) null [ ${reports} ])`
+      report = i: x: let v = builtins.toJSON [i (one x)]; in builtins.seq v (${mark} (builtins.trace "calder-derivation-${tag} \${v}" null));
+      in builtins.seq (builtins.seq f (builtins.trace "calder-flake-${tag}" null))
+        (builtins.foldl' (_: x: x) null (builtins.genList (i: report i (at (builtins.elemAt paths i))) ${paths.length}))`
     const scratch = recorder === undefined ? undefined : mkdtempSync(join(tmpdir(), "calder-footprint-"))
     const nix = ["nix", "eval", "--json", "--log-format", "internal-json", "--expr", expr]
     const argv = scratch === undefined ? nix : [...straced(join(scratch, "trace")), ...nix]
     // An empty fetcher cache, so no cached hash of a copied path hides that the evaluation read its files.
     // Nix 2.34 reads NIX_CACHE_HOME before XDG_CACHE_HOME.
-    const env = scratch === undefined ? {} : { env: { ...process.env, NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") } }
+    const fetching = yield* FetchEnv
+    // The worker's environment, which strace needs to find nix, and only then what fetching adds.
+    const env = { env: { ...process.env, ...fetching, ...(scratch === undefined ? {} : { NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") }) } }
     const got: Array<Derivation | null> = []
+    /** Attributes whose report wasn't a derivation's paths, by index, with why. */
+    const refused = new Map<number, string>()
     const stderr: Array<string> = []
     let loaded = false
     let pid = 0
@@ -610,7 +661,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     let said: { readonly text: string; readonly at: number } | undefined
     const text = (stream: "stdout" | "stderr", line: string) =>
       Effect.gen(function*() {
-        const report = /^trace: calder-(flake|derivation)(?: (.*))?$/.exec(line)
+        const report = new RegExp(`^trace: calder-(flake|derivation)-${tag}(?: (.*))?$`).exec(line)
         if (report === null) {
           if (stream === "stderr") stderr.push(line)
           if (stderr.length > 200) stderr.shift()
@@ -626,7 +677,9 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
           catch: () => unexpected(`a report it can't read: ${line}`),
         })
         if (index !== got.length) return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`)
-        got.push(derivation)
+        const bad = derivation === null ? null : malformed(derivation)
+        if (bad !== null) refused.set(index, bad)
+        got.push(bad === null ? derivation : null)
         if (got.length < attrs.length && full()) return yield* new Stopped()
       })
     const logged = (line: string) => {
@@ -722,7 +775,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
       : got.length === attrs.length ? "done" as const : "failed" as const
     // Nix's innermost error comes last.
     const error = stderr.map((line) => line.trim()).findLast((line) => line.startsWith("error:"))?.replace(/^error:\s*/, "") ?? ""
-    return { got, stop, error, peak, loaded, trace, forRoom: stop === "over" && forRoom }
+    return { got, refused, stop, error, peak, loaded, trace, forRoom: stop === "over" && forRoom }
   })
 
 /** Runs a command under strace, writing the source accesses Footprint.parseTrace reads to `file`. */
@@ -786,6 +839,10 @@ const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, l
       if (pass.forRoom) forRoom++
       peak = Math.max(peak, pass.peak)
       pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation))
+      for (const [i, why] of pass.refused) {
+        errors.set(rest[i]!, why)
+        yield* log(`${rest[i]} did not evaluate: ${why}`)
+      }
       done += pass.got.length
       const next = rest[pass.got.length]
       if (next === undefined || (pass.stop === "over" && pass.got.length > 0)) continue
@@ -842,8 +899,7 @@ export interface Recorder {
  */
 export const evaluationContext = (system: string) =>
   Effect.gen(function*() {
-    const version = (yield* Exec.run(["nix", "--version"])).trim()
-    const ifd = (yield* Exec.run(["nix", "config", "show", "allow-import-from-derivation"]).pipe(Effect.orElseSucceed(() => "?"))).trim()
+    const { nix: version, ifd } = yield* nixSettings
     return sha256({ version, system, ifd, config: process.env.NIX_CONFIG ?? "" })
   }).pipe(Effect.orElseSucceed(() => undefined))
 
@@ -857,7 +913,8 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
   Effect.gen(function*() {
     if (process.platform !== "linux" || !/[?&]rev=/.test(run.flake)) return undefined
     if ((yield* Exec.exec(["strace", "-V"])).exitCode !== 0) return undefined
-    const { path, locked } = JSON.parse(yield* Exec.run(["nix", "flake", "metadata", "--json", run.flake])) as {
+    const fetching = { env: { ...process.env, ...(yield* FetchEnv) } }
+    const { path, locked } = JSON.parse(yield* Exec.run(["nix", "flake", "metadata", "--json", run.flake], fetching)) as {
       readonly path?: string
       readonly locked?: { readonly rev?: string; readonly revCount?: number; readonly lastModified?: number; readonly narHash?: string }
     }
@@ -865,7 +922,7 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
     const context = yield* evaluationContext(run.system)
     if (context === undefined) return undefined
     // The inputs flake.lock pins, and Nix's own closure (its libraries and data).
-    const archive = JSON.parse(yield* Exec.run(["nix", "flake", "archive", "--json", "--dry-run", run.flake])) as unknown
+    const archive = JSON.parse(yield* Exec.run(["nix", "flake", "archive", "--json", "--dry-run", run.flake], fetching)) as unknown
     const inputs = (node: unknown): ReadonlyArray<string> => {
       const n = node as { readonly path?: string; readonly inputs?: Record<string, unknown> } | null
       return n === null || typeof n !== "object" ? [] : [...(n.path === undefined ? [] : [n.path]), ...Object.values(n.inputs ?? {}).flatMap(inputs)]
@@ -956,6 +1013,8 @@ const contentAddressed = (paths: ReadonlyArray<string>, recorder: Recorder) =>
 const derivers_ = (paths: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     const out = new Map<string, string | null>(paths.filter((p) => p.endsWith(".drv")).map((p) => [p, p]))
+    // Nix answers a line per path it is asked about, so a path it isn't asked about can't shift the others.
+    for (const p of paths) if (!out.has(p) && only([p]).length === 0) out.set(p, null)
     const rest = paths.filter((p) => !out.has(p))
     if (rest.length === 0) return out
     const lines = (yield* Exec.run(["nix-store", "--query", "--deriver", ...rest]).pipe(Effect.orElseSucceed(() => ""))).split("\n")
@@ -1007,7 +1066,7 @@ const records = (
 const commitBound = (drvs: ReadonlyArray<string>, recorder: Pick<Recorder, "marks" | "narHash">) =>
   Effect.gen(function*() {
     const closures = yield* Effect.forEach(drvs, (drv) =>
-      Exec.run(["nix-store", "--query", "--requisites", drv]).pipe(
+      only([drv]).length === 0 ? Effect.succeed([drv, null] as const) : Exec.run(["nix-store", "--query", "--requisites", ...only([drv])]).pipe(
         Effect.map((out) => [drv, out.split("\n").filter(Boolean)] as const),
         Effect.orElseSucceed(() => [drv, null] as const),
       ), { concurrency: 4 })
@@ -1043,7 +1102,7 @@ const pathInfo = (paths: ReadonlyArray<string>) =>
     const infos = new Map<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> }>()
     for (let i = 0; i < paths.length; i += 500) {
       // Format 1 is keyed by full store path. `--json-format` needs Nix 2.33; 2.34 warns that `--json` without it will fail.
-      const out = yield* Exec.run(["nix", "path-info", "--json", "--json-format", "1", ...paths.slice(i, i + 500)]).pipe(Effect.orElseSucceed(() => "{}"))
+      const out = yield* Exec.run(["nix", "path-info", "--json", "--json-format", "1", "--", ...only(paths.slice(i, i + 500))]).pipe(Effect.orElseSucceed(() => "{}"))
       const parsed = JSON.parse(out) as Record<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> } | null>
       for (const [path, info] of Object.entries(parsed)) {
         if (info !== null) infos.set(path, info)
@@ -1122,7 +1181,7 @@ const lastClosures = (attrs: ReadonlyArray<string>, records: Records | undefined
       if (e.derivation !== null && attrs.includes(e.attr) && !last.has(e.attr)) last.set(e.attr, e.derivation.drv)
     }
     const closures = yield* Effect.forEach([...last], ([attr, drv]) =>
-      Exec.run(["nix-store", "--query", "--requisites", drv]).pipe(
+      Exec.run(["nix-store", "--query", "--requisites", ...only([drv])]).pipe(
         Effect.map((out) => [[attr, { drv, closure: new Set(out.split("\n").filter(Boolean)) }] as const]),
         Effect.orElseSucceed(() => []),
       ), { concurrency: 4 })
@@ -1144,10 +1203,11 @@ const inStore = <A extends { readonly derivation: Derivation | null }>(held: Rea
   Effect.gen(function*() {
     const drvs = [...held.values()].flatMap((h) => (h.derivation === null ? [] : [h.derivation.drv]))
     if (drvs.length === 0) return held
-    const out = yield* Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...drvs])
+    const out = yield* Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...only(drvs)])
     if (out.exitCode !== 0) return new Map<string, A>()
     const invalid = new Set(out.stdout.split("\n").filter(Boolean))
-    return new Map([...held].filter(([, h]) => h.derivation === null || !invalid.has(h.derivation.drv)))
+    // A record whose paths aren't a derivation's never counts.
+    return new Map([...held].filter(([, h]) => h.derivation === null || (malformed(h.derivation) === null && !invalid.has(h.derivation.drv))))
   })
 
 const sameDerivation = (a: Derivation | null, b: Derivation | null) => a?.drv === b?.drv && a?.out === b?.out
@@ -1176,7 +1236,7 @@ const alive = (pid: number) => {
 }
 
 /** Creates `path` holding this process's id, waiting while a live process holds it. A dead holder's lock is taken over. */
-const lock = (path: string) =>
+export const lock = (path: string) =>
   Effect.gen(function*() {
     while (true) {
       try {
@@ -1217,7 +1277,7 @@ export const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readon
   builds.length < 2
     ? Effect.succeed(new Map<string, Array<string>>())
     : Effect.forEach(builds, (b) =>
-      Exec.run(["nix-store", "--query", "--requisites", b.drv]).pipe(
+      Exec.run(["nix-store", "--query", "--requisites", ...only([b.drv])]).pipe(
         Effect.map((out) => [b.name, new Set(out.split("\n").filter(Boolean))] as const),
         Effect.orElseSucceed(() => [b.name, new Set<string>()] as const),
       ), { concurrency: 4 }).pipe(Effect.map((closures) => directUses(builds, new Map(closures))))
@@ -1249,6 +1309,12 @@ export const resolve = (
     // Dev shells first: an evaluator's later attributes' footprints include what earlier ones read, and a
     // shell, which reads little more than the flake's Nix files, then keeps its record when sources change.
     const attrs = [...new Set([...shells, ...builds])]
+    const refused = attrs.filter((attr) => Flake.components(attr) === null)
+    if (refused.length > 0) {
+      return yield* new Calder.PlanError({
+        message: `${refused.join(", ")}: not an attribute path Calder evaluates (letters, digits and _'+- per name, or those and . in double quotes)`,
+      })
+    }
     const audit = options.audit === true
     const reused = earlier === undefined || audit ? undefined : yield* fromEarlier(earlier, attrs, {
       committed: yield* Repo.make(run.mirror, earlier.revision).pipe(Effect.flatMap((at) => at.committed), Effect.option),
