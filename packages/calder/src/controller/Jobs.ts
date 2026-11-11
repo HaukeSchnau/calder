@@ -45,6 +45,8 @@ export interface ActiveJob {
   readonly scope: Scope.Closeable
   /** Set by the RPC server while the job holds a deploy lease, and by Leases for an adopted worker that holds one. */
   lease: Lease | undefined
+  /** The number of the last batch of events the RPC server took from the worker. */
+  batch?: number
 }
 
 export interface Usage {

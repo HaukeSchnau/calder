@@ -95,9 +95,15 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
 
   return {
     job: ({ job, token }) => Effect.map(jobs.authorize(job, token), (active) => active.spec),
-    events: ({ job, token, events }) =>
+    events: ({ job, token, events, batch }) =>
       Effect.gen(function*() {
         const active = yield* jobs.authorize(job, token)
+        // A worker whose connection dropped before the answer sends the batch again, and the first try may
+        // have arrived: on srv-2, while the controller stalled, heartbeats reached the log up to four times.
+        if (batch !== undefined) {
+          if (batch <= (active.batch ?? 0)) return
+          active.batch = batch
+        }
         yield* Effect.forEach(events, active.onEvent, { discard: true })
       }),
     finish: ({ job, token, result }) =>

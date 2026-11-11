@@ -194,6 +194,21 @@ describe("a controller restart", () => {
       expect(after.leases.holder("app")?.job).toBe(srv1)
     }).pipe(Effect.provide(sqlite), Effect.scoped))
 
+  it.effect("logs a batch of events that the worker sent again once", () =>
+    Effect.gen(function*() {
+      const { client, auth, srv2, after } = yield* restarted
+      const logged: Array<string> = []
+      yield* after.jobs.reattach(srv2, (event) => Effect.sync(() => void (event._tag === "Log" && logged.push(event.text)))).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      const send = (batch: number, text: string) =>
+        client.events({ ...auth(srv2), events: [{ _tag: "Log", stream: "calder", text, timestamp: 1 }], batch })
+      // The connection dropped before the controller answered, so the worker sends batch 1 again.
+      yield* send(1, "Still evaluating after 7 min 0 s")
+      yield* send(1, "Still evaluating after 7 min 0 s")
+      yield* send(2, "Still evaluating after 10 min 0 s")
+      expect(logged).toEqual(["Still evaluating after 7 min 0 s", "Still evaluating after 10 min 0 s"])
+    }).pipe(Effect.provide(sqlite), Effect.scoped))
+
   it.effect("gives each loss of the controller a fresh 15 minutes, once a controller took a try for a minute", () =>
     Effect.gen(function*() {
       let tries = 0

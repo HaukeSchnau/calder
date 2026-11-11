@@ -318,7 +318,11 @@ const auth = { job: Schema.String, token: Schema.String }
 
 export class WorkerRpcs extends RpcGroup.make(
   Rpc.make("job", { payload: auth, success: Job, error: Unauthorized }),
-  Rpc.make("events", { payload: { ...auth, events: Schema.Array(JobEvent) }, error: Unauthorized }),
+  Rpc.make("events", {
+    // Numbered from 1 per job, so the controller logs a batch the worker sent again only once. Older workers send none.
+    payload: { ...auth, events: Schema.Array(JobEvent), batch: Schema.optional(Schema.Number) },
+    error: Unauthorized,
+  }),
   Rpc.make("finish", { payload: { ...auth, result: JobResult }, error: Unauthorized }),
   Rpc.make("gitHead", { payload: { ...auth, branch: Schema.String }, success: Schema.String, error: Unauthorized }),
   Rpc.make("giteaDispatch", {
