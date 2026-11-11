@@ -13,7 +13,12 @@ export interface Stack<A = void> {
    * Not `pnpm exec`, which checks the install again before every command: 8 s of a deploy on srv-2.
    */
   readonly runner?: "pnpm" | "bun"
-  /** The project's secret with a dotenv file of the providers' credentials, for `--env-file`. */
+  /**
+   * The project's secret with a dotenv file of the providers' credentials, for `--env-file`. With
+   * `ALCHEMY_STATE_STORE_URL` and `ALCHEMY_STATE_STORE_TOKEN`, the workers.dev URL and bearer token of the
+   * Cloudflare state store the stack uses, the CLI starts from them instead of fetching the token through a
+   * preview Worker, and a deploy reads its `outputs` from the store with one request.
+   */
   readonly env: string
   /**
    * The directory the CLI runs in, relative to the repository root, when the stack and its package
@@ -69,13 +74,19 @@ const quote = (words: ReadonlyArray<string>) => words.map((word) => `'${word.rep
 
 /**
  * The script every command runs: in the stack's directory, `alchemy <verb>` of stage `$1` with the env
- * file `$2`, and with `outputs` then `alchemy state read <name>/<stage>/output` into the file the task's
- * value comes from. The CLI prints status lines before the outputs, an object, so the file keeps what
- * starts at the line `{`.
+ * file `$2`, and with `outputs` then the stack's outputs into the file the task's value comes from.
+ *
+ * Alchemy's CLI keeps the Cloudflare state store's token in a cache it never writes when `CI` is set, so
+ * every command fetched it again through a preview Worker. With the store's URL and token in the env file,
+ * the script writes that cache into an `ALCHEMY_HOME` of the command's own, since the trusted jobs of every
+ * project share HOME; its run log stays in HOME. A cached token the store refuses makes the CLI fetch it
+ * as before, and the outputs then come from `alchemy state read`, which prints status lines before them,
+ * so the file keeps what starts at the line `{`. The token goes to curl on stdin, never in its arguments.
  */
 const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan") => {
   const config = stack.config === undefined ? "" : ` --config ${quote([stack.config])}`
   const outputs = verb === "deploy" ? stack.outputs : undefined
+  const cache = `"$ALCHEMY_HOME"/profiles/default/state-stores`
   return [
     "set -euo pipefail",
     "root=$PWD",
@@ -83,12 +94,24 @@ const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan") => {
     // Alchemy keeps its daily npm version check in .alchemy, which git clean removes before every task,
     // so each command waited up to 3 s for npm. Remove this once Alchemy keeps that cache elsewhere.
     `if [ -n "\${CI_CACHE_ROOT:-}" ]; then mkdir -p .alchemy && ln -sfn "$CI_CACHE_ROOT/alchemy-version-check.json" .alchemy/version-check.json; fi`,
+    // Alchemy decides on its telemetry before it reads the env file.
+    "export DO_NOT_TRACK=1",
+    `export ALCHEMY_HOME="$(mktemp -d)"`,
+    // Agents' workers have no private /tmp, where the task's TMPDIR lasts until the slot's next task.
+    `trap 'rm -rf "$ALCHEMY_HOME"' EXIT`,
+    `mkdir -p "$HOME/.alchemy/logs" && ln -s "$HOME/.alchemy/logs" "$ALCHEMY_HOME/logs"`,
+    `dotenv() { sed -n "s/^$1=//p" "$2"; }`,
+    `url=$(dotenv ALCHEMY_STATE_STORE_URL "$2") token=$(dotenv ALCHEMY_STATE_STORE_TOKEN "$2") account=$(dotenv CLOUDFLARE_ACCOUNT_ID "$2")`,
+    // The cache holds each store by its Worker's name, the first label of its workers.dev URL.
+    `if [ -n "$url" ] && [ -n "$token" ]; then store=\${url#https://} && mkdir -p ${cache} && printf '{"stores":{"%s":{"url":"%s","authToken":"%s","accountId":"%s"}}}' "\${store%%.*}" "$url" "$token" "$account" > ${cache}/cloudflare.json; fi`,
     stack.runner === "bun" ? `alchemy() { bun alchemy "$@"; }` : `alchemy() { node_modules/.bin/alchemy "$@"; }`,
     // `plan` has no --yes: without it the CLI changes nothing, the state store included.
     `alchemy ${verb}${config} --stage "$1"${verb === "plan" ? "" : " --yes"} --env-file "$2"`,
-    ...(outputs === undefined
-      ? []
-      : [`alchemy state read ${quote([`${outputs.name}/`])}"$1"/output${config} --env-file "$2" | sed -n '/^{/,$p' > "$root"/${outputsFile}`]),
+    ...(outputs === undefined ? [] : [
+      `if [ -z "$token" ] || ! printf 'header = "Authorization: Bearer %s"\\n' "$token" | curl -fsS --config - -o "$root"/${outputsFile} "$url"/state/stacks/${quote([outputs.name])}/stages/"$1"/output; then`,
+      `  alchemy state read ${quote([`${outputs.name}/`])}"$1"/output${config} --env-file "$2" | sed -n '/^{/,$p' > "$root"/${outputsFile}`,
+      "fi",
+    ]),
   ].join("\n")
 }
 
