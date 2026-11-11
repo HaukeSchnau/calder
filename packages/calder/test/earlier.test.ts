@@ -125,6 +125,7 @@ describe("the attributes of a same-repo pull request's plan a trusted run takes"
     })
   const drv = { drv: "/nix/store/x.drv", out: "/nix/store/x", system: "x86_64-linux" }
   const plan = (fromRecords?: Record<string, number>, reused?: { revision: string; attrs: Array<string> }) => ({
+    app: "app",
     derivations: { a: drv, b: drv, c: drv },
     ...(fromRecords === undefined ? {} : { fromRecords }),
     ...(reused === undefined ? {} : { reused }),
@@ -144,6 +145,15 @@ describe("the attributes of a same-repo pull request's plan a trusted run takes"
       expect(yield* attrs(reused, { revision: "head", trusted: ["a", "c", appAttr] })).toEqual(["a", "c", appAttr])
       expect(yield* attrs(reused, { revision: "other", trusted: ["a", "b", "c", appAttr] })).toEqual(["c"])
       expect(yield* attrs(reused, null)).toEqual(["c"])
+    }).pipe(Effect.provide(sqlite)))
+
+  it.effect("leave out one whose value is the earlier plan's, which a trusted run may not take, though the plan doesn't say it reused it", () =>
+    Effect.gen(function*() {
+      const other = { drv: "/nix/store/y.drv", out: "/nix/store/y", system: "x86_64-linux" }
+      const earlier = { revision: "head", derivations: { a: drv, b: drv, c: other }, app: "app" }
+      expect(yield* Rows.trustedAttrs("app", plan(), { ...earlier, trusted: ["a", appAttr] })).toEqual(["a", "c", appAttr])
+      expect(yield* Rows.trustedAttrs("app", plan(), { ...earlier, trusted: ["a", "b"] })).toEqual(["a", "b", "c"])
+      expect(yield* Rows.trustedAttrs("app", plan(), { ...earlier, app: "other", trusted: [] })).toEqual(["c", appAttr])
     }).pipe(Effect.provide(sqlite)))
 
   it.effect("include one taken from a record an evaluator agent made for a same-repo pull request", () =>

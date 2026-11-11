@@ -413,19 +413,18 @@ export const appOf = (run: RunInfo, cacheDir: string | null = defaultCacheDir, r
   cached(run, cacheDir, (entry) =>
     Effect.gen(function*() {
       if (entry?.app !== undefined && !fresh) return { result: { app: entry.app, recorded: undefined }, entry: {} }
-      const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
       if (recorder === undefined) {
-        const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`], { env: { ...process.env, ...ownNix(scratch) } }).pipe(
+        const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`]).pipe(
           Effect.map((name) => name.trim() || null),
           Effect.orElseSucceed(() => null),
-          Effect.ensuring(Effect.sync(() => rmSync(scratch, { recursive: true, force: true }))),
         )
         return { result: { app, recorded: undefined }, entry: { app } }
       }
+      const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
       // Recorded like an attribute, so a plan whose footprint of it holds needs no Nix for it either.
       const expr = `let p = (builtins.getFlake ${nixString(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`
       const out = yield* Exec.exec([...straced(join(scratch, "trace")), "nix", "eval", "--json", "--expr", expr], {
-        env: { ...process.env, ...ownNix(scratch) },
+        env: { ...process.env, ...emptyCache(scratch) },
       }).pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })))
       const trace = yield* Effect.sync(() => {
         try {
@@ -454,19 +453,49 @@ export const appOf = (run: RunInfo, cacheDir: string | null = defaultCacheDir, r
 const defaultCacheDir = join(homedir(), ".cache", "calder")
 
 /**
- * What a plan's or build evaluation's `nix eval` gets in its environment beside the worker's: Nix's caches
- * and user configuration in `scratch`, where nothing else wrote. An empty fetcher cache keeps a cached hash
- * of a copied path from hiding that the evaluation read its files, or mapping the revision to a source
- * another job put in the store. A pull request's pool's home is one every same-repo pull request's job may
- * write to, and a nix.conf or flake registry left there could change the derivations a merge then takes.
- * Nix 2.34 reads NIX_CACHE_HOME before XDG_CACHE_HOME, and NIX_USER_CONF_FILES before XDG_CONFIG_HOME.
+ * Gives the job's process, and so every Nix command of it, Nix's caches, configuration (nix.conf, the flake
+ * registry), data (the flake settings someone trusted) and state in a fresh directory, removed when the scope
+ * closes, and no global git configuration. A plan's or build evaluation's job runs Nix in a pull request's
+ * pool's home, which every same-repo pull request's job may write to: a nix.conf left there could change
+ * what the flake evaluates to, and a fetcher cache entry could map a revision another push will have to a
+ * source put in the store, which the plan then evaluates as that revision's (`recorder`). A trusted run may
+ * take what such a plan evaluated. Nix 2.34 reads NIX_USER_CONF_FILES before the config homes, and each
+ * NIX_*_HOME before its XDG_*_HOME.
  */
-const ownNix = (scratch: string) => ({
-  NIX_CACHE_HOME: join(scratch, "cache"),
-  XDG_CACHE_HOME: join(scratch, "cache"),
-  NIX_USER_CONF_FILES: join(scratch, "nix.conf"),
-  XDG_CONFIG_HOME: join(scratch, "config"),
-})
+export const ownNix = Effect.acquireRelease(
+  Effect.sync(() => {
+    const dir = mkdtempSync(join(tmpdir(), "calder-nix-"))
+    const env: Record<string, string> = {
+      NIX_USER_CONF_FILES: join(dir, "nix.conf"),
+      GIT_CONFIG_GLOBAL: "/dev/null",
+    }
+    for (const kind of ["cache", "config", "data", "state"]) {
+      env[`XDG_${kind.toUpperCase()}_HOME`] = join(dir, kind)
+      env[`NIX_${kind.toUpperCase()}_HOME`] = join(dir, kind, "nix")
+    }
+    const before = Object.fromEntries(Object.keys(env).map((name) => [name, process.env[name]]))
+    Object.assign(process.env, env)
+    return { dir, before }
+  }),
+  ({ before, dir }) =>
+    Effect.sync(() => {
+      for (const [name, value] of Object.entries(before)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }),
+)
+
+/** `effect` with its own Nix (`ownNix`). */
+export const withOwnNix = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.scoped(Effect.andThen(ownNix, effect))
+
+/**
+ * A recorded `nix eval`'s fetcher cache: an empty one, so a hash cached for a path an earlier command of
+ * the job copied doesn't hide that this evaluation read its files. Nix 2.34 reads NIX_CACHE_HOME before
+ * XDG_CACHE_HOME.
+ */
+const emptyCache = (scratch: string) => ({ NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") })
 
 /**
  * The cache of a local worker's evaluations, or null for none: a pull request's pool's home is one every
@@ -653,7 +682,7 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
     const argv = recorder === undefined ? nix : [...straced(join(scratch, "trace")), ...nix]
     const fetching = yield* FetchEnv
     // The worker's environment, which strace needs to find nix, and only then what fetching adds.
-    const env = { env: { ...process.env, ...fetching, ...ownNix(scratch) } }
+    const env = { env: { ...process.env, ...fetching, ...(recorder === undefined ? {} : emptyCache(scratch)) } }
     const got: Array<Derivation | null> = []
     /** Attributes whose report wasn't a derivation's paths, by index, with why. */
     const refused = new Map<number, string>()

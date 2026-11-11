@@ -191,16 +191,18 @@ as the dev shells of the deploys a pull request doesn't run. Same-repo pull requ
 default branch's runs (its pushes, schedules and manual runs), of same-repo pull requests and of checks.
 Trusted runs and forks' runs take the default branch's plans and never a fork's or a check's. Of a same-repo
 pull request's plan they take only the attributes the controller marked: those the plan evaluated, those it
-took from trusted footprint records, and those it took from an earlier plan that were marked there. A pull
+took from trusted footprint records, and those it took from an earlier plan that were marked there; an
+attribute whose derivation is the earlier plan's counts as taken from it. A pull
 request runs its own ci.ts in the worker that plans, and with the same tree that ci.ts is the default
 branch's. A pull request's record, such as one its first push made, holds for later trees too, whose ci.ts
 may differ, so an attribute taken from it isn't marked, and the merge evaluates it again. A push of another
 branch runs that branch's ci.ts in the trusted worker, so no trusted run takes its plan. So `calder merge`'s
 merge evaluates only what its pull request's rules didn't need or took from a pull request's records. Put
 the revision into what a deploy hands the service rather than into a build, and a merge reuses the pull
-request's builds too. A pull request's evaluations on the controller cache no derivations and read no
-nix.conf, flake registry or fetcher cache from their pool's home, which every same-repo pull request's job
-can write to.
+request's builds too. A pull request's evaluations on the controller cache no derivations. Every Nix command
+of a plan or build evaluation job reads no nix.conf, flake registry, trusted flake settings or fetcher cache
+from the pool's home, which every same-repo pull request's job can write to, and its git reads no global
+configuration: the job gets fresh ones that it removes when it ends.
 
 The attributes a plan needs share one `nix eval` while they fit 80% of the plan job's memory (its
 systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once it holds more than

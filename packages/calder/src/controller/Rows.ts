@@ -305,13 +305,14 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
  * The attributes of a same-repo pull request's plan that a trusted run of its tree may take (`earlierPlan`),
  * `appAttr` among them for the app's name: those the plan evaluated, those it took from trusted footprint
  * records (`fromRecords`), which are trusted runs' and an evaluator agent's (`keepRecords`), and those it took
- * from the earlier plan it reused (`reused`) that a trusted run may take of that one. The worker that planned
- * ran the pull request's ci.ts, so only the controller says this.
+ * from the earlier plan it was handed that a trusted run may take of that one. It took one when it says so
+ * (`reused`) or when its value is that plan's, since a worker could leave an attribute out of `reused`. The
+ * worker that planned ran the pull request's ci.ts, so only the controller says this.
  */
 export const trustedAttrs = (
   project: string,
-  plan: Pick<PlanSpec, "derivations" | "fromRecords" | "reused">,
-  earlier: { readonly revision: string; readonly trusted: ReadonlyArray<string> } | null,
+  plan: Pick<PlanSpec, "app" | "derivations" | "fromRecords" | "reused">,
+  earlier: Pick<PlanSpec, "derivations"> & { readonly revision: string; readonly trusted: ReadonlyArray<string>; readonly app?: string | null } | null,
 ) =>
   Effect.gen(function*() {
     const taken = plan.fromRecords ?? {}
@@ -320,11 +321,23 @@ export const trustedAttrs = (
     const trustedIds = new Set(ids.length === 0 ? [] : (yield* sql<{ id: number }>`select id from evaluations where project = ${project}
       and trust = 'trusted' and ${sql.in("id", ids)}`).map((row) => row.id))
     const { reused } = plan
-    const reusedTrusted = (attr: string) => earlier !== null && reused!.revision === earlier.revision && earlier.trusted.includes(attr)
-    return [...new Set([...Object.keys(plan.derivations ?? {}), appAttr])].filter((attr) =>
-      attr in taken ? trustedIds.has(taken[attr]!) : reused?.attrs.includes(attr) === true ? reusedTrusted(attr) : true
+    const derivations = plan.derivations ?? {}
+    const earlierHas = (attr: string) =>
+      earlier !== null && (attr === appAttr
+        ? earlier.app !== undefined && earlier.app === plan.app
+        : earlier.derivations !== undefined && attr in earlier.derivations && sameDerivation(derivations[attr] ?? null, earlier.derivations[attr] ?? null))
+    const fromEarlier = (attr: string) =>
+      reused?.attrs.includes(attr) === true ? earlier !== null && reused.revision === earlier.revision && earlier.trusted.includes(attr)
+        : earlierHas(attr) ? earlier!.trusted.includes(attr)
+        : undefined
+    return [...new Set([...Object.keys(derivations), appAttr])].filter((attr) =>
+      attr in taken ? trustedIds.has(taken[attr]!) : fromEarlier(attr) ?? true
     ).sort()
   }).pipe(Effect.orDie)
+
+type Derivation = NonNullable<NonNullable<PlanSpec["derivations"]>[string]>
+const sameDerivation = (a: Derivation | null, b: Derivation | null) =>
+  a === null || b === null ? a === b : a.drv === b.drv && a.out === b.out && a.system === b.system
 
 /** The footprint records a run may trust (`trustedOnly`), newest first, with their footprints. */
 export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
