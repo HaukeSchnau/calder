@@ -49,12 +49,28 @@ export interface Sample {
   /** The last file the footprint trace shows Nix opening, and how large the trace was. */
   readonly opened?: { readonly path: string | undefined; readonly size: number }
   readonly host?: { readonly memory?: Stall; readonly io?: Stall }
-  readonly daemon?: {
-    readonly unit: string
-    readonly memory?: Stall
-    /** The cgroup whose memory.high limits the daemon most: it or an ancestor. */
-    readonly limit?: { readonly name: string; readonly current: number; readonly high: number; readonly over: number }
-    readonly current?: number
+  readonly daemon?: Cgroup
+  /** The evaluator's own cgroup, the job's unit where systemd runs it. */
+  readonly job?: Cgroup
+}
+
+/** A cgroup at one moment: its memory pressure and what limits it. */
+export interface Cgroup {
+  readonly unit: string
+  readonly current?: number
+  readonly memory?: Stall
+  /**
+   * Of it and its ancestors, the cgroup with the least room under its memory.high or memory.max: the
+   * one that throttles it first, which may be a shared slice with a higher limit than its own.
+   */
+  readonly limit?: {
+    readonly name: string
+    readonly current: number
+    readonly kind: "memory.high" | "memory.max"
+    readonly bytes: number
+    /** How often it went over that limit, from its memory.events. */
+    readonly over: number
+    readonly swap?: number
   }
 }
 
@@ -121,23 +137,28 @@ const lastOpened = (trace: string) => {
 
 const cgroups = "/sys/fs/cgroup"
 
-/** The daemon's cgroup and what limits it, or nothing where cgroup v2 isn't mounted there. */
-const daemonOf = (unit: string): Sample["daemon"] => {
-  const dir = join(cgroups, unit)
+/** A cgroup by its path under /sys/fs/cgroup and what limits it, or nothing where cgroup v2 isn't mounted there. */
+const cgroupOf = (path: string): Cgroup | undefined => {
+  const dir = join(cgroups, path)
   const current = number(join(dir, "memory.current"))
   if (current === undefined) return undefined
-  let limit: NonNullable<Sample["daemon"]>["limit"]
-  // Like the job's budget, the smallest memory.high of it and its ancestors: on srv-2 its slice's.
+  let limit: Cgroup["limit"]
   for (let at = dir; at.startsWith(cgroups) && at !== cgroups; at = dirname(at)) {
-    const high = number(join(at, "memory.high"))
-    if (high !== undefined && (limit === undefined || high < limit.high)) {
-      const over = Number(/^high (\d+)$/m.exec(read(join(at, "memory.events")) ?? "")?.[1] ?? 0)
-      limit = { name: basename(at), current: number(join(at, "memory.current")) ?? 0, high, over }
+    const used = number(join(at, "memory.current")) ?? 0
+    for (const kind of ["memory.high", "memory.max"] as const) {
+      const bytes = number(join(at, kind))
+      if (bytes === undefined || (limit !== undefined && bytes - used >= limit.bytes - limit.current)) continue
+      const over = Number(new RegExp(`^${kind.slice("memory.".length)} (\\d+)$`, "m").exec(read(join(at, "memory.events")) ?? "")?.[1] ?? 0)
+      const swap = number(join(at, "memory.swap.current"))
+      limit = { name: basename(at), current: used, kind, bytes, over, ...(swap === undefined ? {} : { swap }) }
     }
   }
   const memory = stalls(join(dir, "memory.pressure"))
-  return { unit: basename(unit), current, ...(memory === undefined ? {} : { memory }), ...(limit === undefined ? {} : { limit }) }
+  return { unit: basename(path), current, ...(memory === undefined ? {} : { memory }), ...(limit === undefined ? {} : { limit }) }
 }
+
+/** The cgroup a process is in, from `/proc/<pid>/cgroup`'s cgroup v2 line. */
+const cgroupPath = (pid: number) => /^0::(\/.+)$/m.exec(read(`/proc/${pid}/cgroup`) ?? "")?.[1]
 
 let daemonUnit: string | null | undefined
 /** The Nix daemon's cgroup, asked of systemd once per worker; null where there is no systemd, as on macOS. */
@@ -163,7 +184,9 @@ export const sample = (pid: number, options: {
   const opened = options.trace === undefined ? undefined : lastOpened(options.trace)
   const memory = stalls("/proc/pressure/memory")
   const io = stalls("/proc/pressure/io")
-  const daemon = options.daemon === null ? undefined : daemonOf(options.daemon)
+  const daemon = options.daemon === null ? undefined : cgroupOf(options.daemon)
+  const path = cgroupPath(nix)
+  const job = path === undefined ? undefined : cgroupOf(path)
   return {
     at: Date.now(),
     ...(whole === undefined ? {} : { cpu: whole.cpu, resident: options.resident(pid) }),
@@ -171,6 +194,7 @@ export const sample = (pid: number, options: {
     ...(opened === undefined ? {} : { opened }),
     ...(memory === undefined && io === undefined ? {} : { host: { ...(memory === undefined ? {} : { memory }), ...(io === undefined ? {} : { io }) } }),
     ...(daemon === undefined ? {} : { daemon }),
+    ...(job === undefined ? {} : { job }),
   }
 }
 
@@ -239,26 +263,38 @@ export const describe = (progress: Progress, before: Sample, now: Sample) => {
   } else if (progress.said !== undefined) {
     parts.push(`Nix last said, ${span(now.at - progress.said.at)} ago: "${progress.said.text}".`)
   }
-  const daemon = now.daemon
-  if (daemon?.limit !== undefined) {
-    const { name, current, high } = daemon.limit
-    const holder = name === daemon.unit ? daemon.unit : `${daemon.unit} is in ${name}, which`
-    parts.push(`The Nix daemon's ${holder} holds ${gib(current)} of its ${gib(high)} GiB memory.high.`)
-  } else if (daemon?.current !== undefined) {
-    parts.push(`The Nix daemon's ${daemon.unit} holds ${gib(daemon.current)} GiB and has no memory.high.`)
+  const holds = (who: string, cgroup: Cgroup | undefined) => {
+    if (cgroup?.limit !== undefined) {
+      const { name, current, kind, bytes, swap } = cgroup.limit
+      const holder = name === cgroup.unit ? cgroup.unit : `${cgroup.unit} is in ${name}, which`
+      const swapped = swap === undefined || swap === 0 ? "" : ` and ${gib(swap)} GiB of swap`
+      parts.push(`${who} ${holder} holds ${gib(current)} of its ${gib(bytes)} GiB ${kind}${swapped}.`)
+    } else if (cgroup?.current !== undefined) {
+      parts.push(`${who} ${cgroup.unit} holds ${gib(cgroup.current)} GiB and has no memory limit.`)
+    }
   }
+  holds("The job's", now.job)
+  holds("The Nix daemon's", now.daemon)
   const interval = now.at - before.at
-  const over = daemon?.limit === undefined ? 0 : daemon.limit.over - (before.daemon?.limit?.over ?? daemon.limit.over)
   const pressure = (what: string, a: Stall | undefined, b: Stall | undefined) => {
     const share = stalled(a, b, interval)
     return share === undefined ? [] : [`${what} was ${share}`]
   }
+  // Each limit once, though the job's and the daemon's may be the same slice.
+  const key = (limit: NonNullable<Cgroup["limit"]>) => `${limit.name} ${limit.kind}`
+  const limits = new Map([before.job, before.daemon].flatMap((c) => (c?.limit === undefined ? [] : [[key(c.limit), c.limit.over]])))
+  const overs = [...new Map([now.job, now.daemon].flatMap((c) => (c?.limit === undefined ? [] : [[key(c.limit), c.limit]]))).values()]
+    .flatMap((limit) => {
+      const over = limit.over - (limits.get(key(limit)) ?? limit.over)
+      return over > 0 ? [`${limit.name} went over its ${limit.kind} ${over} times`] : []
+    })
   const during = [
     ...(now.cpu === undefined ? [] : [`Nix used ${seconds(now.cpu - (before.cpu ?? 0))} of CPU, ${seconds(now.cpu)} in all`]),
     ...pressure("the host's memory pressure", before.host?.memory, now.host?.memory),
     ...pressure("its io pressure", before.host?.io, now.host?.io),
-    ...pressure("the Nix daemon's memory pressure", before.daemon?.memory, daemon?.memory),
-    ...(over > 0 ? [`${daemon!.limit!.name} went over its memory.high ${over} times`] : []),
+    ...pressure("the job's memory pressure", before.job?.memory, now.job?.memory),
+    ...pressure("the Nix daemon's memory pressure", before.daemon?.memory, now.daemon?.memory),
+    ...overs,
   ]
   if (during.length > 0) parts.push(`In the last ${span(interval)}, ${during.join("; ")}.`)
   return parts.join(" ")
