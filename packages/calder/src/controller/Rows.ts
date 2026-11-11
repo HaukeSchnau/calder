@@ -292,8 +292,9 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
 
 /**
  * Whether a same-repo pull request's plan took only what a trusted run takes, so a trusted run of its tree
- * may take the plan (`earlierPlan`): footprint records of trusted runs (`taken`, by attribute), and the
- * earlier plan it reused (`reused`, its revision) only if a trusted run would take that one too.
+ * may take the plan (`earlierPlan`): trusted footprint records (`taken`, by attribute), which are trusted
+ * runs' and an evaluator agent's (`keepRecords`), and the earlier plan it reused (`reused`, its revision) only
+ * if a trusted run would take that one too.
  */
 export const trustedInputs = (
   project: string,

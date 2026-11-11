@@ -107,4 +107,18 @@ describe("a same-repo pull request's plan took only what a trusted run takes", (
       expect(yield* inputs(undefined, "head", { revision: "head", trusted: false })).toBe(false)
       expect(yield* inputs(undefined, "head", null)).toBe(false)
     }).pipe(Effect.provide(sqlite)))
+
+  it.effect("when a record it took is one an evaluator agent made for a same-repo pull request", () =>
+    Effect.gen(function*() {
+      const sql = yield* SqlClient.SqlClient
+      const pullRequest = { project: "app", id: "app-2", trust: "pr", fork: 0, event: JSON.stringify({ _tag: "PullRequest", number: 5, fork: false }) } as const
+      const recorded = {
+        footprints: [{ id: "1", revision: "a", entries: [["flake.nix", "read"] as const] }],
+        evaluations: [{ id: 1, attr: "a", footprint: "1", count: 1, digest: "d", derivation: null }],
+      }
+      // As Runs.ts `evaluateBuilds` keeps what an evaluator agent recorded.
+      yield* Rows.keepRecords(pullRequest, "main", recorded, "trusted")
+      const [row] = yield* sql<{ id: number }>`select id from evaluations where run_id = 'app-2'`
+      expect(yield* Rows.trustedInputs("app", { a: row!.id }, undefined, null)).toBe(true)
+    }).pipe(Effect.provide(sqlite)))
 })
