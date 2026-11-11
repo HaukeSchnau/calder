@@ -116,8 +116,10 @@ describe("an evaluation's cache", () => {
     const remote = { workspaces: "/var/lib/calder-agent" }
     expect(Steps.evaluationCache(remote, "pr")).toBe("/var/lib/calder-agent/.cache/pr")
     expect(Steps.evaluationCache(remote, "trusted")).toBe("/var/lib/calder-agent/.cache/trusted")
-    // A local worker's pool user has a home, and so a cache, of its own.
-    expect(Steps.evaluationCache(null, "pr")).toBeUndefined()
+    // A local trusted worker's pool user has a home, and so a cache, of its own. A pull request's pool is
+    // shared with every same-repo pull request's ci.ts, which could forge an entry, so it caches nothing.
+    expect(Steps.evaluationCache(null, "trusted")).toMatch(/\.cache\/calder$/)
+    expect(Steps.evaluationCache(null, "pr")).toBeNull()
   })
 })
 

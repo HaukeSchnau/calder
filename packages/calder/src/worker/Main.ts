@@ -10,7 +10,7 @@ import * as Egress from "./Egress.ts"
 import * as Load from "./Load.ts"
 import * as Redact from "./Redact.ts"
 import * as Repo from "./Repo.ts"
-import { FetchEnv, lock as lockFile, resolve } from "./Resolve.ts"
+import { FetchEnv, lock as lockFile, resolve, withOwnNix } from "./Resolve.ts"
 import * as Steps from "./Steps.ts"
 
 const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
@@ -89,7 +89,7 @@ export const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
       const run = yield* evaluatedRun(spec)
       // Nix fetches the flake's forge inputs from the controller's mirrors, like a local evaluation.
       const fetching = job.remote === null ? {} : Client.evaluationEnv(spec.run.mirrors, job)
-      return yield* Steps.evaluate({ ...spec, run }, spec.evaluate).pipe(Effect.provideService(FetchEnv, fetching))
+      return yield* Steps.evaluate({ ...spec, run }, spec.evaluate).pipe(Effect.provideService(FetchEnv, fetching), withOwnNix)
     }
     const project = yield* Load.project(yield* pipelineDir(spec).pipe(Effect.orDie))
     const step = yield* Load.step(project, spec.step)
@@ -143,7 +143,7 @@ export const run = (
       log: (stream, text) => connected.log(stream, redact(text)),
       redact,
     }
-    const result: JobResult = yield* (spec._tag === "Plan" ? plan(spec) : step(spec)).pipe(
+    const result: JobResult = yield* (spec._tag === "Plan" ? withOwnNix(plan(spec)) : step(spec)).pipe(
       Effect.provideService(Client.Job, job),
       Effect.catchCause((cause) => Effect.succeed({ _tag: "Died", message: Cause.pretty(cause) } satisfies JobResult)),
     )

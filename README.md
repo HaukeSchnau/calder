@@ -93,6 +93,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   the controller's platform with a free slot also takes trusted tasks off the controller, unless the
   task says `offload: false` because it needs the controller's host. Pull-request
   tasks always run on the controller, because agents run every worker as one user without a sandbox.
+  There a pull request's job runs as its pool's user in the host's unit template for it, `calder-job-pr@`, with
+  its own home and workspaces, apart from trusted jobs' `calder-job-trusted@`. A fork's pull request has a pool
+  of its own, `calder-job-fork@`, so nothing a fork's job leaves behind reaches a same-repo pull request's job,
+  whose plan the default branch may take. A host that defines no unit for a pool fails its jobs, saying so.
   Tasks get `GOMEMLIMIT` at 90% of their worker's memory limit, so Go tools such as tsgo collect
   garbage before the limit throttles them; a task's own `env` overrides it.
   Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
@@ -180,14 +184,25 @@ has started on waits for it without a slot and takes its output, or builds itsel
 failed.
 
 A plan evaluates the flake once per revision. A commit with the same root tree as one planned before,
-such as a reworded commit, reuses that plan's derivations unless they mention that commit (`self.rev`,
-`self.shortRev`, `self.lastModified`, `self.lastModifiedDate` or its day) or the flake's sources read
-`revCount`, so its plan evaluates nothing. Plans count by the rules for footprint records: trusted runs and
-forks' runs take only the default branch's (its pushes, schedules and manual runs), since a pull request or
-another branch runs its own ci.ts in the worker that plans; same-repo pull requests take those of same-repo
-pull requests too. A merge doesn't take its pull request's plan, so it evaluates what the default branch's
-footprint records don't cover. Put the revision into what a deploy hands the service rather than into a build, and a merge
-reuses the pull request's builds too.
+such as a reworded commit or the merge of a pull request that was up to date, reuses that plan's derivations
+unless they mention that commit (`self.rev`, `self.shortRev`, `self.lastModified`, `self.lastModifiedDate`
+or its day) or the flake's sources read `revCount`, and evaluates only the attributes that plan didn't, such
+as the dev shells of the deploys a pull request doesn't run. Same-repo pull requests take the plans of the
+default branch's runs (its pushes, schedules and manual runs), of same-repo pull requests and of checks.
+Trusted runs and forks' runs take the default branch's plans and never a fork's or a check's. Of a same-repo
+pull request's plan they take only the attributes the controller marked: those the plan evaluated, those it
+took from trusted footprint records, and those it took from an earlier plan that were marked there; an
+attribute whose derivation is the earlier plan's counts as taken from it. A pull
+request runs its own ci.ts in the worker that plans, and with the same tree that ci.ts is the default
+branch's. A pull request's record, such as one its first push made, holds for later trees too, whose ci.ts
+may differ, so an attribute taken from it isn't marked, and the merge evaluates it again. A push of another
+branch runs that branch's ci.ts in the trusted worker, so no trusted run takes its plan. So `calder merge`'s
+merge evaluates only what its pull request's rules didn't need or took from a pull request's records. Put
+the revision into what a deploy hands the service rather than into a build, and a merge reuses the pull
+request's builds too. A pull request's evaluations on the controller cache no derivations. Every Nix command
+of a plan or build evaluation job reads no nix.conf, flake registry, trusted flake settings or fetcher cache
+from the pool's home, which every same-repo pull request's job can write to, and its git reads no global
+configuration: the job gets fresh ones that it removes when it ends.
 
 The attributes a plan needs share one `nix eval` while they fit 80% of the plan job's memory (its
 systemd unit's `MemoryHigh`). An evaluator keeps everything it computed, so once it holds more than
@@ -210,8 +225,8 @@ the memory.high or memory.max up the cgroup's tree that is closest to being reac
 `calder-jobs.slice`, which every job shares, and the swap used under it. A host
 without `/proc`, PSI or systemd, such as a Mac, leaves those parts out. A pull request's job gets less memory than a trusted run's. A project whose flake
 needs more to evaluate, such as infra, whose srv-2 contract check alone holds 3 GiB, sets
-`largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@`, which the
-host defines with more memory. Plans and build evaluations both take plan slots, one per project at a
+`largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@` (a fork's in
+`calder-job-fork-large@`), which the host defines with more memory. Plans and build evaluations both take plan slots, one per project at a
 time, so one project's flake is never evaluated twice side by side.
 
 A plan also records what each attribute's evaluation read of the repository: its footprint. It evaluates
@@ -242,13 +257,16 @@ read and in a derivation's closure. Records come only from the default branch's 
 manual runs) and same-repo pull requests: a push or manual run of another branch runs that branch's ci.ts
 in the trusted worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
 changes. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
-runs and forks' runs take only trusted runs' records, since a pull request's ci.ts runs in the worker
-that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing. A
-same-repo pull request's build evaluation on an evaluator agent records as trusted, since no ci.ts runs there.
+runs and forks' runs take only trusted records, since a pull request's ci.ts runs in the worker that records,
+also when they take its plan: a record holds for other trees, whose ci.ts may differ from the default
+branch's, and the pull request may never merge. Same-repo pull requests take those of same-repo pull
+requests too; forks record nothing. Trusted runs record as trusted, and so does a same-repo pull request's
+build evaluation on an evaluator agent, since no ci.ts runs there.
 Every night, and on `calder audit <project>`, the controller evaluates each default branch's head afresh,
 through the mirror and without the recorder, as plans did before records, and drops the records that
-disagree. It logs each as `footprint record wrong:` with the runs whose plans took it (infra alerts on
-that line), and the project's page shows it for two weeks.
+disagree. It logs each as `footprint record wrong:` with the runs whose plans took it, those that reused
+such a plan among them (infra alerts on that line), and the project's page shows it for two weeks. No
+run reuses a plan that took a record the audit found wrong.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch
