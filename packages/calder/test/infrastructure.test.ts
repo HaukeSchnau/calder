@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Schedule } from "effect"
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,6 +9,7 @@ import { SqlClient } from "effect/sql"
 import type { JobResult, PlannedStep } from "../src/Protocol.ts"
 import * as Values from "../src/Values.ts"
 import { infrastructure } from "../src/worker/BuildFailure.ts"
+import * as Workflow from "../src/controller/Workflow.ts"
 import { drive, step } from "./drive.ts"
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}))
@@ -137,6 +138,23 @@ describe("a build that failed for an infrastructure reason", () => {
       })
       expect(status).toBe("failed")
       expect(jobs).toEqual(["m1", "m1"])
+      expect(steps.get("m1")?.attempts).toBe(3)
+    }))
+
+  it.live("gets all its attempts again when a rerun runs it again in place", () =>
+    Effect.gen(function*() {
+      const { status, jobs, steps } = yield* drive({
+        steps: [m1],
+        result: () => unreachable,
+        meanwhile: Effect.gen(function*() {
+          const sql = yield* SqlClient.SqlClient
+          const ended = sql<{ status: string }>`select status from runs where id = 'app-2'`.pipe(Effect.map((rows) => rows[0]?.status), Effect.orDie)
+          yield* ended.pipe(Effect.repeat({ until: (s) => s === "failed", schedule: Schedule.spaced("10 millis") }))
+          yield* (yield* Workflow.Runs).rerun("app-2").pipe(Effect.orDie)
+        }),
+      })
+      expect(status).toBe("failed")
+      expect(jobs).toEqual(["m1", "m1", "m1", "m1", "m1", "m1"])
       expect(steps.get("m1")?.attempts).toBe(3)
     }))
 

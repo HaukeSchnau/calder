@@ -68,9 +68,11 @@ export const converge = (project: Project, now: number) =>
     )
     const behind = ahead.length === 0 ? null : { commits: ahead.length, since: ahead.at(-1)!.at }
 
-    const tries = yield* sql<{ id: string; status: Domain.RunStatus; finished_at: number | null }>`select id, status, finished_at from runs
+    const tries = yield* sql<{ id: string; status: Domain.RunStatus; finished_at: number | null; retries: number }>`select id, status, finished_at, retries from runs
       where ${pushes} and sha = ${head} order by created_at desc`
     const last = tries[0]
+    // A rerun in place reopens an older try than the newest: one try at a time deploys the head.
+    if (tries.some((t) => !Domain.ended.has(t.status))) return { ...delivery, behind, stalled: false }
     const stalled = last !== undefined && Domain.ended.has(last.status)
     const state = { ...delivery, behind, stalled }
     if (last === undefined || last.finished_at === null || (last.status !== "failed" && last.status !== "errored") || project.retryDeploys === false) {
@@ -79,11 +81,13 @@ export const converge = (project: Project, now: number) =>
     // A rerun that failed before it planned, such as when its plan's worker died, repeats the last one that ran.
     const ran = last.status === "failed" ? last : tries.find((t) => t.status === "failed")
     if (ran === undefined || !(yield* critical(ran.id, true))) return state
-    const attempt = tries.filter((t) => t.status === "failed" || t.status === "errored").length
-    const at = last.finished_at + backoff(attempt)
+    // A rerun runs a failed run's steps again in the same run, so each of its retries is an attempt too.
+    const attempt = tries.filter((t) => t.status === "failed" || t.status === "errored").reduce((sum, t) => sum + 1 + t.retries, 0)
+    // A try rerun in place can end after a newer one that errored.
+    const at = Math.max(...tries.map((t) => t.finished_at ?? 0)) + backoff(attempt)
     if (now < at) return { ...state, retry: { runId: ran.id, at, attempt } }
-    const again = yield* runs.rerun(ran.id)
-    yield* Effect.logInfo(`${project.name}'s deploy of ${head.slice(0, 12)} failed ${attempt} times; rerunning ${ran.id} as ${again.id}`)
+    const again = yield* runs.rerun(ran.id, { reason: `the deploy of the head failed ${attempt} times; Calder retries it` })
+    yield* Effect.logInfo(`${project.name}'s deploy of ${head.slice(0, 12)} failed ${attempt} times; rerunning ${ran.id}${again.id === ran.id ? " in place" : ` as ${again.id}`}`)
     return state
   })
 
@@ -138,7 +142,9 @@ export const tick = (now: number, looked: Set<string> = new Set()) =>
           yield* Effect.gen(function*() {
             if (!(yield* shipped(row.sha))) return
             const [failedRun] = yield* sql<{ finished_at: number | null }>`select finished_at from runs where id = ${row.run_id}`
-            const after = failedRun?.finished_at == null ? "" : `, ${span(passed.finished_at - failedRun.finished_at)} after ${link(row.run_id)} failed`
+            // A run that passed once it ran again in place no longer knows when it had failed.
+            const after = passed.id === row.run_id ? " when it ran again"
+              : failedRun?.finished_at == null ? "" : `, ${span(passed.finished_at - failedRun.finished_at)} after ${link(row.run_id)} failed`
             yield* gitea.comment(project.repo, row.pr, `**Shipped.** ${link(passed.id)} passed with this merge${after}.`, row.comment_id)
             yield* sql`update shipments set shipped_run = ${passed.id} where project = ${project.name} and sha = ${row.sha}`
           }).pipe(Effect.catchCause((cause) => Effect.logWarning(`telling pull request #${row.pr} of ${project.name} it shipped failed`, cause)))

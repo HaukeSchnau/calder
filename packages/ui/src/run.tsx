@@ -7,7 +7,7 @@ import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult } from "effect/reactivity"
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { isActive, overviewAtom, runAtom } from "./data.ts"
-import { useRunCommands } from "./commands.ts"
+import { hasFailed, useRunCommands } from "./commands.ts"
 import { ago, bytes, clockS, count, dur, eventLine, plural, refOf, runDuration, shortKey, shortSha, spanDur, stepDuration, titleOf, totalSteps } from "./format.ts"
 import { Graph, GraphList, Legend, Meta } from "./graph.tsx"
 import { layout, shapeKey } from "./layout.ts"
@@ -202,9 +202,13 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
 
 function RunActions({ run }: { readonly run: Domain.Run }) {
   const { cancel, rerun } = useRunCommands()
-  return isActive(run.status)
-    ? <button type="button" className="btn" onClick={() => cancel(run)}>Cancel</button>
-    : <button type="button" className="btn" onClick={() => rerun(run)}>Rerun</button>
+  if (!isActive(run.status)) return <button type="button" className="btn" onClick={() => rerun(run)}>Rerun</button>
+  return (
+    <>
+      {hasFailed(run) ? <button type="button" className="btn" onClick={() => rerun(run)}>Rerun failed</button> : null}
+      <button type="button" className="btn" onClick={() => cancel(run)}>Cancel</button>
+    </>
+  )
 }
 
 function Siblings({ runs, current }: { readonly runs: ReadonlyArray<Domain.Run>; readonly current: string }) {

@@ -281,6 +281,11 @@ export const migrations = {
     // The branches the push rules of each `.calder/` tree that was planned name, as a JSON array.
     yield* sql`create table pipeline_pushes (project text not null, tree text not null, branches text not null, primary key (project, tree))`
   }),
+  "0023_run_retries": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // How often a run ran its failed steps again in place (Runs.ts `retry`), which a deploy's backoff counts (Delivery.ts).
+    yield* sql`alter table runs add column retries integer not null default 0`
+  }),
 }
 
 /**

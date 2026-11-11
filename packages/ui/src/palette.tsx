@@ -5,7 +5,7 @@ import type { Domain } from "@calder-ci/api"
 import { useAtomValue } from "@effect/atom-react"
 import { AsyncResult, Atom } from "effect/reactivity"
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"
-import { useRunCommands } from "./commands.ts"
+import { hasFailed, useRunCommands } from "./commands.ts"
 import { isActive, overviewAtom, runAtom } from "./data.ts"
 import { refOf, titleOf } from "./format.ts"
 import { go, type Route } from "./route.ts"
@@ -36,8 +36,10 @@ export function Palette({ route, onClose }: { readonly route: Route; readonly on
     if (detail) {
       const r = detail.run
       const label = `#${r.number}`
-      if (isActive(r.status)) add("This run", `Cancel ${r.project} ${label}`, r.status, () => void cancel(r))
-      else {
+      if (isActive(r.status)) {
+        if (hasFailed(r)) add("This run", `Rerun the failed steps of ${r.project} ${label}`, "while it runs", () => void rerun(r))
+        add("This run", `Cancel ${r.project} ${label}`, r.status, () => void cancel(r))
+      } else {
         add("This run", `Rerun ${r.project} ${label}`, `what didn't pass, ${refOf(r)}`, () => void rerun(r))
         add("This run", `Rerun every step of ${r.project} ${label}`, "deploys included", () => void rerun(r, true))
       }
