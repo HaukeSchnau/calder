@@ -326,7 +326,16 @@ export const writesRecords = (run: Pick<RunRow, "fork" | "trust" | "event">, def
  * Keeps what a plan or build recorded, if its run may write records (`writesRecords`), except records an
  * audit blocked, and the newest three records per attribute of the project with them.
  */
-export const keepRecords = (run: Pick<RunRow, "project" | "fork" | "trust" | "id" | "event">, defaultBranch: string | undefined, recorded: Records) =>
+export const keepRecords = (
+  run: Pick<RunRow, "project" | "fork" | "trust" | "id" | "event">,
+  defaultBranch: string | undefined,
+  recorded: Records,
+  /**
+   * Whom the records count for: the run's trust, or trusted for a same-repo pull request's evaluation on
+   * an evaluator agent, where none of the pull request's code ran (Runs.ts `evaluateBuilds`).
+   */
+  trust: Domain.Trust = run.trust,
+) =>
   Effect.gen(function*() {
     if (!writesRecords(run, defaultBranch) || recorded.evaluations.length === 0) return
     const sql = yield* SqlClient.SqlClient
@@ -346,7 +355,7 @@ export const keepRecords = (run: Pick<RunRow, "project" | "fork" | "trust" | "id
         yield* sql`insert into evaluations (project, attr, footprint, count, digest, derivation, app, trust, run_id, created_at)
           values (${run.project}, ${e.attr}, ${footprint}, ${e.count}, ${e.digest},
             ${e.derivation === null ? null : JSON.stringify(e.derivation)}, ${e.app === undefined ? null : JSON.stringify(e.app)},
-            ${run.trust}, ${run.id}, ${now})`
+            ${trust}, ${run.id}, ${now})`
       }
       yield* sql`delete from evaluations where project = ${run.project} and id not in (select id from (
         select id, row_number() over (partition by attr order by created_at desc, id desc) as n from evaluations

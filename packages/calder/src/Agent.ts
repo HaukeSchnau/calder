@@ -29,6 +29,11 @@ export interface Options {
    * admission until its stdin closes, like a Mac builder's admission wrapper.
    */
   readonly admission: string | null
+  /**
+   * Takes the controller's evaluation jobs only, never tasks or setups, and its workers push the
+   * derivations they evaluate to this store, the controller's (`calder agent --evaluator <store>`).
+   */
+  readonly evaluator: string | null
 }
 
 /** Sends `signal` to a process group; false once the group is gone. */
@@ -133,7 +138,12 @@ export const run = (options: Options) =>
         // Added before the worker, so it runs after the worker's group is gone.
         yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(join(pids, job), { force: true })))
         const handle = yield* spawner.spawn(ChildProcess.make(command!, [...args, "worker", job], {
-          env: { CALDER_URL: options.url, CALDER_TOKEN: jobToken, CALDER_WORKSPACES: options.workspaces },
+          env: {
+            CALDER_URL: options.url,
+            CALDER_TOKEN: jobToken,
+            CALDER_WORKSPACES: options.workspaces,
+            ...(options.evaluator === null ? {} : { CALDER_EVALUATOR_STORE: options.evaluator }),
+          },
           extendEnv: true,
           stdin: "ignore",
           stdout: "inherit",
@@ -174,10 +184,15 @@ export const run = (options: Options) =>
       }).pipe(Effect.ignore, Effect.repeat(Schedule.spaced("10 seconds")), Effect.forkScoped)
     }
 
-    yield* Effect.logInfo(`agent ${options.name} serving ${options.platform} jobs from ${options.url}`)
+    yield* Effect.logInfo(
+      options.evaluator === null
+        ? `agent ${options.name} serving ${options.platform} jobs from ${options.url}`
+        : `agent ${options.name} evaluating for ${options.url}, pushing derivations to ${options.evaluator}`,
+    )
     yield* Effect.suspend(() => {
       offering = offered()
-      return client.work({ ...auth, platform: options.platform, slots: offering, running: [...running.keys()], build: Build.id, compatibility }).pipe(
+      return client.work({ ...auth, platform: options.platform, slots: offering, running: [...running.keys()], build: Build.id, compatibility,
+        evaluator: options.evaluator !== null }).pipe(
         Stream.runForEach(obey),
       )
     }).pipe(

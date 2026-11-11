@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Exit, Fiber } from "effect"
 import { TestClock } from "effect/testing"
+import * as Jobs from "../src/controller/Jobs.ts"
 import { startUnit } from "../src/controller/Jobs.ts"
 
 const timedOut = {
@@ -92,4 +93,15 @@ describe("starting a worker's unit", () => {
       expect(Exit.hasInterrupts(yield* Fiber.await(fiber))).toBe(true)
       expect(ran).toBe(false)
     }))
+})
+
+describe("agents", () => {
+  it("take trusted jobs and same-repo pull requests' evaluations, never a fork's or other pull-request work", () => {
+    expect(Jobs.refusedOnAgents({ pool: "trusted" })).toBe(false)
+    expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true, fork: false })).toBe(false)
+    expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true, fork: true })).toBe(true)
+    // A caller that doesn't say whether the run is a fork's gets the sandbox.
+    expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true })).toBe(true)
+    expect(Jobs.refusedOnAgents({ pool: "pr" })).toBe(true)
+  })
 })

@@ -5,11 +5,12 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Option, PlatformError, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { RunInfo } from "../src/Protocol.ts"
+import { askedAttrs, reportTag } from "./expression.ts"
 import * as Footprint from "../src/worker/Footprint.ts"
 import { type Derivation, derivations, fromEarlier, jobMemory, type Memory } from "../src/worker/Resolve.ts"
 
 const run = (flake: string) => ({ flake }) as RunInfo
-const drv = (name: string) => ({ drv: `/nix/store/${name}.drv`, out: `/nix/store/${name}`, system: "x86_64-linux" })
+const drv = (name: string) => ({ drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system: "x86_64-linux" })
 const GiB = 2 ** 30
 
 /** What `nix eval` makes of an attribute: a derivation or null, an error Nix can't catch, and how much memory it takes. */
@@ -74,10 +75,10 @@ const nix = (
       }
       if (evaluates) {
         yield* options.evaluating ?? Effect.void
-        const asked = [...argv.at(-1)!.matchAll(/\(report \d+ f\.(\S+)\)/g)].map((m) => m[1]!)
+        const asked = askedAttrs(argv.at(-1)!)
         evaluated.push(asked)
         const reports: Array<Stream.Stream<Uint8Array>> = options.heavyFlake === undefined
-          ? [Stream.make(line(options.broken ? "error: cannot fetch input 'nixpkgs'" : "trace: calder-flake"))]
+          ? [Stream.make(line(options.broken ? "error: cannot fetch input 'nixpkgs'" : `trace: calder-flake-${reportTag(argv.at(-1)!)}`))]
           : [Stream.fromEffect(Effect.sync(() => held.set(pid, options.heavyFlake!))).pipe(Stream.drain), Stream.never]
         if (options.heavyFlake !== undefined) exit = Effect.never
         if (options.broken) exit = Effect.succeed(1)
@@ -96,7 +97,7 @@ const nix = (
             exit = Effect.never
             break
           }
-          reports.push(grow, Stream.make(line(`trace: calder-derivation ${JSON.stringify([i, value])}`)))
+          reports.push(grow, Stream.make(line(`trace: calder-derivation-${reportTag(argv.at(-1)!)} ${JSON.stringify([i, value])}`)))
         }
         stderr = Stream.flatten(Stream.fromIterable(reports))
       }

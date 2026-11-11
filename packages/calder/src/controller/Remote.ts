@@ -4,7 +4,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
-import { AgentRpcs } from "../Protocol.ts"
+import { AgentRpcs, type Job } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
@@ -58,7 +58,15 @@ export const cgi = <E>(stdout: Stream.Stream<Uint8Array, E>) =>
   }).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
 
 /**
- * Read-only git over HTTP for agents' workers: `git http-backend` on the job's own mirror, so they
+ * Whether a job's worker may fetch the mirror of `project`: its own project's, and for a build evaluation
+ * any mirrored project's (`known`), which the flake's inputs may name, as a local evaluation reads them
+ * from disk through `RunInfo.mirrors`.
+ */
+export const readable = (spec: Job, project: string, known: ReadonlySet<string>) =>
+  project === spec.run.project || (spec._tag === "Step" && spec.evaluate !== undefined && known.has(project))
+
+/**
+ * Read-only git over HTTP for agents' workers: `git http-backend` on a mirror `readable` allows, so they
  * check out without Gitea credentials. The pack streams through; the request's scope keeps git
  * running until the response is sent.
  */
@@ -68,18 +76,20 @@ export const git = (request: HttpServerRequest.HttpServerRequest) =>
     if (active === undefined) return unauthorized
     const url = new URL(request.url, "http://calder")
     const match = /^\/git\/([^/]+)\.git\/(info\/refs|git-upload-pack)$/.exec(url.pathname)
-    const project = active.spec.run.project
-    if (match === null || match[1] !== project) return HttpServerResponse.text("not found", { status: 404 })
+    const mirror = yield* Mirror
+    const known = new Set(Object.values(mirror.byUrl()).map((path) => basename(path, ".git")))
+    if (match === null || !readable(active.spec, match[1]!, known)) return HttpServerResponse.text("not found", { status: 404 })
+    const project = match[1]!
     if (match[2] === "info/refs" && url.searchParams.get("service") !== "git-upload-pack") {
       return HttpServerResponse.text("only fetches", { status: 403 })
     }
-    const mirror = (yield* Mirror).path(project)
+    const path = mirror.path(project)
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const handle = yield* spawner.spawn(ChildProcess.make("git", ["http-backend"], {
       env: {
-        GIT_PROJECT_ROOT: dirname(mirror),
+        GIT_PROJECT_ROOT: dirname(path),
         GIT_HTTP_EXPORT_ALL: "1",
-        PATH_INFO: `/${basename(mirror)}/${match[2]}`,
+        PATH_INFO: `/${basename(path)}/${match[2]}`,
         REQUEST_METHOD: request.method,
         QUERY_STRING: url.search.slice(1),
         CONTENT_TYPE: request.headers["content-type"] ?? "",

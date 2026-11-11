@@ -62,6 +62,8 @@ export const fetching = <A, E, R>(fetch: Effect.Effect<A, E, R>) =>
 export interface Remote {
   readonly url: string
   readonly workspaces: string
+  /** On an evaluator agent: the controller's store, where an evaluation job pushes its derivations. */
+  readonly store?: string
 }
 
 /** The worker's job: its id and token, the controller client, and a buffer for events. */
@@ -97,6 +99,25 @@ export const gitEnv = (job: Job["Service"]) =>
     GIT_CONFIG_KEY_1: "http.extraHeader",
     GIT_CONFIG_VALUE_1: `Authorization: Bearer ${job.id}:${job.token}`,
   }
+
+/**
+ * Git's environment for Nix's fetches in an evaluation on an agent: each forge repository from the
+ * controller's endpoint (`mirrors`, whose targets are its `/git/` URLs), with the job's token sent to that
+ * origin alone, never to another host an input names, and no prompt for credentials.
+ */
+export const evaluationEnv = (mirrors: Readonly<Record<string, string>>, job: { readonly id: string; readonly token: string }) => {
+  const origins = [...new Set(Object.values(mirrors).flatMap((target) => {
+    const at = /^(https?:\/\/[^/]+)\/git\//.exec(target)
+    return at === null ? [] : [`${at[1]}/git/`]
+  }))]
+  return {
+    ...Repo.insteadOf(mirrors, [
+      ["safe.directory", "*"],
+      ...origins.map((origin) => [`http.${origin}.extraHeader`, `Authorization: Bearer ${job.id}:${job.token}`] as const),
+    ]),
+    GIT_TERMINAL_PROMPT: "0",
+  }
+}
 
 export const make = (id: string, token: string, remote: Remote | null): Effect.Effect<Job["Service"], never, RpcClient.Protocol | Scope.Scope> =>
   Effect.gen(function*() {

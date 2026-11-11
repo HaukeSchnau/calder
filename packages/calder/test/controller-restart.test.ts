@@ -33,13 +33,16 @@ const unused = () => Effect.die(new Error("not used by this test"))
 /** What the worker's socket gives a call while no controller listens. */
 class Disconnected extends Data.TaggedError("RpcClientError")<{}> {}
 
-/** systemd as the controller sees it: every worker's unit starts and keeps running. */
+/**
+ * systemd as the controller sees it: every worker's unit starts and keeps running, and stopping one never
+ * returns, as on srv-2, where the host switch that restarts the controller stops polkit at the same moment.
+ */
 const systemd = ChildProcessSpawner.make((command) => {
   const args = ChildProcess.isStandardCommand(command) ? command.args : []
   const stdout = args.includes("ActiveState") ? "ActiveState=active\nResult=success\n" : ""
   return Effect.succeed(ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+    exitCode: args[0] === "stop" ? Effect.never : Effect.succeed(ChildProcessSpawner.ExitCode(0)),
     isRunning: Effect.succeed(false),
     kill: () => Effect.void,
     stdin: Sink.drain,
@@ -145,6 +148,9 @@ const restarted = Effect.gen(function*() {
     const spec = yield* deployStep(10, name)
     yield* before.jobs.run(spec, { pool: "trusted", adoptable: true, onEvent: () => Effect.void }).pipe(Effect.forkIn(before.scope))
   }
+  // A plan, which no controller adopts.
+  const plan = { ...(yield* deployStep(11, "plan")), _tag: "Plan", requiredChecks: [] } as unknown as Job
+  yield* before.jobs.run(plan, { pool: "trusted", onEvent: () => Effect.void }).pipe(Effect.forkIn(before.scope))
   yield* Effect.yieldNow
   const job = (name: string) => before.jobs.active().find((j) => j.spec._tag === "Step" && j.spec.step === name)!.id
   const auth = (id: string) => ({ job: id, token: readFileSync(join(runtimeDir, "jobs", `${id}.token`), "utf8") })
@@ -155,7 +161,10 @@ const restarted = Effect.gen(function*() {
   const waiting = yield* reconnecting(client.fleetAcquire({ ...auth(srv1), project: "app" })).pipe(Effect.forkChild)
   yield* Effect.yieldNow
   process.emit("SIGTERM")
-  yield* before.stop
+  // The stop leaves every worker to the next controller instead of waiting for systemd.
+  const stopped = yield* before.stop.pipe(Effect.forkChild)
+  yield* TestClock.adjust("1 second")
+  expect(stopped.pollUnsafe()).toBeDefined()
 
   // The next controller adopts both workers; deploy-srv-2 still holds the lease, and deploy-srv-1 waits again.
   const after = yield* start
