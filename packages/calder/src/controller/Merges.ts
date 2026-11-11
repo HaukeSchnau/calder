@@ -16,11 +16,13 @@ export interface MergeRequest {
 }
 
 /**
- * Pull requests to merge once they are green. One per base branch at a time: a pull request behind its
+ * Pull requests to merge once they are green, in the order they turn green. A pull request behind its
  * base gets the base merged in, which starts a run that only repeats what the update can affect; one
- * whose run on its current head passed is merged, pinned to that head. A failed run, a conflict or a
- * refused merge ends the request with a comment on the pull request. Any other error, such as a branch
- * or repository that is gone, ends only that request, and the queue goes on.
+ * whose run on its current head passed is merged, pinned to that head. While the run of an update is
+ * pending, requests made after it for the same base wait, so that none of them updates or merges in
+ * between and makes the update stale. A failed run, a conflict or a refused merge ends the request with
+ * a comment on the pull request. Any other error, such as a branch or repository that is gone, ends only
+ * that request, and the queue goes on.
  */
 export class MergeRefused extends Schema.TaggedError<MergeRefused>("calder/MergeRefused")("MergeRefused", { reason: Schema.String }) {}
 
@@ -68,7 +70,7 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
       Effect.orElseSucceed(() => false),
     )
 
-  /** Moves one request forward; returns the base branch it holds, so later requests for it wait. */
+  /** Moves one request forward; returns the base branch it holds while its update's run is pending, so later requests for it wait. */
   const advance = (row: Row) =>
     Effect.gen(function*() {
       const project = projects.get(row.project)
@@ -97,10 +99,7 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
       const runs = yield* db(sql<{ id: string; status: string }>`select id, status from runs
         where project = ${row.project} and pr = ${row.pr} and sha = ${pull.sha} order by created_at desc limit 1`)
       const run = runs[0]
-      if (run === undefined || ["queued", "planning", "running"].includes(run.status)) {
-        if (row.status !== "waiting") yield* settle(row, "waiting", null)
-        return holds
-      }
+      if (run === undefined || ["queued", "planning", "running"].includes(run.status)) return row.status === "updating" ? holds : null
       if (run.status !== "passed") return yield* fail(`its run ${run.id} ${run.status}`)
       const merged = yield* gitea.mergePull(repo, row.pr, pull.sha).pipe(Effect.as(null), Effect.catch((message) => Effect.succeed(message)))
       if (merged !== null) return yield* fail(`Gitea refused the merge: ${merged}`)
@@ -137,7 +136,9 @@ export const layer = Layer.effect(Merges)(Effect.gen(function*() {
         if (!pull.open) return yield* new MergeRefused({ reason: `pull request #${pr} is ${pull.merged ? "merged" : "closed"}` })
         yield* db(sql`insert into merges (project, pr, base, status, message, requested_at)
           values (${project}, ${pr}, ${pull.base}, 'waiting', null, ${Date.now()})
-          on conflict (project, pr) do update set base = excluded.base, status = 'waiting', message = null, requested_at = excluded.requested_at`)
+          on conflict (project, pr) do update set base = excluded.base, message = null,
+            status = case when merges.status = 'updating' then 'updating' else 'waiting' end,
+            requested_at = case when merges.status in ('waiting', 'updating') then merges.requested_at else excluded.requested_at end`)
         const rows = yield* db(sql<Row>`select * from merges where project = ${project} and pr = ${pr}`)
         return toRequest(rows[0]!)
       }),

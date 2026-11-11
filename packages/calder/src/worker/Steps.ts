@@ -84,6 +84,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
     if (drv === null) return { _tag: "Died", message: `${attr} has no derivation to build` } satisfies JobResult
     yield* log("calder", `nix build ${attr}`)
     const ref = `${drv}^*`
+    let lost = false
     const attempt = Effect.gen(function*() {
       const out: Array<string> = []
       const exitCode = yield* Exec.stream(
@@ -95,6 +96,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
               out.push(line.trim())
               return
             }
+            if (line.includes("failed to obtain derivation of") && line.includes(drv)) lost = true
             for (const msg of parse(line, Date.now())) {
               if (msg._tag === "Activity") yield* emit({ _tag: "Activity", activity: msg.activity })
               else yield* log(msg.error ? "stderr" : "stdout", msg.text)
@@ -104,7 +106,21 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
       if (exitCode !== 0) return yield* new Calder.BuildFailed({ attr, ...(drv === null ? {} : { drv }) })
       return out.find((l) => l.startsWith("/nix/store/")) as Calder.StorePath
     })
-    const exit = yield* Effect.exit(withPolicies(attempt, step.policies))
+    // The plan's evaluation doesn't root the derivation, so Nix's garbage collector can delete it while
+    // the build waits for a slot. Evaluating the attribute again writes it back. Rooting the plan's
+    // derivations until their builds ended would make this unnecessary.
+    const again = Effect.catchIf(attempt, () => lost, (failed) =>
+      Effect.gen(function*() {
+        lost = false
+        yield* log("calder", `the store lost ${drv}, so ${attr} is evaluated again`)
+        const evaluated = yield* Exec.run(["nix", "eval", "--raw", `${job.run.flake}#${attr}.drvPath`], { env: env(job.run, step.name) }).pipe(
+          Effect.map((out) => out.trim()),
+          Effect.orElseSucceed(() => null),
+        )
+        if (evaluated !== drv) return yield* Effect.fail(failed)
+        return yield* attempt
+      }))
+    const exit = yield* Effect.exit(withPolicies(again, step.policies))
     return toResult(exit, { key: drv })
   })
 

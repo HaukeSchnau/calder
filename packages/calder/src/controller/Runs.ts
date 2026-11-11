@@ -1,5 +1,5 @@
 import type { Domain } from "@calder-ci/api"
-import { Event } from "@calder-ci/core"
+import { Event, On } from "@calder-ci/core"
 import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { existsSync, readFileSync } from "node:fs"
@@ -307,6 +307,20 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       return null
     })
 
+  /**
+   * A push to a branch no rule names, for example: nothing to run, keep or report on the commit. Whoever
+   * follows the run, such as `calder trigger`, still sees it end and why.
+   */
+  const matchesNoRule = (run: Rows.RunRow, event: Domain.Event) =>
+    Effect.gen(function*() {
+      const reason = `no rule of ${run.project} runs anything for ${Event.describe(event)}`
+      yield* db(sql`update runs set status = 'cancelled', error = ${reason}, finished_at = ${Date.now()} where id = ${run.id}`)
+      yield* publishRun(run.id)
+      yield* db(sql`delete from runs where id = ${run.id}`)
+      yield* Effect.logInfo(`${run.id} matches no rule, dropped`)
+      return null
+    })
+
   const plan = (runId: string) =>
     Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
@@ -323,9 +337,18 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       )
       if (pipelineDir.dir === null) return yield* unplanned(run, pipelineDir.error ?? "could not read the revision")
 
+      const event = JSON.parse(run.event) as Domain.Event
+      // A plan of the same pipeline already said which branches its push rules name. A push to another
+      // branch, such as one with a pull request open, which has its own run, gets no plan job.
+      const tree = yield* mirror.pipelineTree(run.project, run.sha)
+      if (event._tag === "Push" && event.branch !== projects.get(run.project)?.defaultBranch && tree !== null) {
+        const known = yield* db(sql<{ branches: string }>`select branches from pipeline_pushes where project = ${run.project} and tree = ${tree}`)
+        const pushes = known[0] === undefined ? undefined : JSON.parse(known[0].branches) as ReadonlyArray<string>
+        if (pushes !== undefined && !pushes.some((pattern) => On.matchesBranch(pattern, event.branch))) return yield* matchesNoRule(run, event)
+      }
+
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
       const job: Job = { _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: required, earlier: yield* db(Rows.earlierPlan(run, projects.get(run.project)?.defaultBranch)) }
-      const event = JSON.parse(run.event) as Domain.Event
       const claim: Slots.Claim = {
         project: run.project,
         expected: 0,
@@ -365,6 +388,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* db(sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`)
       }
       const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
+      // A pull request's plan job runs the pull request's code, so only a trusted plan's answer is kept.
+      if (tree !== null && run.trust === "trusted" && spec.pushes !== undefined) {
+        yield* db(sql`insert into pipeline_pushes (project, tree, branches) values (${run.project}, ${tree}, ${JSON.stringify(spec.pushes)})
+          on conflict do update set branches = excluded.branches`)
+      }
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
         yield* db(sql.withTransaction(Effect.gen(function*() {
@@ -372,16 +400,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           for (const cron of spec.schedules) yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`
         })))
       }
-      // A push to a branch no rule names, for example: nothing to run, keep or report on the commit. Whoever
-      // follows the run, such as `calder trigger`, still sees it end and why.
-      if (spec.steps.length === 0) {
-        const reason = `no rule of ${run.project} runs anything for ${Event.describe(event)}`
-        yield* db(sql`update runs set status = 'cancelled', error = ${reason}, finished_at = ${Date.now()} where id = ${runId}`)
-        yield* publishRun(runId)
-        yield* db(sql`delete from runs where id = ${runId}`)
-        yield* Effect.logInfo(`${runId} matches no rule, dropped`)
-        return null
-      }
+      if (spec.steps.length === 0) return yield* matchesNoRule(run, event)
       // A cancel that came in while the plan job ran wins.
       const stored = yield* db(sql.withTransaction(Effect.gen(function*() {
         const updated = yield* sql`update runs set plan = ${JSON.stringify(spec)}, status = 'running', planned_at = ${Date.now()}
