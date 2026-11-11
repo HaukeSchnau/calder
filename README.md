@@ -238,7 +238,8 @@ manual runs) and same-repo pull requests: a push or manual run of another branch
 in the trusted worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
 changes. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
 runs and forks' runs take only trusted runs' records, since a pull request's ci.ts runs in the worker
-that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing.
+that records; same-repo pull requests take those of same-repo pull requests too; forks record nothing. A
+same-repo pull request's build evaluation on an evaluator agent records as trusted, since no ci.ts runs there.
 Every night, and on `calder audit <project>`, the controller evaluates each default branch's head afresh,
 through the mirror and without the recorder, as plans did before records, and drops the records that
 disagree. It logs each as `footprint record wrong:` with the runs whose plans took it (infra alerts on
@@ -439,10 +440,43 @@ calder audit <project>                 # evaluates the default branch head afres
 calder controller --config <file>      # the service
 calder worker <job>                    # started by the controller in a systemd unit, or by an agent
 calder agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
+  [--evaluator <store>]              # with --evaluator, evaluates builds for the controller instead
                                      # runs the controller's jobs for this host's platform
 ```
 
 `calder <command> --help` describes each argument and flag.
+
+An evaluator agent (`calder agent --evaluator <store>`) takes the controller's build evaluations, the job
+the first build a plan left unevaluated starts, and nothing else: no task or setup of its platform. Evaluation
+needs a fast host more than any other job: infra's 25 builds took 648 s to evaluate on srv-2 under Calder and
+111 s on dev-hauke. While one is connected, every run that isn't a fork's evaluates there, in a slot of the
+agent's rather than the project's plan slot. The worker runs no `.calder/ci.ts`: only Calder's evaluator
+and `nix eval`, in which the flake's Nix runs in pure evaluation, with the builds an import from a derivation
+needs. Only report lines carrying a tag the evaluator draws for each `nix eval` count, so the flake's own code
+can't trace one. It evaluates a full mirror of the project that the
+agent keeps under `<workspaces>/.mirrors` and fetches from the controller, and fetches the flake's inputs from
+other repositories of the forge from the controller's mirrors too, as a local evaluation does, so Nix gets the same source and
+`revCount`, and so the same derivations, as from the controller's mirror. It then pushes the derivations
+with their closure to `<store>`, the controller's store (`nix copy --derivation --to`), which sends only what
+the controller lacks: 8 s for infra's builds when it lacks nothing, 322 s for their whole closure of 51,000
+paths. Pulling them from the controller took longer than 12 minutes, since it asks for each path in turn. The
+evaluation counts once every derivation is valid in the controller's store. When the push failed, the agent's
+job died, a derivation is missing, or no evaluator agent took the job within two minutes, the controller
+evaluates the builds itself and says so in the step's log. Builds the agent couldn't evaluate, such as one that
+imports another system's build or outgrew the agent's memory, the controller evaluates after it, and a build
+that evaluates alone after a failed evaluation of them together always does so on the controller. The agent's
+log says which Nix it evaluates with, and warns when its version or import-from-derivation setting differs from
+the controller's, since the controller's plans then can't take its records. Its pull requests' and trusted
+runs' evaluations keep separate caches.
+Attribute paths reach Nix as data, never as part of the expression, and a plan whose steps name a path
+outside the grammar (names of letters, digits and `_'+-`, or those and `.` in double quotes) fails. An
+attribute whose reported `drvPath` or `outPath` isn't a path in the store didn't evaluate, wherever it was
+evaluated, and the controller drops an agent's evaluation that reports one, since those paths go to Nix
+commands as arguments. Since no
+ci.ts runs in its worker, and a record holds only where the files its evaluation read are the same, what an
+evaluator agent records for a same-repo pull request
+counts as trusted: the default branch's run after the merge, of the same tree, takes every build from those
+records instead of evaluating again.
 
 An agent gets jobs only while it has the controller's compatibility version (`compatibility` in
 `packages/calder/src/Protocol.ts`), so deploying the controller stalls agents only when that version

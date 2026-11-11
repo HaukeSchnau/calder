@@ -220,6 +220,12 @@ export const StepJob = Schema.TaggedStruct("Step", {
   evaluate: Schema.optional(Schema.Struct({
     builds: Schema.Array(Schema.Struct({ name: Schema.String, attr: Schema.String })),
     planned: Schema.Array(Schema.Struct({ name: Schema.String, drv: Schema.String })),
+    /**
+     * For an evaluator agent: the controller's Nix version, import-from-derivation setting and hash of
+     * `NIX_CONFIG` (`nixSettings`), which its
+     * plans' footprint records count under. An agent whose own differ says so.
+     */
+    controller: Schema.optional(Schema.Struct({ nix: Schema.String, ifd: Schema.String, config: Schema.String })),
   })),
 })
 
@@ -396,6 +402,8 @@ export class AgentRpcs extends RpcGroup.make(
       build: Schema.String,
       // Agents built before compatibility versions send none.
       compatibility: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+      /** An evaluator agent (`calder agent --evaluator`) takes evaluation jobs only; older agents send none. */
+      evaluator: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
     },
     success: AgentOrder,
     error: Unauthorized,

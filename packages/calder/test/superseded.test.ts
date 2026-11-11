@@ -13,8 +13,8 @@ import { layer as sqlite } from "./sqlite.ts"
 vi.mock("@effect/sql-sqlite-bun", () => ({}))
 
 const attr = "nixosConfigurations.srv-1.config.system.build.toplevel"
-const old = "/nix/store/d7gk87np00000000000000000000000-nixos-system-srv-1.drv"
-const next = "/nix/store/37i5xxmr00000000000000000000000-nixos-system-srv-1.drv"
+const old = "/nix/store/d7gk87np000000000000000000000000-nixos-system-srv-1.drv"
+const next = "/nix/store/37i5xxmr000000000000000000000000-nixos-system-srv-1.drv"
 
 const build = (drv: string | null, name = "srv-1"): PlannedStep => ({
   ...step,

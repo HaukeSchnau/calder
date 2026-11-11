@@ -46,4 +46,16 @@ export const select = <K extends Output>(ref: FlakeRef<K>, path: string): FlakeR
 export const attrPath = (ref: FlakeRef, system: string): string =>
   [ref.output === "attr" ? ref.name : `${ref.output}.${system}.${quote(ref.name)}`, ...(ref.path ?? []).map(quote)].join(".")
 
+/**
+ * The components of an attribute path such as `checks.x86_64-linux."Haukes-MacBook-Pro"`, or null for a
+ * path outside the grammar Calder evaluates: components of letters, digits and `_'+-`, or the same and
+ * `.` between double quotes. A pipeline's attribute names reach a Nix evaluation that trusted runs take
+ * records from, so a name that could be Nix code, such as one with `${`, a space or a newline, is refused.
+ */
+export const components = (path: string): ReadonlyArray<string> | null => {
+  const parts = path.match(/"[A-Za-z0-9_'.+-]+"|[A-Za-z0-9_'+-]+/g)
+  if (parts === null || parts.join(".") !== path) return null
+  return parts.map((part) => (part.startsWith('"') ? part.slice(1, -1) : part))
+}
+
 const quote = (name: string) => (/^[A-Za-z_][A-Za-z0-9_'-]*$/.test(name) ? name : JSON.stringify(name))

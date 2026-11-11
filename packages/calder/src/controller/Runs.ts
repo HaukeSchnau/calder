@@ -1,15 +1,17 @@
 import type { Domain } from "@calder-ci/api"
-import { Event, On } from "@calder-ci/core"
+import { Event, Flake, On } from "@calder-ci/core"
 import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import * as Exec from "../Exec.ts"
+import { nixSettings } from "../NixSettings.ts"
+import { malformed, only, storeDrv, storePath } from "../StorePaths.ts"
 import { placementToken, secretsDigest, sha256, taskKey } from "../Keys.ts"
 import * as Values from "../Values.ts"
-import type { Job, JobEvent, JobResult, Mismatch, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
+import type { Job, JobEvent, JobResult, Mismatch, Outcome, PlannedStep, PlanSpec, Records, RunInfo } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
-import { Cache } from "./Cache.ts"
+import { Cache, hashOf } from "./Cache.ts"
 import { Comments } from "./Comments.ts"
 import { Config } from "./Config.ts"
 import * as Each from "./Each.ts"
@@ -455,6 +457,28 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return yield* unplanned(run, result._tag === "PlanFailed" ? result.message : result._tag === "Died" ? result.message : "planning failed")
       }
 
+      // A pull request's plan job ran its ci.ts: attribute paths outside the grammar never reach an evaluation.
+      const paths = [
+        ...result.plan.steps.flatMap((s) => (s.build === null ? [] : [s.build.attr])),
+        ...Object.keys(result.plan.derivations ?? {}),
+        ...(result.plan.deferred ?? []),
+      ]
+      const refused = [...new Set(paths.filter((path) => Flake.components(path) === null))]
+      if (refused.length > 0) return yield* unplanned(run, `${refused.join(", ")}: not an attribute path Calder evaluates`)
+      const derived = Object.entries(result.plan.derivations ?? {}).find(([, d]) => d !== null && malformed(d) !== null)
+      if (derived !== undefined) return yield* unplanned(run, `${derived[0]}: ${malformed(derived[1]!)}`)
+      // A build's derivation, output and system each, as far as the plan knows them.
+      const built = result.plan.steps.flatMap((s) => {
+        const b = s.build
+        if (b === null) return []
+        const why = b.drv !== null && !storeDrv.test(b.drv) ? `its derivation ${JSON.stringify(b.drv)} isn't one in the store`
+          : b.out !== null && !storePath.test(b.out) ? `its output ${JSON.stringify(b.out)} isn't a path in the store`
+          : b.system !== null && !/^[A-Za-z0-9_-]+$/.test(b.system) ? `its system ${JSON.stringify(b.system)} isn't a system`
+          : null
+        return why === null ? [] : [`${b.attr}: ${why}`]
+      })
+      if (built.length > 0) return yield* unplanned(run, built[0]!)
+
       // Footprints go to their own tables, not into the stored plan.
       const { recorded, mismatches: _, ...planned_ } = result.plan
       if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
@@ -702,7 +726,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false) => {
     const foreign = platform !== null && platform !== config.system
     const offload = !foreign && !here && run.trust === "trusted" &&
-      agents.usage().some((a) => a.connected && a.current && a.platform === config.system && a.running < a.slots)
+      agents.usage().some((a) => a.connected && a.current && !a.evaluator && a.platform === config.system && a.running < a.slots)
     const remote = foreign || offload
     const system = platform ?? config.system
     const where = remote ? { ...info, flake: "", mirror: `${config.url.replace(/\/$/, "")}/git/${run.project}.git`, mirrors: {}, pipelineDir: "", system } : info
@@ -815,6 +839,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly critical?: boolean
       /** Evaluates the project's flake, in the larger pull-request unit where the project asks for it (Jobs `large`). */
       readonly evaluates?: boolean
+      /** A build evaluation for an evaluator agent (Jobs `evaluation`). */
+      readonly evaluation?: boolean
+      /** The run is a fork's, whose evaluations Jobs keeps off agents. */
+      readonly fork?: boolean
     },
     collect: { tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>; attempts: number },
   ) =>
@@ -877,6 +905,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           large: options.evaluates === true && largeEvaluations(run),
           agent: options.remote === true,
           offload: options.offload === true,
+          evaluation: options.evaluation === true,
+          ...(options.fork === undefined ? {} : { fork: options.fork }),
           adoptable: !options.action,
           onWaiting: (reason) => waiting(run.id, row.name, reason),
         })
@@ -974,7 +1004,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     })
 
   /** Why an evaluation job came back without derivations. */
-  const why = (result: JobResult) => (result._tag === "Died" ? result.message.split("\n")[0] : result._tag)
+  const why = (result: JobResult) => (result._tag === "Died" || result._tag === "Lost" ? result.message.split("\n")[0] : result._tag)
 
   /**
    * One job that evaluates builds (Steps.ts `evaluate`) for `row`'s step. It is plan work and takes a plan
@@ -982,7 +1012,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
    * anyway, in the larger pull-request unit where the project asks for it, and no build slot sits idle
    * for the minutes it takes.
    */
-  const evaluateBuilds = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
+  const evaluateHere = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
     execute(run, row, () => job, {
       slots: slots.plans,
       what: "a plan slot",
@@ -995,14 +1025,172 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     }, { tests: [], attempts: 0 })
 
   /**
+   * Whether an evaluator agent (`calder agent --evaluator`) evaluates the run's builds: one is connected
+   * with the controller's compatibility version, and the run is no fork's. Its worker runs no ci.ts, so a
+   * same-repo pull request's evaluation may go there. A fork's stays in the pull-request sandbox.
+   */
+  const evaluator = (run: Rows.RunRow) => run.fork === 0 && agents.usage().some((a) => a.evaluator && a.connected && a.current)
+
+  /** The derivations of `drvs` this host's store lacks. */
+  const invalid = (drvs: ReadonlyArray<string>) =>
+    Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...only(drvs)]).pipe(
+      // A path that isn't a store path never went to nix-store, and isn't valid.
+      Effect.map((r) => (r.exitCode === 0 ? [...drvs.filter((d) => !only([d]).length), ...r.stdout.split("\n").filter(Boolean)] : [...drvs])),
+      Effect.provideService(Exec.SpawnerTag, spawner),
+      Effect.orElseSucceed(() => [...drvs]),
+    )
+
+  /** The controller's Nix settings, which an evaluator agent compares with its own (Steps.ts `contextNote`). */
+  const nixHere = yield* nixSettings.pipe(
+    Effect.provideService(Exec.SpawnerTag, spawner),
+    Effect.orElseSucceed(() => null),
+    Effect.cached,
+  )
+
+  type Evaluated = Extract<JobResult, { _tag: "Evaluated" }>
+  /** What an evaluation recorded, and whom its records count for. */
+  type Kept = ReadonlyArray<{ readonly recorded: Records; readonly trust: Domain.Trust }>
+  const recordsOf = (result: JobResult, trust: Domain.Trust): Kept =>
+    result._tag === "Evaluated" && result.recorded !== undefined ? [{ recorded: result.recorded, trust }] : []
+
+  /** Evaluates builds here, in a plan slot; what it records counts for the run's trust. */
+  const evaluateLocally = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
+    Effect.map(evaluateHere(run, row, job, critical), (r) => {
+      const result = sanitized(r.result)
+      return { ...r, result, records: recordsOf(result, run.trust) }
+    })
+
+  /**
+   * An evaluation's derivations whose paths aren't a derivation's (StorePaths `malformed`) as builds that
+   * didn't evaluate, and its records without them.
+   */
+  const sanitized = (result: JobResult): JobResult => {
+    if (result._tag !== "Evaluated") return result
+    const bad = Object.entries(result.derivations).flatMap(([name, d]) => {
+      const why = d === null ? null : malformed(d)
+      return why === null ? [] : [[name, why] as const]
+    })
+    const recorded = result.recorded === undefined ? undefined : {
+      ...result.recorded,
+      evaluations: result.recorded.evaluations.filter((e) => e.derivation === null || malformed(e.derivation) === null),
+    }
+    if (bad.length === 0 && recorded?.evaluations.length === result.recorded?.evaluations.length) return result
+    return {
+      ...result,
+      derivations: { ...result.derivations, ...Object.fromEntries(bad.map(([name]) => [name, null])) },
+      errors: { ...result.errors, ...Object.fromEntries(bad) },
+      ...(recorded === undefined ? {} : { recorded }),
+    }
+  }
+
+  /** The builds an agent's evaluation got, with the ones the controller evaluated after it. */
+  const merged = (agent: Evaluated, local: Evaluated): Evaluated => {
+    const uses: Record<string, Array<string>> = {}
+    for (const [name, used] of [...Object.entries(agent.uses), ...Object.entries(local.uses)]) {
+      uses[name] = [...new Set([...(uses[name] ?? []), ...used])]
+    }
+    return {
+      _tag: "Evaluated",
+      derivations: { ...agent.derivations, ...local.derivations },
+      tooLarge: local.tooLarge,
+      uses,
+      ...(local.errors === undefined ? {} : { errors: local.errors }),
+    }
+  }
+
+  /**
+   * Evaluates builds (Steps.ts `evaluate`) on an evaluator agent where `evaluator` allows, which pushes
+   * the derivations to this host's store, or here. It waits for the agent's slot rather than a plan
+   * slot, so other runs' plans don't queue behind it. Where the agent's evaluation fails, or its
+   * derivations didn't reach this store, it evaluates here. Builds the agent couldn't evaluate, such as
+   * one that needs another system's build to evaluate or more memory than the agent has, are evaluated
+   * here after it. What the agent recorded counts for trusted runs too, since no pull-request code runs
+   * in its worker (`records`); what this host recorded counts for the run's trust.
+   */
+  const evaluateBuilds = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
+    Effect.gen(function*() {
+      const say = (text: string) => logTo(run, row.name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
+      // A local worker that evaluated across a restart goes on, and `execute` reattaches to it: it ran in
+      // this host's sandbox, so its records count for the run's trust, whatever agent connected since.
+      const adopted = jobs.adopted().some((a) => a.spec.run.id === run.id && a.spec.step === row.name && a.spec.evaluate !== undefined)
+      // The plan's derivations go to the agent's commands as arguments: anything but a store path stays here.
+      const odd = job._tag === "Step" ? job.evaluate?.planned.find((p) => !storeDrv.test(p.drv)) : undefined
+      if (odd !== undefined) yield* say(`${odd.name}'s derivation ${JSON.stringify(odd.drv)} isn't a store path, so the builds are evaluated here`)
+      if (job._tag === "Step" && job.evaluate !== undefined && !adopted && odd === undefined && evaluator(run)) {
+        const controller = yield* nixHere
+        const base = config.url.replace(/\/$/, "")
+        const remote: Job = {
+          ...job,
+          run: {
+            ...job.run,
+            flake: "",
+            mirror: `${base}/git/${run.project}.git`,
+            // The flake's forge inputs come from this host's mirrors through its git endpoint (Remote.ts `readable`).
+            mirrors: Object.fromEntries(Object.entries(mirror.byUrl()).map(([url, path]) => [url, `${base}/git/${basename(path)}`])),
+            pipelineDir: "",
+          },
+          evaluate: { ...job.evaluate, ...(controller === null ? {} : { controller }) },
+        }
+        const r = yield* execute(run, row, () => remote, {
+          slots: slots.agents,
+          what: "an evaluator agent's slot",
+          expected: 0,
+          action: false,
+          shard: null,
+          workspace: false,
+          critical,
+          remote: true,
+          evaluation: true,
+          fork: run.fork === 1,
+        }, { tests: [], attempts: 0 })
+        if (stopped(r)) return { ...r, records: [] as Kept }
+        const odder = r.result._tag === "Evaluated"
+          ? Object.entries(r.result.derivations).find(([, d]) => d !== null && malformed(d) !== null)
+          : undefined
+        if (odder !== undefined) {
+          yield* say(`the evaluator agent reported ${odder[0]}'s derivation as ${JSON.stringify(odder[1])}, which isn't one, so the builds are evaluated here`)
+        } else if (r.result._tag === "Evaluated") {
+          const agent = r.result
+          const drvs = Object.values(agent.derivations).flatMap((d) => (d === null ? [] : [d.drv]))
+          const missing = drvs.length === 0 ? [] : yield* invalid(drvs)
+          if (missing.length === 0) {
+            const kept = recordsOf(agent, "trusted")
+            const { recorded: _, ...result } = agent
+            // What Nix couldn't evaluate there (an error tryEval can't catch, such as an import from another
+            // system's build) or that outgrew the agent's memory; an attribute that threw throws here too.
+            const failed = job.evaluate.builds.filter((b) => b.name in agent.tooLarge || agent.errors?.[b.name] !== undefined)
+            if (failed.length === 0) return { ...r, result: result as JobResult, records: kept }
+            const reason = agent.tooLarge[failed[0]!.name] ?? agent.errors?.[failed[0]!.name] ?? "it threw"
+            yield* say(`the evaluator agent didn't evaluate ${failed.map((b) => b.name).join(", ")} (${reason.split("\n")[0]}), so they are evaluated here`)
+            const got = job.evaluate.builds.flatMap((b) => {
+              const d = agent.derivations[b.name] ?? null
+              return d === null ? [] : [{ name: b.name, drv: d.drv }]
+            })
+            const local = yield* evaluateLocally(run, row, { ...job, evaluate: { builds: failed, planned: [...job.evaluate.planned, ...got] } }, critical)
+            if (stopped(local)) return local
+            if (local.result._tag !== "Evaluated") {
+              yield* say(`evaluating them here failed too: ${why(local.result)}`)
+              return { ...r, result: result as JobResult, records: kept }
+            }
+            return { ...local, result: merged(result as Evaluated, local.result), records: [...kept, ...local.records] }
+          }
+          yield* say(`this host's store lacks ${missing.length} of the derivations the evaluator agent pushed, such as ${missing[0]}, so the builds are evaluated here`)
+        } else {
+          yield* say(`evaluating on the evaluator agent failed: ${why(r.result)}; the builds are evaluated here`)
+        }
+      }
+      return yield* evaluateLocally(run, row, job, critical)
+    })
+
+  /**
    * Gives the evaluated builds' steps their derivations, the edges between builds a plan would have given
    * and the critical path those make, in the steps and the run's plan, and keeps what they recorded.
    */
-  const applyEvaluated = (run: Rows.RunRow, result: Extract<JobResult, { _tag: "Evaluated" }>) =>
+  const applyEvaluated = (run: Rows.RunRow, result: Extract<JobResult, { _tag: "Evaluated" }>, records: Kept) =>
     Effect.gen(function*() {
-      const { derivations, uses, recorded } = result
+      const { derivations, uses } = result
       yield* rootDerivations(run, Object.values(derivations).flatMap((d) => (d === null ? [] : [d.drv])))
-      if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
+      for (const { recorded, trust } of records) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded, trust))
       const changed = yield* db(sql.withTransaction(Effect.gen(function*() {
         const stored = (yield* Rows.loadRun(run.id))?.plan
         if (stored === null || stored === undefined) return []
@@ -1085,7 +1273,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           if (!stopped(r)) yield* say(`evaluating the builds together failed again, so each evaluates its own attribute: ${why(r.result)}`)
           return new Map<string, string>()
         }
-        yield* applyEvaluated(run, r.result)
+        yield* applyEvaluated(run, r.result, r.records)
         return new Map(Object.entries(r.result.tooLarge))
       })
       return yield* evaluate.pipe(
@@ -1245,9 +1433,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           build = evaluated.build ?? build
           if (build.drv === null) {
             // The run's evaluation failed: this build evaluates its attribute alone, still as plan work.
-            const alone = yield* evaluateBuilds(run, now, stepJob({ inputs: {}, evaluate: { builds: [{ name, attr: build.attr }], planned: [] } }), spec.critical === true)
+            // On this host: what failed together, here or on the evaluator agent, may fail alone there too.
+            const alone = yield* evaluateLocally(run, now, stepJob({ inputs: {}, evaluate: { builds: [{ name, attr: build.attr }], planned: [] } }), spec.critical === true)
             if (stopped(alone)) return yield* settle(run, now, { status: "cancelled" })
-            if (alone.result._tag === "Evaluated") yield* applyEvaluated(run, alone.result)
+            if (alone.result._tag === "Evaluated") yield* applyEvaluated(run, alone.result, alone.records)
             evaluated = Rows.spec((yield* db(Rows.loadStep(runId, name))) ?? now)
             build = evaluated.build ?? build
             if (build.drv === null) {
@@ -1686,7 +1875,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
    */
   const buildExpected = (run: Rows.RunRow, name: string, drv: string, estimate: number) =>
     Effect.gen(function*() {
-      const dry = yield* Exec.exec(["nix-store", "--realise", "--dry-run", drv]).pipe(
+      if (!storeDrv.test(drv)) return estimate
+      const dry = yield* Exec.exec(["nix-store", "--realise", "--dry-run", ...only([drv])]).pipe(
         Effect.provideService(Exec.SpawnerTag, spawner),
         Effect.timeout("30 seconds"),
         Effect.orElseSucceed(() => null),
@@ -1711,7 +1901,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   /** Whether a build output exists here or in the binary cache, which means its derivation built before. */
   const available = (out: string) =>
     Effect.gen(function*() {
-      const local = yield* Exec.exec(["nix-store", "--check-validity", out]).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
+      // nix-store asked about no path at all says yes.
+      if (hashOf(out) === undefined) return false
+      const local = yield* Exec.exec(["nix-store", "--check-validity", ...only([out])]).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
       return local.exitCode === 0 || (yield* cache.has(out))
     }).pipe(Effect.timeout("20 seconds"), Effect.orElseSucceed(() => false))
 
