@@ -234,7 +234,7 @@ export const withReasons = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray
 export const leased = (task: PlannedStep["task"] | undefined) => (task?.lease ?? false) !== false
 
 /** Whether a step deploys: holds a lease, has a deploy grant, or is a preview's. */
-const deploys = (step: PlannedStep) =>
+export const deploys = (step: PlannedStep) =>
   leased(step.task) || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
 
 /**

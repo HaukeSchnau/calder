@@ -140,7 +140,13 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   protection requires (`calder/<step>`).
 
 Steps wait for a slot of their kind: plans, builds, tasks and actions each have a number the controller's
-`jobs.slots` sets. A project plans one run at a time, so a long plan leaves the other plan slots to other projects and two
+`jobs.slots` sets. The waiting step expected to finish soonest goes first, minus the time it has waited, in
+a project as across projects: a short step of a newer run passes a long step of an older one, and a long
+step goes once it has waited about as long as it is expected to take. A build that would wait is sized by
+what it would build: `nix-store --realise --dry-run` counts the derivations, and its expected time is the
+step's usual time scaled by that count against the median count of its last ten builds, never above the
+usual time. So a pull request that changes one file and rebuilds six derivations of a host goes before an
+older run's rebuild of the whole host. A project plans one run at a time, so a long plan leaves the other plan slots to other projects and two
 large evaluations never share the jobs' memory. A push to the default branch goes before every plan that
 isn't one, so it waits for at most the plan that runs. A plan that takes longer than 30 minutes is stopped
 and ends its run. A job whose systemd unit timed out starting, such as when a loaded host keeps the unit's
@@ -158,12 +164,17 @@ comment: steps it depends on, a slot and who holds them, a setup, an agent or th
 
 A newer revision supersedes the runs of older ones. A pull request's new revision supersedes the pull
 request's older runs. A push supersedes the older pushes and scheduled runs of its branch, and a check the
-older checks. Manual runs are never superseded. A superseded run's waiting steps never start. Its running
-jobs finish and keep their results, which newer runs reuse or wait for. A running build stops, though,
-and frees its slot, once no run that goes on builds its derivation or depends on one that it is building
-right now: stopping it makes the Nix daemon drop what it builds, which a newer build would start over. A
-newer run of the project that still plans, or has builds left to evaluate, may need either, so the build
-runs on until the newer run knows, which it asks every 30 s.
+older checks. Manual runs are never superseded. A superseded run's waiting steps never start, and its
+running jobs stop at once, plans, evaluations, tasks and setups alike, so their slots go to the runs that
+go on, and their logs say `stopped: superseded by #<n>`. infra-891's builds, superseded, once held both of
+the Macs' build slots for 25 minutes while the rerun of another pull request waited. Deploys finish, as
+actions do: a task with a lease or a preview's task, such as infra's host deploys, would otherwise stop
+mid-switch. A running build stops once no run that goes on builds its derivation and either another
+step waits for its slots or no run of the project still plans or has builds left to evaluate, which it
+asks every 30 s. A run that replaces it supersedes it before planning, so while nobody waits for the
+slot, the build runs on until that run knows what it builds. A build of a derivation another run's build
+has started on waits for it without a slot and takes its output, or builds itself if that one stopped or
+failed.
 
 A plan evaluates the flake once per revision. A commit with the same root tree as one planned before,
 such as a reworded commit, reuses that plan's derivations unless they mention that commit (`self.rev`,
