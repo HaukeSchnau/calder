@@ -11,6 +11,7 @@ import { link, sdkPath } from "../Gen.ts"
 import type { Job as JobSpec, JobResult, Outcome, RunInfo } from "../Protocol.ts"
 import * as Values from "../Values.ts"
 import { fetching, gitEnv, Job, reconnecting } from "./Client.ts"
+import * as BuildFailure from "./BuildFailure.ts"
 import * as NixLog from "./NixLog.ts"
 import * as Repo from "./Repo.ts"
 import * as Resolve from "./Resolve.ts"
@@ -85,8 +86,11 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
     yield* log("calder", `nix build ${attr}`)
     const ref = `${drv}^*`
     let lost = false
+    /** What Nix said in the last attempt, which says whether it failed for an infrastructure reason. */
+    let said: Array<string> = []
     const attempt = Effect.gen(function*() {
       const out: Array<string> = []
+      said = []
       const exitCode = yield* Exec.stream(
         ["nix", "build", "--no-link", "--print-out-paths", "--log-format", "internal-json", "-L", ref],
         { env: env(job.run, step.name) },
@@ -99,16 +103,22 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
             if (line.includes("failed to obtain derivation of") && line.includes(drv)) lost = true
             for (const msg of parse(line, Date.now())) {
               if (msg._tag === "Activity") yield* emit({ _tag: "Activity", activity: msg.activity })
-              else yield* log(msg.error ? "stderr" : "stdout", msg.text)
+              else {
+                said.push(msg.text)
+                yield* log(msg.error ? "stderr" : "stdout", msg.text)
+              }
             }
           }),
       )
-      if (exitCode !== 0) return yield* new Calder.BuildFailed({ attr, ...(drv === null ? {} : { drv }) })
+      if (exitCode !== 0) {
+        const cause = BuildFailure.infrastructure(said)
+        return yield* cause === null ? new Calder.BuildFailed({ attr, drv }) : new Calder.Infrastructure({ attr, drv, cause })
+      }
       return out.find((l) => l.startsWith("/nix/store/")) as Calder.StorePath
     })
-    // The plan's evaluation doesn't root the derivation, so Nix's garbage collector can delete it while
-    // the build waits for a slot. Evaluating the attribute again writes it back. Rooting the plan's
-    // derivations until their builds ended would make this unnecessary.
+    // The controller roots a run's derivations once its plan or evaluation has them (Runs.ts
+    // `rootDerivations`), so this is for a derivation the store lost anyway: one evaluated before the
+    // controller rooted it, or one whose root couldn't be made. Evaluating the attribute again writes it back.
     const again = Effect.catchIf(attempt, () => lost, (failed) =>
       Effect.gen(function*() {
         lost = false

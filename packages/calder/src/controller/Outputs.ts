@@ -1,7 +1,8 @@
 import { Effect } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { SqlClient } from "effect/sql"
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { existsSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs"
 import { basename, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { hashOf } from "./Cache.ts"
@@ -19,6 +20,45 @@ export const root = (stateDir: string, path: string) =>
     if (hashOf(path) === undefined || existsSync(link)) return Effect.void
     mkdirSync(roots(stateDir), { recursive: true })
     return Exec.run(["nix-store", "--add-root", link, "--realise", path]).pipe(Effect.asVoid)
+  })
+
+/** Where each run's derivations have their roots, one directory per run. */
+export const derivationRoots = (stateDir: string) => join(stateDir, "derivations")
+
+/**
+ * Keeps a run's derivations from Nix's garbage collector until the run ends (`unrootDerivations`). A
+ * plan's evaluation leaves them without a root once its `nix eval` exits, and a build can wait hours for a
+ * slot: srv-2's nightly collection deleted infra-909's mbp derivation while it waited. `nix build
+ * --out-link` of a bare `.drv` path registers an indirect root to the derivation itself without building
+ * it. Derivations the run's directory already holds are left out; a batch Nix refuses, such as one with a
+ * derivation that is gone already, is rooted one by one, so the rest still get theirs.
+ */
+export const rootDerivations = (stateDir: string, runId: string, drvs: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    const dir = join(derivationRoots(stateDir), runId)
+    const held = yield* Effect.try(() => {
+      mkdirSync(dir, { recursive: true })
+      return new Set(readdirSync(dir).map((name) => readlinkSync(join(dir, name))))
+    })
+    const missing = [...new Set(drvs)].filter((drv) => drv.endsWith(".drv") && hashOf(drv) !== undefined && !held.has(drv))
+    if (missing.length === 0) return
+    const root = (some: ReadonlyArray<string>) =>
+      Exec.run(["nix", "--extra-experimental-features", "nix-command", "build", "--out-link", join(dir, randomUUID().slice(0, 8)), ...some])
+    yield* root(missing).pipe(
+      Effect.catch((e) => missing.length === 1 ? Effect.fail(e) : Effect.forEach(missing, (drv) => root([drv]), { discard: true })),
+    )
+  })
+
+/** Drops a run's derivation roots. */
+export const unrootDerivations = (stateDir: string, runId: string) =>
+  Effect.try(() => rmSync(join(derivationRoots(stateDir), runId), { recursive: true, force: true }))
+
+/** Drops the derivation roots of every run but `active`, such as runs that ended while the controller was down. */
+export const sweepDerivations = (stateDir: string, active: ReadonlySet<string>) =>
+  Effect.try(() => {
+    const dir = derivationRoots(stateDir)
+    const runs = existsSync(dir) ? readdirSync(dir) : []
+    for (const run of runs) if (!active.has(run)) rmSync(join(dir, run), { recursive: true, force: true })
   })
 
 /** The outputs that steps name, and passed results, which later runs may reuse. */

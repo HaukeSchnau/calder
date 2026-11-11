@@ -12,7 +12,7 @@ import * as Live from "../src/controller/Live.ts"
 import { Mirror } from "../src/controller/Mirror.ts"
 import { type Project, Projects } from "../src/controller/Projects.ts"
 import * as Rows from "../src/controller/Rows.ts"
-import { layerCore, type RunsCore } from "../src/controller/Runs.ts"
+import { InfrastructureRetries, layerCore, type RunsCore } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
@@ -65,6 +65,10 @@ export interface Drive {
   readonly meanwhile?: Effect.Effect<void, never, RunsCore | SqlClient.SqlClient>
   /** The controller's placement key, none by default. */
   readonly placementKey?: string
+  /** The controller's state directory, one that doesn't exist by default. */
+  readonly stateDir?: string
+  /** Collects the `nix` commands Calder runs, which then succeed; without it they aren't found. */
+  readonly nix?: Array<ReadonlyArray<string>>
   /**
    * Makes `app-2` a rerun of `app-1`, whose steps ended like this: `secrets` is the step's secrets
    * digest, `lease` the newest run number whose step held the project's lease.
@@ -100,6 +104,8 @@ export const drive = ({
   requisites,
   rerunOf,
   placementKey,
+  stateDir,
+  nix,
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
@@ -135,7 +141,8 @@ export const drive = ({
     const statuses = new Map<string, string>()
     const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
     const services = Layer.mergeAll(
-      config(placementKey === undefined ? {} : { placementKey }),
+      config({ ...(placementKey === undefined ? {} : { placementKey }), ...(stateDir === undefined ? {} : { stateDir }) }),
+      Layer.succeed(InfrastructureRetries)(["5 millis", "5 millis"]),
       Live.layer,
       Layer.succeed(Agents)(makeAgents(null)),
       Layer.succeed(Cache)(cache),
@@ -144,10 +151,12 @@ export const drive = ({
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
         ChildProcessSpawner.make((command) => {
           const answers = ChildProcess.isStandardCommand(command) && requisites !== undefined && command.args[1] === "--requisites"
-          return ChildProcess.isStandardCommand(command) && command.command === "nix-store"
+          const collected = ChildProcess.isStandardCommand(command) && command.command === "nix" && nix !== undefined
+          if (collected) nix.push(command.args)
+          return ChildProcess.isStandardCommand(command) && (command.command === "nix-store" || collected)
             ? Effect.succeed(ChildProcessSpawner.makeHandle({
               pid: ChildProcessSpawner.ProcessId(1),
-              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answers ? 0 : 1)),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answers || collected ? 0 : 1)),
               isRunning: Effect.succeed(false),
               kill: () => Effect.void,
               stdin: Sink.drain,

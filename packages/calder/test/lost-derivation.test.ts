@@ -50,3 +50,32 @@ echo /nix/store/00000000000000000000000000000000-app
       expect(readFileSync(join(bin, "calls"), "utf8")).toBe("build\neval\nbuild\n")
     }))
 })
+
+describe("a build that couldn't reach its builder", () => {
+  it.live("fails as an infrastructure failure, naming the builder", () =>
+    Effect.gen(function*() {
+      const bin = mkdtempSync(join(tmpdir(), "calder-ssh-"))
+      // Nix as srv-2's had it in infra-887, when the SSH connection to the Mac builder dropped.
+      writeFileSync(
+        join(bin, "nix"),
+        `#!/usr/bin/env bash
+echo "@nix {\\"action\\":\\"msg\\",\\"level\\":0,\\"msg\\":\\"cannot build on 'ssh-ng://hauke@100.83.228.36': error: failed to start SSH connection to '100.83.228.36'\\"}" >&2
+echo "@nix {\\"action\\":\\"msg\\",\\"level\\":0,\\"msg\\":\\"error: Cannot build '${drv}'. Reason: platform mismatch\\"}" >&2
+exit 1
+`,
+        { mode: 0o755 },
+      )
+      const path = process.env.PATH
+      process.env.PATH = `${bin}:${path}`
+      const result = yield* Steps.build(job, app, "packages.x86_64-linux.app").pipe(
+        Effect.provideService(Job, self),
+        Effect.provide(processes),
+        Effect.ensuring(Effect.sync(() => void (process.env.PATH = path))),
+      )
+      expect(result._tag).toBe("Failed")
+      expect(result._tag === "Failed" ? [result.tag, result.message] : null).toEqual([
+        "Infrastructure",
+        "nix build packages.x86_64-linux.app failed: the builder 100.83.228.36 could not be reached: failed to start SSH connection",
+      ])
+    }))
+})

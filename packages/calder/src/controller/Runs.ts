@@ -27,6 +27,15 @@ import * as Tests from "./Tests.ts"
 import { leaseOf } from "./WorkerServer.ts"
 
 const activeStatuses = ["queued", "planning", "running"] as const
+
+/**
+ * How long a build that failed for an infrastructure reason (`Infrastructure`, such as a remote builder
+ * whose SSH connection dropped) waits before each further attempt; it runs once more than this has
+ * entries. Tests shorten them.
+ */
+export const InfrastructureRetries = Context.Reference<ReadonlyArray<Duration.Input>>("calder/controller/InfrastructureRetries", {
+  defaultValue: () => ["30 seconds", "2 minutes"],
+})
 /** How often a superseded run's running build asks whether a run that goes on needs it. */
 const neededEvery = "30 seconds"
 
@@ -101,6 +110,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const cache = yield* Cache
   const comments = yield* Comments
   const estimates = yield* Estimates.Estimates
+  const infrastructureRetries = yield* InfrastructureRetries
   // Steps a deploy or a preview waits for take one slot of each pool beyond its capacity, so they never
   // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
   const lane = 1
@@ -206,6 +216,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
+
+  // Runs that ended while the controller was down keep no roots for their derivations.
+  const active = yield* db(sql<{ id: string }>`select id from runs where ${sql.in("status", activeStatuses)}`)
+  yield* Outputs.sweepDerivations(config.stateDir, new Set(active.map((r) => r.id))).pipe(
+    Effect.catch((e) => Effect.logWarning("could not drop the derivation roots of ended runs", e)),
+  )
 
   /** Records what a step waits for, or that it no longer waits (null). */
   const waiting = (runId: string, name: string, reason: string | null) =>
@@ -414,6 +430,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         return true
       })))
       if (!stored) return null
+      yield* rootDerivations(run, [
+        ...spec.steps.flatMap((s) => (s.build?.drv == null ? [] : [s.build.drv])),
+        ...Object.values(spec.derivations ?? {}).flatMap((d) => (d === null ? [] : [d.drv])),
+      ])
       yield* status(run, "calder", "pending", `${spec.steps.filter((s) => s.kind !== "output").length} steps`)
       yield* Effect.forEach(spec.steps.filter((s) => s.kind !== "output"), (s) => status(run, `calder/${s.name}`, "pending", "waiting"), {
         concurrency: 4,
@@ -900,6 +920,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const applyEvaluated = (run: Rows.RunRow, result: Extract<JobResult, { _tag: "Evaluated" }>) =>
     Effect.gen(function*() {
       const { derivations, uses, recorded } = result
+      yield* rootDerivations(run, Object.values(derivations).flatMap((d) => (d === null ? [] : [d.drv])))
       if (recorded !== undefined) yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded))
       const changed = yield* db(sql.withTransaction(Effect.gen(function*() {
         const stored = (yield* Rows.loadRun(run.id))?.plan
@@ -1160,18 +1181,42 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           }
         }
         const { drv, system } = build
-        const r = yield* execute(run, row, () => stepJob({ derivation: drv }), {
-          slots: buildSlots(system),
-          what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`,
-          expected,
-          action: false,
-          shard: null,
-          workspace: false,
-          ...(drv === null ? {} : { obsolete: obsoleteBuild(run, name, drv) }),
-        }, collect)
+        // A rerun of a run that ended has no roots left; one the plan made holds already.
+        if (drv !== null) yield* rootDerivations(run, [drv])
+        const once = () =>
+          execute(run, row, () => stepJob({ derivation: drv }), {
+            slots: buildSlots(system),
+            what: system === null || system === config.system ? "a build slot" : `a build slot for ${system}`,
+            expected,
+            action: false,
+            shard: null,
+            workspace: false,
+            ...(drv === null ? {} : { obsolete: obsoleteBuild(run, name, drv) }),
+          }, collect)
+        let r = yield* once()
+        let attempt = 1
+        // An infrastructure failure, such as a builder that couldn't be reached, gets more attempts, each
+        // after a wait without a slot. The step fails only once the last attempt failed the same way.
+        for (const wait of infrastructureRetries) {
+          if (stopped(r) || r.result._tag !== "Failed" || r.result.tag !== "Infrastructure") break
+          attempt++
+          const cause = (r.result.error as { readonly cause?: string } | null)?.cause ?? r.result.message
+          const text = `${cause}; an infrastructure failure, so it runs again in ${Duration.format(Duration.fromInputUnsafe(wait))} ` +
+            `(attempt ${attempt} of ${infrastructureRetries.length + 1})`
+          yield* logTo(run, name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
+          yield* db(sql`update steps set status = 'queued', waiting = ${`another attempt after an infrastructure failure: ${cause}`},
+            attempts = max(attempts, ${attempt}) where run_id = ${runId} and name = ${name}`)
+          yield* publishStep(runId, name)
+          const ended = yield* Effect.raceFirst(
+            Effect.sleep(wait).pipe(Effect.as(false)),
+            Effect.raceFirst(Deferred.await(cancelSignal(runId)), Deferred.await(supersedeSignal(runId))).pipe(Effect.as(true)),
+          )
+          if (ended) return yield* settle(run, row, { status: "cancelled" })
+          r = yield* once()
+        }
         if (stopped(r)) return yield* settle(run, row, { status: "cancelled" })
         if (r.result._tag === "Passed" && typeof r.result.value === "string") yield* share(run, name, r.result.value)
-        return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: collect.attempts }))
+        return yield* settle(run, row, fromResult(r.result, r.usage, { attempts: Math.max(collect.attempts, attempt) }))
       }
 
       if (spec.setup !== null) {
@@ -1535,6 +1580,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       yield* logTo(run, name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
     })
 
+  /** Roots the run's derivations until it ends (Outputs `rootDerivations`); a build whose derivation is gone evaluates it again. */
+  const rootDerivations = (run: Rows.RunRow, drvs: ReadonlyArray<string>) =>
+    Outputs.rootDerivations(config.stateDir, run.id, drvs).pipe(
+      Effect.provideService(Exec.SpawnerTag, spawner),
+      Effect.catch((e) => Effect.logWarning(`could not keep ${run.id}'s derivations from the garbage collector`, e)),
+    )
+
   /** Whether a build output exists here or in the binary cache, which means its derivation built before. */
   const available = (out: string) =>
     Effect.gen(function*() {
@@ -1615,6 +1667,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       stepped.drop(runId)
       wanted.drop(runId)
       evaluations.delete(runId)
+      yield* Outputs.unrootDerivations(config.stateDir, runId).pipe(Effect.catch((e) => Effect.logWarning(`could not drop ${runId}'s derivation roots`, e)))
       yield* publishRun(runId)
       yield* comments.touch(runId)
     }).pipe(Effect.catchCause((cause) => Effect.logError("finish failed", cause)))
