@@ -72,10 +72,13 @@ describe("starting a worker's unit", () => {
 
   it.effect("says the host lacks the pool's unit, such as forks' on a host from before they had their own", () =>
     Effect.gen(function*() {
-      const missing = { exitCode: 5, stderr: "Failed to start calder-job-fork@0a1b.service: Unit calder-job-fork@0a1b.service not found.\n" }
-      const { starts, run } = starting([{ answer: missing, unit: "" }])
-      expect(yield* run).toBe("the host defines no calder-job-fork@ unit to run the job in")
+      // Without the unit the host also lacks its polkit grant, and systemd asks polkit first.
+      const denied = { exitCode: 1, stderr: "Failed to start calder-job-fork@0a1b.service: Interactive authentication required.\n" }
+      const { starts, run } = starting([{ answer: denied, unit: "" }])
+      expect(yield* run).toBe("the host has no calder-job-fork@ unit the controller may start: Interactive authentication required")
       expect(starts()).toBe(1)
+      const refused = { exitCode: 1, stderr: "Failed to start calder-job-fork-large@0a1b.service: Access denied\n" }
+      expect(yield* starting([{ answer: refused, unit: "" }]).run).toBe("the host has no calder-job-fork-large@ unit the controller may start: Access denied")
     }))
 
   it.effect("stops waiting when the job is cancelled, also where the job itself may not be interrupted", () =>

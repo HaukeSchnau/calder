@@ -1506,9 +1506,10 @@ export const resolve = (
         }
       }), { concurrency: 4 })
 
+    const appTaken = !(reused !== undefined && earlier !== undefined) && heldApp !== undefined && !audit
     const named = reused !== undefined && earlier !== undefined
       ? { app: earlier.app, recorded: undefined }
-      : heldApp !== undefined && !audit
+      : appTaken
       ? { app: heldApp.app, recorded: undefined }
       : yield* appOf(run, undefined, recording, audit)
     const recorded = merge(result.recorded, named.recorded)
@@ -1528,6 +1529,10 @@ export const resolve = (
       ...wrong.map((w) => ({ attr: w.attr, recorded: w.recorded, evaluated: w.evaluated, missed: missedBy(records!, again, w.attr), ...(w.id === undefined ? {} : { record: w.id }) })),
       ...(appWrong ? [{ attr: appAttr, recorded: null, evaluated: null, missed: [], ...(heldApp.id === undefined ? {} : { record: heldApp.id }) }] : []),
     ]
+    const fromRecordIds = audit ? [] : [
+      ...[...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id] as const])),
+      ...(appTaken && heldApp.id !== undefined ? [[appAttr, heldApp.id] as const] : []),
+    ]
     const spec: PlanSpec = {
       version: 1,
       app: named.app,
@@ -1541,10 +1546,9 @@ export const resolve = (
       ...(audit ? { mismatches } : {}),
       ...(order.length === 0 ? {} : { deferred: order }),
       ...(reused === undefined ? {} : { reused: earlier!.revision }),
-      // Which record gave each attribute this plan took, so a wrong record's deploys can be listed.
-      ...(taken.size === 0 || audit ? {} : {
-        fromRecords: Object.fromEntries([...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id]]))),
-      }),
+      // Which record gave each attribute this plan took, the app's name included, so a wrong record's
+      // deploys can be listed and the controller knows whose records the plan trusted.
+      ...(fromRecordIds.length === 0 ? {} : { fromRecords: Object.fromEntries(fromRecordIds) }),
     }
     return spec
   })

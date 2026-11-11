@@ -270,7 +270,7 @@ const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) => run.trust === "trus
  * whose plans took nothing a trusted run wouldn't take (`trustedInputs`): with the same tree, a pull request
  * ran the default branch's ci.ts, in a pool no fork's job writes to. A push of another branch runs that
  * branch's ci.ts in the trusted worker, so its plan could be forged. `trusted` says whether a trusted run
- * would take the plan.
+ * would take the plan. Of those the run takes, the newest a trusted run would take comes first.
  */
 export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
   Effect.gen(function*() {
@@ -279,14 +279,15 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
     const rows = yield* sql<{ sha: string; plan: string; event: string; trust: Domain.Trust; fork: number }>`select sha, plan, event, trust, fork
       from runs where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha} and plan is not null
       order by created_at desc limit 20`
-    for (const row of rows.filter((r) => writesRecords(r, defaultBranch))) {
+    const candidates = rows.filter((r) => writesRecords(r, defaultBranch)).flatMap((row) => {
       const spec = JSON.parse(row.plan) as PlanSpec
       const trusted = row.trust === "trusted" || ((JSON.parse(row.event) as Domain.Event)._tag === "PullRequest" && spec.trustedInputs === true)
-      if (spec.derivations !== undefined && (trusted || !trustedOnly(run))) {
-        return { revision: row.sha, derivations: spec.derivations, app: spec.app, trusted }
-      }
-    }
-    return null
+      return spec.derivations !== undefined && (trusted || !trustedOnly(run))
+        ? [{ revision: row.sha, derivations: spec.derivations, app: spec.app, trusted }]
+        : []
+    })
+    // A trusted plan first, so a pull request's plan that reuses it stays one a trusted run takes.
+    return candidates.find((c) => c.trusted) ?? candidates[0] ?? null
   }).pipe(Effect.orDie)
 
 /**

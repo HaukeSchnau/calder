@@ -42,7 +42,7 @@ const run = (
   })
 
 describe("an earlier plan of the same tree", () => {
-  it.effect("comes from the newest run of that tree the run trusts: the default branch's, or for a same-repo pull request its kind too", () =>
+  it.effect("comes from the newest run of that tree the run trusts: the default branch's, or for a same-repo pull request its kind too, trusted first", () =>
     Effect.gen(function*() {
       yield* run("app-1", "pushed", "tree-1", { at: 1 })
       yield* run("app-2", "pr-head", "tree-1", { trust: "pr", at: 2 })
@@ -55,8 +55,11 @@ describe("an earlier plan of the same tree", () => {
       // A pull request's ci.ts runs in the worker that planned, so its plan reaches neither the merge nor a fork.
       expect(yield* next("trusted", 0)).toEqual({ revision: "pushed", derivations: derivations("pushed"), app: "app", trusted: true })
       expect(yield* next("pr", 1)).toEqual({ revision: "pushed", derivations: derivations("pushed"), app: "app", trusted: true })
-      expect(yield* next("pr", 0)).toEqual({ revision: "pr-head", derivations: derivations("pr-head"), app: "app", trusted: false })
+      expect(yield* next("pr", 0)).toEqual({ revision: "pushed", derivations: derivations("pushed"), app: "app", trusted: true })
       expect(yield* next("trusted", 0, "tree-3")).toBeNull()
+      // Without a trusted plan, a same-repo pull request takes another's.
+      yield* run("app-7", "pr-other-tree", "tree-4", { trust: "pr", at: 7 })
+      expect(yield* next("pr", 0, "tree-4")).toMatchObject({ revision: "pr-other-tree", trusted: false })
     }).pipe(Effect.provide(sqlite)))
 
   it.effect("for a merge is its same-repo pull request's, once that plan took only what a trusted run takes", () =>
@@ -74,8 +77,8 @@ describe("an earlier plan of the same tree", () => {
       yield* run("app-4", "check", "tree-1", { trust: "pr", at: 4, event: { _tag: "Check", ref: "calder/check/x", base: "main" }, trustedInputs: true })
       yield* run("app-5", "pr-amended", "tree-1", { trust: "pr", at: 5, event: pullRequest(false) })
       expect(yield* taken).toEqual({ revision: "pr-head", derivations: derivations("pr-head"), app: "app", trusted: true })
-      // A same-repo pull request still takes the newest of them.
-      expect(yield* Rows.earlierPlan({ ...merge, sha: "next", trust: "pr" }, "main")).toMatchObject({ revision: "pr-amended", trusted: false })
+      // A same-repo pull request takes the newest a trusted run would take, so its own plan stays one.
+      expect(yield* Rows.earlierPlan({ ...merge, sha: "next", trust: "pr" }, "main")).toMatchObject({ revision: "pr-head", trusted: true })
     }).pipe(Effect.provide(sqlite)))
 })
 

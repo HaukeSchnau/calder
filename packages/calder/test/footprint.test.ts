@@ -394,4 +394,37 @@ describe("what a record may be trusted with", () => {
       expect(evaluated).toEqual([attr])
       expect(audited.mismatches).toMatchObject([{ attr, recorded: recordedDrv, evaluated: freshDrv, record: 7 }])
     }))
+
+  it.effect("says which record gave the app's name, so the controller knows whose record named what a merge deploys", () =>
+    Effect.gen(function*() {
+      const attr = "packages.x86_64-linux.app"
+      const drv = { drv: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app.drv", out: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app", system: "x86_64-linux" }
+      const { spawner, evaluated } = answering({
+        "nix --version": { stdout: "nix (Nix) 2.34.9" },
+        "nix config": { stdout: "true" },
+        "nix-store --check-validity": {},
+        "nix-store --query": {},
+      }, () => drv)
+      const tree = { "flake.nix": "{ outputs = _: { }; }" }
+      const context = yield* evaluationContext("x86_64-linux").pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      const entries = [["flake.nix", "read"]] as const
+      const digest = Footprint.digest(files({ "flake.nix": createHash("sha256").update(tree["flake.nix"]).digest("hex") }), entries, 1, context!)
+      // The build's record is a trusted run's, the app's another pull request's: only the controller can tell them apart.
+      const records = {
+        footprints: [{ id: "1", revision: "a", entries: [...entries] }],
+        evaluations: [
+          { id: 7, attr, footprint: "1", count: 1, digest, derivation: drv },
+          { id: 8, attr: "lib.project.project", footprint: "1", count: 1, digest, derivation: null, app: "forged" },
+        ],
+      }
+      const run = { id: "app-1", project: "app", number: 1, revision: "b", branch: "main", trust: "trusted", event: Event.push("main"),
+        flake: "git+file:///mirror", mirror: "/mirror", mirrors: {}, pipelineDir: "", system: "x86_64-linux" } satisfies RunInfo
+      const project = Calder.project({ rules: [On.push("main", [Nix.build(Flake.attr(attr), { name: "app" })])] })
+      const planned = yield* Effect.gen(function*() {
+        return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo(tree), undefined, { records })
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      expect(evaluated).toEqual([])
+      expect(planned.app).toBe("forged")
+      expect(planned.fromRecords).toEqual({ [attr]: 7, "lib.project.project": 8 })
+    }))
 })

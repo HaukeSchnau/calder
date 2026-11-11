@@ -35,6 +35,8 @@ describe("a pull request's plan", () => {
         )
       expect(yield* plan({ a: 1 })).toBe(true)
       expect(yield* plan({ a: 1, b: 2 })).toBeUndefined()
+      // Nor when only the record that named the app is a pull request's.
+      expect(yield* plan({ a: 1, "lib.project.project": 2 })).toBeUndefined()
       expect(yield* plan({ a: 1 }, pullRequest(true))).toBeUndefined()
     }))
 })

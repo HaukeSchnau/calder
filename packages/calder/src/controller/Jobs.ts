@@ -156,9 +156,10 @@ export const startUnit = <E, R>(
       }
       const unitResult = (yield* result) || "unknown"
       const line = stderr.trim().split("\n")[0]!.replace(/\.$/, "") || `systemctl exited with ${exitCode}`
-      // A host that doesn't define a pool's template, such as one from before forks had their own, runs none of its jobs.
-      const missing = /^Failed to start \S+: Unit ([\w-]+)@\S* not found$/.exec(line)
-      if (missing !== null) return `the host defines no ${missing[1]}@ unit to run the job in`
+      // A host from before a pool existed, such as forks', runs none of its jobs. systemd asks polkit before it
+      // looks the unit up, so such a host denies the start rather than say the unit is missing.
+      const missing = /^Failed to start (calder-job-[\w-]+)@\S*: (Access denied|Interactive authentication required)$/.exec(line)
+      if (missing !== null) return `the host has no ${missing[1]}@ unit the controller may start: ${missing[2]}`
       const said = /^Job for (\S+) failed because (.+)$/.exec(line)
       const cause = said?.[2] ?? line
       const where = said === null ? `result ${unitResult}` : `result ${unitResult}, ${said[1]}`
