@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Calder, Cmd, Event, Flake, type Step, Task, cmd } from "@calder-ci/core"
+import { Calder, Event, Flake, Task, cmd } from "@calder-ci/core"
 import { Effect, Schema } from "effect"
 import * as Pnpm from "../src/Pnpm.ts"
 import * as Project from "../src/Project.ts"
@@ -37,15 +37,14 @@ describe("Project.standard", () => {
       const plan = yield* Calder.plan(project, Event.push("main"))
       expect(plan.get("placement")?.after).toEqual(["artifact", "projectRelease", "qa"])
       expect(plan.get("promote")?.after).toEqual(["artifact", "projectRelease", "qa", "placement"])
+
+      // A same-repo pull request plans the placement without deploying it; a fork's doesn't plan.
       const pr = yield* Calder.plan(project, Event.pullRequest({ number: 1 }))
       expect(pr.get("placement")).toBeUndefined()
-      expect(pr.get("placement-plan")).toBeUndefined()
-
-      // With planDeploys, a same-repo pull request plans the placement; a fork's doesn't.
-      const planning = Project.standard({ flake, checks: [qa], placement, planDeploys: true })
-      const same = yield* Calder.plan(planning, Event.pullRequest({ number: 1 }))
-      expect(same.get("placement-plan")?.preview).toBe(true)
-      expect((yield* Calder.plan(planning, Event.pullRequest({ number: 1, fork: true }))).get("placement-plan")).toBeUndefined()
+      expect(pr.get("placement-plan")?.preview).toBe(true)
+      expect((yield* Calder.plan(project, Event.pullRequest({ number: 1, fork: true }))).get("placement-plan")).toBeUndefined()
+      const optedOut = Project.standard({ flake, checks: [qa], placement, planDeploys: false })
+      expect((yield* Calder.plan(optedOut, Event.pullRequest({ number: 1 }))).get("placement-plan")).toBeUndefined()
     }))
 
   it.effect("a nightly run checks everything again and deploys nothing", () =>
@@ -81,7 +80,7 @@ describe("Project.alchemy", () => {
   it.effect("a same-repo pull request deploys its own stage and links it; a fork only checks", () =>
     Effect.gen(function*() {
       const same = yield* Calder.plan(project, Event.pullRequest({ number: 7 }))
-      expect(same.steps.map((s) => s.name).sort()).toEqual(["artifact", "install", "preview", "preview-url"])
+      expect(same.steps.map((s) => s.name).sort()).toEqual(["artifact", "install", "plan-prod", "preview", "preview-url"])
       // It waits for every check in their usual turn: none gates it into the latency lane.
       expect(same.get("preview")).toMatchObject({ preview: true, after: ["artifact"], gates: [] })
       const fork = yield* Calder.plan(project, Event.pullRequest({ number: 7, fork: true }))
@@ -95,23 +94,19 @@ describe("Project.alchemy", () => {
       expect(plan.steps.map((s) => s.name).sort()).toEqual(["destroy-preview", "install"])
     }))
 
-  it.effect("production reads no outputs that no step reads, while a preview reads them for its link", () =>
+  it.effect("production's deploy and a preview have the stack's outputs as their value", () =>
     Effect.gen(function*() {
       const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) }
       const site = Project.alchemy({ flake: Flake.make({ checks: ["artifact"], devShells: ["ci"] }), stack: { ...stack, outputs }, previews: { url: (_pr, o) => o.url } })
-      const command = (def: Step.Any["def"]) => (def._tag === "Task" && typeof def.run !== "function" ? Cmd.show(def.run) : "")
       const prod = (yield* Calder.plan(site, Event.push("main"))).get("deploy-prod")!.step.def
-      expect(prod._tag === "Task" && prod.value).toBeUndefined()
-      expect(command(prod)).not.toContain("state read")
       const preview = (yield* Calder.plan(site, Event.pullRequest({ number: 7 }))).get("preview")!.step.def
-      expect(preview._tag === "Task" && preview.value?.path).toBe(".calder-alchemy-outputs.json")
-      expect(command(preview)).toContain("state read 'Site/'")
+      expect([prod, preview].map((def) => def._tag === "Task" && def.value?.path)).toEqual([".calder-alchemy-outputs.json", ".calder-alchemy-outputs.json"])
     }))
 
-  it.effect("without previews, pull requests only check", () =>
+  it.effect("without previews, pull requests check and plan production", () =>
     Effect.gen(function*() {
       const plan = yield* Calder.plan(Project.alchemy({ flake: site, stack }), Event.pullRequest({ number: 8 }))
-      expect(plan.steps.map((s) => s.name)).toEqual(["artifact"])
+      expect(plan.steps.map((s) => s.name)).toEqual(["artifact", "install", "plan-prod"])
       const closed = yield* Calder.plan(Project.alchemy({ flake: site, stack }), Event.pullRequestClosed({ number: 8 }))
       expect(closed.steps).toEqual([])
     }))

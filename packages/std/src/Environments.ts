@@ -56,8 +56,7 @@ export interface Options<A> {
   readonly nightly?: string
   /**
    * Same-repo pull requests also plan each stage that pushes to the default branch deploy (`plan-<stage>`,
-   * `alchemy plan`), so one whose deploy can't work fails before it merges. Off by default while Alchemy's
-   * state store fails every plan (since 2026-11-06); default it to on once infra's and t3code's plans pass.
+   * `alchemy plan`), so one whose deploy can't work fails before it merges. On unless set to false.
    */
   readonly planDeploys?: boolean
   /** More rules of the project, such as a mobile pipeline's. */
@@ -125,16 +124,14 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
   })
   const environments = Object.entries(options.environments).map(([name, environment]) => {
     const stage = Alchemy.stageName(name)
-    // Reading the outputs takes a second CLI process after the deploy: 16 s of casa-crema's 63. So an
-    // environment reads them only for steps that do, its readiness and `then`. Previews always need them.
-    const { outputs: _, ...unread } = options.stack
-    const reads = options.readiness !== undefined || environment.then !== undefined
-    const { deployed, ready, last } = deploy(reads ? options : { ...options, stack: unread }, stage, environment)
+    const { deployed, ready, last } = deploy(options, stage, environment)
     return ruleOf(environment.on, [deployed, ...(ready === undefined ? [] : [ready]), ...(environment.then?.(last) ?? [])])
   })
-  const plans = options.planDeploys !== true ? [] : Object.entries(options.environments).flatMap(([name, environment]) =>
-    "push" in environment.on && environment.on.push === branch ? [Alchemy.plan(options.stack, { stage: Alchemy.stageName(name), ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }) })] : []
-  )
+  const plans = options.planDeploys === false ? [] : Object.entries(options.environments).flatMap(([name, environment]) =>
+    "push" in environment.on && On.matchesBranch(environment.on.push, branch)
+      ? [Alchemy.plan(options.stack, { stage: Alchemy.stageName(name), ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }) })]
+      : []
+  ).filter((plan) => !namesTarget(options.rules, plan.name))
   return Calder.project({
     ...(options.shared === undefined ? {} : { shared: options.shared }),
     rules: [
@@ -148,3 +145,7 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
     ],
   })
 }
+
+/** Whether a project's own rules already list a step with this name, which a generated one would collide with. */
+const namesTarget = (rules: ReadonlyArray<On.Rule<"pr" | "trusted", any>> | undefined, name: string) =>
+  (rules ?? []).some((rule) => rule.targets.some((target) => target.name === name))
