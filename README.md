@@ -490,24 +490,23 @@ with their closure to `<store>`, the controller's store (`nix copy --derivation 
 the controller lacks: 8 s for infra's builds when it lacks nothing, 322 s for their whole closure of 51,000
 paths. Pulling them from the controller took longer than 12 minutes, since it asks for each path in turn. The
 evaluation counts once every derivation is valid in the controller's store. When the push failed, the agent's
-job died, a derivation is missing, no evaluator agent is connected, or the connected ones ran no job for two
-minutes without taking this one (one that offers no slots, say), the controller evaluates the builds itself and
-says so in the step's log. Behind a busy evaluator it waits, since its turn there comes sooner than the
-controller's own evaluation would end. Builds the agent couldn't evaluate, such as one that
+job died, a derivation is missing, no evaluator agent is connected (one that lost the controller gets 30 s to
+come back, since agents drop their connection for a few seconds now and then), or the connected ones ran no
+job for two minutes without taking this one (one that offers no slots, say), the controller evaluates the
+builds itself and says so in the step's log. Behind a busy evaluator it waits, since its turn there comes
+sooner than the controller's own evaluation would end. Builds the agent couldn't evaluate, such as one that
 imports another system's build or outgrew the agent's memory, the controller evaluates after it, and a build
 that evaluates alone after a failed evaluation of them together always does so on the controller. The agent's
-log says which Nix it evaluates with, and warns when its version or import-from-derivation setting differs from
-the controller's, since the controller's plans then can't take its records. Its pull requests' and trusted
-runs' evaluations keep separate caches.
-Attribute paths reach Nix as data, never as part of the expression, and a plan whose steps name a path
-outside the grammar (names of letters, digits and `_'+-`, or those and `.` in double quotes) fails. An
-attribute whose reported `drvPath` or `outPath` isn't a path in the store didn't evaluate, wherever it was
-evaluated, and the controller drops an agent's evaluation that reports one, since those paths go to Nix
-commands as arguments. Since no
-ci.ts runs in its worker, and a record holds only where the files its evaluation read are the same, what an
-evaluator agent records for a same-repo pull request
-counts as trusted: the default branch's run after the merge, of the same tree, takes every build from those
-records instead of evaluating again.
+log says which Nix it evaluates with, and warns when its version or import-from-derivation setting differs
+from the controller's, since the controller's plans then can't take its records. Its pull requests' and
+trusted runs' evaluations keep separate caches. Attribute paths reach Nix as data, never as part of the
+expression, and a plan whose steps name a path outside the grammar (names of letters, digits and `_'+-`, or
+those and `.` in double quotes) fails. An attribute whose reported `drvPath` or `outPath` isn't a path in the
+store didn't evaluate, wherever it was evaluated, and the controller drops an agent's evaluation that reports
+one, since those paths go to Nix commands as arguments. Since no ci.ts runs in its worker, and a record holds
+only where the files its evaluation read are the same, what an evaluator agent records for a same-repo pull
+request counts as trusted: the default branch's run after the merge, of the same tree, takes every build from
+those records instead of evaluating again.
 
 An agent gets jobs only while it has the controller's compatibility version (`compatibility` in
 `packages/calder/src/Protocol.ts`), so deploying the controller stalls agents only when that version

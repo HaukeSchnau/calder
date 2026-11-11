@@ -78,6 +78,9 @@ export interface AgentUsage {
 /** How long an evaluator's job counts as progress for the evaluations waiting behind it: 3x infra's 5 minutes. */
 export const evaluationCap = "15 minutes"
 
+/** How long evaluations keep waiting for an evaluator agent that lost the controller to come back. */
+export const evaluatorGrace = "30 seconds"
+
 /** How long an agent may stay away before the jobs it ran count as lost. */
 const reconnectGrace = "5 minutes"
 
@@ -142,6 +145,8 @@ export const make = (secret: string | null, version: number = compatibility, sle
     secret !== null && auth.token === secret ? Effect.void : Effect.fail(new Unauthorized({ reason: "wrong agent token" }))
 
   const evaluatorConnected = () => [...connections.values()].some((c) => c.evaluator && c.compatibility === version)
+  /** When the last evaluator agent disconnected, while none has connected since. */
+  let evaluatorLeft: number | null = null
   /**
    * Whether a connected evaluator agent runs a job, so the evaluations waiting for it make progress: one
    * that the agent took less than `evaluationCap` ago and that isn't being stopped. A hung evaluation
@@ -259,8 +264,11 @@ export const make = (secret: string | null, version: number = compatibility, sle
         waiters.push(waiter)
         yield* assign
         const waits = waiters.includes(waiter)
-        // An evaluation no evaluator agent can take runs on the controller instead of waiting.
-        if (waits && (options?.wait === false || (waiter.evaluation && !evaluatorConnected()))) {
+        // An evaluation no evaluator agent can take runs on the controller instead of waiting, unless the
+        // last one left only moments ago: agents lose the controller for a few seconds about 20 times an hour.
+        const now = yield* Clock.currentTimeMillis
+        const gone = !evaluatorConnected() && (evaluatorLeft === null || now - evaluatorLeft >= Duration.toMillis(evaluatorGrace))
+        if (waits && (options?.wait === false || (waiter.evaluation && gone))) {
           waiters.splice(waiters.indexOf(waiter), 1)
           return -2
         }
@@ -328,6 +336,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
               orders,
             }
             connections.set(auth.name, connection)
+            if (evaluatorConnected()) evaluatorLeft = null
             seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility, evaluator })
             const unknown = agent.running.filter((job) => !placed.has(job))
             for (const job of unknown) placed.set(job, { agent: auth.name, exited: Deferred.makeUnsafe<number>(), at: 0, stopping: true })
@@ -360,8 +369,19 @@ export const make = (secret: string | null, version: number = compatibility, sle
                 if (connections.get(auth.name) !== connection) return
                 connections.delete(auth.name)
                 yield* Effect.logInfo(`agent ${auth.name} disconnected`)
-                if (!evaluatorConnected()) {
-                  for (const w of waiters.filter((w) => w.evaluation)) yield* Deferred.succeed(w.abandoned, undefined)
+                // Evaluations give up on the agents once none came back within the grace, not at the first
+                // dropped connection: dev-hauke's reconnects within seconds, about 20 times an hour.
+                if (evaluator && connection.compatibility === version && !evaluatorConnected()) {
+                  const left = yield* Clock.currentTimeMillis
+                  evaluatorLeft = left
+                  yield* Effect.sleep(evaluatorGrace).pipe(
+                    Effect.andThen(Effect.gen(function*() {
+                      // An evaluator came back since, or left again and has a grace of its own.
+                      if (evaluatorLeft !== left || evaluatorConnected()) return
+                      for (const w of waiters.filter((w) => w.evaluation)) yield* Deferred.succeed(w.abandoned, undefined)
+                    })),
+                    Effect.forkDetach,
+                  )
                 }
                 yield* Effect.sleep(reconnectGrace).pipe(
                   Effect.andThen(Effect.gen(function*() {
