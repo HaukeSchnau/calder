@@ -427,14 +427,25 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const tree = yield* mirror.pipelineTree(run.project, run.sha)
       if (event._tag === "Push" && event.branch !== projects.get(run.project)?.defaultBranch && tree !== null) {
         const known = yield* db(sql<{ branches: string }>`select branches from pipeline_pushes where project = ${run.project} and tree = ${tree}`)
+        const stopped = Effect.raceFirst(Deferred.await(cancelSignal(runId)), Deferred.await(supersedeSignal(runId))).pipe(Effect.as("stopped" as const))
         const pushes = known[0] === undefined
-          ? yield* jobs.run({ _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: [], rules: true }, { pool: poolOf(run), onEvent: log }).pipe(
-            Effect.timeoutOption(planTimeout),
-            Effect.map((done) => (Option.isSome(done) && done.value.result._tag === "Planned" ? done.value.result.plan.pushes : undefined)),
-            Effect.tap((pushes) => (pushes === undefined ? Effect.void : rememberPushes(run, tree, pushes))),
+          ? yield* Effect.raceFirst(
+            jobs.run({ _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: [], rules: true }, { pool: poolOf(run), onEvent: log }).pipe(
+              Effect.timeoutOption(planTimeout),
+              Effect.map((done) => (Option.isSome(done) && done.value.result._tag === "Planned" ? done.value.result.plan.pushes : undefined)),
+              Effect.tap((pushes) => (pushes === undefined ? Effect.void : rememberPushes(run, tree, pushes))),
+            ),
+            stopped,
           )
           : JSON.parse(known[0].branches) as ReadonlyArray<string>
-        if (pushes !== undefined && !pushes.some((pattern) => On.matchesBranch(pattern, event.branch))) return yield* matchesNoRule(run, event)
+        if (pushes === "stopped") {
+          live.finish(runId, "plan")
+          return null
+        }
+        if (pushes !== undefined && !pushes.some((pattern) => On.matchesBranch(pattern, event.branch))) {
+          live.finish(runId, "plan")
+          return yield* matchesNoRule(run, event)
+        }
       }
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
