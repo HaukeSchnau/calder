@@ -189,6 +189,11 @@ export const PlanJob = Schema.TaggedStruct("Plan", {
   records: Schema.optional(Records),
   /** Evaluates every attribute afresh and reports the records that a fresh evaluation contradicts. */
   audit: Schema.optional(Schema.Boolean),
+  /**
+   * Only reads ci.ts: answers with a plan without steps that says which branches the push rules name,
+   * evaluating nothing, so the controller runs it without a plan slot.
+   */
+  rules: Schema.optional(Schema.Boolean),
 })
 
 export const StepJob = Schema.TaggedStruct("Step", {

@@ -396,6 +396,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       return null
     })
 
+  /**
+   * Keeps which branches the push rules of `.calder/` tree `tree` name. A pull request's plan job runs the
+   * pull request's code, so only a trusted run's answer is kept.
+   */
+  const rememberPushes = (run: Rows.RunRow, tree: string, pushes: ReadonlyArray<string>) =>
+    run.trust !== "trusted" ? Effect.void : db(sql`insert into pipeline_pushes (project, tree, branches)
+      values (${run.project}, ${tree}, ${JSON.stringify(pushes)}) on conflict do update set branches = excluded.branches`)
+
   const plan = (runId: string) =>
     Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
@@ -413,13 +421,33 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (pipelineDir.dir === null) return yield* unplanned(run, pipelineDir.error ?? "could not read the revision")
 
       const event = JSON.parse(run.event) as Domain.Event
-      // A plan of the same pipeline already said which branches its push rules name. A push to another
-      // branch, such as one with a pull request open, which has its own run, gets no plan job.
+      const log = logTo(run, "plan", run.span_id, null)
+      // A push to another branch than the default, such as one with a pull request open, which has its own
+      // run, mostly matches no rule. Which branches the push rules name comes from an earlier plan of the
+      // same pipeline, or else from a job that only reads ci.ts and needs no plan slot, so such a push
+      // never waits behind another run's evaluation of the flake.
       const tree = yield* mirror.pipelineTree(run.project, run.sha)
       if (event._tag === "Push" && event.branch !== projects.get(run.project)?.defaultBranch && tree !== null) {
         const known = yield* db(sql<{ branches: string }>`select branches from pipeline_pushes where project = ${run.project} and tree = ${tree}`)
-        const pushes = known[0] === undefined ? undefined : JSON.parse(known[0].branches) as ReadonlyArray<string>
-        if (pushes !== undefined && !pushes.some((pattern) => On.matchesBranch(pattern, event.branch))) return yield* matchesNoRule(run, event)
+        const stopped = Effect.raceFirst(Deferred.await(cancelSignal(runId)), Deferred.await(supersedeSignal(runId))).pipe(Effect.as("stopped" as const))
+        const pushes = known[0] === undefined
+          ? yield* Effect.raceFirst(
+            jobs.run({ _tag: "Plan", run: runInfo(run, pipelineDir.dir), requiredChecks: [], rules: true }, { pool: poolOf(run), onEvent: log }).pipe(
+              Effect.timeoutOption(planTimeout),
+              Effect.map((done) => (Option.isSome(done) && done.value.result._tag === "Planned" ? done.value.result.plan.pushes : undefined)),
+              Effect.tap((pushes) => (pushes === undefined ? Effect.void : rememberPushes(run, tree, pushes))),
+            ),
+            stopped,
+          )
+          : JSON.parse(known[0].branches) as ReadonlyArray<string>
+        if (pushes === "stopped") {
+          live.finish(runId, "plan")
+          return null
+        }
+        if (pushes !== undefined && !pushes.some((pattern) => On.matchesBranch(pattern, event.branch))) {
+          live.finish(runId, "plan")
+          return yield* matchesNoRule(run, event)
+        }
       }
 
       const required = run.trust === "trusted" && run.branch !== null ? yield* gitea.requiredChecks(repoOf(run.project), run.branch) : []
@@ -434,7 +462,6 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         label: `${run.id}'s plan`,
         owner: run.id,
       }
-      const log = logTo(run, "plan", run.span_id, null)
       const waits = slots.plans.waitsFor(claim)
       if (waits !== null) yield* log({ _tag: "Log", stream: "calder", text: `waiting for a plan slot (${waits})`, timestamp: Date.now() })
       const planned = yield* Effect.raceFirst(
@@ -486,11 +513,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         yield* db(sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`)
       }
       const spec = { ...planned_, steps: Rows.criticalPath(result.plan.steps, run.fork === 1) }
-      // A pull request's plan job runs the pull request's code, so only a trusted plan's answer is kept.
-      if (tree !== null && run.trust === "trusted" && spec.pushes !== undefined) {
-        yield* db(sql`insert into pipeline_pushes (project, tree, branches) values (${run.project}, ${tree}, ${JSON.stringify(spec.pushes)})
-          on conflict do update set branches = excluded.branches`)
-      }
+      if (tree !== null && spec.pushes !== undefined) yield* rememberPushes(run, tree, spec.pushes)
       // The default branch's plan says which schedules exist, even when its push runs nothing.
       if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
         yield* db(sql.withTransaction(Effect.gen(function*() {

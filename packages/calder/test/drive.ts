@@ -71,6 +71,8 @@ export interface Drive {
   readonly placementKey?: string
   /** The controller's state directory, one that doesn't exist by default. */
   readonly stateDir?: string
+  /** How many plan slots the controller has, one by default. */
+  readonly planSlots?: number
   /** Collects the `nix` commands Calder runs, which then succeed; without it they aren't found. */
   readonly nix?: Array<ReadonlyArray<string>>
   /**
@@ -121,6 +123,7 @@ export const drive = ({
   rerunOf,
   placementKey,
   stateDir,
+  planSlots,
   nix,
   statusDelay = () => undefined,
   evaluator = false,
@@ -179,7 +182,11 @@ export const drive = ({
     const history: Array<string> = []
     const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
     const services = Layer.mergeAll(
-      config({ ...(placementKey === undefined ? {} : { placementKey }), ...(stateDir === undefined ? {} : { stateDir }) }),
+      config({
+        ...(placementKey === undefined ? {} : { placementKey }),
+        ...(stateDir === undefined ? {} : { stateDir }),
+        ...(planSlots === undefined ? {} : { jobs: { mode: "process", slots: { plans: planSlots, builds: 1, tasks: 1, actions: 1 } } }),
+      }),
       Layer.succeed(InfrastructureRetries)(["5 millis", "5 millis"]),
       Live.layer,
       Layer.succeed(Agents)({
@@ -271,7 +278,7 @@ export const drive = ({
         run: (job, options) =>
           Effect.gen(function*() {
             if (job._tag === "Plan") {
-              jobs.push("plan")
+              jobs.push(job.rules === true ? "rules" : "plan")
               return { result: { _tag: "Planned", plan }, usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "job-plan" }
             }
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
