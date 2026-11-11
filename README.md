@@ -220,7 +220,9 @@ the plan with Nix's reason, since task keys include it. The plan's log says how 
 and the most one held. An evaluator that runs for a minute says what it does, and again every 3 minutes:
 the attribute it is at, Nix's CPU time and memory, what its main thread waits for (such as the Nix daemon),
 the last store path it opened, Nix's current activity (such as a copy to the store), and the memory and io
-pressure of the host and of the Nix daemon's cgroup, with the memory.high that limits the daemon. A host
+pressure of the host, of the job's own cgroup and of the Nix daemon's. For the job and the daemon it names
+the memory.high or memory.max up the cgroup's tree that is closest to being reached, such as that of
+`calder-jobs.slice`, which every job shares, and the swap used under it. A host
 without `/proc`, PSI or systemd, such as a Mac, leaves those parts out. A pull request's job gets less memory than a trusted run's. A project whose flake
 needs more to evaluate, such as infra, whose srv-2 contract check alone holds 3 GiB, sets
 `largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@` (a fork's in
@@ -510,7 +512,10 @@ changed. The UI lists each agent's version and Calder build and marks an agent o
 incompatible. A reconnecting agent reports the workers it still runs, and the controller stops those it
 doesn't know, such as jobs from before its restart, before it gives that agent new jobs. An agent that
 restarts stops the workers its earlier run left behind before it takes jobs, from the pids it keeps in
-`<workspaces>/.workers`.
+`<workspaces>/.workers`. A controller that stops leaves its own workers running too: the next one adopts
+the steps' workers and stops the others, such as plans. Stopping them itself would wait on `systemctl stop`,
+which needs polkit, and the host switch that restarts the controller stops polkit at the same moment, so
+srv-2's controller hung until systemd killed it two minutes later.
 
 The controller wakes agents whose hosts sleep while idle. Its config's `agents.wake` lists them, each
 with its `name`, `platform` and the `command` that wakes its host, such as

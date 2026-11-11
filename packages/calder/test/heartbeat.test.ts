@@ -32,7 +32,7 @@ describe("a heartbeat", () => {
       unit: "nix-daemon.service",
       current: 3.9 * GiB,
       memory: { some, full },
-      limit: { name: "nix-builds.slice", current: 4 * GiB, high: 4 * GiB, over },
+      limit: { name: "nix-builds.slice", current: 4 * GiB, kind: "memory.high" as const, bytes: 4 * GiB, over },
     })
     const before: Heartbeat.Sample = {
       at: start + minutes(21),
@@ -59,6 +59,24 @@ describe("a heartbeat", () => {
         "In the last 3 min 0 s, Nix used 0.4 s of CPU, 12 s in all; the host's memory pressure was 61% some and 45% full; " +
         "its io pressure was 3% some and 0% full; the Nix daemon's memory pressure was 60% some and 58% full; " +
         "nix-builds.slice went over its memory.high 1839221 times.",
+    )
+
+    // infra-998's plan on 2026-11-11: the job's own slice, which other jobs share, throttled it.
+    const job = (over: number, some: number, full: number): Heartbeat.Cgroup => ({
+      unit: "calder-job-trusted@4f2a.service",
+      current: 1.8 * GiB,
+      memory: { some, full },
+      limit: { name: "calder-jobs.slice", current: 7.9 * GiB, kind: "memory.high", bytes: 8 * GiB, over, swap: 4 * GiB },
+    })
+    const lines = Heartbeat.describe(
+      { started: start, loaded: true, attr: { index: 18, total: 25, name: "checks.aarch64-linux.srv-2" }, budget: 5.5 * GiB },
+      { at: start + minutes(4), job: job(10, 0, 0) },
+      { at: start + minutes(7), job: job(52, 0.21 * minutes(3) * 1000, 0.19 * minutes(3) * 1000) },
+    )
+    expect(lines).toBe(
+      "Still evaluating after 7 min 0 s, at attribute 18 of 25, checks.aarch64-linux.srv-2. " +
+        "The job's calder-job-trusted@4f2a.service is in calder-jobs.slice, which holds 7.9 of its 8.0 GiB memory.high and 4.0 GiB of swap. " +
+        "In the last 3 min 0 s, the job's memory pressure was 21% some and 19% full; calder-jobs.slice went over its memory.high 42 times.",
     )
 
     // A macOS agent has no /proc, PSI or systemd: what's left is what the evaluator knows.

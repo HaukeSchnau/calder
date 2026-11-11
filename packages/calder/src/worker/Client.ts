@@ -1,5 +1,5 @@
 import { BunSocket } from "@effect/platform-bun"
-import { Cause, Clock, Context, Data, Duration, Effect, Exit, Fiber, Layer, Predicate, Schedule, type Scope } from "effect"
+import { Cause, Clock, Context, Data, Duration, Effect, Exit, Fiber, Layer, Predicate, Schedule, type Scope, Semaphore } from "effect"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { type JobEvent, WorkerRpcs } from "../Protocol.ts"
 import * as Repo from "./Repo.ts"
@@ -123,12 +123,16 @@ export const make = (id: string, token: string, remote: Remote | null): Effect.E
   Effect.gen(function*() {
     const client = yield* makeClient
     let buffer: Array<JobEvent> = []
-    const flush = Effect.suspend(() => {
+    let batch = 0
+    // One batch at a time, in order, so the controller can tell a batch sent again by its number.
+    const sending = yield* Semaphore.make(1)
+    const flush = sending.withPermits(1)(Effect.suspend(() => {
       if (buffer.length === 0) return Effect.void
       const events = buffer
       buffer = []
-      return reconnecting(client.events({ job: id, token, events })).pipe(Effect.orDie)
-    })
+      batch += 1
+      return reconnecting(client.events({ job: id, token, events, batch })).pipe(Effect.orDie)
+    }))
     yield* flush.pipe(Effect.delay("250 millis"), Effect.forever, Effect.forkScoped)
     yield* Effect.addFinalizer(() => flush)
     const emit = (event: JobEvent) =>
