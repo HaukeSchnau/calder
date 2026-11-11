@@ -42,7 +42,27 @@ export class Mirror extends Context.Service<Mirror, {
   readonly flake: (project: string, sha: string) => string
   /** Every fetched project's mirror by the URLs a flake input may name its repository with. */
   readonly byUrl: () => Record<string, string>
+  /**
+   * A merge train: `base` with each pull request's head merged in, in order. A head that conflicts with
+   * what is merged before it is left out. `sha` is null when no head merged.
+   */
+  readonly train: (project: string, base: string, heads: ReadonlyArray<TrainHead>) => Effect.Effect<{
+    readonly sha: string | null
+    readonly conflicts: ReadonlyArray<number>
+  }, Exec.ExecError>
+  /** The base a train (`train`) started from and the heads it merged. */
+  readonly trainOf: (project: string, sha: string) => Effect.Effect<{ readonly base: string; readonly heads: ReadonlyArray<TrainHead> }, Exec.ExecError>
+  /** Pushes `sha` to `ref` on the forge with the bot's token. Without `force`, a branch only moves forward. */
+  readonly push: (project: string, sha: string, ref: string, options?: { readonly force?: boolean }) => Effect.Effect<void, Exec.ExecError>
 }>()("calder/controller/Mirror") {}
+
+/** A pull request's head in a merge train. */
+export interface TrainHead {
+  readonly pr: number
+  readonly sha: string
+}
+
+const trainMerge = /^Merge #(\d+) \(([0-9a-f]{40})\) in a train on ([0-9a-f]{40})$/
 
 /** The URLs a flake input names a repository of the forge with: `git+ssh` and `git+https`. */
 export const urls = (forge: string, repo: string) => {
@@ -104,6 +124,16 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
     GIT_CONFIG_KEY_0: "http.extraHeader",
     GIT_CONFIG_VALUE_0: `Authorization: token ${config.giteaToken}`,
     GIT_TERMINAL_PROMPT: "0",
+  }
+  // A train's merges read no global or system git config, whose merge drivers or merge.renormalize
+  // (which aborts merge-tree in a bare repository) would make them depend on the host.
+  const identity = {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Calder",
+    GIT_AUTHOR_EMAIL: "calder@localhost",
+    GIT_COMMITTER_NAME: "Calder",
+    GIT_COMMITTER_EMAIL: "calder@localhost",
   }
   const git = (project: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
     Exec.run(["git", "--git-dir", path(project), ...args], { env }).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
@@ -227,6 +257,47 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
         link(join(dir, "node_modules"), config.sdk)
         return dir
       }),
+    train: (project, base, heads) =>
+      lock(project).withPermits(1)(Effect.gen(function*() {
+        let tip = base
+        const conflicts: Array<number> = []
+        for (const head of heads) {
+          const merged = yield* Exec.exec(["git", "--git-dir", path(project), "merge-tree", "--write-tree", tip, head.sha], { env: identity }).pipe(
+            Effect.provideService(Exec.SpawnerTag, spawner),
+          )
+          // merge-tree exits 1 on a conflict; anything else is an error.
+          if (merged.exitCode === 1) {
+            conflicts.push(head.pr)
+            continue
+          }
+          if (merged.exitCode !== 0) {
+            return yield* new Exec.CommandFailed({ command: `git merge-tree ${tip} ${head.sha}`, exitCode: merged.exitCode, stderr: merged.stderr })
+          }
+          const tree = merged.stdout.split("\n")[0]!
+          const subject = `Merge #${head.pr} (${head.sha}) in a train on ${base}`
+          tip = (yield* git(project, ["commit-tree", tree, "-p", tip, "-p", head.sha, "-m", subject], identity)).trim()
+        }
+        return { sha: tip === base ? null : tip, conflicts }
+      })),
+    trainOf: (project, sha) =>
+      Effect.gen(function*() {
+        // A train's merges each name the base it started from, which may itself be a landed train's merge.
+        const log = yield* git(project, ["log", "--first-parent", "--format=%H %P%x09%s", sha])
+        const heads: Array<TrainHead> = []
+        let base: string | null = null
+        for (const line of log.split("\n")) {
+          const [commits = "", subject = ""] = line.split("\t")
+          const [commit = "", , second] = commits.split(" ")
+          if (commit === base) break
+          const m = trainMerge.exec(subject)
+          if (m === null || second !== m[2] || (base !== null && m[3] !== base)) break
+          base = m[3]!
+          heads.push({ pr: Number(m[1]), sha: m[2]! })
+        }
+        return { base: base ?? sha, heads: heads.reverse() }
+      }),
+    push: (project, sha, ref, options) =>
+      git(project, ["push", "-q", ...(options?.force === true ? ["--force"] : []), "origin", `${sha}:${ref}`], auth).pipe(Effect.asVoid),
     flake: (project, sha) => `git+file://${path(project)}?rev=${sha}`,
     byUrl: () =>
       Object.fromEntries(

@@ -328,6 +328,7 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
     check: ({ repo, ref, sha, background }) =>
       Effect.gen(function*() {
         if (!ref.startsWith("calder/check/")) return yield* new Refused({ reason: "checks are pushed under calder/check/" })
+        if (ref.startsWith("calder/check/train-")) return yield* new Refused({ reason: "calder/check/train- is the merge queue's" })
         const p = yield* enrolled.byRepo(repo, { sha })
         if (p === undefined) return yield* new NotFound({ what: `a project for ${repo}` })
         const event: Domain.Event = { _tag: "Check", ref, base: p.defaultBranch, ...(background === true ? { background } : {}) }

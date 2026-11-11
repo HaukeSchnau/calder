@@ -115,6 +115,56 @@ describe("Mirror", () => {
       expect(git("--git-dir", join(state, "mirrors", "app.git"), "rev-parse", "refs/calder/check/x")).toBe(checked)
     }).pipe(Effect.provide(sqlite)))
 
+  it.effect("builds a merge train that leaves out a conflicting head, pushes it, and reads back what it merged", () =>
+    Effect.gen(function*() {
+      const state = mkdtempSync(join(tmpdir(), "calder-state-"))
+      const forge = mkdtempSync(join(tmpdir(), "calder-forge-"))
+      const work = join(forge, "work")
+      const remote = join(forge, "schnau", "app.git")
+      const git = (...args: ReadonlyArray<string>) => execFileSync("git", args, { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim()
+      git("init", "-q", "--bare", remote)
+      git("init", "-q", "-b", "main", work)
+      writeFileSync(join(work, "a"), "base\n")
+      git("-C", work, "add", "a")
+      git("-C", work, "commit", "-q", "-m", "base")
+      const base = git("-C", work, "rev-parse", "HEAD")
+      const branch = (name: string, file: string, content: string) => {
+        git("-C", work, "checkout", "-q", "-b", name, base)
+        writeFileSync(join(work, file), content)
+        git("-C", work, "add", file)
+        git("-C", work, "commit", "-q", "-m", name)
+        return git("-C", work, "rev-parse", "HEAD")
+      }
+      const one = branch("one", "b", "one\n")
+      const clash = branch("clash", "b", "clash\n")
+      const two = branch("two", "c", "two\n")
+      const three = branch("three", "d", "three\n")
+      git("-C", work, "push", "-q", remote, `${base}:refs/heads/main`, "one", "clash", "two", "three")
+      const projects = Layer.succeed(Projects)({
+        get: (name) => ({ name, repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {} }),
+        all: () => [],
+        byRepo: () => Effect.die("unused"),
+      })
+      const processes = BunChildProcessSpawner.layer.pipe(Layer.provide([BunFileSystem.layer, BunPath.layer]))
+      const { built, of, next } = yield* Effect.gen(function*() {
+        const mirror = yield* Mirror.Mirror
+        yield* mirror.fetch("app")
+        const built = yield* mirror.train("app", base, [{ pr: 1, sha: one }, { pr: 2, sha: clash }, { pr: 3, sha: two }])
+        yield* mirror.push("app", built.sha!, "refs/heads/main")
+        // The next train starts from the landed one, whose tip is a train's merge too.
+        const second = yield* mirror.train("app", built.sha!, [{ pr: 4, sha: three }])
+        return { built, of: yield* mirror.trainOf("app", built.sha!), next: yield* mirror.trainOf("app", second.sha!) }
+      }).pipe(
+        Effect.provide(Mirror.layer.pipe(Layer.provide([config({ stateDir: state, gitea: { url: `file://${forge}`, tokenFile: "", webhookSecretFile: "" } }), projects, processes]))),
+      )
+      expect(built.conflicts).toEqual([2])
+      expect(of).toEqual({ base, heads: [{ pr: 1, sha: one }, { pr: 3, sha: two }] })
+      expect(next).toEqual({ base: built.sha, heads: [{ pr: 4, sha: three }] })
+      expect(git("--git-dir", remote, "rev-parse", "refs/heads/main")).toBe(built.sha)
+      expect(git("--git-dir", remote, "show", "main:b")).toBe("one")
+      expect(git("--git-dir", remote, "show", "main:c")).toBe("two")
+    }).pipe(Effect.provide(sqlite)))
+
   it.effect("removes revisions no run used for a day, unless a run of them is still going", () =>
     Effect.gen(function*() {
       const state = mkdtempSync(join(tmpdir(), "calder-state-"))
