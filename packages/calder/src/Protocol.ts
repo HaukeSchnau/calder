@@ -121,6 +121,8 @@ export const PlanSpec = Schema.Struct({
   trust: Domain.Trust,
   reuse: Reuse,
   schedules: Schema.Array(Schema.String),
+  /** The branch patterns of the pipeline's push rules. Older plans lack it. */
+  pushes: Schema.optional(Schema.Array(Schema.String)),
   steps: Schema.Array(PlannedStep),
   /**
    * What the plan evaluated, by attribute: the builds' and dev shells' derivations, which a later plan

@@ -35,6 +35,8 @@ export class Mirror extends Context.Service<Mirror, {
   readonly between: (project: string, from: string, to: string) => Effect.Effect<ReadonlyArray<{ readonly sha: string; readonly at: number }>, Exec.ExecError>
   /** Whether `revision` is `commit` or descends from it. False also when the mirror lacks either. */
   readonly contains: (project: string, revision: string, commit: string) => Effect.Effect<boolean>
+  /** The tree id of a revision's `.calder/`, null without one. */
+  readonly pipelineTree: (project: string, sha: string) => Effect.Effect<string | null>
   /** Extracts `.calder/` of a revision and links its `node_modules` to Calder's SDK. */
   readonly pipelineDir: (project: string, sha: string) => Effect.Effect<string, Exec.ExecError | NoPipeline>
   readonly flake: (project: string, sha: string) => string
@@ -195,6 +197,8 @@ export const layer = Layer.effect(Mirror)(Effect.gen(function*() {
     path,
     fetch,
     hasPipeline,
+    pipelineTree: (project, sha) =>
+      git(project, ["rev-parse", "--verify", "--quiet", `${sha}:.calder`]).pipe(Effect.map((out) => out.trim()), Effect.orElseSucceed(() => null)),
     commit,
     between: (project, from, to) =>
       git(project, ["log", "--first-parent", "--format=%H %ct", `${from}..${to}`]).pipe(

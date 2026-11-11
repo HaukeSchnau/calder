@@ -276,6 +276,11 @@ export const migrations = {
     // What the holder deploys (Jobs.ts `Lease`), as JSON, so a restarted controller gives it back to the adopted worker's job.
     yield* sql`alter table lease_holders add column lease text`
   }),
+  "0022_pipeline_pushes": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // The branches the push rules of each `.calder/` tree that was planned name, as a JSON array.
+    yield* sql`create table pipeline_pushes (project text not null, tree text not null, branches text not null, primary key (project, tree))`
+  }),
 }
 
 /**

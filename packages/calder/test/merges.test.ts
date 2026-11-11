@@ -43,6 +43,7 @@ const setup = Effect.gen(function*() {
       path: () => "/mirror",
       fetch: () => Effect.void,
       hasPipeline: unused,
+      pipelineTree: unused,
       commit: unused,
       between: unused,
       contains: unused,

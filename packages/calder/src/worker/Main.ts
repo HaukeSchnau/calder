@@ -19,7 +19,7 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
     const planned = yield* Calder.plan(project, spec.run.event, { requiredChecks: spec.requiredChecks })
     // Nothing to run (a push to a branch no rule names): skip evaluating the flake.
     if (planned.steps.length === 0) {
-      const empty: PlanSpec = { version: 1, app: null, trust: planned.trust, reuse: planned.reuse, schedules: planned.schedules, steps: [] }
+      const empty: PlanSpec = { version: 1, app: null, trust: planned.trust, reuse: planned.reuse, schedules: planned.schedules, pushes: planned.pushes, steps: [] }
       return { _tag: "Planned", plan: empty } satisfies JobResult
     }
     const repo = yield* Repo.make(spec.run.mirror, spec.run.revision)

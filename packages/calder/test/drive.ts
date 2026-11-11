@@ -53,6 +53,10 @@ export interface Drive {
   readonly event?: Domain.Event
   /** What the run's plan says besides its steps. */
   readonly plan?: Partial<PlanSpec>
+  /** `app-2` is queued without its plan, which a plan job of `.calder/` tree `tree` returns. */
+  readonly unplanned?: boolean
+  /** Fills the database before the workflow starts. */
+  readonly seed?: Effect.Effect<void, unknown, SqlClient.SqlClient>
   /** The project's configuration besides its name and repository. */
   readonly project?: Partial<Project>
   /** What `nix-store --query --requisites` answers; any other query of the store finds nothing. */
@@ -89,6 +93,8 @@ export const drive = ({
   settled = () => true,
   event = { _tag: "Push", branch: "main" },
   plan: extra = {},
+  unplanned = false,
+  seed = Effect.void,
   project: configured = {},
   meanwhile = Effect.void,
   requisites,
@@ -100,6 +106,7 @@ export const drive = ({
     const trust = event._tag === "PullRequest" ? "pr" : "trusted"
     const pr = event._tag === "PullRequest" ? event.number : null
     const plan: PlanSpec = { version: 1, app: null, trust, reuse: "all", schedules: [], steps: [...planned], ...extra }
+    yield* seed
     yield* insertRun("app-1", { at: 1 })
     for (const name of passed) {
       yield* sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
@@ -113,9 +120,9 @@ export const drive = ({
     }
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, plan, rerun_of)
-      values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, 'running', 2, 2, 't', 's',
-        ${JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"})`
-    for (const [position, s] of plan.steps.entries()) {
+      values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
+        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"})`
+    for (const [position, s] of unplanned ? [] : plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`
     }
@@ -157,8 +164,9 @@ export const drive = ({
       Layer.succeed(Projects)({ get: () => project, all: () => [project], byRepo: unused }),
       Layer.succeed(Mirror)({
         path: () => "/mirror",
-        fetch: unused,
+        fetch: () => Effect.void,
         hasPipeline: unused,
+        pipelineTree: () => Effect.succeed("tree"),
         commit: unused,
         between: unused,
         contains: unused,
@@ -184,6 +192,10 @@ export const drive = ({
       Layer.succeed(Jobs)({
         run: (job, options) =>
           Effect.gen(function*() {
+            if (job._tag === "Plan") {
+              jobs.push("plan")
+              return { result: { _tag: "Planned", plan }, usage: { cpuSeconds: null, memoryPeakBytes: null }, id: "job-plan" }
+            }
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
             if (job._tag === "Step") pools.set(job.step, options.pool)
             if (options.large === true) large.push(jobs.at(-1) ?? "plan")
@@ -208,7 +220,10 @@ export const drive = ({
     const ended = Effect.gen(function*() {
       const run = yield* Rows.loadRun("app-2")
       return run?.status ?? "missing"
-    }).pipe(Effect.repeat({ until: (status) => status !== "running", schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
+    }).pipe(
+      Effect.repeat({ until: (status) => !["queued", "planning", "running"].includes(status), schedule: Schedule.spaced("10 millis") }),
+      Effect.timeout("5 seconds"),
+    )
     const status = yield* Effect.gen(function*() {
       const beside = yield* Effect.forkChild(meanwhile)
       const status = yield* ended

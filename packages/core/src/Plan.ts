@@ -48,6 +48,8 @@ export interface Plan {
   readonly universe: ReadonlyMap<string, Step.Any>
   /** The project's schedules, so the controller knows when to plan the default branch. */
   readonly schedules: ReadonlyArray<string>
+  /** The branches the project's push rules name, so the controller can drop a push to another branch without planning it. */
+  readonly pushes: ReadonlyArray<string>
   readonly get: (step: Step.Any | string) => PlannedStep | undefined
   readonly runs: (step: Step.Any) => boolean
   readonly needs: (step: Step.Any) => ReadonlyArray<Step.Any>
@@ -246,6 +248,7 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       steps,
       universe: all,
       schedules: unique(project.rules.flatMap((r) => (r.trigger._tag === "Schedule" ? [r.trigger.cron] : []))),
+      pushes: unique(project.rules.flatMap((r) => (r.trigger._tag === "Push" ? [r.trigger.branch] : []))),
       get,
       runs: (step) => planned.has(step.name),
       needs: (step) => (get(step)?.needs ?? []).map((n) => all.get(n)!),

@@ -1464,6 +1464,7 @@ export const resolve = (
       trust: plan.trust,
       reuse: plan.reuse,
       schedules: plan.schedules,
+      pushes: plan.pushes,
       steps,
       derivations: Object.fromEntries(evaluated),
       ...(recorded === undefined ? {} : { recorded }),
