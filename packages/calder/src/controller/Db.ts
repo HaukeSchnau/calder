@@ -291,6 +291,15 @@ export const migrations = {
     // How many derivations a build's dry run said it would build, which sizes later builds of the step (Runs.ts `sized`).
     yield* sql`alter table steps add column to_build integer`
   }),
+  "0025_overview_and_sweep_indexes": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // bun:sqlite blocks the event loop while a statement runs. Without these, the overview's and `calder runs`'
+    // newest runs and the outputs sweep each read a quarter of srv-2's 944 MB database from disk, which froze
+    // the controller for up to 45 s, long enough for every agent to drop its connection.
+    yield* sql`create index runs_created on runs (created_at desc)`
+    yield* sql`create index steps_outputs on steps (outputs) where outputs is not null`
+    yield* sql`create index results_passed_outputs on results (outputs) where status = 'passed'`
+  }),
 }
 
 /**
