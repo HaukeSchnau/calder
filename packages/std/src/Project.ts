@@ -26,8 +26,7 @@ export interface StandardOptions {
   readonly placement?: Alchemy.Stack<unknown>
   /**
    * Same-repo pull requests also plan the placement (`placement-plan`, `alchemy plan`), so one whose deploy
-   * can't work fails before it merges. Off by default while Alchemy's state store fails every plan
-   * (since 2026-11-06); default it to on once infra's and t3code's plans pass.
+   * can't work fails before it merges. On unless set to false.
    */
   readonly planDeploys?: boolean
   /** Steps that run on the default branch after the release is live, such as app store builds. */
@@ -67,7 +66,7 @@ export const standard = (options: StandardOptions): Calder.Project => {
     ...shared,
     rules: [
       On.pullRequest([...checks, release]),
-      ...(options.placement === undefined || options.planDeploys !== true
+      ...(options.placement === undefined || options.planDeploys === false
         ? []
         : [On.preview([Alchemy.plan(options.placement, { stage: "prod", name: "placement-plan" })])]),
       On.push(branch, [promote, ...(options.afterDeploy?.(promote) ?? [])]),

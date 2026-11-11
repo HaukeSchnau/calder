@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Calder, Event, Flake, Nix, type Step, Task, cmd } from "@calder-ci/core"
+import { Calder, Event, Flake, Nix, On, type Step, Task, cmd } from "@calder-ci/core"
 import { Effect, Schema } from "effect"
+import * as Alchemy from "../src/Alchemy.ts"
 import * as Environments from "../src/Environments.ts"
 import * as Pnpm from "../src/Pnpm.ts"
 
@@ -39,7 +40,7 @@ describe("Environments.project", () => {
     Effect.gen(function*() {
       const plan = yield* Calder.plan(project, Event.pullRequest({ number: 5 }))
       expect(plan.steps.map((s) => s.name).sort()).toEqual(
-        ["bundle", "deploy-install", "e2e-web", "lint", "preview", "preview-url", "serverSmoke"].sort(),
+        ["bundle", "deploy-install", "e2e-web", "lint", "plan-beta", "preview", "preview-url", "serverSmoke"].sort(),
       )
       expect(plan.get("preview")).toMatchObject({ needs: ["deploy-install", "bundle"], after: [], preview: true })
       expect(plan.get("preview-url")).toMatchObject({ needs: ["preview"], preview: true })
@@ -61,19 +62,29 @@ describe("Environments.project", () => {
       expect(push.get("deploy-beta")).toMatchObject({ after: ["lint", "serverSmoke"], gates: [] })
     }))
 
-  it.effect("with planDeploys, a same-repo pull request plans the stages pushes to the default branch deploy", () =>
+  it.effect("a same-repo pull request plans the stages pushes to the default branch deploy", () =>
     Effect.gen(function*() {
       const planning = Environments.project({
         stack,
         checks,
         artifacts: { CALDER_BUNDLE: bundle },
         environments: { beta: { on: { push: "main" } }, prod: { on: { manual: {} } } },
-        planDeploys: true,
       })
       const plan = yield* Calder.plan(planning, Event.pullRequest({ number: 5 }))
       expect(plan.steps.map((s) => s.name).filter((name) => name.startsWith("plan-"))).toEqual(["plan-beta"])
       // The stack may read what it deploys while it plans.
       expect(plan.get("plan-beta")?.needs).toEqual(["deploy-install", "bundle"])
+    }))
+
+  it.effect("pull requests plan a stage whose push pattern matches the default branch, unless a rule already plans it", () =>
+    Effect.gen(function*() {
+      const environments = { beta: { on: { push: "m*" } } } as const
+      const matched = Environments.project({ stack, checks, artifacts: { CALDER_BUNDLE: bundle }, environments })
+      expect((yield* Calder.plan(matched, Event.pullRequest({ number: 5 }))).get("plan-beta")).toBeDefined()
+      // A project that plans the stage itself keeps its own step instead of a duplicate.
+      const own = Alchemy.plan(stack, { stage: "beta" })
+      const custom = Environments.project({ stack, checks, artifacts: { CALDER_BUNDLE: bundle }, environments, rules: [On.preview([own])] })
+      expect((yield* Calder.plan(custom, Event.pullRequest({ number: 5 }))).get("plan-beta")?.step).toBe(own)
     }))
 
   it.effect("a fork's pull request runs the checks and builds the bundle, but has no preview", () =>
