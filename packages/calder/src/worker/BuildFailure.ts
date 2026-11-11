@@ -9,7 +9,7 @@
 export const infrastructure = (lines: ReadonlyArray<string>): string | null => {
   // A derivation that ran and failed, also when an unreachable builder shows up beside it.
   const built =
-    /builder for '[^']*' failed|Reason: builder failed|hash mismatch in fixed-output derivation|timed out after|cycle detected in build of|no output reference for/
+    /builder for '[^']*' failed|Reason: builder failed|hash mismatch in fixed-output derivation|timed out after \d+ seconds|cycle detected in build of|no output reference for/
   if (lines.some((line) => built.test(line))) return null
   const causes: ReadonlyArray<(line: string) => string | null> = [
     (line) => {

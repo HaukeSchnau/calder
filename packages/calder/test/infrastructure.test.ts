@@ -39,6 +39,13 @@ describe("an infrastructure failure of a build", () => {
       .toBe("the builder tower could not be reached: Connection refused")
   })
 
+  it("is a dropped SSH connection beside a binary cache that timed out", () => {
+    expect(infrastructure([
+      "warning: error: unable to download 'https://cache.nixos.org/x.narinfo': Timeout was reached (28) Operation timed out after 30001 milliseconds with 0 bytes received",
+      "cannot build on 'ssh-ng://haukeschnau@100.83.228.36': error: failed to start SSH connection to '100.83.228.36'",
+    ])).toBe("the builder 100.83.228.36 could not be reached: failed to start SSH connection")
+  })
+
   it("isn't a derivation that failed to build, even with an unreachable builder beside it", () => {
     expect(infrastructure([
       "cannot build on 'ssh-ng://haukeschnau@100.83.228.36': error: failed to start SSH connection to '100.83.228.36'",
@@ -115,6 +122,21 @@ describe("a build that failed for an infrastructure reason", () => {
       })
       expect(status).toBe("failed")
       expect(jobs).toEqual(["m1"])
+      expect(steps.get("m1")?.attempts).toBe(3)
+    }))
+
+  it.live("goes on from the attempt it ran when the controller restarted", () =>
+    Effect.gen(function*() {
+      const { status, jobs, steps } = yield* drive({
+        steps: [m1],
+        result: () => unreachable,
+        resume: Effect.gen(function*() {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`update steps set status = 'running', attempts = 2 where run_id = 'app-2' and name = 'm1'`
+        }),
+      })
+      expect(status).toBe("failed")
+      expect(jobs).toEqual(["m1", "m1"])
       expect(steps.get("m1")?.attempts).toBe(3)
     }))
 
