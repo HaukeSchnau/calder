@@ -188,8 +188,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
   const jobs = new Map<string, ActiveJob>()
-  // Workers outlive a stopping controller; the next one adopts them. Effect interrupts every fiber on
-  // the signal, and only this tells that apart from cancelling a job.
+  // Workers outlive a stopping controller; the next one adopts or stops them. Effect interrupts every fiber
+  // on the signal, and only this tells that apart from cancelling a job.
   let stopping = false
   for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => (stopping = true))
   const jobsDir = join(config.runtimeDir, "jobs")
@@ -457,10 +457,12 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         return value
       })
 
+      // A stopping controller leaves every worker to the next one, which adopts what may outlive it and stops
+      // the rest: `systemctl stop` needs polkit, which the host switch that stops the controller stops too.
       const stop = remote
         ? agents.stop(id)
         : config.jobs.mode === "systemd"
-        ? Effect.suspend(() => (stopping && persisted ? Effect.void : stopUnit(job.template, id)))
+        ? Effect.suspend(() => (stopping ? Effect.void : stopUnit(job.template, id)))
         : Effect.void
 
       const body = Effect.scoped(
