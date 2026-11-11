@@ -17,8 +17,8 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
   Effect.gen(function*() {
     const project = yield* Load.project(spec.run.pipelineDir)
     const planned = yield* Calder.plan(project, spec.run.event, { requiredChecks: spec.requiredChecks })
-    // Nothing to run (a push to a branch no rule names): skip evaluating the flake.
-    if (planned.steps.length === 0) {
+    // Nothing to run (a push to a branch no rule names), or only the rules asked for: skip evaluating the flake.
+    if (planned.steps.length === 0 || spec.rules === true) {
       const empty: PlanSpec = { version: 1, app: null, trust: planned.trust, reuse: planned.reuse, schedules: planned.schedules, pushes: planned.pushes, steps: [] }
       return { _tag: "Planned", plan: empty } satisfies JobResult
     }

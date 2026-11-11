@@ -26,7 +26,21 @@ describe("a push to a branch other than the default", () => {
       expect(jobs).toEqual([])
     }))
 
-  it.live("is planned when they name it, or when no plan of the pipeline said", () =>
+  it.live("whose pipeline no plan has seen reads the rules without a plan slot, and isn't planned when they don't name it", () =>
+    Effect.gen(function*() {
+      // No plan slot at all: a push that waited for one would never end.
+      const { status, jobs } = yield* drive({
+        steps: [],
+        event: { _tag: "Push", branch: "fix/lane-tab-new-window" },
+        plan: { pushes: ["main", "release/*"] },
+        unplanned: true,
+        planSlots: 0,
+      })
+      expect(status).toBe("missing")
+      expect(jobs).toEqual(["rules"])
+    }))
+
+  it.live("is planned when they name it, or when the rules read for an unseen pipeline do", () =>
     Effect.gen(function*() {
       const named = yield* drive({
         steps: [],
@@ -52,7 +66,7 @@ describe("a push to a branch other than the default", () => {
           recorded = JSON.parse(rows[0]!.branches)
         }),
       })
-      expect(unknown.jobs).toEqual(["plan"])
+      expect(unknown.jobs).toEqual(["rules", "plan"])
       expect(recorded).toEqual(["release/*"])
     }))
 })

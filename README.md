@@ -148,7 +148,10 @@ step's usual time scaled by that count against the median count of its last ten 
 usual time. So a pull request that changes one file and rebuilds six derivations of a host goes before an
 older run's rebuild of the whole host. A project plans one run at a time, so a long plan leaves the other plan slots to other projects and two
 large evaluations never share the jobs' memory. A push to the default branch goes before every plan that
-isn't one, so it waits for at most the plan that runs. A plan that takes longer than 30 minutes is stopped
+isn't one, so it waits for at most the plan that runs. A push to another branch that no push rule names,
+such as a pull request's branch, whose pull request has a run of its own, ends without waiting for a plan
+slot: the controller keeps which branches the push rules of each `.calder/` tree name from its trusted
+runs, and for a tree it hasn't seen, a job that only loads ci.ts tells it. A plan that takes longer than 30 minutes is stopped
 and ends its run. A job whose systemd unit timed out starting, such as when a loaded host keeps the unit's
 start step past systemd's timeout, never ran its code, so it starts again after 15 s, 30 s and 60 s, saying
 so in its log, before its step dies with the unit's result. A unit that failed to start otherwise doesn't
