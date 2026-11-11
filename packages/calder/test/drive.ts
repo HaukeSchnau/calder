@@ -255,6 +255,9 @@ export const drive = ({
         pipelineDir: () => Effect.succeed("/calder"),
         flake: () => "git+file:///mirror",
         byUrl: () => ({ "ssh://git@gitea.test/schnau/lib.git": "/state/mirrors/lib.git" }),
+        train: unused,
+        trainOf: unused,
+        push: unused,
       }),
       Layer.succeed(Telemetry)({ exportSpan: () => Effect.void, log: () => Effect.void, gauge: () => Effect.void, span: (_parent, _name, _attributes, effect) => effect, logs: unused, trace: unused }),
       Layer.succeed(Gitea)({
