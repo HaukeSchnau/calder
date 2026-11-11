@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Cmd, Files, Flake, Nix, Secret, Step } from "@calder-ci/core"
 import { Schema } from "effect"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Alchemy from "../src/Alchemy.ts"
@@ -11,38 +11,54 @@ import * as Pnpm from "../src/Pnpm.ts"
 
 const shell = Flake.make({ packages: [], checks: [], devShells: ["ci"] }).devShells.ci
 
-const argv = (step: ReturnType<typeof Alchemy.deploy<unknown>>, values: Record<string, unknown> = {}) => {
+const argv = (step: ReturnType<typeof Alchemy.deploy<unknown>>, env: string, values: Record<string, unknown> = {}) => {
   if (step.def._tag !== "Task" || typeof step.def.run === "function") throw new Error("not a task with one command")
-  return Cmd.render(step.def.run, values, { secrets: { cloudflare: "/secrets/cloudflare" }, pullRequest: 7 })
+  return Cmd.render(step.def.run, values, { secrets: { cloudflare: env }, pullRequest: 7 })
 }
 
 /**
- * Runs a step's command in a fresh workspace where `<dir>/node_modules/.bin/alchemy` and `bun` stand in
- * for the CLI: each records its directory and arguments, and answers `state read` like Alchemy does,
- * status lines first. Returns the workspace and the calls.
+ * Runs a step's command in a fresh workspace where `<dir>/node_modules/.bin/alchemy`, `bun` and `curl`
+ * stand in for the tools: each records its directory and arguments, `curl` its standard input too, and
+ * `state read` answers like Alchemy does, status lines first. The alchemy CLI also records what it finds
+ * in its environment. `env` is the env file's content. Returns the workspace, the calls and that record.
  */
-const execute = (step: ReturnType<typeof Alchemy.deploy<unknown>>, options: { readonly dir?: string; readonly values?: Record<string, unknown> } = {}) => {
+const execute = (
+  step: ReturnType<typeof Alchemy.deploy<unknown>>,
+  options: { readonly dir?: string; readonly values?: Record<string, unknown>; readonly env?: string } = {},
+) => {
   const root = mkdtempSync(join(tmpdir(), "alchemy-"))
   const at = options.dir === undefined ? root : join(root, options.dir)
   const fake = `#!/usr/bin/env bash\necho "$(basename "$0") $PWD $* ${"$"}{CALDER_BUNDLE:-}" >> ${join(root, "calls")}\n` +
+    `echo "DO_NOT_TRACK=$DO_NOT_TRACK ALCHEMY_HOME=$ALCHEMY_HOME $(cat "$ALCHEMY_HOME"/profiles/default/state-stores/cloudflare.json 2>/dev/null)" >> ${join(root, "seen")}\n` +
     `[[ " $* " == *" state read "* ]] && printf '%s\\n' '• Refreshing credentials' '[12:00:00] INFO (#1): from the environment' '{' '  "url": "https://site.example",' '  "token": { "__redacted__": "s3cret" }' '}'\ntrue\n`
+  // The store answers a request for the outputs unless its token is "refused".
+  const curl = `#!/usr/bin/env bash\nconfig=$(cat)\necho "curl $* | $config" >> ${join(root, "calls")}\n` +
+    `[[ "$config" == *refused* ]] && exit 22\nwhile [ "$1" != -o ]; do shift; done\necho '{"url":"https://store.example"}' > "$2"\n`
   mkdirSync(join(at, "node_modules", ".bin"), { recursive: true })
   mkdirSync(join(root, "bin"))
+  mkdirSync(join(root, "home"))
+  mkdirSync(join(root, "tmp"))
   writeFileSync(join(at, "node_modules", ".bin", "alchemy"), fake, { mode: 0o755 })
   writeFileSync(join(root, "bin", "bun"), fake.replace('$(basename "$0")', "bun"), { mode: 0o755 })
-  const [command, ...args] = argv(step, options.values)
+  writeFileSync(join(root, "bin", "curl"), curl, { mode: 0o755 })
+  writeFileSync(join(root, "cloudflare"), options.env ?? "CLOUDFLARE_API_TOKEN=cf-token\n")
+  const [command, ...args] = argv(step, join(root, "cloudflare"), options.values)
   // With a socket for stdin, as in Calder's workers, NixOS's bash sources /etc/bashrc, which resets PATH.
-  execFileSync(command!, args, { cwd: root, env: { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] })
-  const calls = readFileSync(join(root, "calls"), "utf8").trim().split("\n").map((line) => line.replaceAll(root, "<root>").trim())
-  return { root, calls }
+  execFileSync(command!, args, {
+    cwd: root,
+    env: { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, HOME: join(root, "home"), TMPDIR: join(root, "tmp") },
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  const lines = (file: string) => readFileSync(join(root, file), "utf8").trim().split("\n").map((line) => line.replaceAll(root, "<root>").trim())
+  return { root, calls: lines("calls"), seen: lines("seen") }
 }
 
-const rest = "deploy --stage prod --yes --env-file /secrets/cloudflare"
+const rest = "deploy --stage prod --yes --env-file <root>/cloudflare"
 
 describe("Alchemy.plan", () => {
   it("plans the stage without --yes, so the CLI changes nothing", () => {
     const step = Alchemy.plan({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod" })
-    expect(execute(step).calls).toEqual(["alchemy <root> plan --stage prod --env-file /secrets/cloudflare"])
+    expect(execute(step).calls).toEqual(["alchemy <root> plan --stage prod --env-file <root>/cloudflare"])
     if (step.def._tag !== "Task") throw new Error("not a task")
     expect(step.def.lease).toBeUndefined()
   })
@@ -92,11 +108,36 @@ describe("Alchemy.deploy", () => {
     const { root, calls } = execute(step, { dir: "site" })
     expect(calls).toEqual([
       `alchemy <root>/site ${rest}`,
-      "alchemy <root>/site state read Site/prod/output --env-file /secrets/cloudflare",
+      "alchemy <root>/site state read Site/prod/output --env-file <root>/cloudflare",
     ])
     if (step.def._tag !== "Task" || step.def.value === undefined) throw new Error("not a task with a value")
     const written: unknown = JSON.parse(readFileSync(join(root, step.def.value.path), "utf8"))
     expect(Schema.decodeUnknownSync(step.def.value.schema)(written)).toEqual({ url: "https://site.example" })
+  })
+
+  it("runs the CLI without telemetry, in an Alchemy home of its own that it removes once it ends", () => {
+    const { root, seen } = execute(Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod" }))
+    expect(seen).toEqual([expect.stringMatching(/^DO_NOT_TRACK=1 ALCHEMY_HOME=<root>\/tmp\/tmp\.\w+$/)])
+    expect(readdirSync(join(root, "tmp"))).toEqual([])
+    expect(readdirSync(join(root, "home", ".alchemy"))).toEqual(["logs"])
+  })
+
+  it("starts the CLI from the state store's token in the env file, and reads the outputs from the store with it", () => {
+    const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) }
+    const step = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare", outputs }, { stage: "prod" })
+    const url = "https://alchemy-state-store-fleet.acme.workers.dev"
+    const env = (token: string) => `CLOUDFLARE_ACCOUNT_ID=9118\nALCHEMY_STATE_STORE_URL=${url}\nALCHEMY_STATE_STORE_TOKEN=${token}\n`
+    const { root, calls, seen } = execute(step, { env: env("s3cret") })
+    expect(seen[0]).toContain(JSON.stringify({ stores: { "alchemy-state-store-fleet": { url, authToken: "s3cret", accountId: "9118" } } }))
+    expect(calls).toEqual([
+      `alchemy <root> ${rest}`,
+      `curl -fsS --config - -o <root>/.calder-alchemy-outputs.json ${url}/state/stacks/Site/stages/prod/output | header = "Authorization: Bearer s3cret"`,
+    ])
+    if (step.def._tag !== "Task" || step.def.value === undefined) throw new Error("not a task with a value")
+    expect(JSON.parse(readFileSync(join(root, step.def.value.path), "utf8"))).toEqual({ url: "https://store.example" })
+
+    // A token the store refuses: the CLI fetches the token itself, as without one, and reads the outputs.
+    expect(execute(step, { env: env("refused") }).calls.at(-1)).toBe("alchemy <root> state read Site/prod/output --env-file <root>/cloudflare")
   })
 
   it("declares its artifacts, which the worker hands the stack by variable and publishes, and waits for those builds", () => {
@@ -120,10 +161,10 @@ describe("Alchemy.deploy", () => {
     const stack = { shell, setup: Pnpm.install({ shell }), env: "cloudflare" }
     const [preview] = Alchemy.preview(stack, { url: () => "https://pr.example" })
     expect(execute(preview as ReturnType<typeof Alchemy.deploy<unknown>>).calls).toEqual([
-      "alchemy <root> deploy --stage pr-7 --yes --env-file /secrets/cloudflare",
+      "alchemy <root> deploy --stage pr-7 --yes --env-file <root>/cloudflare",
     ])
     expect(execute(Alchemy.destroy(stack) as ReturnType<typeof Alchemy.deploy<unknown>>).calls).toEqual([
-      "alchemy <root> destroy --stage pr-7 --yes --env-file /secrets/cloudflare",
+      "alchemy <root> destroy --stage pr-7 --yes --env-file <root>/cloudflare",
     ])
   })
 })
