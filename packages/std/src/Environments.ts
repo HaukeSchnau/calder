@@ -56,8 +56,7 @@ export interface Options<A> {
   readonly nightly?: string
   /**
    * Same-repo pull requests also plan each stage that pushes to the default branch deploy (`plan-<stage>`,
-   * `alchemy plan`), so one whose deploy can't work fails before it merges. Off by default while Alchemy's
-   * state store fails every plan (since 2026-11-06); default it to on once infra's and t3code's plans pass.
+   * `alchemy plan`), so one whose deploy can't work fails before it merges. On unless set to false.
    */
   readonly planDeploys?: boolean
   /** More rules of the project, such as a mobile pipeline's. */
@@ -132,7 +131,7 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
     const { deployed, ready, last } = deploy(reads ? options : { ...options, stack: unread }, stage, environment)
     return ruleOf(environment.on, [deployed, ...(ready === undefined ? [] : [ready]), ...(environment.then?.(last) ?? [])])
   })
-  const plans = options.planDeploys !== true ? [] : Object.entries(options.environments).flatMap(([name, environment]) =>
+  const plans = options.planDeploys === false ? [] : Object.entries(options.environments).flatMap(([name, environment]) =>
     "push" in environment.on && environment.on.push === branch ? [Alchemy.plan(options.stack, { stage: Alchemy.stageName(name), ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }) })] : []
   )
   return Calder.project({

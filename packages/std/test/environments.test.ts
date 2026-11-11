@@ -39,7 +39,7 @@ describe("Environments.project", () => {
     Effect.gen(function*() {
       const plan = yield* Calder.plan(project, Event.pullRequest({ number: 5 }))
       expect(plan.steps.map((s) => s.name).sort()).toEqual(
-        ["bundle", "deploy-install", "e2e-web", "lint", "preview", "preview-url", "serverSmoke"].sort(),
+        ["bundle", "deploy-install", "e2e-web", "lint", "plan-beta", "preview", "preview-url", "serverSmoke"].sort(),
       )
       expect(plan.get("preview")).toMatchObject({ needs: ["deploy-install", "bundle"], after: [], preview: true })
       expect(plan.get("preview-url")).toMatchObject({ needs: ["preview"], preview: true })
@@ -61,14 +61,13 @@ describe("Environments.project", () => {
       expect(push.get("deploy-beta")).toMatchObject({ after: ["lint", "serverSmoke"], gates: [] })
     }))
 
-  it.effect("with planDeploys, a same-repo pull request plans the stages pushes to the default branch deploy", () =>
+  it.effect("a same-repo pull request plans the stages pushes to the default branch deploy", () =>
     Effect.gen(function*() {
       const planning = Environments.project({
         stack,
         checks,
         artifacts: { CALDER_BUNDLE: bundle },
         environments: { beta: { on: { push: "main" } }, prod: { on: { manual: {} } } },
-        planDeploys: true,
       })
       const plan = yield* Calder.plan(planning, Event.pullRequest({ number: 5 }))
       expect(plan.steps.map((s) => s.name).filter((name) => name.startsWith("plan-"))).toEqual(["plan-beta"])
