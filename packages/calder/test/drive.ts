@@ -57,6 +57,8 @@ export interface Drive {
   readonly unplanned?: boolean
   /** Fills the database before the workflow starts. */
   readonly seed?: Effect.Effect<void, unknown, SqlClient.SqlClient>
+  /** Changes `app-2`'s step rows before the workflow starts, such as to resume a step after a restart. */
+  readonly resume?: Effect.Effect<void, unknown, SqlClient.SqlClient>
   /** The project's configuration besides its name and repository. */
   readonly project?: Partial<Project>
   /** What `nix-store --query --requisites` answers; any other query of the store finds nothing. */
@@ -99,6 +101,7 @@ export const drive = ({
   plan: extra = {},
   unplanned = false,
   seed = Effect.void,
+  resume = Effect.void,
   project: configured = {},
   meanwhile = Effect.void,
   requisites,
@@ -132,6 +135,7 @@ export const drive = ({
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`
     }
+    yield* resume
 
     const jobs: Array<string> = []
     /** The pool each step's job ran in. */

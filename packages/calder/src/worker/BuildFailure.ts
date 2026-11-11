@@ -1,14 +1,15 @@
 /**
  * Whether a failed `nix build` failed for an infrastructure reason: Nix couldn't reach or use a builder
  * or its store, and no derivation failed to build. Returns what went wrong, in one line, or null for a
- * real build failure. `lines` are the messages Nix printed, in order.
+ * real build failure. `lines` are the messages Nix itself printed, in order, without the builds' own logs.
  *
  * infra-887's m1 build failed when the SSH connection to the Mac builder dropped, and infra-909's mbp
  * build when srv-2's garbage collector had deleted its derivation: both would pass when tried again.
  */
 export const infrastructure = (lines: ReadonlyArray<string>): string | null => {
   // A derivation that ran and failed, also when an unreachable builder shows up beside it.
-  const built = /builder for '[^']*' failed|Reason: builder failed|hash mismatch in fixed-output derivation/
+  const built =
+    /builder for '[^']*' failed|Reason: builder failed|hash mismatch in fixed-output derivation|timed out after|cycle detected in build of|no output reference for/
   if (lines.some((line) => built.test(line))) return null
   const causes: ReadonlyArray<(line: string) => string | null> = [
     (line) => {

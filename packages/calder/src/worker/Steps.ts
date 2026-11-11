@@ -104,7 +104,8 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
             for (const msg of parse(line, Date.now())) {
               if (msg._tag === "Activity") yield* emit({ _tag: "Activity", activity: msg.activity })
               else {
-                said.push(msg.text)
+                // A build's own output, such as a test's "Broken pipe", says nothing about Nix's builders.
+                if (msg.buildLog !== true) said.push(msg.text)
                 yield* log(msg.error ? "stderr" : "stdout", msg.text)
               }
             }
@@ -119,7 +120,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
     // The controller roots a run's derivations once its plan or evaluation has them (Runs.ts
     // `rootDerivations`), so this is for a derivation the store lost anyway: one evaluated before the
     // controller rooted it, or one whose root couldn't be made. Evaluating the attribute again writes it back.
-    const again = Effect.catchIf(attempt, () => lost, (failed) =>
+    const again = Effect.catchIf(attempt, () => lost, () =>
       Effect.gen(function*() {
         lost = false
         yield* log("calder", `the store lost ${drv}, so ${attr} is evaluated again`)
@@ -127,7 +128,12 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
           Effect.map((out) => out.trim()),
           Effect.orElseSucceed(() => null),
         )
-        if (evaluated !== drv) return yield* Effect.fail(failed)
+        // Evaluating again won't give it back either, so trying again would only repeat this: no
+        // infrastructure failure.
+        if (evaluated !== drv) {
+          yield* log("calder", evaluated === null ? `evaluating ${attr} again failed` : `${attr} evaluates to ${evaluated} now, not ${drv}`)
+          return yield* new Calder.BuildFailed({ attr, drv })
+        }
         return yield* attempt
       }))
     const exit = yield* Effect.exit(withPolicies(again, step.policies))

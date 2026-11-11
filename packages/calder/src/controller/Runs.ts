@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { placementToken, secretsDigest, sha256, taskKey } from "../Keys.ts"
+import * as Values from "../Values.ts"
 import type { Job, JobEvent, JobResult, Mismatch, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Cache } from "./Cache.ts"
@@ -27,6 +28,8 @@ import * as Tests from "./Tests.ts"
 import { leaseOf } from "./WorkerServer.ts"
 
 const activeStatuses = ["queued", "planning", "running"] as const
+/** What a build that waits for another attempt after an infrastructure failure waits for. */
+const anotherAttempt = "another attempt after an infrastructure failure"
 
 /**
  * How long a build that failed for an infrastructure reason (`Infrastructure`, such as a remote builder
@@ -1193,18 +1196,21 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             workspace: false,
             ...(drv === null ? {} : { obsolete: obsoleteBuild(run, name, drv) }),
           }, collect)
+        // A step that waited for another attempt when the controller restarted goes on from that attempt.
+        let attempt = row.waiting?.startsWith(anotherAttempt) === true ? Math.max(1, row.attempts) : 1
         let r = yield* once()
-        let attempt = 1
         // An infrastructure failure, such as a builder that couldn't be reached, gets more attempts, each
         // after a wait without a slot. The step fails only once the last attempt failed the same way.
-        for (const wait of infrastructureRetries) {
+        for (const wait of infrastructureRetries.slice(attempt - 1)) {
           if (stopped(r) || r.result._tag !== "Failed" || r.result.tag !== "Infrastructure") break
           attempt++
-          const cause = (r.result.error as { readonly cause?: string } | null)?.cause ?? r.result.message
+          // The worker's Calder.Infrastructure, as Values encodes it.
+          const failure = Values.decode(r.result.error) as { readonly cause?: unknown } | null
+          const cause = typeof failure?.cause === "string" ? failure.cause : r.result.message
           const text = `${cause}; an infrastructure failure, so it runs again in ${Duration.format(Duration.fromInputUnsafe(wait))} ` +
             `(attempt ${attempt} of ${infrastructureRetries.length + 1})`
           yield* logTo(run, name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
-          yield* db(sql`update steps set status = 'queued', waiting = ${`another attempt after an infrastructure failure: ${cause}`},
+          yield* db(sql`update steps set status = 'queued', waiting = ${`${anotherAttempt}: ${cause}`},
             attempts = max(attempts, ${attempt}) where run_id = ${runId} and name = ${name}`)
           yield* publishStep(runId, name)
           const ended = yield* Effect.raceFirst(

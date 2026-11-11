@@ -18,7 +18,13 @@ const resBuildLogLine = 101
 
 export type NixMessage =
   | { readonly _tag: "Activity"; readonly activity: NixActivity }
-  | { readonly _tag: "Log"; readonly text: string; readonly error: boolean }
+  | {
+    readonly _tag: "Log"
+    readonly text: string
+    readonly error: boolean
+    /** A line of a derivation's own build log, which the builder printed rather than Nix. */
+    readonly buildLog?: boolean
+  }
 
 /** Parses Nix's `--log-format internal-json` stderr, keeping the state of open activities. */
 export const parser = () => {
@@ -59,7 +65,7 @@ export const parser = () => {
           : []
       }
       case "result":
-        if (msg.type === resBuildLogLine) return [{ _tag: "Log", text: String(msg.fields?.[0] ?? ""), error: false }]
+        if (msg.type === resBuildLogLine) return [{ _tag: "Log", text: String(msg.fields?.[0] ?? ""), error: false, buildLog: true }]
         return []
       case "msg": {
         const text = String(msg.msg ?? "").replace(/\x1b\[[0-9;]*m/g, "")

@@ -4,7 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { vi } from "vitest"
+import { Calder } from "@calder-ci/core"
+import { SqlClient } from "effect/sql"
 import type { JobResult, PlannedStep } from "../src/Protocol.ts"
+import * as Values from "../src/Values.ts"
 import { infrastructure } from "../src/worker/BuildFailure.ts"
 import { drive, step } from "./drive.ts"
 
@@ -44,6 +47,13 @@ describe("an infrastructure failure of a build", () => {
     ])).toBe(null)
     expect(infrastructure(["error: Cannot build '/nix/store/x.drv'.\n       Reason: 1 dependency failed."])).toBe(null)
   })
+
+  it("isn't a build that timed out or left a cycle or a reference out, whatever else Nix said", () => {
+    for (const failure of ["timed out after 3600 seconds", "cycle detected in build of '/nix/store/x.drv' in the references of output 'out'",
+      "no output reference for 'dev' in build of '/nix/store/x.drv'"]) {
+      expect(infrastructure(["Connection closed by 10.0.0.1 port 22", `error: ${failure}`])).toBe(null)
+    }
+  })
 })
 
 const drv = "/nix/store/00000000000000000000000000000000-m1.drv"
@@ -56,11 +66,13 @@ const m1: PlannedStep = {
   detail: "checks.aarch64-darwin.m1",
   build: { attr: "checks.aarch64-darwin.m1", drv, out: "/nix/store/00000000000000000000000000000000-m1", system: "aarch64-darwin" },
 }
+const cause = "the builder 100.83.228.36 could not be reached: failed to start SSH connection"
+// As the worker sends it (Steps.ts `toResult`).
 const unreachable: JobResult = {
   _tag: "Failed",
   tag: "Infrastructure",
-  message: "nix build checks.aarch64-darwin.m1 failed: the builder 100.83.228.36 could not be reached: failed to start SSH connection",
-  error: { _tag: "Infrastructure", attr: "checks.aarch64-darwin.m1", drv, cause: "the builder 100.83.228.36 could not be reached: failed to start SSH connection" },
+  message: `nix build checks.aarch64-darwin.m1 failed: ${cause}`,
+  error: Values.encode(new Calder.Infrastructure({ attr: "checks.aarch64-darwin.m1", drv, cause })),
   key: drv,
 }
 
@@ -86,10 +98,24 @@ describe("a build that failed for an infrastructure reason", () => {
       const failed = steps.get("m1")!
       expect(failed.attempts).toBe(3)
       expect(failed.error?.tag).toBe("Infrastructure")
-      expect(failed.error?.excerpt).toContain(
-        "the builder 100.83.228.36 could not be reached: failed to start SSH connection; an infrastructure failure, so it runs again in",
-      )
+      expect(failed.error?.excerpt).toContain(`\n${cause}; an infrastructure failure, so it runs again in`)
       expect(failed.error?.excerpt).toContain("(attempt 3 of 3)")
+    }))
+
+  it.live("goes on from the attempt it waited for when the controller restarted", () =>
+    Effect.gen(function*() {
+      const { status, jobs, steps } = yield* drive({
+        steps: [m1],
+        result: () => unreachable,
+        resume: Effect.gen(function*() {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`update steps set status = 'queued', attempts = 3, waiting = ${`another attempt after an infrastructure failure: ${cause}`}
+            where run_id = 'app-2' and name = 'm1'`
+        }),
+      })
+      expect(status).toBe("failed")
+      expect(jobs).toEqual(["m1"])
+      expect(steps.get("m1")?.attempts).toBe(3)
     }))
 
   it.live("a build that failed for real runs once", () =>
