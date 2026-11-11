@@ -124,11 +124,7 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
   })
   const environments = Object.entries(options.environments).map(([name, environment]) => {
     const stage = Alchemy.stageName(name)
-    // Reading the outputs takes a second CLI process after the deploy: 16 s of casa-crema's 63. So an
-    // environment reads them only for steps that do, its readiness and `then`. Previews always need them.
-    const { outputs: _, ...unread } = options.stack
-    const reads = options.readiness !== undefined || environment.then !== undefined
-    const { deployed, ready, last } = deploy(reads ? options : { ...options, stack: unread }, stage, environment)
+    const { deployed, ready, last } = deploy(options, stage, environment)
     return ruleOf(environment.on, [deployed, ...(ready === undefined ? [] : [ready]), ...(environment.then?.(last) ?? [])])
   })
   const plans = options.planDeploys === false ? [] : Object.entries(options.environments).flatMap(([name, environment]) =>
