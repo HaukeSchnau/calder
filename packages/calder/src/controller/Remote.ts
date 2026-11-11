@@ -1,7 +1,7 @@
 import { Effect, Pull, Stream } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { AgentRpcs } from "../Protocol.ts"
@@ -68,12 +68,14 @@ export const git = (request: HttpServerRequest.HttpServerRequest) =>
     if (active === undefined) return unauthorized
     const url = new URL(request.url, "http://calder")
     const match = /^\/git\/([^/]+)\.git\/(info\/refs|git-upload-pack)$/.exec(url.pathname)
-    const project = active.spec.run.project
-    if (match === null || match[1] !== project) return HttpServerResponse.text("not found", { status: 404 })
+    // An evaluation also fetches the flake's inputs that name other projects, from their mirrors.
+    const readable = (name: string) =>
+      name === active.spec.run.project || Object.values(active.spec.run.mirrors).some((url) => url.endsWith(`/git/${name}.git`))
+    if (match === null || !readable(match[1]!)) return HttpServerResponse.text("not found", { status: 404 })
     if (match[2] === "info/refs" && url.searchParams.get("service") !== "git-upload-pack") {
       return HttpServerResponse.text("only fetches", { status: 403 })
     }
-    const mirror = (yield* Mirror).path(project)
+    const mirror = (yield* Mirror).path(match[1]!)
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const handle = yield* spawner.spawn(ChildProcess.make("git", ["http-backend"], {
       env: {
@@ -141,4 +143,56 @@ export const store = (request: HttpServerRequest.HttpServerRequest) =>
     const entry = basename(path)
     const tar = yield* spawner.spawn(ChildProcess.make("tar", ["-c", "-C", "/nix/store", `--transform=s,^${entry.slice(0, 33)},,`, entry], { stdin: "ignore" }))
     return HttpServerResponse.stream(tar.stdout, { contentType: "application/x-tar" })
+  }).pipe(Effect.orDie)
+
+const storePath = /^\/nix\/store\/[a-z0-9]{32}-[A-Za-z0-9+._?=-]+$/
+
+/** The agent's worker of a job that evaluates builds, which ships the derivations it evaluated here. */
+const evaluator = (request: HttpServerRequest.HttpServerRequest) =>
+  Effect.map(worker(request), (active) => (active?.spec._tag === "Step" && active.spec.evaluate !== undefined ? active : undefined))
+
+/** Which of the store paths in the body, one per line, this host's store lacks. */
+export const missing = (request: HttpServerRequest.HttpServerRequest) =>
+  Effect.gen(function*() {
+    if ((yield* evaluator(request)) === undefined) return unauthorized
+    const paths = (yield* request.text).split("\n").filter(Boolean)
+    if (!paths.every((p) => storePath.test(p))) return HttpServerResponse.text("not store paths", { status: 400 })
+    const invalid: Array<string> = []
+    for (let i = 0; i < paths.length; i += 1000) {
+      const out = yield* Exec.run(["nix-store", "--check-validity", "--print-invalid", ...paths.slice(i, i + 1000)])
+      invalid.push(...out.split("\n").filter(Boolean))
+    }
+    return HttpServerResponse.text(invalid.join("\n"))
+  }).pipe(Effect.orDie)
+
+/**
+ * The derivations an agent's worker evaluated, with the sources they read, that this host lacked: a
+ * gzipped tar of a binary cache of just those paths. Each is content-addressed, so Nix takes it from
+ * Calder's unprivileged user without a signature.
+ */
+export const derivations = (request: HttpServerRequest.HttpServerRequest) =>
+  Effect.gen(function*() {
+    const active = yield* evaluator(request)
+    if (active === undefined) return unauthorized
+    const uploads = join((yield* Config).stateDir, "uploads")
+    mkdirSync(uploads, { recursive: true })
+    const dir = mkdtempSync(join(uploads, `${active.id}-`))
+    return yield* Effect.gen(function*() {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const tar = yield* spawner.spawn(ChildProcess.make("tar", ["-x", "-z", "-C", dir], { stdin: Stream.orDie(request.stream) }))
+      const [, stderr, code] = yield* Effect.all([
+        Stream.runDrain(tar.stdout),
+        Stream.mkString(Stream.decodeText(tar.stderr)),
+        tar.exitCode,
+      ], { concurrency: "unbounded" })
+      const cache = join(dir, "cache")
+      if (code !== 0 || !existsSync(cache)) return HttpServerResponse.text(`bad upload: ${stderr}`, { status: 400 })
+      const paths = readdirSync(cache).filter((f) => f.endsWith(".narinfo"))
+        .map((f) => /^StorePath: (\S+)$/m.exec(readFileSync(join(cache, f), "utf8"))?.[1] ?? "")
+      if (!paths.every((p) => storePath.test(p))) return HttpServerResponse.text("bad upload: a narinfo without a store path", { status: 400 })
+      // Nix writes the cache's realisations directory while it reads it.
+      mkdirSync(join(cache, "realisations"), { recursive: true })
+      yield* Exec.run(["nix", "copy", "--no-recursive", "--from", `file://${cache}`, "--stdin"], { stdin: paths.join("\n") })
+      return HttpServerResponse.text(`added ${paths.length} paths`)
+    }).pipe(Effect.scoped, Effect.ensuring(Effect.sync(() => rmSync(dir, { recursive: true, force: true }))))
   }).pipe(Effect.orDie)

@@ -12,7 +12,7 @@ import * as Live from "../src/controller/Live.ts"
 import { Mirror } from "../src/controller/Mirror.ts"
 import { type Project, Projects } from "../src/controller/Projects.ts"
 import * as Rows from "../src/controller/Rows.ts"
-import { InfrastructureRetries, layerCore, type RunsCore } from "../src/controller/Runs.ts"
+import { EvaluationWait, InfrastructureRetries, layerCore, type RunsCore } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
@@ -45,8 +45,8 @@ export interface Drive {
   readonly value?: (step: string) => unknown
   /** What a step's job does once it started, before it passes, such as report Nix's activities. */
   readonly work?: (step: string, emit: (event: JobEvent) => Effect.Effect<void>) => Effect.Effect<void>
-  /** How a step's job ends instead of passing with its `value`. */
-  readonly result?: (step: string, job: Extract<Job, { _tag: "Step" }>) => JobResult | undefined
+  /** How a step's job ends instead of passing with its `value`; `agent` is the platform of the agent it ran on. */
+  readonly result?: (step: string, job: Extract<Job, { _tag: "Step" }>, agent: string | null) => JobResult | undefined
   /** Keeps reading the steps after the run ended until this holds, for work the run doesn't wait for. */
   readonly settled?: (steps: ReadonlyMap<string, Domain.StepRun>) => boolean
   /** The run's event, a push to main by default. */
@@ -71,6 +71,10 @@ export interface Drive {
   readonly placementKey?: string
   /** The controller's state directory, one that doesn't exist by default. */
   readonly stateDir?: string
+  /** The platform whose agents evaluate trusted runs' builds (`agents.evaluate`), none by default. */
+  readonly evaluateOn?: string
+  /** No agent ever takes a job, which then waits until it is withdrawn. */
+  readonly agentless?: boolean
   /** Collects the `nix` commands Calder runs, which then succeed; without it they aren't found. */
   readonly nix?: Array<ReadonlyArray<string>>
   /**
@@ -111,6 +115,8 @@ export const drive = ({
   placementKey,
   stateDir,
   nix,
+  evaluateOn,
+  agentless = false,
   statusDelay = () => undefined,
 }: Drive) =>
   Effect.gen(function*() {
@@ -145,13 +151,20 @@ export const drive = ({
     const pools = new Map<string, string>()
     /** The jobs that ran in the larger pull-request unit. */
     const large: Array<string> = []
+    /** Where each job ran: `here`, or the platform of the agent that took it. */
+    const placed: Array<string> = []
     const statuses = new Map<string, string>()
     /** Every commit status Calder reported, in order, as `context: state: description`. */
     const history: Array<string> = []
     const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
     const services = Layer.mergeAll(
-      config({ ...(placementKey === undefined ? {} : { placementKey }), ...(stateDir === undefined ? {} : { stateDir }) }),
+      config({
+        ...(placementKey === undefined ? {} : { placementKey }),
+        ...(stateDir === undefined ? {} : { stateDir }),
+        ...(evaluateOn === undefined ? {} : { agents: { tokenFile: "", wake: [], evaluate: evaluateOn } }),
+      }),
       Layer.succeed(InfrastructureRetries)(["5 millis", "5 millis"]),
+      Layer.succeed(EvaluationWait)("50 millis"),
       Live.layer,
       Layer.succeed(Agents)(makeAgents(null)),
       Layer.succeed(Cache)(cache),
@@ -224,10 +237,13 @@ export const drive = ({
             if (job._tag === "Step") jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`)
             if (job._tag === "Step") pools.set(job.step, options.pool)
             if (options.large === true) large.push(jobs.at(-1) ?? "plan")
+            const agent = options.agent === true ? options.platform ?? "x86_64-linux" : null
+            if (agent !== null && agentless) return yield* Effect.never
+            placed.push(`${jobs.at(-1) ?? "plan"} ${agent === null ? "here" : `on ${agent}`}`)
             yield* options.onStart ?? Effect.void
             if (job._tag === "Step") yield* work(job.step, options.onEvent)
             return {
-              result: (job._tag === "Step" ? result(job.step, job) : undefined) ??
+              result: (job._tag === "Step" ? result(job.step, job, agent) : undefined) ??
                 { _tag: "Passed", value: job._tag === "Step" ? value(job.step) : null, outputs: {}, key: null },
               usage: { cpuSeconds: null, memoryPeakBytes: null },
               id: `job-${jobs.length}`,
@@ -259,5 +275,5 @@ export const drive = ({
     const load = Effect.map(Rows.loadSteps("app-2"), (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])))
     const steps = yield* load.pipe(Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }), Effect.timeout("5 seconds"))
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
-    return { status, jobs, statuses, history, steps, pools, large, plan: stored }
+    return { status, jobs, statuses, history, steps, pools, large, placed, plan: stored }
   }).pipe(Effect.provide(sqlite))

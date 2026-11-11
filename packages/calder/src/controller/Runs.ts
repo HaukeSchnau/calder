@@ -3,12 +3,13 @@ import { Event, On } from "@calder-ci/core"
 import { Context, Deferred, Duration, Effect, Exit, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { basename, join } from "node:path"
+import { buildEdges } from "../Edges.ts"
 import * as Exec from "../Exec.ts"
 import { placementToken, secretsDigest, sha256, taskKey } from "../Keys.ts"
 import * as Values from "../Values.ts"
 import type { Job, JobEvent, JobResult, Mismatch, Outcome, PlannedStep, PlanSpec, RunInfo } from "../Protocol.ts"
-import { Agents } from "./Agents.ts"
+import { Agents, wakeTimeout } from "./Agents.ts"
 import { Cache } from "./Cache.ts"
 import { Comments } from "./Comments.ts"
 import { Config } from "./Config.ts"
@@ -36,6 +37,13 @@ const activeStatuses = ["queued", "planning", "running"] as const
  */
 export const InfrastructureRetries = Context.Reference<ReadonlyArray<Duration.Input>>("calder/controller/InfrastructureRetries", {
   defaultValue: () => ["30 seconds", "2 minutes"],
+})
+/**
+ * How long a trusted run's evaluation waits for an agent of `agents.evaluate`, its slot included, before
+ * it runs here: as long as waking a sleeping agent's host may take. Tests shorten it.
+ */
+export const EvaluationWait = Context.Reference<Duration.Input>("calder/controller/EvaluationWait", {
+  defaultValue: () => wakeTimeout,
 })
 /** How often a superseded run's running build asks again whether it should stop. */
 const neededEvery = "30 seconds"
@@ -158,6 +166,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const comments = yield* Comments
   const estimates = yield* Estimates.Estimates
   const infrastructureRetries = yield* InfrastructureRetries
+  const evaluationWait = yield* EvaluationWait
   // Steps a deploy or a preview waits for take one slot of each pool beyond its capacity, so they never
   // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
   const lane = 1
@@ -175,9 +184,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     actions: Slots.make({ capacity: config.jobs.slots.actions, lane }),
     // Agents limit themselves; this only orders their jobs.
     agents: Slots.make({ capacity: 64 }),
+    // Evaluations on agents, one per project like plans, so two never share an agent's memory.
+    evaluations: Slots.make({ capacity: 64, maxPerProject: 1 }),
   }
   /** Every pool, the remote builds' of each system included. */
-  const pools = () => [slots.plans, slots.builds, ...slots.remoteBuilds.values(), slots.tasks, slots.actions, slots.agents]
+  const pools = () => [slots.plans, slots.builds, ...slots.remoteBuilds.values(), slots.tasks, slots.actions, slots.agents, slots.evaluations]
   const cancels = new Map<string, Deferred.Deferred<string>>()
   const signal = (map: Map<string, Deferred.Deferred<string>>) => (runId: string) => {
     let d = map.get(runId)
@@ -977,12 +988,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const why = (result: JobResult) => (result._tag === "Died" ? result.message.split("\n")[0] : result._tag)
 
   /**
-   * One job that evaluates builds (Steps.ts `evaluate`) for `row`'s step. It is plan work and takes a plan
-   * slot, so one project's flake is evaluated once at a time, as the worker's cache lock would have it
-   * anyway, in the larger pull-request unit where the project asks for it, and no build slot sits idle
+   * One job that evaluates builds (Steps.ts `evaluate`) for `row`'s step, here. It is plan work and takes
+   * a plan slot, so one project's flake is evaluated once at a time, as the worker's cache lock would have
+   * it anyway, in the larger pull-request unit where the project asks for it, and no build slot sits idle
    * for the minutes it takes.
    */
-  const evaluateBuilds = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
+  const evaluateHere = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
     execute(run, row, () => job, {
       slots: slots.plans,
       what: "a plan slot",
@@ -993,6 +1004,59 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       critical,
       evaluates: true,
     }, { tests: [], attempts: 0 })
+
+  /**
+   * Evaluates builds, on an agent of `agents.evaluate` when the run is trusted, unless `here`: infra's
+   * evaluate in 2 minutes on the tower and in 12 to 21 on srv-2. The agent fetches the revision and the
+   * flake's inputs from the mirrors here and ships the derivations to this store; their system stays
+   * this host's, which the derivations are for and the footprints it records count under. A job no agent
+   * took within `EvaluationWait`, or that didn't evaluate there, runs here. Pull requests evaluate here,
+   * in the sandbox an agent doesn't have.
+   */
+  const evaluateBuilds = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean, here = false) =>
+    Effect.gen(function*() {
+      const platform = config.agents?.evaluate ?? null
+      if (platform === null || here || run.trust !== "trusted") return yield* evaluateHere(run, row, job, critical)
+      const say = (text: string) => logTo(run, row.name, row.span_id, null)({ _tag: "Log", stream: "calder", text, timestamp: Date.now() })
+      const base = config.url.replace(/\/$/, "")
+      const remote: Job = {
+        ...job,
+        run: {
+          ...job.run,
+          flake: "",
+          mirror: `${base}/git/${run.project}.git`,
+          mirrors: Object.fromEntries(Object.entries(job.run.mirrors).map(([url, path]) => [url, `${base}/git/${basename(path)}`])),
+          pipelineDir: "",
+        },
+      }
+      const waited = Deferred.makeUnsafe<void>()
+      const r = yield* execute(run, row, () => remote, {
+        slots: slots.evaluations,
+        what: "an agent's evaluation slot",
+        expected: 0,
+        action: false,
+        shard: null,
+        workspace: false,
+        critical,
+        platform,
+        remote: true,
+        withdraw: waited,
+      }, { tests: [], attempts: 0 }).pipe(
+        Effect.raceFirst(Deferred.succeed(waited, undefined).pipe(Effect.delay(evaluationWait), Effect.andThen(Effect.never))),
+      )
+      if (r.result._tag === "Evaluated") {
+        const evaluated = Object.entries(r.result.derivations).flatMap(([name, d]) => (d === null ? [] : [{ name, drv: d.drv }]))
+        const planned = job._tag === "Step" ? job.evaluate?.planned ?? [] : []
+        const uses = yield* buildEdges([...planned, ...evaluated]).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
+        return { ...r, result: { ...r.result, uses: Object.fromEntries(uses) } }
+      }
+      const gone = Deferred.isDoneUnsafe(supersedeSignal(run.id)) || Deferred.isDoneUnsafe(cancelSignal(run.id))
+      if (gone || ("withdrawn" in r && !Deferred.isDoneUnsafe(waited)) || "cancelled" in r) return r
+      yield* say("withdrawn" in r
+        ? `no ${platform} agent took the evaluation within ${Duration.format(Duration.fromInputUnsafe(evaluationWait))}, so it runs here`
+        : `evaluating on the ${platform} agent failed, so it runs here: ${why(r.result)}`)
+      return yield* evaluateHere(run, row, job, critical)
+    })
 
   /**
    * Gives the evaluated builds' steps their derivations, the edges between builds a plan would have given
@@ -1079,7 +1143,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         // It fails mostly when the host is short of memory, as when a worker's unit times out starting.
         if (r.result._tag !== "Evaluated" && !stopped(r)) {
           yield* say(`evaluating the builds together failed, so it tries once more: ${why(r.result)}`)
-          r = yield* evaluateBuilds(run, row, job(by, what), critical)
+          r = yield* evaluateBuilds(run, row, job(by, what), critical, true)
         }
         if (r.result._tag !== "Evaluated") {
           if (!stopped(r)) yield* say(`evaluating the builds together failed again, so each evaluates its own attribute: ${why(r.result)}`)
@@ -1245,7 +1309,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           build = evaluated.build ?? build
           if (build.drv === null) {
             // The run's evaluation failed: this build evaluates its attribute alone, still as plan work.
-            const alone = yield* evaluateBuilds(run, now, stepJob({ inputs: {}, evaluate: { builds: [{ name, attr: build.attr }], planned: [] } }), spec.critical === true)
+            const alone = yield* evaluateBuilds(run, now, stepJob({ inputs: {}, evaluate: { builds: [{ name, attr: build.attr }], planned: [] } }), spec.critical === true, true)
             if (stopped(alone)) return yield* settle(run, now, { status: "cancelled" })
             if (alone.result._tag === "Evaluated") yield* applyEvaluated(run, alone.result)
             evaluated = Rows.spec((yield* db(Rows.loadStep(runId, name))) ?? now)

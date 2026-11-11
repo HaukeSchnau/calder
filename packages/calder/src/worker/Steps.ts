@@ -4,8 +4,9 @@ import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { hostname, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join } from "node:path"
+import { buildEdges } from "../Edges.ts"
 import * as Exec from "../Exec.ts"
 import { link, sdkPath } from "../Gen.ts"
 import type { Job as JobSpec, JobResult, Outcome, RunInfo } from "../Protocol.ts"
@@ -143,25 +144,27 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
 /**
  * The builds a plan left unevaluated, evaluated the way plans evaluate, in one evaluator while they fit
  * the job's memory, recording what they read for the plans after them. The job fails only where Nix does,
- * such as for a flake that doesn't load; each build then evaluates its own attribute.
+ * such as for a flake that doesn't load; each build then evaluates its own attribute. On an agent it
+ * evaluates its own copy of the repository, ships the derivations to the controller, where they build,
+ * and leaves finding which builds use which to the controller, whose store has the planned ones.
  */
 export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =>
   Effect.gen(function*() {
-    const { log } = yield* Job
-    const say = (text: string) => log("calder", text)
-    const repo = yield* Repo.make(job.run.mirror, job.run.revision)
-    const recorder = yield* Resolve.recorder(job.run, repo)
+    const self = yield* Job
+    const say = (text: string) => self.log("calder", text)
+    const run = self.remote === null ? job.run : yield* evaluationRepo(self, job.run)
+    const repo = yield* Repo.make(run.mirror, run.revision)
+    const recorder = yield* Resolve.recorder(run, repo)
     const attrs = [...new Set(what.builds.map((b) => b.attr))]
-    yield* say(`evaluating the ${attrs.length} builds the plan left for when the first of them runs`)
-    const evaluated = yield* Resolve.derivations(job.run, attrs, undefined, say, undefined, { recorder }).pipe(
+    yield* say(`evaluating the ${attrs.length} builds the plan left for when the first of them runs, on ${hostname()}`)
+    const evaluated = yield* Resolve.derivations(run, attrs, undefined, say, undefined, { recorder }).pipe(
       // Loading the flake alone outgrew the memory: so would every build's.
       Effect.catchTag("TooLarge", (e) => Effect.succeed({ derivations: new Map(), errors: new Map(), tooLarge: new Map(attrs.map((a) => [a, e])) } as Resolve.Evaluated)),
     )
     const derivation = (attr: string) => evaluated.derivations.get(attr) ?? null
-    const uses = yield* Resolve.buildEdges([
-      ...what.planned,
-      ...what.builds.flatMap((b) => (derivation(b.attr) === null ? [] : [{ name: b.name, drv: derivation(b.attr)!.drv }])),
-    ])
+    const drvs = what.builds.flatMap((b) => (derivation(b.attr) === null ? [] : [{ name: b.name, drv: derivation(b.attr)!.drv }]))
+    if (self.remote !== null) yield* ship(self, drvs.map((d) => d.drv))
+    const uses = self.remote === null ? yield* buildEdges([...what.planned, ...drvs]) : new Map<string, Array<string>>()
     return {
       _tag: "Evaluated",
       derivations: Object.fromEntries(what.builds.map((b) => [b.name, derivation(b.attr)])),
@@ -177,6 +180,82 @@ export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =
       ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
     } satisfies JobResult
   })
+
+/**
+ * An agent's bare copy of the project's repository with the revision fetched from the controller's
+ * mirror, and the run as it evaluates there. It keeps the history, so the flake's `revCount` and
+ * `lastModified` are the mirror's, and later revisions fetch only what is new.
+ */
+const evaluationRepo = (self: Job["Service"], run: RunInfo) =>
+  Effect.gen(function*() {
+    const dir = join(self.remote!.workspaces, ".repos", `${run.project}.git`)
+    const git = (args: ReadonlyArray<string>) => Exec.run(["git", "--git-dir", dir, ...args], { env: gitEnv(self) })
+    if (!existsSync(join(dir, "HEAD"))) {
+      mkdirSync(dir, { recursive: true })
+      yield* git(["init", "-q", "--bare"])
+    }
+    const has = yield* git(["cat-file", "-e", `${run.revision}^{commit}`]).pipe(Effect.as(true), Effect.orElseSucceed(() => false))
+    if (!has) yield* fetching(git(["fetch", "-q", "--no-tags", run.mirror, run.revision]))
+    return { ...run, mirror: dir, flake: `git+file://${dir}?rev=${run.revision}` } satisfies RunInfo
+  })
+
+/**
+ * Adds derivations evaluated on an agent to the controller's store, where their builds run: the paths
+ * of their closure, derivations and the sources they read, that the controller lacks, as a binary cache
+ * of those paths alone (`nix copy --to file://` insists on their references too). Each is
+ * content-addressed, so the controller's Nix takes it without a signature.
+ */
+const ship = (self: Job["Service"], drvs: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    if (drvs.length === 0) return
+    const closure = (yield* Exec.run(["nix-store", "--query", "--requisites", ...new Set(drvs)])).split("\n").filter(Boolean)
+    const auth = { Authorization: `Bearer ${self.id}:${self.token}` }
+    const asked = yield* request(`${self.remote!.url}/derivations/missing`, { method: "POST", body: closure.join("\n"), headers: auth })
+    const missing = asked.split("\n").filter(Boolean)
+    if (missing.length === 0) return yield* self.log("calder", `the controller has the ${closure.length} paths of the derivations already`)
+    const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
+    yield* Effect.gen(function*() {
+      mkdirSync(join(dir, "cache", "nar"), { recursive: true })
+      writeFileSync(join(dir, "cache", "nix-cache-info"), "StoreDir: /nix/store\n")
+      const infos = JSON.parse(yield* Exec.run(["nix", "path-info", "--json", "--json-format", "1", "--stdin"], { stdin: missing.join("\n") })) as
+        Record<string, PathInfo>
+      yield* Effect.forEach(Object.entries(infos), ([path, info]) =>
+        Effect.gen(function*() {
+          const hash = basename(path).slice(0, 32)
+          if (info.ca == null) return yield* Effect.die(new Error(`${path} isn't content-addressed, so the controller would want a signature`))
+          yield* Exec.run(["sh", "-c", `nix-store --dump "$1" > "$2"`, "sh", path, join(dir, "cache", "nar", `${hash}.nar`)])
+          writeFileSync(join(dir, "cache", `${hash}.narinfo`), [
+            `StorePath: ${path}`,
+            `URL: nar/${hash}.nar`,
+            "Compression: none",
+            `NarHash: ${info.narHash}`,
+            `NarSize: ${info.narSize}`,
+            `References: ${info.references.map((r: string) => basename(r)).join(" ")}`,
+            `CA: ${info.ca}`,
+            "",
+          ].join("\n"))
+        }), { concurrency: 8, discard: true })
+      yield* Exec.run(["tar", "-c", "-z", "-f", join(dir, "cache.tar.gz"), "-C", dir, "cache"])
+      yield* request(`${self.remote!.url}/derivations`, { method: "PUT", body: readFileSync(join(dir, "cache.tar.gz")), headers: auth })
+      yield* self.log("calder", `shipped ${missing.length} of the ${closure.length} paths of the derivations to the controller`)
+    }).pipe(Effect.ensuring(Effect.sync(() => rmSync(dir, { recursive: true, force: true }))))
+  })
+
+interface PathInfo {
+  readonly narHash: string
+  readonly narSize: number
+  readonly references: ReadonlyArray<string>
+  readonly ca?: string | null
+}
+
+/** The body of a request to the controller, which dies unless the controller answers 2xx. */
+const request = (url: string, init: RequestInit) =>
+  Effect.gen(function*() {
+    const response = yield* Effect.tryPromise(() => fetch(url, init))
+    const text = yield* Effect.tryPromise(() => response.text())
+    if (!response.ok) return yield* Effect.die(new Error(`${init.method ?? "GET"} ${url} failed: ${response.status} ${text}`))
+    return text
+  }).pipe(Effect.orDie)
 
 // ----------------------------------------------------------------------------------------------- task
 

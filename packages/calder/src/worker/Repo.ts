@@ -10,14 +10,21 @@ export const gitEnv = {
   GIT_TERMINAL_PROMPT: "0",
 }
 
-/** Git environment that fetches each URL from its mirror instead, for every process of a job. */
-export const insteadOf = (mirrors: Readonly<Record<string, string>>): Record<string, string> => {
-  const entries = Object.entries(mirrors)
+/**
+ * Git environment that fetches each URL from its mirror instead, for every process of a job: a local
+ * mirror's path, or its URL on the controller for an agent's worker. `config` adds settings of its own,
+ * such as the header that authorizes those fetches.
+ */
+export const insteadOf = (mirrors: Readonly<Record<string, string>>, config: Readonly<Record<string, string>> = {}): Record<string, string> => {
+  const entries = [
+    ...Object.entries(mirrors).map(([url, mirror]) => [`url.${/^[a-z+]+:\/\//.test(mirror) ? mirror : `file://${mirror}`}.insteadOf`, url] as const),
+    ...Object.entries(config),
+  ]
   return Object.fromEntries([
     ["GIT_CONFIG_COUNT", String(entries.length)],
-    ...entries.flatMap(([url, mirror], i) => [
-      [`GIT_CONFIG_KEY_${i}`, `url.file://${mirror}.insteadOf`],
-      [`GIT_CONFIG_VALUE_${i}`, url],
+    ...entries.flatMap(([key, value], i) => [
+      [`GIT_CONFIG_KEY_${i}`, key],
+      [`GIT_CONFIG_VALUE_${i}`, value],
     ]),
   ])
 }

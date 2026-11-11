@@ -145,4 +145,18 @@ describe("flake inputs", () => {
     expect(execFileSync("git", ["ls-remote", "--get-url", "ssh://git@git.example.org/schnau/Studienbuch-Legacy.git"], { env, encoding: "utf8" }).trim())
       .toBe("ssh://git@git.example.org/schnau/Studienbuch-Legacy.git")
   })
+
+  it("come from the controller's mirror for an agent's evaluation, which sends its token only there", () => {
+    const env = {
+      ...process.env,
+      ...Repo.insteadOf(
+        { "ssh://git@git.example.org/schnau/Studienbuch.git": "https://calder.example/git/studienbuch.git" },
+        { "http.https://calder.example/.extraHeader": "Authorization: Bearer job:token" },
+      ),
+    }
+    const git = (args: ReadonlyArray<string>) => execFileSync("git", args, { env, encoding: "utf8" }).trim()
+    expect(git(["ls-remote", "--get-url", "ssh://git@git.example.org/schnau/Studienbuch.git"])).toBe("https://calder.example/git/studienbuch.git")
+    expect(git(["config", "--get-urlmatch", "http.extraHeader", "https://calder.example/git/studienbuch.git"])).toBe("Authorization: Bearer job:token")
+    expect(() => git(["config", "--get-urlmatch", "http.extraHeader", "https://github.com/NixOS/nixpkgs.git"])).toThrow()
+  })
 })

@@ -46,7 +46,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   the store lost anyway is evaluated again before the build gives up.
   Flake inputs that name another project's repository (`git+ssh` or `git+https` on the forge) come
   from Calder's mirror of it, in plans, builds and tasks alike, so a flake with private inputs
-  evaluates without credentials, also in a pull request's sandbox. Agents fetch inputs themselves.
+  evaluates without credentials, also in a pull request's sandbox. Agents' tasks fetch inputs
+  themselves; their evaluations fetch from the mirrors too.
 - **setup** (`Setup.make`, or `Pnpm.install` and `Bun.install` from `@calder-ci/std`): prepares a workspace once per key,
   which comes from its `inputs` (manifests, lockfiles, patches), toolchain and command. Tasks that
   name it (`setup: install`) wait for it and start from a copy of the prepared workspace; a key
@@ -208,6 +209,18 @@ needs more to evaluate, such as infra, whose srv-2 contract check alone holds 3 
 `largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@`, which the
 host defines with more memory. Plans and build evaluations both take plan slots, one per project at a
 time, so one project's flake is never evaluated twice side by side.
+
+A controller whose host evaluates slowly hands trusted runs' build evaluations to its agents of the
+platform `agents.evaluate` names, a Linux one, where footprints are recorded: infra's builds evaluate in
+2 minutes on the tower and in 12 to 21 on srv-2. The agent fetches the revision and the flake's inputs
+that name the forge from the controller's mirrors, evaluates for the controller's system, and sends the
+derivations and sources the controller's store lacks back to it, where the builds run; the controller
+finds which builds use which. Every such path is content-addressed, so the controller's Nix takes them
+without a signature. Its records count wherever later plans run, as long as the agent's Nix version and
+settings are the controller's. One evaluation per project runs on agents at a time. One that no agent took
+within three minutes, as long as a wake may take, or that failed there runs on the controller, and its log
+says so; the evaluation's log names the host it ran on. Pull requests' evaluations stay on the controller,
+in their sandbox.
 
 A plan also records what each attribute's evaluation read of the repository: its footprint. It evaluates
 `path:<source>?rev=…` under strace, which gives the same derivations as the mirror's `git+file:` URL but

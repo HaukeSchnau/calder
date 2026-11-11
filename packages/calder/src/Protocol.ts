@@ -154,8 +154,8 @@ export const RunInfo = Schema.Struct({
   mirror: Schema.String,
   /**
    * Every project's mirror by the URLs a flake input may name its repository with, so the job fetches
-   * private inputs from the forge without credentials, also in a pull request's sandbox. Empty for
-   * agents' workers, which fetch inputs themselves.
+   * private inputs from the forge without credentials, also in a pull request's sandbox. For an agent's
+   * evaluation, their URLs on the controller; empty for agents' other workers, which fetch inputs themselves.
    */
   mirrors: Schema.Record(Schema.String, Schema.String),
   /** The revision's `.calder/` directory, extracted, with `node_modules` linked to Calder's SDK. Empty for agents' workers. */

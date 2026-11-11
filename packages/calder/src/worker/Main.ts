@@ -58,8 +58,9 @@ const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
     const project = yield* Load.project(yield* pipelineDir(spec).pipe(Effect.orDie))
     const step = yield* Load.step(project, spec.step)
     const def = step.def
-    if ((yield* Client.Job).remote !== null && def._tag !== "Task" && def._tag !== "Setup") {
-      return { _tag: "Died", message: "agents only run tasks and setups" } satisfies JobResult
+    const evaluates = def._tag === "Build" && spec.evaluate !== undefined
+    if ((yield* Client.Job).remote !== null && def._tag !== "Task" && def._tag !== "Setup" && !evaluates) {
+      return { _tag: "Died", message: "agents only run tasks, setups and evaluations of builds" } satisfies JobResult
     }
     switch (def._tag) {
       case "Build":
@@ -94,7 +95,11 @@ export const run = (
     const token = "token" in options ? options.token : readFileSync(options.tokenFile, "utf8").trim()
     const connected = yield* Client.make(id, token, remote)
     const spec = yield* Client.reconnecting(connected.client.job({ job: id, token }))
-    Object.assign(process.env, Repo.insteadOf(spec.run.mirrors))
+    // An agent's worker gets the mirrors only to evaluate, and fetches them from the controller with its token.
+    const authorized = remote === null || Object.keys(spec.run.mirrors).length === 0
+      ? {}
+      : { [`http.${remote.url.replace(/\/$/, "")}/.extraHeader`]: `Authorization: Bearer ${id}:${token}` }
+    Object.assign(process.env, Repo.insteadOf(spec.run.mirrors, authorized))
     // Nothing the job prints, says or fails with leaves the worker with its secrets or its token in it.
     const redact = Redact.make([...(spec._tag === "Step" ? Object.values(spec.secrets) : []), token])
     const job: Client.Job["Service"] = {

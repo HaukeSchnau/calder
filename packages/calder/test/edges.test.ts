@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { directUses } from "../src/worker/Resolve.ts"
+import { directUses } from "../src/Edges.ts"
 
 describe("build edges", () => {
   it("links each build to the planned builds it uses directly", () => {

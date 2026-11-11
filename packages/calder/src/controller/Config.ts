@@ -95,6 +95,12 @@ export const ConfigSchema = Schema.Struct({
     wake: Schema.Array(Schema.Struct({ name: Schema.String, platform: Schema.String, command: Schema.NonEmptyArray(Schema.String) })).pipe(
       Schema.withDecodingDefaultKey(Effect.succeed([])),
     ),
+    /**
+     * The platform whose agents evaluate trusted runs' builds instead of this host, such as `x86_64-linux`
+     * when that host is faster. A Linux one, since only there evaluations record footprints. Null keeps
+     * every evaluation here.
+     */
+    evaluate: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   })),
   projects: Schema.Record(Schema.String, ProjectConfig),
   retention: Schema.Struct({

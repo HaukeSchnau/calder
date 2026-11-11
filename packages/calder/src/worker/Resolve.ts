@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core"
 import { type Duration, Effect, Option, Schedule, Schema } from "effect"
 import { randomBytes } from "node:crypto"
+import { buildEdges } from "../Edges.ts"
 import * as Exec from "../Exec.ts"
 import { sha256 } from "../Keys.ts"
 import type { Mismatch, PlannedStep, PlanSpec, Records, RunInfo } from "../Protocol.ts"
@@ -1194,33 +1195,6 @@ const lock = (path: string) =>
 
 const describeCmd = (run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unknown>), count: number) =>
   Cmd.show(typeof run === "function" ? run({ index: 1, count, files: ["<files>"] }) : run)
-
-/**
- * Which planned builds each build uses: a build needs another when the other's derivation is in its
- * closure, keeping only direct links (`deps → release → gate`, not also `deps → gate`). Two steps of
- * the same derivation are one build to Nix and get no link.
- */
-export const directUses = (
-  builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>,
-  closures: ReadonlyMap<string, ReadonlySet<string>>,
-) => {
-  const uses = (a: (typeof builds)[number], b: (typeof builds)[number]) => a.drv !== b.drv && (closures.get(b.name)?.has(a.drv) ?? false)
-  const edges = new Map<string, Array<string>>()
-  for (const b of builds) {
-    const direct = builds.filter((a) => uses(a, b) && !builds.some((c) => c !== a && uses(a, c) && uses(c, b)))
-    if (direct.length > 0) edges.set(b.name, direct.map((a) => a.name))
-  }
-  return edges
-}
-
-export const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>) =>
-  builds.length < 2
-    ? Effect.succeed(new Map<string, Array<string>>())
-    : Effect.forEach(builds, (b) =>
-      Exec.run(["nix-store", "--query", "--requisites", b.drv]).pipe(
-        Effect.map((out) => [b.name, new Set(out.split("\n").filter(Boolean))] as const),
-        Effect.orElseSucceed(() => [b.name, new Set<string>()] as const),
-      ), { concurrency: 4 }).pipe(Effect.map((closures) => directUses(builds, new Map(closures))))
 
 /** Turns a plan into the wire format, resolving tree ids, dev shells and task keys at the revision. */
 export const resolve = (

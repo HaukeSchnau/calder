@@ -39,6 +39,8 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
     HttpRouter.add("POST", "/git/*", Remote.git),
     HttpRouter.add("PUT", "/outputs", Remote.output),
     HttpRouter.add("GET", "/store", Remote.store),
+    HttpRouter.add("POST", "/derivations/missing", Remote.missing),
+    HttpRouter.add("PUT", "/derivations", Remote.derivations),
     HttpRouter.add("GET", "/outputs/*", Outputs.serve),
     rpc,
     agents,
