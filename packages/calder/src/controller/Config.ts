@@ -80,10 +80,16 @@ export const ConfigSchema = Schema.Struct({
   /**
    * The hosts' promotion endpoints, in deploy order. Calder asks each which apps it runs. One whose host
    * sleeps while idle has `wake`, the command that wakes it, such as `systemctl start calder-wake@tower.service`.
+   * An `optional` one that doesn't answer is left out of the promotion instead of failing it, so a workstation
+   * that is down doesn't hold back every project's deploy; it gets the next release it is up for.
    */
   fleet: Schema.Array(Schema.Union([
     Schema.String,
-    Schema.Struct({ url: Schema.String, wake: Schema.optional(Schema.NonEmptyArray(Schema.String)) }),
+    Schema.Struct({
+      url: Schema.String,
+      wake: Schema.optional(Schema.NonEmptyArray(Schema.String)),
+      optional: Schema.optional(Schema.Boolean),
+    }),
   ])),
   /**
    * Sandboxed workers reach the network only through the controller's egress proxy: hosts in `allow`
