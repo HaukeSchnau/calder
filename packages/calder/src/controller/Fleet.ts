@@ -26,10 +26,13 @@ export type Health = typeof Health.Type
 export interface Endpoint {
   readonly url: string
   readonly wake: ReadonlyArray<string> | undefined
+  readonly optional: boolean
 }
 
 export const endpoint = (entry: ConfigShape["fleet"][number]): Endpoint =>
-  typeof entry === "string" ? { url: entry, wake: undefined } : { url: entry.url, wake: entry.wake }
+  typeof entry === "string"
+    ? { url: entry, wake: undefined, optional: false }
+    : { url: entry.url, wake: entry.wake, optional: entry.optional === true }
 
 /** A host the deploy goes to, with the Nix system its release must be built for. */
 export interface DeployTarget {
@@ -56,7 +59,7 @@ export class Fleet extends Context.Service<Fleet, {
    * `targets` for a deploy, with the system each one's `/health` reports (the controller's when it reports
    * none or, for a project's configured targets, doesn't answer). It asks every endpoint afresh, as
    * `patiently` does. Those that don't answer are `unreachable`: they might run the app, so the deploy
-   * must not go on without them.
+   * must not go on without them. Optional ones that don't answer are left out instead.
    */
   readonly deployTargets: (project: Project, app: string) => Effect.Effect<{
     readonly targets: ReadonlyArray<DeployTarget>
@@ -181,13 +184,18 @@ export const layer = Layer.effect(Fleet)(Effect.gen(function*() {
       Effect.gen(function*() {
         // Configured targets run the app, and one that doesn't answer fails its preflight; /health only tells the system.
         if (project.targets !== null) {
-          const found = yield* ask((e) => healthOf.cached(e.url), project.targets.map((url) => ({ url, wake: undefined })))
+          const found = yield* ask((e) => healthOf.cached(e.url), project.targets.map((url) => ({ url, wake: undefined, optional: false })))
           return { targets: found.map((f) => ({ url: f.url, system: f.health?.system ?? config.system })), unreachable: [] }
         }
         const found = yield* ask(asking, endpoints)
+        const optional = new Set(endpoints.filter((e) => e.optional).map((e) => e.url))
+        const silent = found.filter((f) => f.health === null)
+        for (const f of silent.filter((f) => optional.has(f.url))) {
+          yield* Effect.logWarning(`${hostOf(f.url)} doesn't answer; its optional endpoint misses this release`)
+        }
         return {
           targets: found.flatMap((f) => (f.health?.apps.includes(app) === true ? [{ url: f.url, system: f.health.system ?? config.system }] : [])),
-          unreachable: found.filter((f) => f.health === null).map((f) => f.url),
+          unreachable: silent.filter((f) => !optional.has(f.url)).map((f) => f.url),
         }
       }),
     status: (target, project) =>

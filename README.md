@@ -542,7 +542,11 @@ that sleeps while idle. A deploy asks every endpoint's `/health` (`{"ok": true, 
 counts as the controller's, as does a project's configured target that doesn't answer, which then fails its
 preflight. One that doesn't answer is asked again every 5 seconds for a minute, and one
 with `wake` for five minutes, while the controller runs its command in the background at most once per
-two minutes. An endpoint that still doesn't answer is unreachable, and the promotion deploys nowhere.
+two minutes. An endpoint that still doesn't answer is unreachable, and the promotion deploys nowhere,
+unless its entry has `"optional": true`: then the promotion leaves it out with a warning, so a
+workstation that is down doesn't hold back every project's deploy, and it gets the next release it is
+up for. An optional host that answers is a target like any other, and hosts deploy in `fleet` order, so
+list optional endpoints last.
 
 ## Two addresses
 
