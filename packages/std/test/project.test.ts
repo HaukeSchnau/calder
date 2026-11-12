@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Calder, Event, Flake, Task, cmd } from "@calder-ci/core"
-import { Effect, Schema } from "effect"
+import { Cache, Calder, CurrentRun, Event, Fleet, Flake, Git, Sha, StorePath, Task, cmd } from "@calder-ci/core"
+import { Effect, Layer, Schema } from "effect"
+import { HttpClient } from "effect/http"
 import * as Pnpm from "../src/Pnpm.ts"
 import * as Project from "../src/Project.ts"
 
@@ -45,6 +46,42 @@ describe("Project.standard", () => {
       expect((yield* Calder.plan(project, Event.pullRequest({ number: 1, fork: true }))).get("placement-plan")).toBeUndefined()
       const optedOut = Project.standard({ flake, checks: [qa], placement, planDeploys: false })
       expect((yield* Calder.plan(optedOut, Event.pullRequest({ number: 1 }))).get("placement-plan")).toBeUndefined()
+    }))
+
+  it.effect("builds a release for each further system on pull requests, and the promotion reads them all", () =>
+    Effect.gen(function*() {
+      const project = Project.standard({ flake, releaseSystems: ["aarch64-darwin", "aarch64-darwin", "x86_64-linux"] })
+      const pr = yield* Calder.plan(project, Event.pullRequest({ number: 1 }))
+      expect(pr.steps.map((s) => s.name).sort()).toEqual(["artifact", "projectRelease", "release", "release-aarch64-darwin", "release-x86_64-linux"])
+      const darwin = pr.get("release-aarch64-darwin")!.step.def
+      expect(darwin._tag === "Build" && Flake.attrPath(darwin.ref, "x86_64-linux")).toBe("packages.aarch64-darwin.projectRelease")
+      const push = yield* Calder.plan(project, Event.push("main"))
+      expect(push.get("promote")?.needs).toEqual(["release", "release-aarch64-darwin", "release-x86_64-linux"])
+    }))
+
+  it.effect("promotes the controller's system's release from `release`, and each further system's from its own build", () =>
+    Effect.gen(function*() {
+      const project = Project.standard({ flake, releaseSystems: ["aarch64-darwin", "aarch64-linux"] })
+      const promote = (yield* Calder.plan(project, Event.push("main"))).get("promote")!.step.def
+      if (promote._tag !== "Action") return expect.unreachable()
+      const path = (name: string) => StorePath.make(`/nix/store/00000000000000000000000000000000-${name}`)
+      const deployed: Array<string> = []
+      const target = (host: string, system: string) => ({
+        host,
+        system,
+        preflight: () => Effect.void,
+        deploy: (r: { readonly storePath: string }) => Effect.sync(() => deployed.push(`${host} ${r.storePath}`)),
+      })
+      const revision = Sha.make("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+      const body = Effect.gen(() => promote.body({ release: path("release"), "aarch64-darwin": path("darwin"), "aarch64-linux": path("arm") }))
+      yield* Effect.scoped(body as Effect.Effect<unknown, unknown, any>).pipe(Effect.provide(Layer.mergeAll(
+        Layer.succeed(CurrentRun, { id: "r", project: "app", revision, branch: "main", trust: "trusted", event: Event.push("main"), system: "aarch64-linux", descriptor: Effect.succeed({}) }),
+        Layer.succeed(Fleet, { deploying: () => Effect.succeed({ _tag: "Held", fence: 1, targets: [target("m1", "aarch64-darwin"), target("srv", "aarch64-linux")], unreachable: [] }) }),
+        Layer.succeed(Git, { head: () => Effect.succeed(revision) }),
+        Layer.succeed(Cache, { publish: () => Effect.void }),
+        Layer.succeed(HttpClient.HttpClient, HttpClient.make(() => Effect.die(new Error("no requests expected")))),
+      )))
+      expect(deployed).toEqual([`m1 ${path("darwin")}`, `srv ${path("release")}`])
     }))
 
   it.effect("a nightly run checks everything again and deploys nothing", () =>

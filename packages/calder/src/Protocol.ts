@@ -365,6 +365,8 @@ export class WorkerRpcs extends RpcGroup.make(
       path: Schema.String,
       /** The task's artifact the path is, by its environment variable: the deploy keeps it as that artifact's release. */
       artifact: Schema.optional(Schema.String),
+      /** The system of the hosts a promotion's release is for, when it isn't the controller's. */
+      system: Schema.optional(Schema.String),
     },
     error: Unauthorized,
   }),
@@ -372,7 +374,11 @@ export class WorkerRpcs extends RpcGroup.make(
   Rpc.make("fleetAcquire", {
     payload: { ...auth, project: Schema.String },
     success: Schema.Union([
-      Schema.TaggedStruct("Held", { fence: Schema.Number, targets: Schema.Array(Schema.String), unreachable: Schema.Array(Schema.String) }),
+      Schema.TaggedStruct("Held", {
+        fence: Schema.Number,
+        targets: Schema.Array(Schema.Struct({ host: Schema.String, system: Schema.String })),
+        unreachable: Schema.Array(Schema.String),
+      }),
       /** `by`: the newer run whose same step took the lease. */
       Schema.TaggedStruct("Replaced", { by: Schema.Number }),
       /** The run no longer deploys what it was for, such as its branch's head, as `reason` says. Only tasks get it. */
@@ -399,7 +405,7 @@ export class WorkerRpcs extends RpcGroup.make(
  * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
  * newer SDK, need no bump: failed steps are not reused.
  */
-export const compatibility = 5
+export const compatibility = 6
 
 /** What the controller tells an agent: start a worker for a job, or stop one. */
 export const AgentOrder = Schema.Union([

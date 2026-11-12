@@ -8,9 +8,14 @@ import * as Release from "../src/Release.ts"
 const revision = Sha.make("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
 const release = StorePath.make("/nix/store/0000000000000000000000000000000a-release")
 
-const promoting = (lease: Lease, head: () => Sha = () => revision) =>
+const promoting = (
+  lease: Lease,
+  head: () => Sha = () => revision,
+  releases: StorePath | Release.Releases = release,
+  published: Array<string> = [],
+) =>
   Effect.provide(
-    Release.promote(release),
+    Release.promote(releases),
     Layer.mergeAll(
       Layer.succeed(CurrentRun, {
         id: "calder-1",
@@ -19,11 +24,12 @@ const promoting = (lease: Lease, head: () => Sha = () => revision) =>
         branch: "main",
         trust: "trusted",
         event: Event.push("main"),
+        system: "x86_64-linux",
         descriptor: Effect.succeed({}),
       }),
       Layer.succeed(Fleet, { deploying: () => Effect.succeed(lease) }),
       Layer.succeed(Git, { head: () => Effect.sync(head) }),
-      Layer.succeed(Cache, { publish: () => Effect.void }),
+      Layer.succeed(Cache, { publish: (path, options) => Effect.sync(() => published.push(`${options?.system ?? "own"} ${path}`)) }),
       Layer.succeed(HttpClient.HttpClient, HttpClient.make(() => Effect.die(new Error("no requests expected")))),
     ),
   )
@@ -40,6 +46,7 @@ describe("Release.promote", () => {
       const touched: Array<string> = []
       const hostA = {
         host: "host-a",
+        system: "x86_64-linux",
         preflight: () => Effect.sync(() => touched.push("preflight")),
         deploy: () => Effect.sync(() => touched.push("deploy")),
       }
@@ -52,6 +59,7 @@ describe("Release.promote", () => {
   /** A host that refuses the first `refusals` preflights with `refused`. */
   const host = (refusals: number, refused: Rejected, touched: Array<string>) => ({
     host: "host-a",
+    system: "x86_64-linux",
     preflight: () =>
       Effect.suspend(() => {
         touched.push("preflight")
@@ -91,5 +99,38 @@ describe("Release.promote", () => {
       const error = yield* Effect.flip(promoting({ _tag: "Held", fence: 1, targets: [host(1, secret, touched)], unreachable: [] }))
       expect(error).toEqual(secret)
       expect(touched).toEqual(["preflight"])
+    }))
+
+  const linux = StorePath.make("/nix/store/0000000000000000000000000000000b-release")
+  const darwin = StorePath.make("/nix/store/0000000000000000000000000000000c-release")
+  /** A host of `system` that records what it is asked to deploy. */
+  const of = (host: string, system: string, deployed: Array<string>) => ({
+    host,
+    system,
+    preflight: () => Effect.void,
+    deploy: (r: { readonly storePath: StorePath }) => Effect.sync(() => deployed.push(`${host} ${r.storePath}`)),
+  })
+
+  it.effect("gives each host the release of its system and publishes each one a host needs", () =>
+    Effect.gen(function*() {
+      const deployed: Array<string> = []
+      const published: Array<string> = []
+      const unused = StorePath.make("/nix/store/0000000000000000000000000000000d-release")
+      const targets = [of("m1", "aarch64-darwin", deployed), of("tower", "x86_64-linux", deployed), of("dev", "x86_64-linux", deployed)]
+      const releases = { "x86_64-linux": linux, "aarch64-darwin": darwin, "aarch64-linux": unused }
+      const result = yield* promoting({ _tag: "Held", fence: 1, targets, unreachable: [] }, undefined, releases, published)
+      expect(result).toEqual(new Release.Live({ revision, hosts: ["m1", "tower", "dev"] }))
+      expect(deployed).toEqual([`m1 ${darwin}`, `tower ${linux}`, `dev ${linux}`])
+      expect(published.sort()).toEqual([`aarch64-darwin ${darwin}`, `own ${linux}`])
+    }))
+
+  it.effect("deploys nowhere when a host's system has no release", () =>
+    Effect.gen(function*() {
+      const deployed: Array<string> = []
+      const published: Array<string> = []
+      const targets = [of("tower", "x86_64-linux", deployed), of("m1", "aarch64-darwin", deployed)]
+      const error = yield* Effect.flip(promoting({ _tag: "Held", fence: 1, targets, unreachable: [] }, undefined, release, published))
+      expect(error).toEqual(new Release.NoRelease({ project: "calder", host: "m1", system: "aarch64-darwin", built: ["x86_64-linux"] }))
+      expect([...deployed, ...published]).toEqual([])
     }))
 })

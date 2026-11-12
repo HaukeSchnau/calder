@@ -1,4 +1,4 @@
-import { Action, type Base, type Files, type Flake, Calder, Nix, On, type Step } from "@calder-ci/core"
+import { Action, type Base, CurrentRun, type Files, Flake, Calder, Nix, On, type Step } from "@calder-ci/core"
 import * as Alchemy from "./Alchemy.ts"
 import * as Environments from "./Environments.ts"
 import * as Release from "./Release.ts"
@@ -19,6 +19,14 @@ export interface StandardOptions {
   readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
   /** A URL whose JSON `revision` must report the deployed commit before the deploy counts. */
   readonly readiness?: string
+  /**
+   * Systems whose hosts run the release besides the controller's. Each gets a build of
+   * `packages.<system>.projectRelease`, `release-<system>`, which Nix sends to a remote builder of it;
+   * pull requests build them too, and the promotion gives each host the release of its system. `release`
+   * always builds the controller's system, and the promotion deploys it there; listing that system too is
+   * allowed but only adds a step that builds the same derivation again.
+   */
+  readonly releaseSystems?: ReadonlyArray<Step.Platform>
   /**
    * The Alchemy stack with the release's `Fleet.Placement`: its hostname, secrets and limits on its
    * host. The default branch deploys it before the promotion, so a release starts with them.
@@ -56,16 +64,25 @@ export const standard = (options: StandardOptions): Calder.Project => {
     return Calder.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly] })
   }
   const release = Nix.build(ref, { name: "release" })
+  const systems = [...new Set(options.releaseSystems ?? [])]
+  const releases = Object.fromEntries(
+    systems.map((system) => [system, Nix.build(Flake.attr(Flake.attrPath(ref, system)), { name: `release-${system}` })]),
+  )
   const place = options.placement === undefined
     ? []
     : [Alchemy.deploy(options.placement, { stage: "prod", name: "placement", after: checks })]
-  const promote = Action.make("promote", { needs: { release }, after: [...checks, ...place], grants: { deploy: true } }, function*({ release }) {
-    return yield* Release.promote(release, options.readiness === undefined ? {} : { readiness: options.readiness })
-  })
+  const promote = Action.make(
+    "promote",
+    { needs: { release, ...releases }, after: [...checks, ...place], grants: { deploy: true } },
+    function*({ release, ...others }) {
+      const run = yield* CurrentRun
+      return yield* Release.promote({ ...others, [run.system]: release }, options.readiness === undefined ? {} : { readiness: options.readiness })
+    },
+  )
   return Calder.project({
     ...shared,
     rules: [
-      On.pullRequest([...checks, release]),
+      On.pullRequest([...checks, release, ...Object.values(releases)]),
       ...(options.placement === undefined || options.planDeploys === false
         ? []
         : [On.preview([Alchemy.plan(options.placement, { stage: "prod", name: "placement-plan" })])]),
