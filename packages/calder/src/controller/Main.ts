@@ -21,6 +21,7 @@ import * as Mirror from "./Mirror.ts"
 import * as Projects from "./Projects.ts"
 import * as Runs from "./Runs.ts"
 import * as Scheduler from "./Scheduler.ts"
+import { named, reportWhileStopping } from "./Stopping.ts"
 import * as Telemetry from "./Telemetry.ts"
 import * as Web from "./Web.ts"
 import * as WorkerServer from "./WorkerServer.ts"
@@ -30,15 +31,32 @@ import * as Workflow from "./Workflow.ts"
 export const layer = (configPath: string) => {
   const platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunCrypto.layer)
   const config = Config.fromFile(configPath)
-  const base = Layer.mergeAll(Db.layer, Telemetry.layer, Gitea.layer, Live.layer, Jobs.layer.pipe(Layer.provideMerge(Agents.layer), Layer.provide(Db.layer))).pipe(
+  const db = named("Db", Db.layer)
+  const jobs = named("Jobs", Jobs.layer).pipe(Layer.provideMerge(named("Agents", Agents.layer)), Layer.provide(db))
+  const base = Layer.mergeAll(db, named("Telemetry", Telemetry.layer), named("Gitea", Gitea.layer), named("Live", Live.layer), jobs).pipe(
     Layer.provideMerge(config),
     Layer.provideMerge(platform),
   )
-  const projects = Projects.layer.pipe(Layer.provideMerge(base))
-  const fleet = Layer.mergeAll(Cache.layer, Comments.layer, Fleet.layer, Leases.layer, Mirror.layer).pipe(Layer.provideMerge(projects))
-  const core = Runs.layerCore.pipe(Layer.provideMerge(fleet))
-  const runs = Workflow.layer.pipe(Layer.provideMerge(core))
-  const merging = Merges.layer.pipe(Layer.provideMerge(runs))
-  const delivery = Delivery.layer.pipe(Layer.provideMerge(merging))
-  return Layer.mergeAll(WorkerServer.layer, Egress.layer, Scheduler.layer, Catchup.layer, Http.layer, Web.layer, Health.layer).pipe(Layer.provide(delivery))
+  const projects = named("Projects", Projects.layer).pipe(Layer.provideMerge(base))
+  const fleet = Layer.mergeAll(
+    named("Cache", Cache.layer),
+    named("Comments", Comments.layer),
+    named("Fleet", Fleet.layer),
+    named("Leases", Leases.layer),
+    named("Mirror", Mirror.layer),
+  ).pipe(Layer.provideMerge(projects))
+  const core = named("Runs", Runs.layerCore).pipe(Layer.provideMerge(fleet))
+  const runs = named("Workflow", Workflow.layer).pipe(Layer.provideMerge(core))
+  const merging = named("Merges", Merges.layer).pipe(Layer.provideMerge(runs))
+  const delivery = named("Delivery", Delivery.layer).pipe(Layer.provideMerge(merging))
+  return Layer.mergeAll(
+    reportWhileStopping,
+    named("WorkerServer", WorkerServer.layer),
+    named("Egress", Egress.layer),
+    named("Scheduler", Scheduler.layer),
+    named("Catchup", Catchup.layer),
+    named("Http", Http.layer),
+    named("Web", Web.layer),
+    named("Health", Health.layer),
+  ).pipe(Layer.provide(delivery))
 }
