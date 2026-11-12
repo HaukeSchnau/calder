@@ -31,6 +31,8 @@ export interface Lease {
   readonly project: string
   readonly app: string
   readonly targets: ReadonlyArray<string> | null
+  /** The targets' systems, whose releases a promotion may publish. */
+  readonly systems?: ReadonlyArray<string>
 }
 
 export interface ActiveJob {

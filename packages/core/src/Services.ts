@@ -13,6 +13,8 @@ export class CurrentRun extends Context.Service<CurrentRun, {
   readonly branch: string | undefined
   readonly trust: "pr" | "trusted"
   readonly event: Event
+  /** The controller's Nix system, whose attributes a flake ref's `packages` and `checks` name. */
+  readonly system: string
   /** The repository's `.#lib.project` descriptor at this revision. */
   readonly descriptor: Effect.Effect<unknown>
 }>()("@calder-ci/core/CurrentRun") {}
@@ -40,12 +42,13 @@ export class Gitea extends Context.Service<Gitea, {
 export class Cache extends Context.Service<Cache, {
   /**
    * Readies a release for the hosts it goes to. When one of them isn't the controller's host, the fleet's
-   * binary cache gets the release's closure and keeps it as the project's release. Only while the step
-   * holds the project's deploy lease (`Fleet.deploying`); outside it the step dies.
+   * binary cache gets the release's closure and keeps it as the project's release for `system`, the
+   * controller's by default. Only while the step holds the project's deploy lease (`Fleet.deploying`);
+   * outside it the step dies.
    */
-  readonly publish: (path: StorePath) => Effect.Effect<void>
+  readonly publish: (path: StorePath, options?: { readonly system?: string }) => Effect.Effect<void>
 }>()("@calder-ci/core/Cache") {
-  static publish = (path: StorePath) => Cache.use((cache) => cache.publish(path))
+  static publish = (path: StorePath, options?: { readonly system?: string }) => Cache.use((cache) => cache.publish(path, options))
 }
 
 export class PullRequest extends Context.Service<PullRequest, {
@@ -75,6 +78,8 @@ export class Rejected extends Failure<Rejected>("@calder-ci/core/Fleet")("Reject
 
 export interface Target {
   readonly host: string
+  /** The host's Nix system, which the store path it deploys must be built for. */
+  readonly system: string
   /** Checks the release contract against the host's bindings. */
   readonly preflight: (descriptor: unknown) => Effect.Effect<void, Rejected>
   /** Activates the release. The request carries the lease's fencing token. */

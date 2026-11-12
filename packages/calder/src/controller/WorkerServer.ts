@@ -126,7 +126,7 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const project = projects.get(run.project)!
         yield* gitea.dispatch(project.repo, workflow, ref ?? run.branch ?? project.defaultBranch, inputs)
       }),
-    cachePublish: ({ job, token, path, artifact }) =>
+    cachePublish: ({ job, token, path, artifact, system }) =>
       Effect.gen(function*() {
         const active = yield* trusted(job, token)
         if (Cache.hashOf(path) === undefined) return yield* Effect.die(new Error(`not a store path: ${path}`))
@@ -136,9 +136,13 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         // each kept as that artifact's release of the step; a pull request's previews keep none. A
         // promotion's targets say whether a host other than this one substitutes the release.
         const task = lease.targets === null
+        if (system !== undefined && (task || !(lease.systems ?? []).includes(system))) {
+          return yield* refuse(`no target of the lease runs ${system}`)
+        }
         if (!task && !Cache.leavesHost(lease.targets!, config.host)) return
         const project = active.spec.run.project
-        const pin = !task ? project
+        // A promotion keeps a release per system: the controller's as the project's, others with the system.
+        const pin = !task ? (system === undefined || system === config.system ? project : Cache.pinName(`${project}-${system}`))
           : lease.project === project && artifact !== undefined ? Cache.pinName(`${project}-${active.spec.step}-${artifact}`)
           : undefined
         yield* cache.publish(path, { ...(pin === undefined ? {} : { pin }), urgent: task }).pipe(
@@ -195,9 +199,14 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         }
         const app = yield* appOf(run.id, project)
         const { targets, unreachable } = yield* fleet.deployTargets(projects.get(project)!, app)
-        active.lease = { project, app, targets }
+        active.lease = { project, app, targets: targets.map((t) => t.url), systems: [...new Set(targets.map((t) => t.system))] }
         yield* leases.keep(key, active.id, active.lease)
-        return { _tag: "Held" as const, fence: grant.fence, targets: targets.map(Fleet.hostOf), unreachable: unreachable.map(Fleet.hostOf) }
+        return {
+          _tag: "Held" as const,
+          fence: grant.fence,
+          targets: targets.map((t) => ({ host: Fleet.hostOf(t.url), system: t.system })),
+          unreachable: unreachable.map(Fleet.hostOf),
+        }
       }),
     fleetRelease: ({ job, token }) =>
       Effect.gen(function*() {

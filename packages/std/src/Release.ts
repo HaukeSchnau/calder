@@ -36,6 +36,20 @@ export class Unreachable extends Calder.Failure<Unreachable>("@calder-ci/std/Rel
   }
 }
 
+export class NoRelease extends Calder.Failure<NoRelease>("@calder-ci/std/Release")("NoRelease", {
+  project: Schema.String,
+  host: Schema.String,
+  system: Schema.String,
+  built: Schema.Array(Schema.String),
+}) {
+  override get message() {
+    return `${this.host} runs ${this.system}, but ${this.project} has no release built for it (only for ${this.built.join(", ")}); nothing was deployed`
+  }
+}
+
+/** A project's release per Nix system, such as `{ "x86_64-linux": path, "aarch64-darwin": path }`. */
+export type Releases = { readonly [system: string]: StorePath }
+
 const every = (interval: Duration.Input, deadline: Duration.Input) =>
   Schedule.spaced(interval).pipe(Schedule.upTo({ duration: deadline }))
 
@@ -70,8 +84,9 @@ export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function*(url:
 
 /**
  * Promotes a release to the project's hosts. Takes the project's deploy lease (latest wins, so an
- * older run gives way to a newer one), fails when a host can't be reached or none runs the app,
- * preflights every host, puts the release in the binary cache for hosts other than the controller's,
+ * older run gives way to a newer one), fails when a host can't be reached, none runs the app or one's
+ * system has no release (`releases` per system; a single path is the controller's system's),
+ * preflights every host, puts each release a host needs in the binary cache for hosts other than the controller's,
  * checks before each host that the branch still points at this revision, and deploys with the lease's
  * fencing token.
  *
@@ -79,8 +94,9 @@ export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function*(url:
  * promotion asks again every 30 seconds for an hour, until a newer push supersedes it.
  */
 export const promote = Effect.fn("Release.promote")(
-  function*(release: StorePath, options: { readonly readiness?: string } = {}) {
+  function*(releases: StorePath | Releases, options: { readonly readiness?: string } = {}) {
     const run = yield* CurrentRun
+    const bySystem: Releases = typeof releases === "string" ? { [run.system]: releases } : releases
     const branch = run.branch
     if (branch === undefined) return yield* Effect.die(new Error("Release.promote needs a branch to check the head against"))
 
@@ -88,6 +104,10 @@ export const promote = Effect.fn("Release.promote")(
     if (lease._tag === "Replaced") return new Skipped({ reason: "Superseded" })
     if (lease.unreachable.length > 0) return yield* new Unreachable({ project: run.project, hosts: lease.unreachable })
     if (lease.targets.length === 0) return yield* new NoHosts({ project: run.project })
+    const missing = lease.targets.find((t) => bySystem[t.system] === undefined)
+    if (missing !== undefined) {
+      return yield* new NoRelease({ project: run.project, host: missing.host, system: missing.system, built: Object.keys(bySystem) })
+    }
 
     const descriptor = yield* run.descriptor
     const current = Effect.map(Git.head(branch), (head) => head === run.revision)
@@ -99,13 +119,14 @@ export const promote = Effect.fn("Release.promote")(
       }).pipe(Effect.retry({ while: awaitsSwitch, schedule: every("30 seconds", "1 hour") }))
     const preflighted = yield* Effect.forEach(lease.targets, preflight, { concurrency: "unbounded" })
     if (preflighted.includes(false)) return new Skipped({ reason: "Superseded" })
-    yield* Cache.publish(release)
+    const systems = new Set(lease.targets.map((t) => t.system))
+    yield* Effect.forEach(systems, (system) => Cache.publish(bySystem[system]!, system === run.system ? {} : { system }), { discard: true })
 
     for (const target of lease.targets) {
       const head = yield* Git.head(branch)
       if (head !== run.revision) return new Skipped({ reason: "Superseded" })
       yield* target
-        .deploy({ revision: run.revision, storePath: release })
+        .deploy({ revision: run.revision, storePath: bySystem[target.system]! })
         .pipe(Effect.retry({ while: (e) => e._tag === "Busy", schedule: every("10 seconds", "5 minutes") }))
     }
 

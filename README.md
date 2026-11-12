@@ -26,7 +26,14 @@ Calder reads only the default export and finds the steps by following the rules,
 
 Every flake check is a step, plus `checks`. Pull requests run them and build `packages.projectRelease`;
 the default branch reuses identical results (also from same-repo pull requests) and promotes the release
-once every check passed. With `placement`, an Alchemy stack with the release's `Fleet.Placement` (`@schnau/fleet`: its hostname, secret bindings and limits on its host, within the grant the host's configuration gives it), the default branch deploys that stack before the promotion. The stack reads the project's token from `FLEET_TOKEN_FILE` when its `secrets` map it to `placement-token`, which Calder derives for every project when the controller has a `placementKeyFile`. `afterDeploy` adds steps that run after the release is live. With `planDeploys: true`, a same-repo pull request also runs `placement-plan`, `alchemy plan` of the placement's production stage, which changes nothing, so a pull request whose deploy can't work fails before it merges; `Environments.project` and `Project.alchemy` take it too and plan each stage that pushes to the default branch deploy (`plan-<stage>`). It is off by default while Alchemy's state store fails every plan. A pipeline beyond
+once every check passed. `release` builds it for the controller's system. Hosts of other systems need
+`releaseSystems: ["aarch64-darwin", "x86_64-linux"]`: each listed system gets a build of
+`packages.<system>.projectRelease` named `release-<system>`, which Nix sends to a remote builder of that
+system. `release` always builds the controller's system, so listing it is allowed but redundant: its
+`release-<system>` builds the same derivation, and the promotion deploys `release`. Pull requests build them all, and the promotion gives each host the release of the system its
+`/health` reports. A host whose system has none fails the promotion before any host is deployed. The
+binary cache keeps the controller's system's release pinned as `<project>` and another system's as
+`<project>-<system>`. With `placement`, an Alchemy stack with the release's `Fleet.Placement` (`@schnau/fleet`: its hostname, secret bindings and limits on its host, within the grant the host's configuration gives it), the default branch deploys that stack before the promotion. The stack reads the project's token from `FLEET_TOKEN_FILE` when its `secrets` map it to `placement-token`, which Calder derives for every project when the controller has a `placementKeyFile`. `afterDeploy` adds steps that run after the release is live. With `planDeploys: true`, a same-repo pull request also runs `placement-plan`, `alchemy plan` of the placement's production stage, which changes nothing, so a pull request whose deploy can't work fails before it merges; `Environments.project` and `Project.alchemy` take it too and plan each stage that pushes to the default branch deploy (`plan-<stage>`). It is off by default while Alchemy's state store fails every plan. A pipeline beyond
 that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci/std` `Project.ts`).
 
 - **build** (`Nix.build`): a derivation of the repository's flake. Its value is the output path.
@@ -528,6 +535,15 @@ before the next. The step's wait reason reads `an agent of x86_64-linux to take 
 its log says `tower connected after 41 s` once the agent is back. A command that fails, or an agent that
 doesn't connect within three minutes, leaves the step waiting with that reason until a later wake works.
 
+Promotion endpoints sleep too. An entry of the config's `fleet` is the endpoint's URL, or
+`{ "url": "http://tower:18100", "wake": ["systemctl", "start", "calder-wake@tower.service"] }` for a host
+that sleeps while idle. A deploy asks every endpoint's `/health` (`{"ok": true, "apps": [...], "system":
+"aarch64-darwin"}`) which apps it runs and which Nix system it has; an endpoint that reports no system
+counts as the controller's, as does a project's configured target that doesn't answer, which then fails its
+preflight. One that doesn't answer is asked again every 5 seconds for a minute, and one
+with `wake` for five minutes, while the controller runs its command in the background at most once per
+two minutes. An endpoint that still doesn't answer is unreachable, and the promotion deploys nowhere.
+
 ## Two addresses
 
 The controller listens twice. `listen` is for the private network: Gitea's webhook, agents and their
@@ -603,7 +619,7 @@ retried. `retryDeploys: false` in a project's configuration turns the reruns off
 | Path | What |
 | --- | --- |
 | `packages/core` | `@calder-ci/core`: the API and the plan engine (`Calder.plan` is pure and testable) |
-| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Expo` (runtime versions, EAS updates, TestFlight, Play internal), `Release.promote` (deploy lease, preflight, head check, fencing token, readiness; fails when a host can't be reached or none runs the app), `Pnpm.install`, `Bun.install`, `Vitest.files` |
+| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Expo` (runtime versions, EAS updates, TestFlight, Play internal), `Release.promote` (deploy lease, a release per host system, preflight, head check, fencing token, readiness; fails when a host can't be reached, none runs the app or a host's system has no release), `Pnpm.install`, `Bun.install`, `Vitest.files` |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |

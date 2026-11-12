@@ -738,6 +738,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
       branch: run.branch ?? undefined,
       trust: run.trust,
       event: run.event,
+      system: run.system,
       descriptor,
     })
     if (run.trust === "trusted") {
@@ -747,7 +748,9 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
           dispatch: (workflow, options) =>
             rpc(client.giteaDispatch({ ...auth, workflow, ref: options?.ref ?? null, inputs: { ...options?.inputs } })),
         }),
-        Context.add(Cache, { publish: (path) => rpc(client.cachePublish({ ...auth, path })) }),
+        Context.add(Cache, {
+          publish: (path, options) => rpc(client.cachePublish({ ...auth, path, ...(options?.system === undefined ? {} : { system: options.system }) })),
+        }),
       )
     }
     if (run.event._tag === "PullRequest") {
@@ -780,8 +783,9 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
               _tag: "Held" as const,
               fence: lease.fence,
               unreachable: lease.unreachable,
-              targets: lease.targets.map((target) => ({
+              targets: lease.targets.map(({ host: target, system }) => ({
                 host: target,
+                system,
                 preflight: (descriptor: unknown) =>
                   reconnecting(client.fleetPreflight({ ...auth, target, descriptor })).pipe(
                     Effect.catchTag("FleetRejected", (e) => Effect.fail(new Rejected({ target, status: e.status, reason: e.reason }))),

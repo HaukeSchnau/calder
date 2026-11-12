@@ -77,8 +77,14 @@ export const ConfigSchema = Schema.Struct({
   }),
   /** Gitea owners whose repositories are enrolled when they carry `.calder/ci.ts`. */
   owners: Schema.Array(Schema.String),
-  /** The hosts' promotion endpoints, in deploy order. Calder asks each which apps it runs. */
-  fleet: Schema.Array(Schema.String),
+  /**
+   * The hosts' promotion endpoints, in deploy order. Calder asks each which apps it runs. One whose host
+   * sleeps while idle has `wake`, the command that wakes it, such as `systemctl start calder-wake@tower.service`.
+   */
+  fleet: Schema.Array(Schema.Union([
+    Schema.String,
+    Schema.Struct({ url: Schema.String, wake: Schema.optional(Schema.NonEmptyArray(Schema.String)) }),
+  ])),
   /**
    * Sandboxed workers reach the network only through the controller's egress proxy: hosts in `allow`
    * (`*.example.org` for subdomains) on public addresses, and each `host:port` in `allowPrivate` on any.
