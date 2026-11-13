@@ -64,6 +64,11 @@ const agent = Command.make("agent", {
     Flag.withDescription("A command whose lease subcommand prints ready once the host admits a job"),
     Flag.optional,
   ),
+  portableOnly: Flag.Boolean("portable-only").pipe(
+    Flag.withDescription(
+      "Take only tasks of other systems that may run on this one, none of this platform's own jobs, such as those that need what only another host of it has",
+    ),
+  ),
   evaluator: Flag.String("evaluator").pipe(
     Flag.withDescription(
       "Take the controller's evaluation jobs only, no tasks, and push the derivations they evaluate to this store, the controller's (such as ssh-ng://nix-ssh@controller)",

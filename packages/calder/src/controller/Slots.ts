@@ -18,6 +18,12 @@ export interface Claim {
   readonly label?: string
   /** The run it waits for, whose claims `withdraw` takes out of the queue when the run is superseded. */
   readonly owner?: string
+  /**
+   * While it waits, an agent of one of the platforms `to` may take it instead (`spill`), which completes
+   * `signal`. The claim then no longer waits; its caller runs the job on the agent. The first is the job's
+   * own platform, the rest are other systems it may run on.
+   */
+  readonly spill?: { readonly to: ReadonlyArray<string>; readonly signal: Deferred.Deferred<void> }
 }
 
 interface Waiter extends Claim {
@@ -222,6 +228,24 @@ export const make = (options: {
       for (let i = waiters.length - 1; i >= 0; i--) if (waiters[i]!.owner === owner) waiters.splice(i, 1)
       // Background work may have waited only for those claims.
       grant()
+    },
+    /**
+     * Gives the waiting claim that goes first among those an agent of `platform` may take (`Claim.spill`) to
+     * that agent: takes it out of the queue and completes its signal. False when no such claim waits. An
+     * agent that takes only other systems' jobs (`othersOnly`) takes none whose own platform it has.
+     */
+    spill: (platform: string, othersOnly = false) => {
+      const takers = waiters.filter((w) => w.spill !== undefined && (othersOnly ? w.spill.to.slice(1) : w.spill.to).includes(platform))
+      if (takers.length === 0) return false
+      const at = now()
+      const next = takers.reduce((best, w) =>
+        (w.critical === true) !== (best.critical === true) ? (w.critical === true ? w : best) : before(w, best, at) < 0 ? w : best
+      )
+      waiters.splice(waiters.indexOf(next), 1)
+      Deferred.doneUnsafe(next.spill!.signal, Effect.void)
+      // Background work may have waited only for this claim.
+      grant()
+      return true
     },
     /**
      * Why `claim` would wait for a slot right now, such as `3 of 3 busy: t3code-452 test-server, ...`, or

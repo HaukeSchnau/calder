@@ -244,6 +244,51 @@ const answering = (answers: Record<string, { readonly code?: number; readonly st
   return { spawner, evaluated }
 }
 
+describe("a plan of tasks that may run on another Linux system", () => {
+  /** How the aarch64-linux shell evaluates: to its own system's derivation, to none, or to the run's system's. */
+  const plan = (aarch64: "own" | "none" | "x86_64-linux") =>
+    Effect.gen(function*() {
+      const shellDrv = { drv: "/nix/store/ssssssssssssssssssssssssssssssss-shell.drv", out: "/nix/store/ssssssssssssssssssssssssssssssss-shell", system: "x86_64-linux" }
+      const { spawner } = answering({
+        "nix --version": { stdout: "nix (Nix) 2.34.9" },
+        "nix config": { stdout: "true" },
+        "nix-store --check-validity": {},
+        "nix-store --query": {},
+      }, (attr) =>
+        !attr.includes("aarch64") || aarch64 === "own"
+          ? { ...shellDrv, system: attr.split(".")[1]! }
+          : aarch64 === "none" ? null : { ...shellDrv, system: aarch64 })
+      const flake = Flake.make({ devShells: ["ci"] })
+      const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` })
+      const bundle = Task.make("bundle", { shell: flake.devShells.ci, run: cmd`just bundle`, outputs: { dist: "dist" } })
+      const here = Task.make("here", { shell: flake.devShells.ci, run: cmd`just here`, offload: false })
+      // A build's store path holds the run's system's binaries.
+      const app = Nix.build(Flake.attr("packages.x86_64-linux.app"), { name: "app" })
+      const e2e = Task.make("e2e", { shell: flake.devShells.ci, run: cmd`${app}/bin/e2e` })
+      // One attribute names one system's shell.
+      const pinned = Task.make("pinned", { shell: Flake.attr("devShells.x86_64-linux.ci") as never, run: cmd`just pinned` })
+      const project = Calder.project({ rules: [On.push("main", [qa, bundle, here, e2e, pinned])] })
+      const run = { id: "app-1", project: "app", number: 1, revision: "b", branch: "main", trust: "trusted", event: Event.push("main"),
+        flake: "git+file:///mirror", mirror: "/mirror", mirrors: {}, pipelineDir: "", system: "x86_64-linux" } satisfies RunInfo
+      const spec = yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" })).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      )
+      return Object.fromEntries(spec.steps.flatMap((s) => (s.task === null ? [] : [[s.name, s.task.systems]])))
+    })
+
+  it.effect("names the systems whose dev shell evaluated for those that make nothing system-bound and may offload", () =>
+    Effect.gen(function*() {
+      expect(yield* plan("own")).toEqual({ qa: ["aarch64-linux"], bundle: undefined, here: undefined, e2e: undefined, pinned: undefined })
+    }))
+
+  it.effect("keeps a task on its own system when its dev shell doesn't evaluate for the other, without failing the plan", () =>
+    Effect.gen(function*() {
+      expect(yield* plan("none")).toEqual({ qa: [], bundle: undefined, here: undefined, e2e: undefined, pinned: undefined })
+      // Such as a flake whose aarch64-linux shell takes the x86_64-linux packages.
+      expect(yield* plan("x86_64-linux")).toEqual({ qa: [], bundle: undefined, here: undefined, e2e: undefined, pinned: undefined })
+    }))
+})
+
 describe("a plan with builds whose footprints changed", () => {
   it.effect("evaluates only dev shells and leaves the builds for the build slots of the systems they last built for", () =>
     Effect.gen(function*() {
@@ -270,7 +315,8 @@ describe("a plan with builds whose footprints changed", () => {
       const spec = yield* Effect.gen(function*() {
         return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" }), undefined, { records })
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
-      expect(evaluated).toEqual(["devShells.x86_64-linux.ci"])
+      // The task may also run on aarch64-linux agents, whose dev shell evaluates with it.
+      expect([...new Set(evaluated)]).toEqual(["devShells.x86_64-linux.ci", "devShells.aarch64-linux.ci"])
       expect(spec.steps.find((s) => s.name === "host")?.build).toEqual({ attr: "checks.x86_64-linux.host", drv: null, out: null, system: "aarch64-darwin" })
       expect(spec.deferred).toEqual(["checks.x86_64-linux.host"])
       expect(spec.steps.find((s) => s.name === "qa")?.task?.shell).toBe("devShells.x86_64-linux.ci")
@@ -300,9 +346,10 @@ describe("a plan of a tree another plan evaluated", () => {
       const spec = yield* Effect.gen(function*() {
         return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" }), pullRequest)
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
-      expect(evaluated).toEqual(["devShells.x86_64-linux.ci"])
+      // The task may also run on aarch64-linux agents, whose dev shell evaluates with it.
+      expect([...new Set(evaluated)]).toEqual(["devShells.x86_64-linux.ci", "devShells.aarch64-linux.ci"])
       expect(spec.steps.find((s) => s.name === "host")?.build).toEqual({ attr: "checks.x86_64-linux.host", ...hostDrv })
-      expect(spec.derivations).toEqual({ "checks.x86_64-linux.host": hostDrv, "devShells.x86_64-linux.ci": shellDrv })
+      expect(spec.derivations).toEqual({ "checks.x86_64-linux.host": hostDrv, "devShells.x86_64-linux.ci": shellDrv, "devShells.aarch64-linux.ci": shellDrv })
       expect(spec.reused).toEqual({ revision: pullRequest.revision, attrs: ["checks.x86_64-linux.host", appAttr] })
       expect(spec.app).toBe("app")
     }))
@@ -358,8 +405,10 @@ describe("a plan of a tree another plan evaluated", () => {
       const spec = yield* Effect.gen(function*() {
         return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo({ "flake.nix": "{ }" }), earlier)
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
-      expect(evaluated).toEqual([shellAttr])
-      expect(spec.derivations).toEqual({ [hostAttr]: hostDrv, [shellAttr]: freshShell })
+      // The deploy may also run on aarch64-linux agents, whose dev shell evaluates with it.
+      const spareAttr = "devShells.aarch64-linux.ci"
+      expect([...new Set(evaluated)]).toEqual([shellAttr, spareAttr])
+      expect(spec.derivations).toEqual({ [hostAttr]: hostDrv, [shellAttr]: freshShell, [spareAttr]: freshShell })
       expect(spec.reused).toEqual({ revision: "1".repeat(40), attrs: [hostAttr, appAttr] })
     }))
 

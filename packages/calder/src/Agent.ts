@@ -34,6 +34,8 @@ export interface Options {
    * derivations they evaluate to this store, the controller's (`calder agent --evaluator <store>`).
    */
   readonly evaluator: string | null
+  /** Takes only tasks of other systems that may run on this one (PlannedStep `systems`), none of its platform's own. */
+  readonly portableOnly: boolean
 }
 
 /** Sends `signal` to a process group; false once the group is gone. */
@@ -192,7 +194,7 @@ export const run = (options: Options) =>
     yield* Effect.suspend(() => {
       offering = offered()
       return client.work({ ...auth, platform: options.platform, slots: offering, running: [...running.keys()], build: Build.id, compatibility,
-        evaluator: options.evaluator !== null }).pipe(
+        evaluator: options.evaluator !== null, portableOnly: options.portableOnly }).pipe(
         Stream.runForEach(obey),
       )
     }).pipe(

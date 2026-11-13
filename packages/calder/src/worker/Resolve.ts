@@ -179,6 +179,23 @@ export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
     }
   })
 
+/** The Linux systems whose agents take each other's portable tasks (Runs.ts `place`). */
+const linuxSystems: ReadonlyArray<string> = ["aarch64-linux", "x86_64-linux"]
+
+/**
+ * Whether a task may run on an agent of another Linux system than the run's, in that system's dev shell: one
+ * that offloads and makes or reaches nothing that depends on where it ran, so no outputs, artifacts, lease,
+ * secrets or preview, and whose setup has no platform of its own. Its shells name an output of each system,
+ * not one attribute (`Flake.attr`), and its command interpolates only tasks' values: a build's or an
+ * output's store path holds binaries of the run's system.
+ */
+const portable = (def: Extract<Step.Any["def"], { readonly _tag: "Task" }>, preview: boolean) =>
+  def.shell !== undefined && def.shell.output !== "attr" && def.platform === undefined && def.offload !== false && !preview &&
+  Object.keys(def.outputs).length === 0 && Object.keys(def.artifacts).length === 0 && def.lease === undefined &&
+  Step.taskSecrets(def).length === 0 && Step.taskCommand(def).steps.every((s) => s.def._tag === "Task") &&
+  (def.setup === undefined ||
+    (def.setup.def._tag === "Setup" && def.setup.def.platform === undefined && def.setup.def.shell?.output !== "attr"))
+
 /**
  * A key for every file of a task's `each`: the task's own key base (with its setup's key), the file,
  * everything it imports and its package's data files.
@@ -1356,11 +1373,22 @@ export const resolve = (
       const def = p.step.def
       return (def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined ? [Flake.attrPath(def.shell, run.system)] : []
     }))]
+    // The dev shells a portable task and its setup would enter on agents of the other Linux systems. They
+    // evaluate with the plan's, and one that doesn't keeps the task off that system instead of failing the plan.
+    const others = linuxSystems.includes(run.system) ? linuxSystems.filter((s) => s !== run.system) : []
+    const portableShells = (p: (typeof plan.steps)[number]) => {
+      const def = p.step.def
+      if (def._tag !== "Task" || !portable(def, p.preview)) return []
+      const setupShell = def.setup === undefined || def.setup.def._tag !== "Setup" ? undefined : def.setup.def.shell
+      return [def.shell!, ...(setupShell === undefined ? [] : [setupShell])]
+    }
+    const spares = [...new Set(plan.steps.flatMap((p) => portableShells(p).flatMap((shell) => others.map((s) => Flake.attrPath(shell, s)))))]
+      .filter((attr) => !shells.includes(attr))
     const job = Option.getOrUndefined(yield* Effect.serviceOption(Job))
     const log: Log = (text) => job === undefined ? Effect.void : job.log("calder", text)
     // Dev shells first: an evaluator's later attributes' footprints include what earlier ones read, and a
     // shell, which reads little more than the flake's Nix files, then keeps its record when sources change.
-    const attrs = [...new Set([...shells, ...builds])]
+    const attrs = [...new Set([...shells, ...spares, ...builds])]
     const refused = attrs.filter((attr) => Flake.components(attr) === null)
     if (refused.length > 0) {
       return yield* new Calder.PlanError({
@@ -1386,7 +1414,7 @@ export const resolve = (
     // Builds whose footprints changed are evaluated together once the run's first of them runs, which
     // records their footprints (see Runs.ts `evaluation`). The plan evaluates only dev shells, which task
     // keys need now, and an audit everything.
-    const unknown = attrs.filter((attr) => !known.has(attr) && (audit || shells.includes(attr)))
+    const unknown = attrs.filter((attr) => !known.has(attr) && (audit || shells.includes(attr) || spares.includes(attr)))
     const deferred = attrs.filter((attr) => !known.has(attr) && !unknown.includes(attr))
     if (deferred.length > 0) yield* log(`left ${deferred.length} builds to evaluate when the first of them runs`)
     // Until then, a deferred build waits for a build slot of the system its last record built for.
@@ -1421,8 +1449,9 @@ export const resolve = (
         })
       ),
     )
-    const large = result.tooLarge.values().next()
-    if (large.done !== true) return yield* new Calder.PlanError({ message: large.value.message })
+    // A spare shell too large to evaluate only keeps its tasks off that system.
+    const large = [...result.tooLarge].find(([attr]) => !spares.includes(attr))
+    if (large !== undefined) return yield* new Calder.PlanError({ message: large[1].message })
     const evaluated = new Map([...known, ...result.derivations])
     // Evaluated in the order a plan evaluates, so their footprints keep as much as the plan's would.
     const left = deferred.filter((attr) => !evaluated.has(attr))
@@ -1548,6 +1577,10 @@ export const resolve = (
                 secrets: [...Step.taskSecrets(def)],
                 platform: def.platform ?? null,
                 offload: def.offload !== false,
+                ...(others.length === 0 || portableShells(p).length === 0 ? {} : {
+                  // A shell of another system's attribute may still build for the run's, which that system can't enter.
+                  systems: others.filter((s) => portableShells(p).every((shell) => evaluated.get(Flake.attrPath(shell, s))?.system === s)),
+                }),
                 preview: p.preview,
                 lease: def.lease ?? false,
               },

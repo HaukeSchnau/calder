@@ -11,8 +11,9 @@ const ticks = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }))
 
 const connect = (
   agents: Agents.Agents["Service"],
-  { running = [], compatibility = 1, name = "mac-a", slots = 1, platform = "aarch64-darwin", evaluator = false }: {
+  { running = [], compatibility = 1, name = "mac-a", slots = 1, platform = "aarch64-darwin", evaluator = false, portableOnly = false }: {
     evaluator?: boolean
+    portableOnly?: boolean
     running?: ReadonlyArray<string>
     compatibility?: number
     name?: string
@@ -22,7 +23,7 @@ const connect = (
 ) =>
   Effect.gen(function*() {
     const orders: Array<AgentOrder> = []
-    const fiber = yield* agents.connect({ ...auth, name }, { platform, slots, running, build: "b1", compatibility, evaluator }).pipe(
+    const fiber = yield* agents.connect({ ...auth, name }, { platform, slots, running, build: "b1", compatibility, evaluator, portableOnly }).pipe(
       Stream.runForEach((order) => Effect.sync(() => orders.push(order))),
       Effect.forkChild,
     )
@@ -86,7 +87,7 @@ describe("Agents", () => {
       yield* Fiber.interrupt(before.fiber)
 
       yield* connect(agents, { running: ["a"] })
-      expect(agents.usage()).toEqual([{ name: "mac-a", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true, evaluator: false }])
+      expect(agents.usage()).toEqual([{ name: "mac-a", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true, evaluator: false, portableOnly: false, free: 0 }])
 
       const again = yield* connect(agents)
       expect(yield* Fiber.join(kept)).toBe(-1)
@@ -365,6 +366,59 @@ describe("Agents", () => {
       expect(yield* Fiber.join(meanwhile)).toBe(-2)
       // Long gone, an evaluation doesn't wait at all.
       expect(yield* agents.run({ id: "later", token: "tla" }, "aarch64-linux", { evaluation: true, within: "2 minutes" })).toBe(-2)
+    }))
+
+  it.effect("a job that may also run on other platforms goes to an agent of any of them, its own platform's first, and hears which before the agent does", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", 1)
+      const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux" })
+      const vm = yield* connect(agents, { name: "m1-linux", platform: "aarch64-linux" })
+      const heard: Array<string> = []
+      const assigned = (job: string, orders: ReadonlyArray<AgentOrder>) => (agent: { name: string; platform: string }) =>
+        void heard.push(`${job} to ${agent.name} (${agent.platform}) after ${orders.length} orders`)
+      const first = yield* Effect.forkChild(agents.run({ id: "a", token: "ta" }, "aarch64-linux", {
+        wait: false,
+        also: ["x86_64-linux"],
+        assigned: assigned("a", vm.orders),
+      }))
+      yield* ticks
+      const second = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-linux", {
+        wait: false,
+        also: ["x86_64-linux"],
+        assigned: assigned("b", tower.orders),
+      }))
+      yield* ticks
+      expect(heard).toEqual(["a to m1-linux (aarch64-linux) after 0 orders", "b to tower (x86_64-linux) after 0 orders"])
+      expect(vm.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "b", token: "tb" }])
+      // Without `also` only its own platform's agents take it, and none has a slot left.
+      expect(yield* agents.run({ id: "c", token: "tc" }, "aarch64-linux", { wait: false })).toBe(-2)
+      yield* agents.exited({ ...auth, name: "m1-linux" }, "a", 0)
+      yield* agents.exited({ ...auth, name: "tower" }, "b", 0)
+      expect(yield* Fiber.join(first)).toBe(0)
+      expect(yield* Fiber.join(second)).toBe(0)
+    }))
+
+  it.effect("an agent that takes only other systems' tasks takes none of its own platform's jobs", () =>
+    Effect.gen(function*() {
+      const agents = Agents.make("secret", 1)
+      const dev = yield* connect(agents, { name: "dev-hauke-tasks", platform: "x86_64-linux", slots: 2, portableOnly: true })
+      // Pinned to x86_64-linux, such as an Android build that needs the tower's SDK.
+      expect(yield* agents.run({ id: "pinned", token: "tp" }, "x86_64-linux", { wait: false })).toBe(-2)
+      expect(yield* agents.run({ id: "own", token: "to" }, "aarch64-linux", { wait: false })).toBe(-2)
+      // With a plain agent of the job's own platform free too, the portable task takes the slot only the
+      // portable-only agent can fill, and leaves the plain one to jobs that need it.
+      const vm = yield* connect(agents, { name: "m1-linux", platform: "aarch64-linux" })
+      const portable = yield* Effect.forkChild(agents.run({ id: "portable", token: "tq" }, "aarch64-linux", { wait: false, also: ["x86_64-linux"] }))
+      yield* ticks
+      expect(dev.orders).toEqual([{ _tag: "Start", job: "portable", token: "tq" }])
+      const pinned = yield* Effect.forkChild(agents.run({ id: "aarch64", token: "ta" }, "aarch64-linux", { wait: false }))
+      yield* ticks
+      expect(vm.orders).toEqual([{ _tag: "Start", job: "aarch64", token: "ta" }])
+      yield* agents.exited({ ...auth, name: "dev-hauke-tasks" }, "portable", 0)
+      yield* agents.exited({ ...auth, name: "m1-linux" }, "aarch64", 0)
+      expect(yield* Fiber.join(portable)).toBe(0)
+      expect(yield* Fiber.join(pinned)).toBe(0)
     }))
 
   it.effect("agents need the secret", () =>

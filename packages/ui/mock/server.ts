@@ -50,7 +50,7 @@ function overview(world: World, now: number, seq: number): Domain.Overview {
       builds: running.filter((s) => s.plan.kind === "build").length,
       buildsMax: 3,
     },
-    agents: [{ name: "mac-a", platform: DARWIN, slots: 2, running: running.filter((s) => s.plan.platform === DARWIN).length, connected: world.agentGoneAt === null, build: "dev", compatibility: 1, current: true, evaluator: false }],
+    agents: [{ name: "mac-a", platform: DARWIN, slots: 2, running: running.filter((s) => s.plan.platform === DARWIN).length, connected: world.agentGoneAt === null, build: "dev", compatibility: 1, current: true, evaluator: false, portableOnly: false }],
   }
 }
 
