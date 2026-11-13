@@ -213,6 +213,19 @@ describe("Agents", () => {
       expect(a.log.at(-1)).toBe("tower connected after 0 s")
     }))
 
+  it.effect("a sleeper's host is woken only once its agent has been away for a minute", () =>
+    Effect.gen(function*() {
+      const { agents, woken } = sleeping(Effect.void)
+      const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux", slots: 1 })
+      yield* Fiber.interrupt(tower.fiber)
+      yield* ticks
+      yield* waitFor(agents, "a")
+      yield* later("45 seconds")
+      expect(woken.count).toBe(0)
+      yield* later("15 seconds")
+      expect(woken.count).toBe(1)
+    }))
+
   it.effect("only a job that no connected agent of its platform takes wakes that platform's sleepers", () =>
     Effect.gen(function*() {
       const { agents, woken } = sleeping(Effect.void)

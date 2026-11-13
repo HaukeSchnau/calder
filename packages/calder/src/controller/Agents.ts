@@ -70,6 +70,12 @@ export const wakeEvery = "2 minutes"
 export const wakeTimeout = "3 minutes"
 /** How often a waiting job checks whether a sleeper's host is due for another wake. */
 const wakeCheck = "15 seconds"
+/**
+ * How long a sleeper's agent must be away before its host is woken. Agents lose the controller for a few
+ * seconds about 20 times an hour while their hosts are up, and a wake then only waited for an answer it
+ * didn't get: fleet-wake failed the unit, which can roll back a deploy of the controller's host.
+ */
+export const awayBeforeWake = "1 minute"
 
 export interface AgentUsage {
   readonly name: string
@@ -171,6 +177,8 @@ export const make = (
   const placed = new Map<string, Placed>()
   const waiters: Array<Waiter> = []
   const wakes = new Map<string, Wake>()
+  /** When each agent last disconnected. */
+  const leftAt = new Map<string, number>()
   // Bumped on every connect, so a grace timer knows whether its agent came back.
   const generations = new Map<string, number>()
   // Every agent seen since start, so a missing one stays visible.
@@ -293,14 +301,16 @@ export const make = (
   }
 
   /**
-   * Wakes the hosts of the platform's sleepers that are away, each once per `wakeEvery` and only after
-   * its last wake brought the agent or failed.
+   * Wakes the hosts of the platform's sleepers whose agents have been away for `awayBeforeWake`, each
+   * once per `wakeEvery` and only after its last wake brought the agent or failed.
    */
   const rouse = (platform: string) =>
     Effect.gen(function*() {
       const now = yield* Clock.currentTimeMillis
       for (const sleeper of sleepers) {
         if (sleeper.platform !== platform || connections.has(sleeper.name)) continue
+        const away = leftAt.get(sleeper.name)
+        if (away !== undefined && now - away < Duration.toMillis(awayBeforeWake)) continue
         const last = wakes.get(sleeper.name)
         const due = last === undefined ||
           (now - last.at >= Duration.toMillis(wakeEvery) && (last.connected || last.failure !== null))
@@ -444,18 +454,21 @@ export const make = (
             yield* assign
             yield* Effect.addFinalizer(() =>
               Effect.gen(function*() {
+                // Read first: between taking the connection away and recording when, nothing may run, or
+                // `rouse` would see the agent neither connected nor just gone, and wake its host.
+                const now = yield* Clock.currentTimeMillis
                 if (connections.get(auth.name) !== connection) return
                 connections.delete(auth.name)
+                leftAt.set(auth.name, now)
                 yield* Effect.logInfo(`agent ${auth.name} disconnected`)
                 // Evaluations give up on the agents once none came back within the grace, not at the first
                 // dropped connection: dev-hauke's reconnects within seconds, about 20 times an hour.
                 if (evaluator && connection.compatibility === version && !evaluatorConnected()) {
-                  const left = yield* Clock.currentTimeMillis
-                  evaluatorLeft = left
+                  evaluatorLeft = now
                   yield* Effect.sleep(evaluatorGrace).pipe(
                     Effect.andThen(Effect.gen(function*() {
                       // An evaluator came back since, or left again and has a grace of its own.
-                      if (evaluatorLeft !== left || evaluatorConnected()) return
+                      if (evaluatorLeft !== now || evaluatorConnected()) return
                       for (const w of waiters.filter((w) => w.evaluation)) yield* Deferred.succeed(w.abandoned, undefined)
                     })),
                     Effect.forkDetach,
