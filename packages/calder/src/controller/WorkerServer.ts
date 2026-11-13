@@ -1,7 +1,7 @@
 import { BunSocketServer } from "@effect/platform-bun"
 import type { Domain } from "@calder-ci/api"
 import { Deferred, Effect, Layer, References, Scope } from "effect"
-import { RpcSerialization, RpcServer } from "effect/rpc"
+import { RpcMiddleware, RpcSerialization, RpcServer } from "effect/rpc"
 import { SqlClient } from "effect/sql"
 import { chmodSync, chownSync, existsSync, rmSync } from "node:fs"
 import { join } from "node:path"
@@ -16,6 +16,7 @@ import { Leases } from "./Leases.ts"
 import { Live } from "./Live.ts"
 import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
+import { named, tracked } from "./Stopping.ts"
 
 /**
  * Which lease a deploy takes, and what its run must still be current against when its turn comes. A
@@ -42,6 +43,14 @@ export const pullRequestStale = (number: number, pull: { readonly open: boolean;
   !pull.open ? `pull request #${number} is ${pull.merged ? "merged" : "closed"}`
   : pull.sha !== revision ? `pull request #${number} moved on to ${pull.sha.slice(0, 12)}`
   : undefined
+
+/** Lists each worker call in a stopping controller's report while the call runs. */
+export class Tracked extends RpcMiddleware.Service<Tracked>()("calder/controller/WorkerServer/Tracked") {}
+
+/** The worker calls, each tracked; the worker socket and agents' `/worker` WebSocket serve them. */
+export const TrackedRpcs = WorkerRpcs.middleware(Tracked)
+
+export const tracking = Layer.succeed(Tracked)((effect, { rpc }) => tracked(rpc._tag, effect))
 
 export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const config = yield* Config
@@ -259,14 +268,15 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
     const group = workersGroup(config.jobs.mode)
     if (group !== undefined) chownSync(path, process.getuid!(), group)
   }))
-  const server = RpcServer.layer(WorkerRpcs).pipe(
+  const server = named("WorkerServer's RPC server", RpcServer.layer(TrackedRpcs)).pipe(
     Layer.provide(handlers),
+    Layer.provide(tracking),
     Layer.provide(RpcServer.layerProtocolSocketServer),
     Layer.provide(RpcSerialization.layerNdjson),
   )
   // Workers exit right after reporting, which resets their connection; that's not worth an error log.
   return Layer.provideMerge(permissions, server).pipe(
-    Layer.provide(BunSocketServer.layer({ path })),
+    Layer.provide(named("WorkerServer's socket", BunSocketServer.layer({ path }))),
     Layer.provide(Layer.succeed(References.UnhandledLogLevel, "Debug")),
   )
 }))

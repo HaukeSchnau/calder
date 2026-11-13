@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
-import { named, report } from "../src/controller/Stopping.ts"
+import { named, report, tracked } from "../src/controller/Stopping.ts"
 
 describe("a stopping controller's report", () => {
   it.effect("names the layer whose finalizers still run, and only until they end", () =>
@@ -19,6 +19,16 @@ describe("a stopping controller's report", () => {
 
       yield* Deferred.succeed(gate, undefined)
       yield* Fiber.join(closing)
+      expect(report(Date.now())).toEqual([])
+    }))
+
+  it.effect("lists a worker call while it runs", () =>
+    Effect.gen(function*() {
+      const gate = yield* Deferred.make<void>()
+      const call = yield* Effect.forkChild(tracked("cachePublish", Deferred.await(gate)), { startImmediately: true })
+      expect(report(Date.now())).toEqual(["worker calls in flight: cachePublish for 0 s"])
+      yield* Deferred.succeed(gate, undefined)
+      yield* Fiber.join(call)
       expect(report(Date.now())).toEqual([])
     }))
 })
