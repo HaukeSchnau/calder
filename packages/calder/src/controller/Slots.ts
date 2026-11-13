@@ -1,4 +1,5 @@
 import { Deferred, Duration, Effect } from "effect"
+import type { Pool } from "../Protocol.ts"
 
 /** What a step asks the pool for. */
 export interface Claim {
@@ -19,11 +20,11 @@ export interface Claim {
   /** The run it waits for, whose claims `withdraw` takes out of the queue when the run is superseded. */
   readonly owner?: string
   /**
-   * While it waits, an agent of one of the platforms `to` may take it instead (`spill`), which completes
-   * `signal`. The claim then no longer waits; its caller runs the job on the agent. The first is the job's
-   * own platform, the rest are other systems it may run on.
+   * While it waits, an agent of one of the platforms `to` that runs `pool`'s jobs may take it instead
+   * (`spill`), which completes `signal`. The claim then no longer waits; its caller runs the job on the
+   * agent. The first is the job's own platform, the rest are other systems it may run on.
    */
-  readonly spill?: { readonly to: ReadonlyArray<string>; readonly signal: Deferred.Deferred<void> }
+  readonly spill?: { readonly to: ReadonlyArray<string>; readonly pool: Pool; readonly signal: Deferred.Deferred<void> }
 }
 
 interface Waiter extends Claim {
@@ -230,12 +231,15 @@ export const make = (options: {
       grant()
     },
     /**
-     * Gives the waiting claim that goes first among those an agent of `platform` may take (`Claim.spill`) to
-     * that agent: takes it out of the queue and completes its signal. False when no such claim waits. An
-     * agent that takes only other systems' jobs (`othersOnly`) takes none whose own platform it has.
+     * Gives the waiting claim that goes first among those an agent of `platform` that runs `pools`' jobs may
+     * take (`Claim.spill`) to that agent: takes it out of the queue and completes its signal. False when no
+     * such claim waits. An agent that takes only other systems' jobs (`othersOnly`) takes none whose own
+     * platform it has.
      */
-    spill: (platform: string, othersOnly = false) => {
-      const takers = waiters.filter((w) => w.spill !== undefined && (othersOnly ? w.spill.to.slice(1) : w.spill.to).includes(platform))
+    spill: (platform: string, othersOnly = false, pools: ReadonlyArray<Pool> = ["trusted"]) => {
+      const takers = waiters.filter((w) =>
+        w.spill !== undefined && pools.includes(w.spill.pool) && (othersOnly ? w.spill.to.slice(1) : w.spill.to).includes(platform)
+      )
       if (takers.length === 0) return false
       const at = now()
       const next = takers.reduce((best, w) =>
@@ -247,6 +251,9 @@ export const make = (options: {
       grant()
       return true
     },
+    /** Where and for whom the claims waiting right now may spill (`Claim.spill`). */
+    spilling: (): ReadonlyArray<{ readonly to: ReadonlyArray<string>; readonly pool: Pool }> =>
+      waiters.flatMap((w) => (w.spill === undefined ? [] : [{ to: w.spill.to, pool: w.spill.pool }])),
     /**
      * Why `claim` would wait for a slot right now, such as `3 of 3 busy: t3code-452 test-server, ...`, or
      * null when it would get one at once.

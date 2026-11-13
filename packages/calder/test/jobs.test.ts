@@ -107,11 +107,11 @@ describe("starting a worker's unit", () => {
 })
 
 describe("agents", () => {
-  it("take trusted jobs and same-repo pull requests' evaluations, never a fork's or other pull-request work", () => {
-    expect(Jobs.refusedOnAgents({ pool: "trusted" })).toBe(false)
+  it("evaluate trusted runs and same-repo pull requests, never a fork's; other jobs go by the pools an agent runs", () => {
+    expect(Jobs.refusedOnAgents({ pool: "trusted", evaluation: true })).toBe(false)
     expect(Jobs.refusedOnAgents({ pool: "pr", evaluation: true })).toBe(false)
     expect(Jobs.refusedOnAgents({ pool: "fork", evaluation: true })).toBe(true)
-    expect(Jobs.refusedOnAgents({ pool: "fork" })).toBe(true)
-    expect(Jobs.refusedOnAgents({ pool: "pr" })).toBe(true)
+    expect(Jobs.refusedOnAgents({ pool: "fork" })).toBe(false)
+    expect(Jobs.refusedOnAgents({ pool: "pr" })).toBe(false)
   })
 })

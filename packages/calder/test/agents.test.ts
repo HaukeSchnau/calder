@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { type Duration, Effect, Fiber, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import * as Agents from "../src/controller/Agents.ts"
-import type { AgentOrder } from "../src/Protocol.ts"
+import type { AgentOrder, Pool } from "../src/Protocol.ts"
 
 const auth = { token: "secret", name: "mac-a" }
 
@@ -11,9 +11,10 @@ const ticks = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }))
 
 const connect = (
   agents: Agents.Agents["Service"],
-  { running = [], compatibility = 1, name = "mac-a", slots = 1, platform = "aarch64-darwin", evaluator = false, portableOnly = false }: {
+  { running = [], compatibility = 1, name = "mac-a", slots = 1, platform = "aarch64-darwin", evaluator = false, portableOnly = false, pools }: {
     evaluator?: boolean
     portableOnly?: boolean
+    pools?: ReadonlyArray<Pool>
     running?: ReadonlyArray<string>
     compatibility?: number
     name?: string
@@ -23,7 +24,16 @@ const connect = (
 ) =>
   Effect.gen(function*() {
     const orders: Array<AgentOrder> = []
-    const fiber = yield* agents.connect({ ...auth, name }, { platform, slots, running, build: "b1", compatibility, evaluator, portableOnly }).pipe(
+    const fiber = yield* agents.connect({ ...auth, name }, {
+      platform,
+      slots,
+      running,
+      build: "b1",
+      compatibility,
+      evaluator,
+      portableOnly,
+      ...(pools === undefined ? {} : { pools }),
+    }).pipe(
       Stream.runForEach((order) => Effect.sync(() => orders.push(order))),
       Effect.forkChild,
     )
@@ -64,12 +74,12 @@ describe("Agents", () => {
       const second = yield* Effect.forkChild(agents.run({ id: "b", token: "tb" }, "aarch64-darwin"))
       yield* ticks
       const mac = yield* connect(agents)
-      expect(mac.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
+      expect(mac.orders).toEqual([{ _tag: "Start", job: "a", token: "ta", pool: "trusted" }])
 
       yield* agents.exited(auth, "a", 0)
       expect(yield* Fiber.join(first)).toBe(0)
       yield* ticks
-      expect(mac.orders.at(-1)).toEqual({ _tag: "Start", job: "b", token: "tb" })
+      expect(mac.orders.at(-1)).toEqual({ _tag: "Start", job: "b", token: "tb", pool: "trusted" })
 
       yield* agents.stop("b")
       yield* ticks
@@ -87,7 +97,7 @@ describe("Agents", () => {
       yield* Fiber.interrupt(before.fiber)
 
       yield* connect(agents, { running: ["a"] })
-      expect(agents.usage()).toEqual([{ name: "mac-a", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true, evaluator: false, portableOnly: false, free: 0 }])
+      expect(agents.usage()).toEqual([{ name: "mac-a", platform: "aarch64-darwin", slots: 1, running: 1, connected: true, build: "b1", compatibility: 1, current: true, evaluator: false, portableOnly: false, pools: ["trusted"], free: 0 }])
 
       const again = yield* connect(agents)
       expect(yield* Fiber.join(kept)).toBe(-1)
@@ -106,7 +116,7 @@ describe("Agents", () => {
       expect(agents.usage()[0]).toMatchObject({ connected: true, compatibility: 1, current: false })
 
       const current = yield* connect(agents, { compatibility: 2, name: "m2" })
-      expect(current.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
+      expect(current.orders).toEqual([{ _tag: "Start", job: "a", token: "ta", pool: "trusted" }])
       yield* agents.exited({ ...auth, name: "m2" }, "a", 0)
       expect(yield* Fiber.join(job)).toBe(0)
     }))
@@ -122,7 +132,7 @@ describe("Agents", () => {
 
       yield* agents.exited(auth, "old", 143)
       yield* ticks
-      expect(mac.orders.at(-1)).toEqual({ _tag: "Start", job: "new", token: "tn" })
+      expect(mac.orders.at(-1)).toEqual({ _tag: "Start", job: "new", token: "tn", pool: "trusted" })
       yield* agents.exited(auth, "new", 0)
       expect(yield* Fiber.join(job)).toBe(0)
     }))
@@ -141,7 +151,7 @@ describe("Agents", () => {
       expect(after.orders).toEqual([{ _tag: "Stop", job: "a" }])
       yield* agents.exited(auth, "a", 143)
       yield* ticks
-      expect(after.orders.at(-1)).toEqual({ _tag: "Start", job: "b", token: "tb" })
+      expect(after.orders.at(-1)).toEqual({ _tag: "Start", job: "b", token: "tb", pool: "trusted" })
       yield* agents.exited(auth, "b", 0)
       expect(yield* Fiber.join(waiting)).toBe(0)
     }))
@@ -159,7 +169,7 @@ describe("Agents", () => {
       expect(mac.orders).toEqual([])
       yield* agents.offer(auth, 2)
       yield* ticks
-      expect(mac.orders).toEqual([{ _tag: "Start", job: "b", token: "tb" }])
+      expect(mac.orders).toEqual([{ _tag: "Start", job: "b", token: "tb", pool: "trusted" }])
       expect(agents.usage()[0]).toMatchObject({ slots: 2, running: 1 })
       yield* agents.exited(auth, "b", 0)
       expect(yield* Fiber.join(waiting)).toBe(0)
@@ -199,7 +209,7 @@ describe("Agents", () => {
       expect(b.reasons.slice(-2)).toEqual([waking, failed])
 
       const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux", slots: 2 })
-      expect(tower.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }, { _tag: "Start", job: "b", token: "tb" }])
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "a", token: "ta", pool: "trusted" }, { _tag: "Start", job: "b", token: "tb", pool: "trusted" }])
       expect(a.log.at(-1)).toBe("tower connected after 0 s")
     }))
 
@@ -226,7 +236,7 @@ describe("Agents", () => {
       yield* later("40 seconds")
       const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux" })
       expect(a.log).toEqual(["waking tower", "tower connected after 40 s"])
-      expect(tower.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "a", token: "ta", pool: "trusted" }])
 
       yield* Fiber.interrupt(tower.fiber)
       yield* agents.exited({ ...auth, name: "tower" }, "a", 0)
@@ -266,15 +276,15 @@ describe("Agents", () => {
       expect(reasons).toEqual(["an evaluator agent to take it"])
       // An x86_64-linux agent that isn't an evaluator takes the task, never the evaluation.
       const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux", slots: 2 })
-      expect(tower.orders).toEqual([{ _tag: "Start", job: "task", token: "tt" }])
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "task", token: "tt", pool: "trusted" }])
       // The evaluator takes the evaluation once it has a slot, and no task.
       yield* agents.offer({ ...auth, name: "dev-hauke" }, 2)
       yield* ticks
-      expect(dev.orders).toEqual([{ _tag: "Start", job: "eval", token: "te" }])
+      expect(dev.orders).toEqual([{ _tag: "Start", job: "eval", token: "te", pool: "trusted" }])
       const another = yield* Effect.forkChild(agents.run({ id: "task2", token: "t2" }, "x86_64-linux"))
       yield* ticks
       expect(dev.orders).toHaveLength(1)
-      expect(tower.orders.at(-1)).toEqual({ _tag: "Start", job: "task2", token: "t2" })
+      expect(tower.orders.at(-1)).toEqual({ _tag: "Start", job: "task2", token: "t2", pool: "trusted" })
       expect(agents.usage().find((a) => a.name === "dev-hauke")?.evaluator).toBe(true)
 
       yield* agents.exited({ ...auth, name: "dev-hauke" }, "eval", 0)
@@ -389,8 +399,8 @@ describe("Agents", () => {
       }))
       yield* ticks
       expect(heard).toEqual(["a to m1-linux (aarch64-linux) after 0 orders", "b to tower (x86_64-linux) after 0 orders"])
-      expect(vm.orders).toEqual([{ _tag: "Start", job: "a", token: "ta" }])
-      expect(tower.orders).toEqual([{ _tag: "Start", job: "b", token: "tb" }])
+      expect(vm.orders).toEqual([{ _tag: "Start", job: "a", token: "ta", pool: "trusted" }])
+      expect(tower.orders).toEqual([{ _tag: "Start", job: "b", token: "tb", pool: "trusted" }])
       // Without `also` only its own platform's agents take it, and none has a slot left.
       expect(yield* agents.run({ id: "c", token: "tc" }, "aarch64-linux", { wait: false })).toBe(-2)
       yield* agents.exited({ ...auth, name: "m1-linux" }, "a", 0)
@@ -411,14 +421,40 @@ describe("Agents", () => {
       const vm = yield* connect(agents, { name: "m1-linux", platform: "aarch64-linux" })
       const portable = yield* Effect.forkChild(agents.run({ id: "portable", token: "tq" }, "aarch64-linux", { wait: false, also: ["x86_64-linux"] }))
       yield* ticks
-      expect(dev.orders).toEqual([{ _tag: "Start", job: "portable", token: "tq" }])
+      expect(dev.orders).toEqual([{ _tag: "Start", job: "portable", token: "tq", pool: "trusted" }])
       const pinned = yield* Effect.forkChild(agents.run({ id: "aarch64", token: "ta" }, "aarch64-linux", { wait: false }))
       yield* ticks
-      expect(vm.orders).toEqual([{ _tag: "Start", job: "aarch64", token: "ta" }])
+      expect(vm.orders).toEqual([{ _tag: "Start", job: "aarch64", token: "ta", pool: "trusted" }])
       yield* agents.exited({ ...auth, name: "dev-hauke-tasks" }, "portable", 0)
       yield* agents.exited({ ...auth, name: "m1-linux" }, "aarch64", 0)
       expect(yield* Fiber.join(portable)).toBe(0)
       expect(yield* Fiber.join(pinned)).toBe(0)
+    }))
+
+  it.effect("pull requests' jobs go only to agents that run them in their host's sandbox, with the controller's allowlist", () =>
+    Effect.gen(function*() {
+      const egress = { allow: ["registry.npmjs.org"], allowPrivate: ["git.schnau.dev:443"] }
+      const agents = Agents.make("secret", 1, [], egress)
+      const plain = yield* connect(agents, { name: "m1-linux", platform: "x86_64-linux" })
+      expect(yield* agents.run({ id: "pr", token: "tp" }, "x86_64-linux", { wait: false, pool: "pr" })).toBe(-2)
+      expect(yield* agents.run({ id: "fork", token: "tf" }, "x86_64-linux", { wait: false, pool: "fork" })).toBe(-2)
+      expect(plain.orders).toEqual([])
+      const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux", slots: 3, pools: ["pr", "fork", "trusted"] })
+      expect(agents.usage().find((a) => a.name === "tower")?.pools).toEqual(["pr", "fork", "trusted"])
+      const jobs = yield* Effect.forEach(
+        [["pr", "pr"], ["fork", "fork"], ["push", "trusted"]] as const,
+        ([id, pool]) => Effect.forkChild(agents.run({ id, token: `t${id}` }, "x86_64-linux", { wait: false, pool })),
+      )
+      yield* ticks
+      expect(tower.orders).toEqual([
+        { _tag: "Start", job: "pr", token: "tpr", pool: "pr", egress },
+        { _tag: "Start", job: "fork", token: "tfork", pool: "fork", egress },
+      ])
+      // A trusted job may go to either.
+      expect(plain.orders).toEqual([{ _tag: "Start", job: "push", token: "tpush", pool: "trusted" }])
+      for (const id of ["pr", "fork"]) yield* agents.exited({ ...auth, name: "tower" }, id, 0)
+      yield* agents.exited({ ...auth, name: "m1-linux" }, "push", 0)
+      for (const job of jobs) expect(yield* Fiber.join(job)).toBe(0)
     }))
 
   it.effect("agents need the secret", () =>

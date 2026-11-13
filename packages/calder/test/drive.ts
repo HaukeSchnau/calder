@@ -1,6 +1,6 @@
 // Drives one push run through the real workflow, with stub services around it.
 import type { Domain } from "@calder-ci/api"
-import { Effect, Fiber, Layer, PlatformError, Schedule, Sink, Stream } from "effect"
+import { Effect, Fiber, Layer, PlatformError, Schedule, Sink, Stream, type Duration } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"
 import { type AgentUsage, Agents, make as makeAgents } from "../src/controller/Agents.ts"
@@ -12,7 +12,7 @@ import * as Live from "../src/controller/Live.ts"
 import { Mirror } from "../src/controller/Mirror.ts"
 import { type Project, Projects } from "../src/controller/Projects.ts"
 import * as Rows from "../src/controller/Rows.ts"
-import { InfrastructureRetries, layerCore, type RunsCore, SpillEvery } from "../src/controller/Runs.ts"
+import { InfrastructureRetries, layerCore, RouseAfterStart, type RunsCore, SpillEvery } from "../src/controller/Runs.ts"
 import { Telemetry } from "../src/controller/Telemetry.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
 import { taskKey } from "../src/Keys.ts"
@@ -86,6 +86,8 @@ export interface Drive {
   readonly evaluator?: boolean
   /** The agents that take tasks, read anew whenever the controller looks; none by default. */
   readonly agents?: () => ReadonlyArray<AgentUsage>
+  /** RouseAfterStart: none, unless a test asks for the controller's hold. */
+  readonly rouseAfterStart?: Duration.Input
   /** What `nix-store --check-validity --print-invalid` finds valid, such as an evaluator agent's derivations; without it, the store answers nothing. */
   readonly valid?: (path: string) => boolean
   /**
@@ -131,6 +133,7 @@ export const drive = ({
   statusDelay = () => undefined,
   evaluator = false,
   agents: taskAgents = () => [],
+  rouseAfterStart = "0 millis",
   adoptedEvaluations = [],
   valid,
 }: Drive) =>
@@ -187,6 +190,8 @@ export const drive = ({
     /** Where each step's last job went: to an agent, and which other systems' agents could take it. */
     const placements = new Map<string, { readonly remote: boolean; readonly offload: boolean; readonly systems: ReadonlyArray<string> }>()
     const statuses = new Map<string, string>()
+    /** The platforms whose sleeping agents' hosts the controller woke (Agents `rouse`). */
+    const roused: Array<string> = []
     /** Every commit status Calder reported, in order, as `context: state: description`. */
     const history: Array<string> = []
     const project: Project = { name: "app", repo: "schnau/app", defaultBranch: "main", targets: null, secrets: {}, ...configured }
@@ -198,15 +203,17 @@ export const drive = ({
       }),
       Layer.succeed(InfrastructureRetries)(["5 millis", "5 millis"]),
       Layer.succeed(SpillEvery)("10 millis"),
+      Layer.succeed(RouseAfterStart)(rouseAfterStart),
       Live.layer,
       Layer.succeed(Agents)({
         ...makeAgents(null),
         usage: () => [
           ...(evaluator
-            ? [{ name: "dev-hauke", platform: "x86_64-linux", slots: 2, running: 0, connected: true, build: "b", compatibility, current: true, evaluator: true, portableOnly: false, free: 2 }]
+            ? [{ name: "dev-hauke", platform: "x86_64-linux", slots: 2, running: 0, connected: true, build: "b", compatibility, current: true, evaluator: true, portableOnly: false, pools: ["trusted" as const], free: 2 }]
             : []),
           ...taskAgents(),
         ],
+        rouse: (platform) => Effect.sync(() => void roused.push(platform)),
       }),
       Layer.succeed(Cache)(cache),
       Layer.succeed(Comments)({ note: unused, touch: () => Effect.void }),
@@ -348,5 +355,5 @@ export const drive = ({
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec
     const records = yield* sql<{ attr: string; trust: string }>`select attr, trust from evaluations order by id`
     const trusted = yield* Rows.records({ project: "app", trust: "trusted", fork: 0 })
-    return { status, jobs, statuses, history, steps, pools, large, evaluations, placements, records, trusted, commands, plan: stored, planJob, read: yield* read }
+    return { status, jobs, statuses, history, steps, pools, large, evaluations, placements, roused, records, trusted, commands, plan: stored, planJob, read: yield* read }
   }).pipe(Effect.provide(sqlite))

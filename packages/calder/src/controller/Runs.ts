@@ -148,6 +148,13 @@ const publishFailure = (error: Exec.ExecError): string => {
 /** How often agents' free slots are offered to the tasks waiting for this host's (Slots `spill`). */
 export const SpillEvery = Context.Reference<Duration.Input>("calder/controller/SpillEvery", { defaultValue: () => "5 seconds" })
 
+/**
+ * How long after it starts the controller wakes no agent's host for tasks waiting here. Agents whose
+ * hosts are up reconnect within seconds of it listening, and a host switch restarted it, which a wake
+ * started meanwhile would hold up: on srv-2 a failed wake of the tower failed the switch.
+ */
+export const RouseAfterStart = Context.Reference<Duration.Input>("calder/controller/RouseAfterStart", { defaultValue: () => "3 minutes" })
+
 export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const config = yield* Config
   const sql = yield* SqlClient.SqlClient
@@ -164,6 +171,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const estimates = yield* Estimates.Estimates
   const infrastructureRetries = yield* InfrastructureRetries
   const spillEvery = yield* SpillEvery
+  const rouseFrom = Date.now() + Duration.toMillis(Duration.fromInputUnsafe(yield* RouseAfterStart))
   // Steps a deploy or a preview waits for take one slot of each pool beyond its capacity, so they never
   // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
   const lane = 1
@@ -757,27 +765,34 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   }
 
   /**
-   * A step of another platform runs on an agent of it, and only trusted runs may use those: an agent
-   * runs every worker as one user, without the pull-request sandbox's egress allowlist, private network
-   * and private /tmp.
+   * A step of another platform runs on an agent of it. A pull request's needs one that runs pull
+   * requests' jobs in its host's sandbox (`calder agent --units`), like this host's: an agent that runs
+   * its workers itself does so as one user, without the egress allowlist, private network and private /tmp.
+   * A trusted run's waits for any agent of the platform, which a sleeping one's host is woken for.
    */
-  const refuses = (run: Rows.RunRow, platform: string | null) => platform !== null && platform !== config.system && run.trust !== "trusted"
+  const refuses = (run: Rows.RunRow, platform: string | null) =>
+    platform !== null && platform !== config.system && poolOf(run) !== "trusted" &&
+    // As Agents `takes` places it: a portable-only agent takes no job of its own platform, and one of
+    // another compatibility version none at all.
+    !agents.usage().some((a) => a.platform === platform && a.current && !a.evaluator && !a.portableOnly && a.pools.includes(poolOf(run)))
 
   /** Agents that take load off this host: connected, current, and not only for evaluations. */
   const helpers = () => agents.usage().filter((a) => a.connected && a.current && !a.evaluator)
 
   /**
    * Where a job runs: here, or on an agent, whose workers fetch what local ones read from disk. A job
-   * of another platform needs an agent of it. Other jobs of trusted runs go to a connected agent with a
-   * free slot, which is there to take load off this host, unless they are to run `here`: one of this
-   * platform, or of the other `systems` the task may run on. A job that waits here for a slot may still
-   * go to such an agent once one has a free slot (`spill`).
+   * of another platform needs an agent of it. Other jobs go to a connected agent with a free slot that
+   * runs their pool's jobs, which is there to take load off this host, unless they are to run `here`:
+   * one of this platform, or of the other `systems` the task may run on. A job that waits here for a slot
+   * may still go to such an agent once one has a free slot (`spill`).
    */
   const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false, systems: ReadonlyArray<string> = []) => {
     const foreign = platform !== null && platform !== config.system
-    const spills = !foreign && !here && run.trust === "trusted"
+    const spills = !foreign && !here
+    const pool = poolOf(run)
     const to = [config.system, ...systems]
-    const offload = spills && helpers().some((a) => (a.portableOnly ? systems : to).includes(a.platform) && a.free > 0)
+    const offload = spills &&
+      helpers().some((a) => a.pools.includes(pool) && (a.portableOnly ? systems : to).includes(a.platform) && a.free > 0)
     const remote = foreign || offload
     const system = platform ?? config.system
     const where = remote ? { ...info, flake: "", mirror: `${config.url.replace(/\/$/, "")}/git/${run.project}.git`, mirrors: {}, pipelineDir: "", system } : info
@@ -787,7 +802,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       where,
       platform: remote ? system : platform,
       systems: offload ? systems : [],
-      spill: spills && !offload ? { to, signal: Deferred.makeUnsafe<void>() } : undefined,
+      spill: spills && !offload ? { to, pool, signal: Deferred.makeUnsafe<void>() } : undefined,
     }
   }
   type Placement = ReturnType<typeof place>
@@ -831,7 +846,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     })
   const agentsRefuse = (platform: string | null): Settled => ({
     status: "died",
-    error: { tag: "Died", message: `${platform} steps run on agents, which only take trusted runs`, json: null },
+    error: { tag: "Died", message: `${platform} steps of pull requests need an agent that sandboxes them, and none of ${platform} does`, json: null },
   })
 
   type Executed = Effect.Success<ReturnType<typeof execute>>
@@ -1648,8 +1663,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const key = count === 1 ? shardKeys[0]! : sha256(shardKeys)
       yield* db(sql`update steps set key = ${key} where run_id = ${runId} and name = ${name}`)
       // A same-repo pull request grants a preview task its secrets. It then runs as a trusted job: in
-      // the trusted pool, whose network and home it needs. It never goes to an agent, which only
-      // takes trusted runs.
+      // the trusted pool, whose network and home it needs. It stays on this host, which already holds
+      // the secrets: an agent takes a pull request's jobs in its pull-request sandbox.
       const event = JSON.parse(run.event) as Domain.Event
       const preview = task.preview === true && run.trust === "pr" && run.fork === 0 &&
         event._tag === "PullRequest" && event.fork === false
@@ -1683,6 +1698,13 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         if (hit !== undefined) return yield* settle(run, row, reused(hit))
       }
 
+      // A preview's secrets stay on this host, so one of another platform has nowhere to run.
+      if (preview && task.platform !== null && task.platform !== config.system) {
+        return yield* settle(run, row, {
+          status: "died",
+          error: { tag: "Died", message: `a preview task gets secrets, which stay on ${config.system}, so it can't run on ${task.platform}`, json: null },
+        })
+      }
       if (refuses(run, task.platform)) return yield* settle(run, row, agentsRefuse(task.platform))
       const sharded = count > 1
       // Shards that passed with the same key before don't run again.
@@ -1728,7 +1750,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 withdraw,
               },
               collect,
-            ), { here: task.offload === false, systems: task.systems ?? [] }))
+            ), { here: task.offload === false || preview, systems: task.systems ?? [] }))
           if (!sharded || stopped(r)) return r
           const passed = r.result._tag === "Passed"
           const now = Date.now()
@@ -2223,11 +2245,20 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
 
   // Agents' free slots go to the tasks waiting here that may run there, the one the queue puts first each:
   // a task finds its place once, and without this one that found every agent busy waited for this host
-  // while agents freed up beside it.
-  yield* Effect.sync(() => {
+  // while agents freed up beside it. A sleeping agent's host is woken for them, unless the agent said it
+  // doesn't run their pool's jobs.
+  yield* Effect.gen(function*() {
     for (const agent of helpers()) {
-      for (let free = agent.free; free > 0 && slots.tasks.spill(agent.platform, agent.portableOnly); free--);
+      for (let free = agent.free; free > 0 && slots.tasks.spill(agent.platform, agent.portableOnly, agent.pools); free--);
     }
+    const known = agents.usage().filter((a) => !a.evaluator)
+    const wanted = new Set(slots.tasks.spilling().flatMap(({ to, pool }) =>
+      to.filter((platform) => {
+        const of = known.filter((a) => a.platform === platform)
+        return of.length === 0 || of.some((a) => a.pools.includes(pool))
+      })
+    ))
+    if (Date.now() >= rouseFrom) for (const platform of wanted) yield* agents.rouse(platform)
   }).pipe(Effect.andThen(Effect.sleep(spillEvery)), Effect.forever, Effect.forkScoped)
 
   return { plan, step, built, finish, cancel, supersede, audit, retry, unblocked }
