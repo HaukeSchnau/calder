@@ -35,7 +35,10 @@ const controller = Command.make("controller", {
 const worker = Command.make("worker", { job: Argument.String("job").pipe(Argument.withDescription("The job id")) }, ({ job }) =>
   Worker.run(
     job,
-    process.env.CALDER_URL !== undefined && process.env.CALDER_TOKEN !== undefined && process.env.CALDER_WORKSPACES !== undefined
+    // A worker in its agent host's unit (`calder agent --units`) reaches the controller through the socket its agent serves.
+    process.env.CALDER_CONTROLLER !== undefined && process.env.CALDER_WORKSPACES !== undefined && process.env.CALDER_TOKEN_FILE !== undefined
+      ? { controller: process.env.CALDER_CONTROLLER, workspaces: process.env.CALDER_WORKSPACES, tokenFile: process.env.CALDER_TOKEN_FILE }
+      : process.env.CALDER_URL !== undefined && process.env.CALDER_TOKEN !== undefined && process.env.CALDER_WORKSPACES !== undefined
       ? {
         remote: {
           url: process.env.CALDER_URL,
@@ -68,6 +71,7 @@ const agent = Command.make("agent", {
     Flag.withDescription(
       "Take only tasks of other systems that may run on this one, none of this platform's own jobs, such as those that need what only another host of it has",
     ),
+    Flag.withDefault(false),
   ),
   evaluator: Flag.String("evaluator").pipe(
     Flag.withDescription(
@@ -75,14 +79,23 @@ const agent = Command.make("agent", {
     ),
     Flag.optional,
   ),
+  units: Flag.String("units").pipe(
+    Flag.withDescription(
+      "Start each job's worker as this host's sandboxed unit of its pool, calder-job-<pool>@<job>.service, and so take pull requests' jobs too; each job gets a directory here with its token and sockets. The units' names are a controller's, so its host can't run such an agent",
+    ),
+    Flag.optional,
+  ),
 }, (flags) =>
-  Agent.run({
+  Option.isSome(flags.units) && Option.isSome(flags.evaluator)
+    ? Effect.die(new Error("an evaluator agent runs its workers itself: --units and --evaluator don't go together"))
+    : Agent.run({
     ...flags,
     platform: system,
     calder: [process.argv[0]!, process.argv[1]!],
     slotsFile: Option.getOrNull(flags.slotsFile),
     admission: Option.getOrNull(flags.admission),
     evaluator: Option.getOrNull(flags.evaluator),
+    units: Option.getOrNull(flags.units),
   })).pipe(Command.withDescription("Run the controller's jobs for this host's platform"))
 
 const gen = Command.make("gen", { dir: repository }, ({ dir }) =>

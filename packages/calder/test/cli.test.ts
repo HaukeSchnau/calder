@@ -86,3 +86,16 @@ describe("calder rerun", () => {
     expect(`${ran.stdout}${ran.stderr}`).not.toContain("Missing required flag")
   })
 })
+
+describe("calder agent", () => {
+  const main = new URL("../src/main.ts", import.meta.url).pathname
+  it.skipIf(spawnSync("bun", ["--version"]).status !== 0)("starts without --portable-only, --units or --evaluator", () => {
+    // The missing token file fails it, after the arguments parsed.
+    const ran = spawnSync("bun", [main, "agent", "--url", "http://127.0.0.1:9", "--token-file", "/nonexistent", "--name", "a", "--workspaces", "/tmp"], {
+      encoding: "utf8",
+      timeout: 60_000,
+    })
+    expect(`${ran.stdout}${ran.stderr}`).not.toContain("Missing required flag")
+    expect(`${ran.stdout}${ran.stderr}`).toContain("/nonexistent")
+  })
+})

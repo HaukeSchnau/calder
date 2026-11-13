@@ -12,6 +12,7 @@ import * as Redact from "./Redact.ts"
 import * as Repo from "./Repo.ts"
 import { FetchEnv, lock as lockFile, resolve, withOwnNix } from "./Resolve.ts"
 import * as Steps from "./Steps.ts"
+import * as Tunnel from "../Tunnel.ts"
 
 const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
   Effect.gen(function*() {
@@ -113,21 +114,41 @@ export const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
 
 /**
  * `calder worker <job>`: fetches the job from the controller, runs it and reports the result. Local
- * workers use the socket and a token file; an agent hands its workers the controller's URL and the token.
+ * workers use the socket and a token file. An agent hands its workers the controller's URL and the token,
+ * or, for a worker in its host's unit (`calder agent --units`), a socket (`controller`) that leads to the
+ * controller from the unit's own network namespace, and a token file.
  */
 export const run = (
   id: string,
-  options: { readonly socket: string; readonly tokenFile: string } | { readonly remote: Client.Remote; readonly token: string },
+  options:
+    | { readonly socket: string; readonly tokenFile: string }
+    | { readonly remote: Client.Remote; readonly token: string }
+    | { readonly controller: string; readonly workspaces: string; readonly tokenFile: string },
 ) =>
   Effect.gen(function*() {
     // An agent hands its worker the job's token in CALDER_TOKEN, and the job's commands inherit the
     // worker's environment.
     delete process.env.CALDER_TOKEN
     if (process.env.CALDER_EGRESS !== undefined) yield* Egress.bridge(process.env.CALDER_EGRESS)
-    const remote = "remote" in options ? options.remote : null
+    const remote: Client.Remote | null = "remote" in options
+      ? options.remote
+      : "controller" in options
+      ? { url: `http://127.0.0.1:${(yield* Tunnel.loopback(options.controller)).port}`, workspaces: options.workspaces }
+      : null
     const token = "token" in options ? options.token : readFileSync(options.tokenFile, "utf8").trim()
+    return yield* job(id, token, remote, "controller" in options).pipe(
+      Effect.provide(remote === null ? Client.layerClient((options as { readonly socket: string }).socket) : Client.layerClientRemote(remote)),
+    )
+  }).pipe(Effect.scoped)
+
+/** Runs the job; a `bridged` worker reaches the controller's mirrors through its agent's socket too. */
+const job = (id: string, token: string, remote: Client.Remote | null, bridged: boolean) =>
+  Effect.gen(function*() {
     const connected = yield* Client.make(id, token, remote)
-    const spec = yield* Client.reconnecting(connected.client.job({ job: id, token }))
+    const fetched = yield* Client.reconnecting(connected.client.job({ job: id, token }))
+    const spec = bridged && remote !== null
+      ? { ...fetched, run: { ...fetched.run, mirror: `${remote.url}/git/${fetched.run.project}.git` } }
+      : fetched
     Object.assign(process.env, Repo.insteadOf(spec.run.mirrors))
     // Nothing the job prints, says or fails with leaves the worker with its secrets or its token in it.
     const redact = Redact.make([...(spec._tag === "Step" ? Object.values(spec.secrets) : []), token])
@@ -149,4 +170,4 @@ export const run = (
     )
     yield* job.flush
     yield* Client.reconnecting(job.client.finish({ job: id, token, result: Redact.result(redact, result) }))
-  }).pipe(Effect.scoped, Effect.provide("remote" in options ? Client.layerClientRemote(options.remote) : Client.layerClient(options.socket)))
+  }).pipe(Effect.scoped)

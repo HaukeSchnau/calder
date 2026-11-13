@@ -2,11 +2,14 @@ import { BunSocket } from "@effect/platform-bun"
 import { Deferred, Effect, Layer, Schedule, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { RpcClient, RpcSerialization } from "effect/rpc"
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Build from "./Build.ts"
+import * as ControllerProxy from "./ControllerProxy.ts"
+import * as Egress from "./controller/Egress.ts"
 import * as Exec from "./Exec.ts"
-import { type AgentOrder, AgentRpcs, compatibility } from "./Protocol.ts"
+import { groupId } from "./Groups.ts"
+import { type AgentOrder, AgentRpcs, compatibility, type Pool, sandboxed } from "./Protocol.ts"
 
 export interface Options {
   /** The controller's URL. */
@@ -36,7 +39,22 @@ export interface Options {
   readonly evaluator: string | null
   /** Takes only tasks of other systems that may run on this one (PlannedStep `systems`), none of its platform's own. */
   readonly portableOnly: boolean
+  /**
+   * Starts each job's worker as the host's systemd unit of the job's pool (`unitOf`), which the host
+   * sandboxes like the controller's, instead of as a child process, and so takes every pool's jobs. Each
+   * job gets a directory here that only its pool's group may enter, with its token, a socket to the
+   * controller's worker routes (ControllerProxy) and, for pull requests, one to the egress proxy.
+   */
+  readonly units: string | null
 }
+
+/** The host's unit that runs a job of `pool` (`calder agent --units`), like the controller's. */
+export const unitOf = (pool: Pool, job: string) => `calder-job-${pool}@${job}.service`
+
+/** The pools an agent may have units for; it runs those whose group, `calder-<pool>`, its host has. */
+const unitPools: ReadonlyArray<Pool> = ["pr", "fork", "trusted"]
+
+const systemctl = (args: ReadonlyArray<string>) => Exec.exec(["systemctl", ...args])
 
 /** Sends `signal` to a process group; false once the group is gone. */
 const signalGroup = (group: number, signal: NodeJS.Signals | 0) => {
@@ -90,6 +108,55 @@ export const recordPid = (dir: string, job: string, pid: number) => {
 }
 
 /**
+ * Runs a job in its pool's unit of the host (`Options.units`) and returns the worker's exit code. The
+ * job's directory under `units`, which only the pool's group (`group`) may enter, holds its token, a
+ * socket to the controller's worker routes at `url` (ControllerProxy) and, for a sandboxed pool, one to an
+ * egress proxy with the job's allowlist. They and the unit go with the scope.
+ */
+export const runInUnit = (
+  options: {
+    readonly units: string
+    readonly url: string
+    /** The group of a pool's units; tests, whose user can't hand files to `calder-<pool>`, pass their own. */
+    readonly group?: (pool: Pool) => number | undefined
+  },
+  order: Extract<AgentOrder, { readonly _tag: "Start" }>,
+) =>
+  Effect.gen(function*() {
+    const pool = order.pool ?? "trusted"
+    const group = (options.group ?? ((pool: Pool) => groupId(`calder-${pool}`)))(pool)
+    if (group === undefined) return yield* Effect.die(new Error(`the host has no group calder-${pool} for the job's unit`))
+    const dir = join(options.units, order.job)
+    const share = (path: string, mode: number) => {
+      chownSync(path, process.getuid!(), group)
+      chmodSync(path, mode)
+    }
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        mkdirSync(dir, { recursive: true })
+        share(dir, 0o750)
+      }),
+      () => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+    )
+    writeFileSync(join(dir, "token"), order.token, { mode: 0o600 })
+    share(join(dir, "token"), 0o640)
+    yield* ControllerProxy.serve(join(dir, "controller.sock"), options.url)
+    share(join(dir, "controller.sock"), 0o660)
+    if (sandboxed(pool)) {
+      // A controller from before pools sends no allowlist, and nothing gets out.
+      yield* Egress.serve(join(dir, "egress.sock"), order.egress ?? { allow: [], allowPrivate: [] }, (message) =>
+        void Effect.runFork(Effect.logInfo(`worker ${order.job}: ${message}`)))
+      share(join(dir, "egress.sock"), 0o660)
+    }
+    const unit = unitOf(pool, order.job)
+    // However the wait ends, the unit doesn't outlive the job's directory: systemctl may lose systemd
+    // while the unit runs on.
+    const started = yield* systemctl(["start", "--wait", unit]).pipe(Effect.ensuring(systemctl(["stop", unit]).pipe(Effect.ignore)))
+    if (started.exitCode !== 0) yield* Effect.logWarning(`worker ${order.job}: ${started.stderr.trim() || `${unit} failed`}`)
+    return started.exitCode
+  })
+
+/**
  * `calder agent`: runs workers on this host for the controller's jobs of this platform. Workers outlive
  * a lost connection; the agent reconnects and tells the controller which ones still run. Those an
  * earlier run of the agent left behind it stops before it takes jobs.
@@ -133,16 +200,37 @@ export const run = (options: Options) =>
     const exited = (job: string, code: number) =>
       client.exited({ ...auth, job, code }).pipe(Effect.retry(Schedule.spaced("5 seconds")), Effect.ignore)
 
-    const worker = (job: string, jobToken: string, stop: Deferred.Deferred<void>) =>
+    // Units an earlier run of the agent started run on without it: their sockets went with its runtime
+    // directory, and new jobs would get their workspaces.
+    if (options.units !== null) {
+      const listed = yield* systemctl(["list-units", "--plain", "--no-legend", "--state=active,activating,deactivating",
+        ...unitPools.map((pool) => unitOf(pool, "*"))])
+      const left = listed.stdout.split("\n").map((line) => line.trim().split(/\s+/)[0] ?? "").filter((unit) => unit.startsWith("calder-job-"))
+      if (left.length > 0) {
+        yield* Effect.logInfo(`stopping ${left.join(" ")}, which an earlier run of this agent started`)
+        yield* systemctl(["stop", ...left])
+      }
+      mkdirSync(options.units, { recursive: true })
+      // Only job directories, whatever else the directory holds.
+      for (const dir of readdirSync(options.units)) if (/^[0-9a-f]+$/.test(dir)) rmSync(join(options.units, dir), { recursive: true, force: true })
+    }
+    const pools = options.units === null ? ["trusted" as const] : unitPools.filter((pool) => groupId(`calder-${pool}`) !== undefined)
+    if (pools.length === 0) return yield* Effect.die(new Error("--units needs the host's calder-pr, calder-fork or calder-trusted group"))
+
+    const worker = (order: Extract<AgentOrder, { readonly _tag: "Start" }>, stop: Deferred.Deferred<void>) =>
       Effect.scoped(Effect.gen(function*() {
+        const job = order.job
         if (options.admission !== null) yield* admitted(options.admission)
+        if (options.units !== null) {
+          return yield* runInUnit({ units: options.units, url: options.url }, order)
+        }
         const [command, ...args] = options.calder
         // Added before the worker, so it runs after the worker's group is gone.
         yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(join(pids, job), { force: true })))
         const handle = yield* spawner.spawn(ChildProcess.make(command!, [...args, "worker", job], {
           env: {
             CALDER_URL: options.url,
-            CALDER_TOKEN: jobToken,
+            CALDER_TOKEN: order.token,
             CALDER_WORKSPACES: options.workspaces,
             ...(options.evaluator === null ? {} : { CALDER_EVALUATOR_STORE: options.evaluator }),
           },
@@ -156,10 +244,10 @@ export const run = (options: Options) =>
         recordPid(pids, job, handle.pid)
         return yield* handle.exitCode
       })).pipe(
-        Effect.catchCause((cause) => Effect.logError(`worker ${job} failed to start`, cause).pipe(Effect.as(-1))),
-        Effect.raceFirst(Deferred.await(stop).pipe(Effect.andThen(Effect.logInfo(`stopped worker ${job}`)), Effect.as(-1))),
-        Effect.ensuring(Effect.sync(() => running.delete(job))),
-        Effect.flatMap((code) => exited(job, code)),
+        Effect.catchCause((cause) => Effect.logError(`worker ${order.job} failed to start`, cause).pipe(Effect.as(-1))),
+        Effect.raceFirst(Deferred.await(stop).pipe(Effect.andThen(Effect.logInfo(`stopped worker ${order.job}`)), Effect.as(-1))),
+        Effect.ensuring(Effect.sync(() => running.delete(order.job))),
+        Effect.flatMap((code) => exited(order.job, code)),
       )
 
     const obey = (order: AgentOrder) =>
@@ -168,7 +256,7 @@ export const run = (options: Options) =>
           yield* Effect.logInfo(`starting worker ${order.job}`)
           const stop = Deferred.makeUnsafe<void>()
           running.set(order.job, stop)
-          yield* Effect.forkDetach(worker(order.job, order.token, stop))
+          yield* Effect.forkDetach(worker(order, stop))
         } else {
           const stop = running.get(order.job)
           // The controller holds a slot until it hears the worker is gone, which it may have missed.
@@ -188,13 +276,13 @@ export const run = (options: Options) =>
 
     yield* Effect.logInfo(
       options.evaluator === null
-        ? `agent ${options.name} serving ${options.platform} jobs from ${options.url}`
+        ? `agent ${options.name} serving ${options.platform} jobs from ${options.url}${options.units === null ? "" : `, each in its pool's unit`}`
         : `agent ${options.name} evaluating for ${options.url}, pushing derivations to ${options.evaluator}`,
     )
     yield* Effect.suspend(() => {
       offering = offered()
       return client.work({ ...auth, platform: options.platform, slots: offering, running: [...running.keys()], build: Build.id, compatibility,
-        evaluator: options.evaluator !== null, portableOnly: options.portableOnly }).pipe(
+        evaluator: options.evaluator !== null, portableOnly: options.portableOnly, pools }).pipe(
         Stream.runForEach(obey),
       )
     }).pipe(

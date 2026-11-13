@@ -5,17 +5,14 @@ import { randomBytes } from "node:crypto"
 import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Exec from "../Exec.ts"
+import { groupId } from "../Groups.ts"
 import { sha256 } from "../Keys.ts"
-import type { Job, JobEvent, JobResult } from "../Protocol.ts"
+import type { Job, JobEvent, JobResult, Pool } from "../Protocol.ts"
 import { compatibility, Unauthorized } from "../Protocol.ts"
 import { Agents } from "./Agents.ts"
 import { Config } from "./Config.ts"
 
-/**
- * Who a job runs as. Forks' pull requests get a pool of their own, so nothing a fork's job leaves in its
- * home or workspaces reaches a same-repo pull request's job, whose plan the default branch may take.
- */
-export type Pool = "pr" | "fork" | "trusted"
+export type { Pool } from "../Protocol.ts"
 
 export interface Sample {
   readonly timestamp: number
@@ -70,12 +67,12 @@ export interface Adopted {
 }
 
 /**
- * Whether a job may not run on an agent, which runs every worker as one user in one workspace directory:
- * pull-request work there could read and change what trusted work keeps. A same-repo pull request's
- * evaluation runs none of its code, only Calder's evaluator, so it may; a fork's may not.
+ * Whether a job may not run on any agent. Agents take the pools they say they sandbox (Agents `takes`);
+ * evaluator agents run every evaluation as one user, which a same-repo pull request's may share, since
+ * it runs none of its code, only Calder's evaluator, but a fork's may not.
  */
 export const refusedOnAgents = (options: { readonly pool: Pool; readonly evaluation?: boolean }) =>
-  options.pool === "fork" || (options.pool === "pr" && options.evaluation !== true)
+  options.pool === "fork" && options.evaluation === true
 
 /** How long the evaluator agents may run nothing while an evaluation waits, before the controller evaluates it. */
 export const evaluatorWait = "2 minutes"
@@ -128,11 +125,6 @@ export class Jobs extends Context.Service<Jobs, {
   readonly get: (id: string) => ActiveJob | undefined
   readonly active: () => ReadonlyArray<ActiveJob>
 }>()("calder/controller/Jobs") {}
-
-const groupId = (name: string) => {
-  const line = readText("/etc/group")?.split("\n").find((l) => l.startsWith(`${name}:`))
-  return line === undefined ? undefined : Number(line.split(":")[2])
-}
 
 /**
  * The group systemd workers run in, which needs the controller's sockets and token files. Workers in
@@ -357,7 +349,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
       const platform = options.platform ?? config.system
       const remote = options.agent === true || options.evaluation === true || platform !== config.system
       if (remote && refusedOnAgents(options)) {
-        const refused: JobResult = { _tag: "Died", message: "agents only take jobs of trusted runs" }
+        const refused: JobResult = { _tag: "Died", message: "agents don't evaluate forks' pull requests" }
         return { result: refused, usage: { cpuSeconds: null, memoryPeakBytes: null }, id }
       }
       const job: ActiveJob = {
@@ -447,6 +439,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
           yield* log(`waiting for ${evaluation ? "an evaluator" : `a ${platform}`} agent${why}`)
         }
         const exited = yield* agents.run({ id, token }, platform, {
+          pool: options.pool,
           wait: options.offload !== true,
           also: options.offload === true ? options.systems ?? [] : [],
           assigned: (agent) => {

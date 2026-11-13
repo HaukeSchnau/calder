@@ -413,9 +413,31 @@ export class WorkerRpcs extends RpcGroup.make(
  */
 export const compatibility = 7
 
-/** What the controller tells an agent: start a worker for a job, or stop one. */
+/**
+ * Who a job runs as. Forks' pull requests get a pool of their own, so nothing a fork's job leaves in its
+ * home or workspaces reaches a same-repo pull request's job, whose plan the default branch may take.
+ */
+export const Pool = Schema.Literals(["pr", "fork", "trusted"])
+export type Pool = typeof Pool.Type
+
+/** Pools whose workers reach the network only through an egress proxy with this allowlist (`Egress.admit`). */
+export const sandboxed = (pool: Pool) => pool !== "trusted"
+
+export const EgressPolicy = Schema.Struct({ allow: Schema.Array(Schema.String), allowPrivate: Schema.Array(Schema.String) })
+export type EgressPolicy = typeof EgressPolicy.Type
+
+/**
+ * What the controller tells an agent: start a worker for a job, or stop one. A job's `pool` is who runs
+ * it, and a sandboxed pool's job carries the controller's `egress` allowlist; controllers from before
+ * pools send neither, and only trusted jobs.
+ */
 export const AgentOrder = Schema.Union([
-  Schema.TaggedStruct("Start", { job: Schema.String, token: Schema.String }),
+  Schema.TaggedStruct("Start", {
+    job: Schema.String,
+    token: Schema.String,
+    pool: Schema.optional(Pool),
+    egress: Schema.optional(EgressPolicy),
+  }),
   Schema.TaggedStruct("Stop", { job: Schema.String }),
 ])
 export type AgentOrder = typeof AgentOrder.Type
@@ -444,6 +466,11 @@ export class AgentRpcs extends RpcGroup.make(
        * of its platform's own jobs. Older agents send none.
        */
       portableOnly: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+      /**
+       * Whose jobs it runs: an agent that starts each job in its host's sandboxed unit of the job's pool
+       * (`calder agent --units`) runs every pool's. Older agents send none and run trusted jobs only.
+       */
+      pools: Schema.Array(Pool).pipe(Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<Pool>>(["trusted"]))),
     },
     success: AgentOrder,
     error: Unauthorized,

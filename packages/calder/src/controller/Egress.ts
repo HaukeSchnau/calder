@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect"
 import { chmodSync, chownSync, existsSync, rmSync } from "node:fs"
 import { isIP } from "node:net"
 import { join } from "node:path"
+import type { EgressPolicy } from "../Protocol.ts"
 import * as Tunnel from "../Tunnel.ts"
 import { Config } from "./Config.ts"
 import { workersGroup } from "./Jobs.ts"
@@ -65,7 +66,7 @@ export const admit = (
   host: string,
   port: number,
   addresses: ReadonlyArray<string> | undefined,
-  egress: { readonly allow: ReadonlyArray<string>; readonly allowPrivate: ReadonlyArray<string> },
+  egress: EgressPolicy,
 ): { readonly status: string; readonly reason: string } | null => {
   const anywhere = egress.allowPrivate.includes(`${host}:${port}`)
   if (!anywhere && !allowed(host, egress.allow)) return { status: "403 Not On The Allowlist", reason: "not on the allowlist" }
@@ -78,6 +79,26 @@ export const admit = (
 interface Client extends Tunnel.End {
   head: Array<Uint8Array>
   decided: boolean
+  /** Bytes queued in `early` while the upstream connects. */
+  earlyBytes: number
+}
+
+/**
+ * How much a client may send after its CONNECT before the upstream is linked: the proxy's memory, outside
+ * the worker unit's limit. Clients wait for the 200 before they send, so there is little to keep.
+ */
+const earlyLimit = 1024 ** 2
+
+/**
+ * The first of `addresses` that takes the connection. A host may resolve to IPv6 first where only IPv4
+ * gets out, such as from an agent whose host rejects IPv6 for its jobs to keep them off the LAN.
+ */
+const connectAny = async (addresses: ReadonlyArray<string>, port: number) => {
+  for (const hostname of addresses) {
+    const upstream = await Bun.connect<Tunnel.End>({ hostname, port, data: Tunnel.end(), socket: Tunnel.handlers }).catch(() => null)
+    if (upstream !== null) return upstream
+  }
+  return null
 }
 
 const refuse = (socket: Socket<Client>, status: string) => {
@@ -86,67 +107,70 @@ const refuse = (socket: Socket<Client>, status: string) => {
 
 /**
  * The only way out for sandboxed workers (pull-request runs, `PrivateNetwork=yes`): an HTTP CONNECT
- * proxy on a unix socket that reaches allowlisted hosts (`admit`). Workers bridge it to a
- * loopback port inside their network namespace.
+ * proxy on the unix socket `path` that reaches allowlisted hosts (`admit`). Workers bridge it to a
+ * loopback port inside their network namespace. `log` hears every refusal of a listed host's address
+ * and of an unlisted host. Closes with the scope.
  */
+export const serve = (path: string, egress: EgressPolicy, log: (message: string) => void) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      if (existsSync(path)) rmSync(path)
+      const open = async (socket: Socket<Client>, host: string, port: number) => {
+        const unlisted = admit(host, port, undefined, egress)
+        if (unlisted !== null) {
+          log(`egress refused ${host}:${port}: ${unlisted.reason}`)
+          return refuse(socket, unlisted.status)
+        }
+        const addresses = isIP(host) !== 0 ? [host] : (await Bun.dns.lookup(host, {}).catch(() => [])).map((a) => a.address)
+        const refused = admit(host, port, addresses, egress)
+        if (refused !== null) {
+          if (refused.status !== "502 Unknown Host") log(`egress refused ${host}:${port}: ${refused.reason}`)
+          return refuse(socket, refused.status)
+        }
+        const upstream = await connectAny(addresses, port)
+        if (upstream === null) return refuse(socket, "502 Connect Failed")
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n")
+        Tunnel.link(socket, upstream)
+      }
+      return Bun.listen<Client>({
+        unix: path,
+        socket: {
+          ...Tunnel.handlers,
+          open(socket) {
+            socket.data = { ...Tunnel.end(), head: [], decided: false, earlyBytes: 0 }
+          },
+          data(socket, chunk) {
+            if (socket.data.decided) {
+              if (socket.data.peer === null && (socket.data.earlyBytes += chunk.length) > earlyLimit) return void socket.end()
+              return Tunnel.handlers.data(socket, chunk)
+            }
+            socket.data.head.push(chunk)
+            const buffered = Buffer.concat(socket.data.head)
+            const split = buffered.indexOf("\r\n\r\n")
+            if (split === -1) {
+              if (buffered.length > 16384) refuse(socket, "431 Request Header Fields Too Large")
+              return
+            }
+            socket.data.decided = true
+            if (buffered.length > split + 4) socket.data.early.push(buffered.subarray(split + 4))
+            const [method, target] = buffered.subarray(0, split).toString("latin1").split("\r\n")[0]!.split(" ")
+            const match = /^\[?([^\]]+?)\]?:(\d+)$/.exec(target ?? "")
+            if (method !== "CONNECT" || match === null) return refuse(socket, "405 Only CONNECT")
+            void open(socket, match[1]!.toLowerCase(), Number(match[2]))
+          },
+        },
+      })
+    }),
+    (server) => Effect.sync(() => server.stop(true)),
+  )
+
+/** The controller's egress proxy, `egress.sock` in its runtime directory, for its local sandboxed workers. */
 export const layer = Layer.effectDiscard(Effect.gen(function*() {
   const config = yield* Config
   if (config.egress === null) return
-  const egress = config.egress
   const services = yield* Effect.context<never>()
-  const log = (message: string) => Effect.runForkWith(services)(Effect.logInfo(message))
   const path = join(config.runtimeDir, "egress.sock")
-  if (existsSync(path)) rmSync(path)
-
-  const open = async (socket: Socket<Client>, host: string, port: number) => {
-    const unlisted = admit(host, port, undefined, egress)
-    if (unlisted !== null) {
-      log(`egress refused ${host}:${port}: ${unlisted.reason}`)
-      return refuse(socket, unlisted.status)
-    }
-    const addresses = isIP(host) !== 0 ? [host] : (await Bun.dns.lookup(host, {}).catch(() => [])).map((a) => a.address)
-    const refused = admit(host, port, addresses, egress)
-    if (refused !== null) {
-      if (refused.status !== "502 Unknown Host") log(`egress refused ${host}:${port}: ${refused.reason}`)
-      return refuse(socket, refused.status)
-    }
-    const upstream = await Bun.connect<Tunnel.End>({
-      hostname: addresses[0]!,
-      port,
-      data: Tunnel.end(),
-      socket: Tunnel.handlers,
-    }).catch(() => null)
-    if (upstream === null) return refuse(socket, "502 Connect Failed")
-    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n")
-    Tunnel.link(socket, upstream)
-  }
-
-  const server = Bun.listen<Client>({
-    unix: path,
-    socket: {
-      ...Tunnel.handlers,
-      open(socket) {
-        socket.data = { ...Tunnel.end(), head: [], decided: false }
-      },
-      data(socket, chunk) {
-        if (socket.data.decided) return Tunnel.handlers.data(socket, chunk)
-        socket.data.head.push(chunk)
-        const buffered = Buffer.concat(socket.data.head)
-        const split = buffered.indexOf("\r\n\r\n")
-        if (split === -1) {
-          if (buffered.length > 16384) refuse(socket, "431 Request Header Fields Too Large")
-          return
-        }
-        socket.data.decided = true
-        if (buffered.length > split + 4) socket.data.early.push(buffered.subarray(split + 4))
-        const [method, target] = buffered.subarray(0, split).toString("latin1").split("\r\n")[0]!.split(" ")
-        const match = /^\[?([^\]]+?)\]?:(\d+)$/.exec(target ?? "")
-        if (method !== "CONNECT" || match === null) return refuse(socket, "405 Only CONNECT")
-        void open(socket, match[1]!.toLowerCase(), Number(match[2]))
-      },
-    },
-  })
-  yield* Effect.addFinalizer(() => Effect.sync(() => server.stop(true)))
+  yield* serve(path, config.egress, (message) => void Effect.runForkWith(services)(Effect.logInfo(message)))
   chmodSync(path, 0o660)
   const group = workersGroup(config.jobs.mode)
   if (group !== undefined) chownSync(path, process.getuid!(), group)

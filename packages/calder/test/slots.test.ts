@@ -318,7 +318,7 @@ describe("a build's expected time", () => {
     Effect.gen(function*() {
       const slots = Slots.make({ capacity: 1 })
       const { order, hold, job } = yield* harness(slots)
-      const spill = (to: ReadonlyArray<string>) => ({ to, signal: Deferred.makeUnsafe<void>() })
+      const spill = (to: ReadonlyArray<string>) => ({ to, pool: "trusted" as const, signal: Deferred.makeUnsafe<void>() })
       const running = yield* job("running", { project: "a", expected: 0, run: 0 })
       const darwin = spill(["aarch64-darwin"])
       const long = spill(["x86_64-linux", "aarch64-linux"])
@@ -343,5 +343,33 @@ describe("a build's expected time", () => {
       yield* Fiber.join(running)
       yield* Fiber.join(stays)
       expect(order).toEqual(["running", "mac", "stays"])
+    }))
+
+  it.effect("spills a pull request's claim only to an agent that runs pull requests' jobs, and lists what may spill", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 1 })
+      const { hold, job } = yield* harness(slots)
+      const spill = (pool: "pr" | "trusted") => ({ to: ["aarch64-linux", "x86_64-linux"], pool, signal: Deferred.makeUnsafe<void>() })
+      const running = yield* job("running", { project: "a", expected: 0, run: 0 })
+      const pr = spill("pr")
+      const push = spill("trusted")
+      yield* job("pr", { project: "a", expected: minutes(1), run: 0, spill: pr })
+      yield* job("push", { project: "a", expected: minutes(2), run: 0, spill: push })
+      yield* Effect.yieldNow
+      expect(slots.spilling()).toEqual([
+        { to: ["aarch64-linux", "x86_64-linux"], pool: "pr" },
+        { to: ["aarch64-linux", "x86_64-linux"], pool: "trusted" },
+      ])
+
+      // An agent that runs its workers itself takes only the push's, though the pull request's goes first.
+      expect(slots.spill("x86_64-linux", false, ["trusted"])).toBe(true)
+      expect(Deferred.isDoneUnsafe(push.signal)).toBe(true)
+      expect(slots.spill("x86_64-linux", false, ["trusted"])).toBe(false)
+      expect(slots.spill("x86_64-linux", false, ["pr", "fork", "trusted"])).toBe(true)
+      expect(Deferred.isDoneUnsafe(pr.signal)).toBe(true)
+      expect(slots.spilling()).toEqual([])
+
+      yield* Deferred.succeed(hold, undefined)
+      yield* Fiber.join(running)
     }))
 })

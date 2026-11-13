@@ -1,7 +1,7 @@
 import { type Cause, Clock, Context, Deferred, Duration, Effect, Layer, Queue, Stream } from "effect"
 import { readFileSync } from "node:fs"
 import * as Exec from "../Exec.ts"
-import { type AgentOrder, compatibility, Unauthorized } from "../Protocol.ts"
+import { type AgentOrder, compatibility, type EgressPolicy, type Pool, sandboxed, Unauthorized } from "../Protocol.ts"
 import { Config } from "./Config.ts"
 
 interface Connection {
@@ -13,6 +13,8 @@ interface Connection {
   readonly evaluator: boolean
   /** Takes only jobs of other platforms that may run on its own (`also`). */
   readonly portableOnly: boolean
+  /** Whose jobs it runs (`calder agent --units`); older agents run trusted jobs only. */
+  readonly pools: ReadonlyArray<Pool>
   readonly orders: Queue.Queue<AgentOrder, Cause.Done>
 }
 
@@ -32,6 +34,8 @@ interface Placed {
 interface Waiter {
   readonly job: { readonly id: string; readonly token: string }
   readonly platform: string
+  /** Who runs it: only an agent that runs this pool's jobs takes it. Evaluations go by `evaluation` instead. */
+  readonly pool: Pool
   /** Other platforms whose agents may take it too (Jobs `systems`). */
   readonly also: ReadonlyArray<string>
   /** Hears the agent that takes the job before the agent hears of it. */
@@ -81,6 +85,8 @@ export interface AgentUsage {
   readonly evaluator: boolean
   /** Whether it takes only jobs of other platforms that may run on its own (`calder agent --portable-only`). */
   readonly portableOnly: boolean
+  /** Whose jobs it runs (`calder agent --units`). */
+  readonly pools: ReadonlyArray<Pool>
   /** How many jobs it would take right now: none while it is away, behind or stopping a worker. */
   readonly free: number
 }
@@ -111,6 +117,8 @@ export class Agents extends Context.Service<Agents, {
     job: { readonly id: string; readonly token: string },
     platform: string,
     options?: {
+      /** Who runs the job; trusted unless given. Only agents that run this pool's jobs take it. */
+      readonly pool?: Pool
       readonly wait?: boolean
       readonly onPlaced?: (agent: string) => Effect.Effect<void>
       readonly evaluation?: boolean
@@ -136,17 +144,29 @@ export class Agents extends Context.Service<Agents, {
     readonly compatibility: number
     readonly evaluator?: boolean
     readonly portableOnly?: boolean
+    readonly pools?: ReadonlyArray<Pool>
   }) => Stream.Stream<AgentOrder, Unauthorized>
   readonly exited: (auth: { readonly token: string; readonly name: string }, job: string, code: number) => Effect.Effect<void, Unauthorized>
   readonly offer: (auth: { readonly token: string; readonly name: string }, slots: number) => Effect.Effect<void, Unauthorized>
   readonly usage: () => ReadonlyArray<AgentUsage>
+  /**
+   * Wakes the hosts of `platform`'s sleepers that are away, as a job waiting for an agent of it does,
+   * for work that waits here but an agent of it could take (Runs `spill`).
+   */
+  readonly rouse: (platform: string) => Effect.Effect<void>
 }>()("calder/controller/Agents") {}
 
 /**
  * Agents authenticate with `secret`; with none, no agent may connect. `version` is the controller's
- * compatibility, and `sleepers` are the agents whose hosts it wakes for waiting jobs.
+ * compatibility, and `sleepers` are the agents whose hosts it wakes for waiting jobs. Sandboxed pools'
+ * jobs carry `egress`, the allowlist their agent's egress proxy enforces; without one it lets nothing out.
  */
-export const make = (secret: string | null, version: number = compatibility, sleepers: ReadonlyArray<Sleeper> = []): Agents["Service"] => {
+export const make = (
+  secret: string | null,
+  version: number = compatibility,
+  sleepers: ReadonlyArray<Sleeper> = [],
+  egress: EgressPolicy | null = null,
+): Agents["Service"] => {
   const connections = new Map<string, Connection>()
   const placed = new Map<string, Placed>()
   const waiters: Array<Waiter> = []
@@ -163,6 +183,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
       readonly compatibility: number
       readonly evaluator: boolean
       readonly portableOnly: boolean
+      readonly pools: ReadonlyArray<Pool>
     }
   >()
 
@@ -186,11 +207,12 @@ export const make = (secret: string | null, version: number = compatibility, sle
 
   const on = (agent: string) => [...placed.values()].filter((p) => p.agent === agent)
 
-  const takes = (c: Connection, waiter: Pick<Waiter, "platform" | "also" | "evaluation">) => {
+  const takes = (c: Connection, waiter: Pick<Waiter, "platform" | "also" | "evaluation" | "pool">) => {
     const jobs = on(c.name)
     const kind = waiter.evaluation
       ? c.evaluator
-      : !c.evaluator && (c.portableOnly ? waiter.also : [waiter.platform, ...waiter.also]).includes(c.platform)
+      : !c.evaluator && c.pools.includes(waiter.pool) &&
+        (c.portableOnly ? waiter.also : [waiter.platform, ...waiter.also]).includes(c.platform)
     return kind && c.compatibility === version && jobs.length < c.slots && !jobs.some((p) => p.stopping)
   }
 
@@ -205,7 +227,13 @@ export const make = (secret: string | null, version: number = compatibility, sle
       waiter.assigned({ name: agent.name, platform: agent.platform })
       const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>(), at: yield* Clock.currentTimeMillis, stopping: false }
       placed.set(waiter.job.id, p)
-      Queue.offerUnsafe(agent.orders, { _tag: "Start", job: waiter.job.id, token: waiter.job.token })
+      Queue.offerUnsafe(agent.orders, {
+        _tag: "Start",
+        job: waiter.job.id,
+        token: waiter.job.token,
+        pool: waiter.pool,
+        ...(sandboxed(waiter.pool) ? { egress: egress ?? { allow: [], allowPrivate: [] } } : {}),
+      })
       yield* Deferred.succeed(waiter.placed, p)
     }
   })
@@ -286,6 +314,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
         const waiter: Waiter = {
           job,
           platform,
+          pool: options?.pool ?? "trusted",
           also: options?.also ?? [],
           assigned: options?.assigned ?? (() => {}),
           evaluation: options?.evaluation === true,
@@ -361,6 +390,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
             generations.set(auth.name, generation)
             const evaluator = agent.evaluator === true
             const portableOnly = agent.portableOnly === true
+            const pools = agent.pools ?? ["trusted"]
             const connection: Connection = {
               name: auth.name,
               platform: agent.platform,
@@ -368,11 +398,20 @@ export const make = (secret: string | null, version: number = compatibility, sle
               compatibility: agent.compatibility,
               evaluator,
               portableOnly,
+              pools,
               orders,
             }
             connections.set(auth.name, connection)
             if (evaluatorConnected()) evaluatorLeft = null
-            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility, evaluator, portableOnly })
+            seen.set(auth.name, {
+              platform: agent.platform,
+              slots: agent.slots,
+              build: agent.build,
+              compatibility: agent.compatibility,
+              evaluator,
+              portableOnly,
+              pools,
+            })
             const unknown = agent.running.filter((job) => !placed.has(job))
             for (const job of unknown) placed.set(job, { agent: auth.name, exited: Deferred.makeUnsafe<number>(), at: 0, stopping: true })
             for (const [job, p] of [...placed]) {
@@ -382,7 +421,9 @@ export const make = (secret: string | null, version: number = compatibility, sle
               else if (p.stopping) Queue.offerUnsafe(orders, { _tag: "Stop", job })
             }
             yield* Effect.logInfo(
-              `agent ${auth.name} (${agent.platform}, ${agent.slots} slots${evaluator ? ", evaluations only" : portableOnly ? ", other systems' tasks only" : ""}) connected`,
+              `agent ${auth.name} (${agent.platform}, ${agent.slots} slots${evaluator ? ", evaluations only" : portableOnly ? ", other systems' tasks only" : ""}${
+                pools.some(sandboxed) ? ", pull requests sandboxed" : ""
+              }) connected`,
             )
             const woken = wakes.get(auth.name)
             if (woken !== undefined && !woken.connected) {
@@ -456,6 +497,7 @@ export const make = (secret: string | null, version: number = compatibility, sle
           free: taking ? Math.max(0, a.slots - jobs.length) : 0,
         }
       }),
+    rouse,
   }
 }
 
@@ -467,5 +509,5 @@ export const layer = Layer.effect(Agents)(Effect.gen(function*() {
     ...sleeper,
     wake: Exec.run(command).pipe(Effect.provideService(Exec.SpawnerTag, spawner)),
   }))
-  return make(readFileSync(config.agents.tokenFile, "utf8").trim(), compatibility, sleepers)
+  return make(readFileSync(config.agents.tokenFile, "utf8").trim(), compatibility, sleepers, config.egress)
 }))
