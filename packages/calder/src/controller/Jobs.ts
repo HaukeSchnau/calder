@@ -38,7 +38,8 @@ export interface Lease {
 export interface ActiveJob {
   readonly id: string
   readonly tokenHash: string
-  readonly spec: Job
+  /** An agent of another of the job's `systems` that takes it makes its run's system the agent's. */
+  spec: Job
   readonly pool: Pool
   /** The systemd unit template of a local worker: its pool's, or its larger one (`large`). */
   readonly template: string
@@ -102,6 +103,11 @@ export class Jobs extends Context.Service<Jobs, {
     readonly agent?: boolean
     /** Taken only by an agent with a free slot right now; otherwise the job comes back `Lost`. */
     readonly offload?: boolean
+    /**
+     * Other systems whose agents may take an offloaded job, which then runs as a job of the agent's system
+     * (`RunInfo.system`), in that system's dev shell.
+     */
+    readonly systems?: ReadonlyArray<string>
     /**
      * A build evaluation for an evaluator agent (`calder agent --evaluator`) of any platform. Its worker
      * runs no ci.ts, only Calder's evaluator and pure `nix eval`, so a same-repo pull request's may go too.
@@ -442,10 +448,22 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         }
         const exited = yield* agents.run({ id, token }, platform, {
           wait: options.offload !== true,
+          also: options.offload === true ? options.systems ?? [] : [],
+          assigned: (agent) => {
+            if (agent.platform !== job.spec.run.system) job.spec = { ...job.spec, run: { ...job.spec.run, system: agent.platform } }
+          },
           evaluation: options.evaluation === true,
           // The controller evaluates what no evaluator agent takes soon, as it did without one.
           ...(options.evaluation === true ? { within: evaluatorWait } : {}),
-          onPlaced: (agent) => Effect.andThen(options.evaluation === true ? log(`evaluating on ${agent}`) : Effect.void, onStart),
+          onPlaced: (agent) =>
+            Effect.andThen(
+              options.evaluation === true
+                ? log(`evaluating on ${agent}`)
+                : job.spec.run.system !== platform
+                ? log(`running on ${agent}, a ${job.spec.run.system} agent, in its dev shell`)
+                : Effect.void,
+              onStart,
+            ),
           ...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
           onLog: log,
         }).pipe(

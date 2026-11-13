@@ -313,4 +313,35 @@ describe("a build's expected time", () => {
     expect(toBuild("this path will be fetched (74.2 KiB download, 273.0 KiB unpacked):\n  /nix/store/b\n")).toBe(0)
     expect(toBuild("")).toBe(null)
   })
+
+  it.effect("gives an agent's free slot to the waiting claim that goes first among those it may take", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      const spill = (to: ReadonlyArray<string>) => ({ to, signal: Deferred.makeUnsafe<void>() })
+      const running = yield* job("running", { project: "a", expected: 0, run: 0 })
+      const darwin = spill(["aarch64-darwin"])
+      const long = spill(["x86_64-linux", "aarch64-linux"])
+      const short = spill(["x86_64-linux", "aarch64-linux"])
+      yield* job("mac", { project: "a", expected: minutes(1), run: 0, spill: darwin })
+      yield* job("long", { project: "a", expected: minutes(10), run: 0, spill: long })
+      yield* job("short", { project: "a", expected: minutes(2), run: 0, spill: short })
+      const stays = yield* job("stays", { project: "a", expected: minutes(5), run: 0 })
+      yield* Effect.yieldNow
+      expect(slots.usage().waiting).toBe(4)
+
+      expect(slots.spill("aarch64-linux")).toBe(true)
+      expect(Deferred.isDoneUnsafe(short.signal)).toBe(true)
+      expect(slots.spill("aarch64-linux")).toBe(true)
+      expect(Deferred.isDoneUnsafe(long.signal)).toBe(true)
+      // The Mac's claim and the one without a spill stay for an agent that may take them, or for a slot here.
+      expect(slots.spill("aarch64-linux")).toBe(false)
+      expect(Deferred.isDoneUnsafe(darwin.signal)).toBe(false)
+      expect(slots.usage().waiting).toBe(2)
+
+      yield* Deferred.succeed(hold, undefined)
+      yield* Fiber.join(running)
+      yield* Fiber.join(stays)
+      expect(order).toEqual(["running", "mac", "stays"])
+    }))
 })

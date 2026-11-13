@@ -57,6 +57,12 @@ export const PlannedStep = Schema.Struct({
     platform: Schema.NullOr(Schema.String),
     /** False when the task must run on the controller's host; plans from before it was added lack it. */
     offload: Schema.optional(Schema.Boolean),
+    /**
+     * Other systems whose agents may run the task when it offloads: the Linux systems whose dev shells of
+     * the task and its setup evaluated. Its result counts under its key, as if it ran on the run's system.
+     * Older plans lack it.
+     */
+    systems: Schema.optional(Schema.Array(Schema.String)),
     /** A preview rule's task that reads secrets; same-repo pull requests grant them. Older plans lack it. */
     preview: Schema.optional(Schema.Boolean),
     /**
@@ -405,7 +411,7 @@ export class WorkerRpcs extends RpcGroup.make(
  * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
  * newer SDK, need no bump: failed steps are not reused.
  */
-export const compatibility = 6
+export const compatibility = 7
 
 /** What the controller tells an agent: start a worker for a job, or stop one. */
 export const AgentOrder = Schema.Union([
@@ -433,6 +439,11 @@ export class AgentRpcs extends RpcGroup.make(
       compatibility: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
       /** An evaluator agent (`calder agent --evaluator`) takes evaluation jobs only; older agents send none. */
       evaluator: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+      /**
+       * Takes only tasks of other systems that may run on its own (`calder agent --portable-only`), none
+       * of its platform's own jobs. Older agents send none.
+       */
+      portableOnly: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
     },
     success: AgentOrder,
     error: Unauthorized,

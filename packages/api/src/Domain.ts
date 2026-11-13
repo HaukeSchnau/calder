@@ -358,6 +358,8 @@ export const Overview = Schema.Struct({
     current: Schema.Boolean,
     /** Takes evaluation jobs only, for any platform. */
     evaluator: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+    /** Takes only other systems' tasks that may run on its own (`calder agent --portable-only`). */
+    portableOnly: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   })),
 })
 export type Overview = typeof Overview.Type

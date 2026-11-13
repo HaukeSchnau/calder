@@ -145,6 +145,9 @@ const publishFailure = (error: Exec.ExecError): string => {
   return lines.findLast((line) => line.startsWith("error:")) ?? lines.at(-1) ?? `exit code ${error.exitCode}`
 }
 
+/** How often agents' free slots are offered to the tasks waiting for this host's (Slots `spill`). */
+export const SpillEvery = Context.Reference<Duration.Input>("calder/controller/SpillEvery", { defaultValue: () => "5 seconds" })
+
 export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const config = yield* Config
   const sql = yield* SqlClient.SqlClient
@@ -160,6 +163,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const comments = yield* Comments
   const estimates = yield* Estimates.Estimates
   const infrastructureRetries = yield* InfrastructureRetries
+  const spillEvery = yield* SpillEvery
   // Steps a deploy or a preview waits for take one slot of each pool beyond its capacity, so they never
   // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
   const lane = 1
@@ -759,19 +763,32 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
    */
   const refuses = (run: Rows.RunRow, platform: string | null) => platform !== null && platform !== config.system && run.trust !== "trusted"
 
+  /** Agents that take load off this host: connected, current, and not only for evaluations. */
+  const helpers = () => agents.usage().filter((a) => a.connected && a.current && !a.evaluator)
+
   /**
    * Where a job runs: here, or on an agent, whose workers fetch what local ones read from disk. A job
-   * of another platform needs an agent of it. Other jobs of trusted runs go to a connected agent of this
-   * platform with a free slot, which is there to take load off this host, unless they are to run `here`.
+   * of another platform needs an agent of it. Other jobs of trusted runs go to a connected agent with a
+   * free slot, which is there to take load off this host, unless they are to run `here`: one of this
+   * platform, or of the other `systems` the task may run on. A job that waits here for a slot may still
+   * go to such an agent once one has a free slot (`spill`).
    */
-  const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false) => {
+  const place = (run: Rows.RunRow, info: RunInfo, platform: string | null, here = false, systems: ReadonlyArray<string> = []) => {
     const foreign = platform !== null && platform !== config.system
-    const offload = !foreign && !here && run.trust === "trusted" &&
-      agents.usage().some((a) => a.connected && a.current && !a.evaluator && a.platform === config.system && a.running < a.slots)
+    const spills = !foreign && !here && run.trust === "trusted"
+    const to = [config.system, ...systems]
+    const offload = spills && helpers().some((a) => (a.portableOnly ? systems : to).includes(a.platform) && a.free > 0)
     const remote = foreign || offload
     const system = platform ?? config.system
     const where = remote ? { ...info, flake: "", mirror: `${config.url.replace(/\/$/, "")}/git/${run.project}.git`, mirrors: {}, pipelineDir: "", system } : info
-    return { remote, offload, where, platform: remote ? system : platform }
+    return {
+      remote,
+      offload,
+      where,
+      platform: remote ? system : platform,
+      systems: offload ? systems : [],
+      spill: spills && !offload ? { to, signal: Deferred.makeUnsafe<void>() } : undefined,
+    }
   }
   type Placement = ReturnType<typeof place>
 
@@ -787,11 +804,16 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     platform: string | null,
     shard: number | null,
     attempt: (placement: Placement) => Effect.Effect<R, E, Q>,
-    options: { readonly setup?: boolean; readonly here?: boolean } = {},
+    options: { readonly setup?: boolean; readonly here?: boolean; readonly systems?: ReadonlyArray<string> } = {},
   ) =>
     Effect.gen(function*() {
-      const placement = place(run, info, platform, options.here)
-      const first = yield* attempt(placement)
+      let placement = place(run, info, platform, options.here, options.systems)
+      let first = yield* attempt(placement)
+      // An agent took it from the queue here: it runs there now.
+      while ("spilled" in first) {
+        placement = place(run, info, platform, options.here, options.systems)
+        first = yield* attempt(placement)
+      }
       const { result } = first
       const why = stopped(first)
         ? null
@@ -865,6 +887,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly remote?: boolean
       /** Runs on an agent of this host's platform only if one has a free slot when the job starts. */
       readonly offload?: boolean
+      /** Other systems whose agents may take the offloaded job (Jobs `systems`). */
+      readonly systems?: ReadonlyArray<string>
+      /** While it waits here for a slot, an agent may take it instead (Slots `spill`). */
+      readonly spill?: Slots.Claim["spill"]
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
       /**
@@ -944,6 +970,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           large: options.evaluates === true && largeEvaluations(run),
           agent: options.remote === true,
           offload: options.offload === true,
+          systems: options.systems ?? [],
           evaluation: options.evaluation === true,
           adoptable: !options.action,
           onWaiting: (reason) => waiting(run.id, row.name, reason),
@@ -961,6 +988,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         label: `${run.id} ${row.name}`,
         // An action waits on after its run was superseded, since nothing interrupts it.
         ...(options.action ? {} : { owner: run.id }),
+        ...(options.spill === undefined ? {} : { spill: options.spill }),
       }
       const work = (reattached ??
         options.slots.with(claim, running, (busy) => waiting(run.id, row.name, `${options.what}: ${busy}`))).pipe(
@@ -994,7 +1022,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const unwanted = options.withdraw === undefined ? Effect.never : Deferred.await(options.withdraw).pipe(
         Effect.andThen(Effect.suspend(() => (startedAt === null ? Effect.succeed(withdrawn) : Effect.never))),
       )
-      return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, Effect.raceFirst(superseded, unwanted)))
+      // The queue gave it to an agent (Slots `spill`); it only ever does while the job waits.
+      const spilled = options.spill === undefined ? Effect.never : Deferred.await(options.spill.signal).pipe(
+        Effect.as({ ...none, result: { _tag: "Died", message: "an agent took it" } satisfies JobResult, spilled: true as const }),
+      )
+      return yield* Effect.raceFirst(work, Effect.raceFirst(cancelled, Effect.raceFirst(superseded, Effect.raceFirst(unwanted, spilled))))
     })
 
   /**
@@ -1691,10 +1723,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 platform: p.platform,
                 remote: p.remote,
                 offload: p.offload,
+                systems: p.systems,
+                spill: p.spill,
                 withdraw,
               },
               collect,
-            ), { here: task.offload === false }))
+            ), { here: task.offload === false, systems: task.systems ?? [] }))
           if (!sharded || stopped(r)) return r
           const passed = r.result._tag === "Passed"
           const now = Date.now()
@@ -1847,9 +1881,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 platform: p.platform,
                 remote: p.remote,
                 offload: p.offload,
+                systems: p.systems,
+                spill: p.spill,
               },
               mine,
-            ), { here: task.offload === false }))
+            ), { here: task.offload === false, systems: task.systems ?? [] }))
           context.collect.tests.push(...mine.tests)
           context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
           return { r, tests: mine.tests, files }
@@ -2184,6 +2220,15 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     Effect.forever,
     Effect.forkScoped,
   )
+
+  // Agents' free slots go to the tasks waiting here that may run there, the one the queue puts first each:
+  // a task finds its place once, and without this one that found every agent busy waited for this host
+  // while agents freed up beside it.
+  yield* Effect.sync(() => {
+    for (const agent of helpers()) {
+      for (let free = agent.free; free > 0 && slots.tasks.spill(agent.platform, agent.portableOnly); free--);
+    }
+  }).pipe(Effect.andThen(Effect.sleep(spillEvery)), Effect.forever, Effect.forkScoped)
 
   return { plan, step, built, finish, cancel, supersede, audit, retry, unblocked }
 })).pipe(Layer.provideMerge(Estimates.layer))

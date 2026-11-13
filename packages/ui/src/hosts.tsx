@@ -33,7 +33,7 @@ export function HostSlots({ ov, compact = false }: { readonly ov: Domain.Overvie
           )
         }
         return a.connected ? (
-          <span key={a.name} className="hsl" data-tip={`${a.name}, ${a.evaluator ? "evaluator" : `${a.platform}`} agent, compatibility version ${a.compatibility} (Calder build ${a.build})`}>
+          <span key={a.name} className="hsl" data-tip={`${a.name}, ${a.evaluator ? "evaluator" : `${a.platform}`} agent${a.portableOnly ? " for other systems' tasks only" : ""}, compatibility version ${a.compatibility} (Calder build ${a.build})`}>
             <b>{a.name}</b>
             {compact ? null : <Meter used={a.running} max={a.slots} />}<span className="n">{a.running}/{a.slots}</span>
           </span>

@@ -11,6 +11,8 @@ interface Connection {
   readonly compatibility: number
   /** Takes evaluation jobs only. */
   readonly evaluator: boolean
+  /** Takes only jobs of other platforms that may run on its own (`also`). */
+  readonly portableOnly: boolean
   readonly orders: Queue.Queue<AgentOrder, Cause.Done>
 }
 
@@ -30,6 +32,10 @@ interface Placed {
 interface Waiter {
   readonly job: { readonly id: string; readonly token: string }
   readonly platform: string
+  /** Other platforms whose agents may take it too (Jobs `systems`). */
+  readonly also: ReadonlyArray<string>
+  /** Hears the agent that takes the job before the agent hears of it. */
+  readonly assigned: (agent: { readonly name: string; readonly platform: string }) => void
   /** An evaluation job, which only evaluator agents take, whatever their platform. */
   readonly evaluation: boolean
   readonly placed: Deferred.Deferred<Placed>
@@ -73,6 +79,10 @@ export interface AgentUsage {
   readonly current: boolean
   /** Whether it takes evaluation jobs only (`calder agent --evaluator`). */
   readonly evaluator: boolean
+  /** Whether it takes only jobs of other platforms that may run on its own (`calder agent --portable-only`). */
+  readonly portableOnly: boolean
+  /** How many jobs it would take right now: none while it is away, behind or stopping a worker. */
+  readonly free: number
 }
 
 /** How long an evaluator's job counts as progress for the evaluations waiting behind it: 3x infra's 5 minutes. */
@@ -108,6 +118,13 @@ export class Agents extends Context.Service<Agents, {
       readonly within?: Duration.Input
       readonly onWaiting?: (reason: string) => Effect.Effect<void>
       readonly onLog?: (text: string) => Effect.Effect<void>
+      /** Other platforms whose agents may take the job too; portable-only agents go first, then agents of `platform`. */
+      readonly also?: ReadonlyArray<string>
+      /**
+       * Hears the agent that takes the job before that agent hears of it, so the job's spec can still
+       * name the agent's system before its worker reads it.
+       */
+      readonly assigned?: (agent: { readonly name: string; readonly platform: string }) => void
     },
   ) => Effect.Effect<number>
   readonly stop: (job: string) => Effect.Effect<void>
@@ -118,6 +135,7 @@ export class Agents extends Context.Service<Agents, {
     readonly build: string
     readonly compatibility: number
     readonly evaluator?: boolean
+    readonly portableOnly?: boolean
   }) => Stream.Stream<AgentOrder, Unauthorized>
   readonly exited: (auth: { readonly token: string; readonly name: string }, job: string, code: number) => Effect.Effect<void, Unauthorized>
   readonly offer: (auth: { readonly token: string; readonly name: string }, slots: number) => Effect.Effect<void, Unauthorized>
@@ -138,7 +156,14 @@ export const make = (secret: string | null, version: number = compatibility, sle
   // Every agent seen since start, so a missing one stays visible.
   const seen = new Map<
     string,
-    { readonly platform: string; slots: number; readonly build: string; readonly compatibility: number; readonly evaluator: boolean }
+    {
+      readonly platform: string
+      slots: number
+      readonly build: string
+      readonly compatibility: number
+      readonly evaluator: boolean
+      readonly portableOnly: boolean
+    }
   >()
 
   const check = (auth: { readonly token: string; readonly name: string }) =>
@@ -161,17 +186,23 @@ export const make = (secret: string | null, version: number = compatibility, sle
 
   const on = (agent: string) => [...placed.values()].filter((p) => p.agent === agent)
 
-  const takes = (c: Connection, waiter: Pick<Waiter, "platform" | "evaluation">) => {
+  const takes = (c: Connection, waiter: Pick<Waiter, "platform" | "also" | "evaluation">) => {
     const jobs = on(c.name)
-    const kind = waiter.evaluation ? c.evaluator : !c.evaluator && c.platform === waiter.platform
+    const kind = waiter.evaluation
+      ? c.evaluator
+      : !c.evaluator && (c.portableOnly ? waiter.also : [waiter.platform, ...waiter.also]).includes(c.platform)
     return kind && c.compatibility === version && jobs.length < c.slots && !jobs.some((p) => p.stopping)
   }
 
   const assign = Effect.gen(function*() {
     for (const waiter of [...waiters]) {
-      const agent = [...connections.values()].find((c) => takes(c, waiter))
+      // An agent that takes only other systems' tasks goes first, since other jobs can't use its slot, then
+      // one of the job's own platform.
+      const candidates = [...connections.values()].filter((c) => takes(c, waiter))
+      const agent = candidates.find((c) => c.portableOnly) ?? candidates.find((c) => c.platform === waiter.platform) ?? candidates[0]
       if (agent === undefined) continue
       waiters.splice(waiters.indexOf(waiter), 1)
+      waiter.assigned({ name: agent.name, platform: agent.platform })
       const p: Placed = { agent: agent.name, exited: Deferred.makeUnsafe<number>(), at: yield* Clock.currentTimeMillis, stopping: false }
       placed.set(waiter.job.id, p)
       Queue.offerUnsafe(agent.orders, { _tag: "Start", job: waiter.job.id, token: waiter.job.token })
@@ -255,6 +286,8 @@ export const make = (secret: string | null, version: number = compatibility, sle
         const waiter: Waiter = {
           job,
           platform,
+          also: options?.also ?? [],
+          assigned: options?.assigned ?? (() => {}),
           evaluation: options?.evaluation === true,
           placed: Deferred.makeUnsafe<Placed>(),
           abandoned: Deferred.makeUnsafe<void>(),
@@ -327,17 +360,19 @@ export const make = (secret: string | null, version: number = compatibility, sle
             const generation = (generations.get(auth.name) ?? 0) + 1
             generations.set(auth.name, generation)
             const evaluator = agent.evaluator === true
+            const portableOnly = agent.portableOnly === true
             const connection: Connection = {
               name: auth.name,
               platform: agent.platform,
               slots: agent.slots,
               compatibility: agent.compatibility,
               evaluator,
+              portableOnly,
               orders,
             }
             connections.set(auth.name, connection)
             if (evaluatorConnected()) evaluatorLeft = null
-            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility, evaluator })
+            seen.set(auth.name, { platform: agent.platform, slots: agent.slots, build: agent.build, compatibility: agent.compatibility, evaluator, portableOnly })
             const unknown = agent.running.filter((job) => !placed.has(job))
             for (const job of unknown) placed.set(job, { agent: auth.name, exited: Deferred.makeUnsafe<number>(), at: 0, stopping: true })
             for (const [job, p] of [...placed]) {
@@ -346,7 +381,9 @@ export const make = (secret: string | null, version: number = compatibility, sle
               if (!agent.running.includes(job)) yield* finish(job, -1)
               else if (p.stopping) Queue.offerUnsafe(orders, { _tag: "Stop", job })
             }
-            yield* Effect.logInfo(`agent ${auth.name} (${agent.platform}, ${agent.slots} slots${evaluator ? ", evaluations only" : ""}) connected`)
+            yield* Effect.logInfo(
+              `agent ${auth.name} (${agent.platform}, ${agent.slots} slots${evaluator ? ", evaluations only" : portableOnly ? ", other systems' tasks only" : ""}) connected`,
+            )
             const woken = wakes.get(auth.name)
             if (woken !== undefined && !woken.connected) {
               woken.connected = true
@@ -407,7 +444,18 @@ export const make = (secret: string | null, version: number = compatibility, sle
         yield* assign
       }))),
     usage: () =>
-      [...seen].map(([name, a]) => ({ name, ...a, running: on(name).length, connected: connections.has(name), current: a.compatibility === version })),
+      [...seen].map(([name, a]) => {
+        const jobs = on(name)
+        const taking = connections.has(name) && a.compatibility === version && !jobs.some((p) => p.stopping)
+        return {
+          name,
+          ...a,
+          running: jobs.length,
+          connected: connections.has(name),
+          current: a.compatibility === version,
+          free: taking ? Math.max(0, a.slots - jobs.length) : 0,
+        }
+      }),
   }
 }
 
