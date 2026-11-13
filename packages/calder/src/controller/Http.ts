@@ -3,7 +3,7 @@ import { UiRpcs } from "@calder-ci/api"
 import { Effect, Layer } from "effect"
 import { HttpRouter, HttpServerResponse, HttpStaticServer } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
-import { AgentRpcs, WorkerRpcs } from "../Protocol.ts"
+import { AgentRpcs } from "../Protocol.ts"
 import { Config } from "./Config.ts"
 import * as Outputs from "./Outputs.ts"
 import * as Remote from "./Remote.ts"
@@ -27,8 +27,9 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
     Layer.provide(RpcServer.layerProtocolWebsocket({ path: "/agent" })),
     Layer.provide(RpcSerialization.layerJson),
   )
-  const workers = RpcServer.layer(WorkerRpcs).pipe(
+  const workers = RpcServer.layer(WorkerServer.TrackedRpcs).pipe(
     Layer.provide(WorkerServer.handlers),
+    Layer.provide(WorkerServer.tracking),
     Layer.provide(RpcServer.layerProtocolWebsocket({ path: "/worker" })),
     Layer.provide(RpcSerialization.layerJson),
   )

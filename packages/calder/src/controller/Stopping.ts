@@ -3,9 +3,26 @@ import { Effect, Layer } from "effect"
 /** When each layer that is stopping right now began to. */
 const stopping = new Map<string, number>()
 
-/** The layers stopping right now, longest first, as "Runs for 95 s". */
-export const report = (now: number) =>
-  [...stopping].sort(([, a], [, b]) => a - b).map(([name, since]) => `${name} for ${Math.round((now - since) / 1000)} s`)
+/** Worker calls the controller is handling right now, with the RPC and when each began. */
+const calls = new Map<number, { readonly rpc: string; readonly since: number }>()
+let nextCall = 0
+
+/** `effect`, a worker call to `rpc`, listed in the report while it runs. */
+export const tracked = <A, E, R>(rpc: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.suspend(() => {
+    const id = nextCall++
+    calls.set(id, { rpc, since: Date.now() })
+    return Effect.ensuring(effect, Effect.sync(() => calls.delete(id)))
+  })
+
+const ago = (now: number, since: number) => `${Math.round((now - since) / 1000)} s`
+
+/** The layers stopping right now, longest first, as "Runs for 95 s", then the worker calls in flight. */
+export const report = (now: number) => {
+  const layers = [...stopping].sort(([, a], [, b]) => a - b).map(([name, since]) => `${name} for ${ago(now, since)}`)
+  const inFlight = [...calls.values()].sort((a, b) => a.since - b.since).map((c) => `${c.rpc} for ${ago(now, c.since)}`)
+  return inFlight.length === 0 ? layers : [...layers, `worker calls in flight: ${inFlight.join(", ")}`]
+}
 
 /**
  * `layer`, counted as stopping from when its finalizers begin until they end. From 2026-11-11 on, every stop of
