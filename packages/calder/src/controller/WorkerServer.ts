@@ -259,6 +259,21 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   }
 }))
 
+/**
+ * Effect's socket protocol, except that a stop or a lost worker can interrupt an answer's write. Effect
+ * 4.0's RpcServer writes a call's answer uninterruptibly once the handler ends, and its stop waits for
+ * every such write. The socket's write waits for `drain` while the worker doesn't take the answer, and
+ * forever once the socket has closed (Node's and Bun's `write` then returns false and emits nothing). From
+ * 2026-11-11 on, srv-2's controller hung on this server at every stop during its own deploy, with no call
+ * in flight, until systemd killed it. A write is interruptible only while it waits for `drain`, after the
+ * socket took the whole answer, so a worker never gets part of one. This goes once Effect's write fails on
+ * a closed socket and its RpcServer stops without waiting for answers.
+ */
+export const protocol = Layer.effect(RpcServer.Protocol)(Effect.map(RpcServer.makeProtocolSocketServer, (socket) => ({
+  ...socket,
+  send: (clientId, response, transferables) => Effect.interruptible(socket.send(clientId, response, transferables)),
+})))
+
 export const layer = Layer.unwrap(Effect.gen(function*() {
   const config = yield* Config
   const path = join(config.runtimeDir, "worker.sock")
@@ -271,7 +286,7 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
   const server = named("WorkerServer's RPC server", RpcServer.layer(TrackedRpcs)).pipe(
     Layer.provide(handlers),
     Layer.provide(tracking),
-    Layer.provide(RpcServer.layerProtocolSocketServer),
+    Layer.provide(protocol),
     Layer.provide(RpcSerialization.layerNdjson),
   )
   // Workers exit right after reporting, which resets their connection; that's not worth an error log.
