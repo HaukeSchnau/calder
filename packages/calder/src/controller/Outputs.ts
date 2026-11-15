@@ -50,6 +50,20 @@ export const rootDerivations = (stateDir: string, runId: string, drvs: ReadonlyA
     )
   })
 
+/**
+ * Keeps a build's output in the store until the run ends, beside its derivation roots. Nothing else roots it,
+ * and a release that waits for its promotion would otherwise be collected: srv-2's nightly collection deleted
+ * t3code-801's release between its build and its promotion. Only a path this store holds is rooted; one only
+ * in the binary cache stays there rather than being downloaded.
+ */
+export const rootBuilt = (stateDir: string, runId: string, path: string) =>
+  Effect.suspend(() => {
+    const link = join(derivationRoots(stateDir), runId, basename(path))
+    if (hashOf(path) === undefined || !existsSync(path) || existsSync(link)) return Effect.void
+    mkdirSync(join(derivationRoots(stateDir), runId), { recursive: true })
+    return Exec.run(["nix-store", "--add-root", link, "--realise", ...only([path])]).pipe(Effect.asVoid)
+  })
+
 /** Drops a run's derivation roots. */
 export const unrootDerivations = (stateDir: string, runId: string) =>
   Effect.try(() => rmSync(join(derivationRoots(stateDir), runId), { recursive: true, force: true }))
