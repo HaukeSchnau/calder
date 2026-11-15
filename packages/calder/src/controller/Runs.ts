@@ -706,6 +706,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
             ${outcome.status})`)
       }
       yield* keep(s.outputs)
+      if (row.kind === "build" && typeof s.value === "string") {
+        yield* Outputs.rootBuilt(config.stateDir, run.id, s.value).pipe(
+          Effect.provideService(Exec.SpawnerTag, spawner),
+          Effect.catch((e) => Effect.logWarning(`could not keep ${s.value} from the garbage collector`, e)),
+        )
+      }
       live.finish(run.id, row.name)
       yield* publishStep(run.id, row.name)
       if (row.kind !== "output") {
