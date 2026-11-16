@@ -302,6 +302,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const repoOf = (project: string) => projects.get(project)!.repo
   const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`
   const poolOf = (run: Rows.RunRow): Pool => (run.trust === "trusted" ? "trusted" : run.fork === 1 ? "fork" : "pr")
+  /** A background check's run: its jobs take only slots nothing else wants (Slots `background`). */
+  const backgroundOf = (run: Rows.RunRow) => {
+    const event = JSON.parse(run.event) as Domain.Event
+    return event._tag === "Check" && event.background === true
+  }
   const largeEvaluations = (run: Rows.RunRow) => projects.get(run.project)?.largeEvaluations === true
 
   const publishRun = (runId: string) =>
@@ -858,28 +863,43 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   type Executed = Effect.Success<ReturnType<typeof execute>>
   /** A job that never ran to a result: its run was cancelled, or replaced before the job started. */
   const stopped = (r: object) => "cancelled" in r || "withdrawn" in r
-  const preparing = new Map<string, Deferred.Deferred<Option.Option<Executed>>>()
+  /** Each setup that runs for several runs (`once`): its outcome, its claim's raise (Slots `raised`) and its run. */
+  const preparing = new Map<
+    string,
+    { readonly done: Deferred.Deferred<Option.Option<Executed>>; readonly raised: Deferred.Deferred<void>; readonly run: string }
+  >()
   /**
    * Runs a setup once for concurrent runs that need the same prepared workspace: the others wait and
-   * reuse it, or try themselves if it didn't pass.
+   * reuse it, or try themselves if it didn't pass. One that isn't background work raises the job it
+   * waits for, and says whose it is.
    */
-  const once = <E, R>(key: string, setup: Effect.Effect<Executed, E, R>): Effect.Effect<{ readonly executed: Executed; readonly reused: boolean }, E, R> =>
+  const once = <E, R>(
+    key: string,
+    run: Rows.RunRow,
+    name: string,
+    setup: (raised: Deferred.Deferred<void>) => Effect.Effect<Executed, E, R>,
+  ): Effect.Effect<{ readonly executed: Executed; readonly reused: boolean }, E, R> =>
     Effect.suspend(() => {
       const running = preparing.get(key)
       if (running !== undefined) {
-        return Deferred.await(running).pipe(Effect.flatMap(Option.match({
-          onNone: () => once(key, setup),
-          onSome: (executed) => Effect.succeed({ executed, reused: true }),
-        })))
+        if (!backgroundOf(run)) Deferred.doneUnsafe(running.raised, Effect.void)
+        return waiting(run.id, name, `${running.run}'s setup of the same dependencies`).pipe(
+          Effect.andThen(Deferred.await(running.done)),
+          Effect.tap(() => waiting(run.id, name, null)),
+          Effect.flatMap(Option.match({
+            onNone: () => once(key, run, name, setup),
+            onSome: (executed) => Effect.succeed({ executed, reused: true }),
+          })),
+        )
       }
-      const done = Deferred.makeUnsafe<Option.Option<Executed>>()
-      preparing.set(key, done)
-      return setup.pipe(
+      const entry = { done: Deferred.makeUnsafe<Option.Option<Executed>>(), raised: Deferred.makeUnsafe<void>(), run: run.id }
+      preparing.set(key, entry)
+      return setup(entry.raised).pipe(
         Effect.onExit((exit) =>
           Effect.suspend(() => {
             preparing.delete(key)
             const passed = Exit.isSuccess(exit) && !stopped(exit.value) && exit.value.result._tag === "Passed"
-            return Deferred.succeed(done, passed ? Option.some(exit.value) : Option.none())
+            return Deferred.succeed(entry.done, passed ? Option.some(exit.value) : Option.none())
           })
         ),
         Effect.map((executed) => ({ executed, reused: false })),
@@ -912,6 +932,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly systems?: ReadonlyArray<string>
       /** While it waits here for a slot, an agent may take it instead (Slots `spill`). */
       readonly spill?: Slots.Claim["spill"]
+      /** Completes once another run's work waits for this background run's job (Slots `raised`). */
+      readonly raised?: Deferred.Deferred<void>
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
       /**
@@ -998,18 +1020,17 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         })
         return { ...done, startedAt }
       }))
-      const event = JSON.parse(run.event) as Domain.Event
-      const background = event._tag === "Check" && event.background === true
       const claim = {
         project: run.project,
         expected: options.expected,
         run: run.created_at,
-        background,
+        background: backgroundOf(run),
         critical: options.critical ?? Rows.spec(row).critical === true,
         label: `${run.id} ${row.name}`,
         // An action waits on after its run was superseded, since nothing interrupts it.
         ...(options.action ? {} : { owner: run.id }),
         ...(options.spill === undefined ? {} : { spill: options.spill }),
+        ...(options.raised === undefined ? {} : { raised: options.raised }),
       }
       const work = (reattached ??
         options.slots.with(claim, running, (busy) => waiting(run.id, row.name, `${options.what}: ${busy}`))).pipe(
@@ -1618,18 +1639,22 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         const executed = yield* placed(run, row, info, platform, null, (p) =>
           once(
             `${p.remote ? "agent" : "local"}/${poolOf(run)}/${run.project}/${p.platform ?? config.system}/${deps}`,
-            execute(run, row, (ws) => stepJob({ run: p.where, workspace: ws, deps }), {
-              slots: p.remote ? slots.agents : slots.tasks,
-              what: p.remote ? "an agent's slot" : "a task slot",
-              // Every task of the run waits for it.
-              expected: 0,
-              action: false,
-              shard: null,
-              workspace: true,
-              platform: p.platform,
-              remote: p.remote,
-              offload: p.offload,
-            }, collect),
+            run,
+            name,
+            (raised) =>
+              execute(run, row, (ws) => stepJob({ run: p.where, workspace: ws, deps }), {
+                slots: p.remote ? slots.agents : slots.tasks,
+                what: p.remote ? "an agent's slot" : "a task slot",
+                // Every task of the run waits for it.
+                expected: 0,
+                action: false,
+                shard: null,
+                workspace: true,
+                platform: p.platform,
+                remote: p.remote,
+                offload: p.offload,
+                raised,
+              }, collect),
           ).pipe(Effect.map(({ executed, reused }) => ({ ...executed, reused }))), { setup: true })
         const { reused } = executed
         if (stopped(executed)) return yield* settle(run, row, { status: "cancelled" })
@@ -1699,7 +1724,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         reusedFrom: hit.run_id,
       })
       if (reusable) {
-        yield* landing(count === 1 ? [key] : shardKeys)
+        yield* landing(count === 1 ? [key] : shardKeys, { raise: !backgroundOf(run) })
         const hit = yield* lookup(key)
         if (hit !== undefined) return yield* settle(run, row, reused(hit))
       }
@@ -1728,6 +1753,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (instead !== null) return yield* settle(run, row, instead)
       const shards = yield* Effect.forEach(pending, (index) =>
         Effect.gen(function*() {
+          const raised = Deferred.makeUnsafe<void>()
           const r = yield* flying([count === 1 ? key : shardKeys[index - 1]!], placed(run, row, info, task.platform, sharded ? index : null, (p) =>
             execute(
               run,
@@ -1754,9 +1780,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 systems: p.systems,
                 spill: p.spill,
                 withdraw,
+                raised,
               },
               collect,
-            ), { here: task.offload === false || preview, systems: task.systems ?? [] }))
+            ), { here: task.offload === false || preview, systems: task.systems ?? [] }), raised)
           if (!sharded || stopped(r)) return r
           const passed = r.result._tag === "Passed"
           const now = Date.now()
@@ -1869,7 +1896,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         // Files another run is checking right now: wait for them rather than check them twice.
         const inAir = each.filter((e) => !passed.has(keys.get(e.file)!) && inFlight(keys.get(e.file)!)).map((e) => keys.get(e.file)!)
         if (inAir.length > 0) {
-          yield* landing(inAir)
+          yield* landing(inAir, { raise: !backgroundOf(run) })
           yield* look(inAir)
         }
       }
@@ -1894,6 +1921,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const job = (files: ReadonlyArray<string>, index: number, total: number, ms: number) =>
         Effect.gen(function*() {
           const mine = { tests: [] as Array<TestRow>, attempts: 0 }
+          const raised = Deferred.makeUnsafe<void>()
           const r = yield* flying(files.map((f) => keys.get(f)!), placed(run, row, context.info, task.platform, index, (p) =>
             execute(
               run,
@@ -1911,9 +1939,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 offload: p.offload,
                 systems: p.systems,
                 spill: p.spill,
+                raised,
               },
               mine,
-            ), { here: task.offload === false, systems: task.systems ?? [] }))
+            ), { here: task.offload === false, systems: task.systems ?? [] }), raised)
           context.collect.tests.push(...mine.tests)
           context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
           return { r, tests: mine.tests, files }

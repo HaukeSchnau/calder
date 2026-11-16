@@ -139,7 +139,7 @@ export const drive = ({
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    const trust = event._tag === "PullRequest" ? "pr" : "trusted"
+    const trust = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted"
     const pr = event._tag === "PullRequest" ? event.number : null
     const plan: PlanSpec = { version: 1, app: null, trust, reuse: "all", schedules: [], steps: [...planned], ...extra }
     yield* seed
