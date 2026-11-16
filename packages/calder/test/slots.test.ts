@@ -185,6 +185,31 @@ describe("Slots", () => {
       expect(order).toEqual(["check-1", "check-2", "push", "check-3"])
     }))
 
+  it.effect("queues background work like other work once that work waits for it, also when it waited before it queued", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      const raised = yield* Deferred.make<void>()
+      yield* job("check install", { project: "studienbuch", expected: 0, run: 0, background: true, raised })
+      yield* Effect.yieldNow
+      // One slot leaves none free for background work.
+      expect(order).toEqual([])
+      expect(slots.waitsFor({ project: "studienbuch", expected: 0, run: 0, background: true }))
+        .toBe("0 of 1 busy; 1 ahead; background work starts only while another slot stays free")
+      // A pull request's install waits for this one.
+      yield* Deferred.succeed(raised, undefined)
+      yield* Effect.yieldNow
+      expect(order).toEqual(["check install"])
+      yield* Deferred.succeed(hold, undefined)
+
+      const before = Slots.make({ capacity: 1 })
+      const second = yield* harness(before)
+      yield* second.job("check lint", { project: "studienbuch", expected: 0, run: 0, background: true, raised })
+      yield* Effect.yieldNow
+      expect(second.order).toEqual(["check lint"])
+      yield* Deferred.succeed(second.hold, undefined)
+    }))
+
   it.effect("gives up the place in the queue when interrupted while waiting", () =>
     Effect.gen(function*() {
       const slots = Slots.make({ capacity: 1 })

@@ -11,6 +11,12 @@ export interface Claim {
   /** Work nobody waits for, such as checks of agents' snapshots: it gets a slot only while no other step wants one and another stays free. */
   readonly background?: boolean
   /**
+   * Completes once other work waits for this background claim's job, such as a pull request's install of
+   * the same dependencies: from then on the claim queues like that work. Otherwise a background check's
+   * install, which never gets the one task slot srv-2 had, held every install of the project for 3 hours (F47).
+   */
+  readonly raised?: Deferred.Deferred<void>
+  /**
    * On a deploy's or a preview's critical path: it goes before every claim that isn't, and may take one
    * of the lane's slots beyond capacity, so a preview never queues behind a long check.
    */
@@ -86,6 +92,9 @@ export const make = (options: {
   const before = (a: Waiter, b: Waiter, at: number) =>
     (a.expected - (at - a.since)) - (b.expected - (at - b.since)) || a.run - b.run || a.seq - b.seq
 
+  /** Whether the claim is background work that nothing else waits for yet. */
+  const yields = (c: Claim) => c.background === true && (c.raised === undefined || !Deferred.isDoneUnsafe(c.raised))
+
   /**
    * Whether a claim may have a slot now: background work leaves one free and yields to the rest, critical
    * work has the lane. Critical work fills the lane first, so the lane never counts against other work.
@@ -95,7 +104,7 @@ export const make = (options: {
     const running = holders.length
     const regular = running - Math.min(lane, holders.filter((h) => h.critical).length)
     if (w.critical === true) return running < options.capacity + lane
-    if (w.background === true) return regular < options.capacity - 1 && !waiters.some((o) => o.background !== true)
+    if (yields(w)) return regular < options.capacity - 1 && !waiters.some((o) => !yields(o))
     return regular < options.capacity
   }
 
@@ -143,7 +152,12 @@ export const make = (options: {
         holding.delete(waiter.granted)
         return holder
       })
-      return Deferred.await(waiter.granted).pipe(
+      const granted = Deferred.await(waiter.granted)
+      // Once other work waits for it, the queue looks at the claim again as that work's.
+      const waited = yields(claim) && claim.raised !== undefined
+        ? Effect.raceFirst(granted, Deferred.await(claim.raised).pipe(Effect.andThen(Effect.sync(grant)), Effect.andThen(granted)))
+        : granted
+      return waited.pipe(
         Effect.andThen(handOver),
         Effect.onInterrupt(() =>
           Effect.suspend(() => {
@@ -181,7 +195,8 @@ export const make = (options: {
     const others = holders.filter((h) => h.project !== claim.project).length
     const own = holders.filter((h) => h.project === claim.project).map((h) => h.label)
     const who = [...own.slice(0, 4), ...(own.length > 4 ? ["..."] : []), ...(others === 0 ? [] : [`${others} of other projects`])].join(", ")
-    return `${busy}${who === "" ? "" : `: ${who}`}${ahead > 0 ? `; ${ahead} ahead` : ""}`
+    const yielding = yields(claim) ? "; background work starts only while another slot stays free" : ""
+    return `${busy}${who === "" ? "" : `: ${who}`}${ahead > 0 ? `; ${ahead} ahead` : ""}${yielding}`
   }
 
   /** Waits for a slot, telling `onWaiting` why whenever that changes, from the first moment it has to wait. */

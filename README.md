@@ -174,8 +174,13 @@ critical steps go first, and they may take one slot beyond the number, so a prev
 long check. A task's `gate`, steps it waits for like `after`, is on its critical path too, with what those
 read: `Environments.project`'s `previews.after` gates the preview, such as on a smoke test of what it
 deploys. Checks a deploy only waits for (`after`, `afterEnded`) take their turn like any other, so a push's checks don't
-jump the queue, and `Project.alchemy`'s previews wait for their checks that way. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
-comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
+jump the queue, and `Project.alchemy`'s previews wait for their checks that way. A background check
+(`calder check --background`, or `calder watch`'s) takes a slot only while no other step wants one and another
+stays free. Once another run waits for one of its jobs, its setup of the same dependencies or a task of the
+same key, that job queues like the waiting run's work: Studienbuch's installs once waited 3 hours for a
+background check's install, which srv-2's one task slot could never take. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
+comment: steps it depends on, a slot and who holds them, a setup or another run's setup of the same
+dependencies, an agent or the deploy lease.
 
 A newer revision supersedes the runs of older ones. A pull request's new revision supersedes the pull
 request's older runs. A push supersedes the older pushes and scheduled runs of its branch, and a check the
