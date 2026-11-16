@@ -1,8 +1,11 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect } from "effect"
+import { SqlClient } from "effect/sql"
 import { vi } from "vitest"
+import { RunsCore } from "../src/controller/Runs.ts"
 import type { PlannedStep } from "../src/Protocol.ts"
 import { drive, step } from "./drive.ts"
+import { insertRun } from "./sqlite.ts"
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}))
 
@@ -79,7 +82,37 @@ describe("builds", () => {
       expect(plan.derivations).toMatchObject({ "checks.x86_64-linux.mac": derivation("mac", "aarch64-darwin") })
     }))
 
-  it.live("tries evaluating the builds together once more, then evaluates each build's attribute alone, in plan slots", () =>
+  it.live("plans another run of the project while the builds evaluate, in its one plan slot", () =>
+    Effect.gen(function*() {
+      // infra-1350's plan took 21 s, after 150 minutes behind infra-1332's evaluation of its builds.
+      const evaluating = yield* Deferred.make<void>()
+      const planned = yield* Deferred.make<void>()
+      const { status, jobs } = yield* drive({
+        steps: [{ ...build("a", "x86_64-linux"), build: { attr: "a", drv: null, out: null, system: null } }],
+        work: (name) => (name === "a" && !Deferred.isDoneUnsafe(planned) ? Deferred.succeed(evaluating, undefined).pipe(Effect.andThen(Deferred.await(planned))) : Effect.void),
+        result: (_step, job) =>
+          job.evaluate === undefined ? undefined : {
+            _tag: "Evaluated",
+            derivations: { a: { drv: "/nix/store/00000000000000000000000000000000-a.drv", out: "/nix/store/00000000000000000000000000000000-a", system: "x86_64-linux" } },
+            tooLarge: {},
+            uses: {},
+            errors: {},
+          },
+        meanwhile: Effect.gen(function*() {
+          yield* Deferred.await(evaluating)
+          const sql = yield* SqlClient.SqlClient
+          yield* insertRun("app-3", { at: 3, status: "queued", trust: "pr", event: '{"_tag":"PullRequest","number":7,"base":"main","head":"f","fork":false}' })
+          yield* sql`delete from run_plans where run_id = 'app-3'`
+          yield* sql`update runs set finished_at = null where id = 'app-3'`
+          yield* (yield* RunsCore).plan("app-3")
+          yield* Deferred.succeed(planned, undefined)
+        }).pipe(Effect.orDie),
+      })
+      expect(status).toBe("passed")
+      expect(jobs).toEqual(["a evaluates", "plan", "a"])
+    }))
+
+  it.live("tries evaluating the builds together once more, then evaluates each build's attribute alone, in evaluation slots", () =>
     Effect.gen(function*() {
       const derivations: Array<string | null> = []
       const { status, jobs, steps } = yield* drive({

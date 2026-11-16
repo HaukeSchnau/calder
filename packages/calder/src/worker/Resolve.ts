@@ -532,8 +532,10 @@ const cached = <A, E, R>(
     if (cacheDir === null || !/[?&]rev=/.test(run.flake)) return (yield* use(undefined)).result
     mkdirSync(cacheDir, { recursive: true })
     const file = join(cacheDir, `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`)
+    // Per revision: a second job of the revision waits and takes the first one's derivations, and one of
+    // another revision, such as a push's plan beside an older run's evaluation, doesn't wait for minutes.
     return yield* Effect.acquireUseRelease(
-      lock(`${file}.lock`),
+      lock(`${file}.${sha256(run.flake).slice(0, 16)}.lock`),
       () =>
         Effect.gen(function*() {
           const stored = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as Cached : undefined
@@ -541,8 +543,9 @@ const cached = <A, E, R>(
           const { result, entry: added } = yield* use(entry)
           if (Object.keys(added).length > 0) {
             const next: Cached = { ...(entry ?? { derivations: {} }), ...added, flake: run.flake }
-            writeFileSync(`${file}.tmp`, JSON.stringify(next))
-            renameSync(`${file}.tmp`, file)
+            const tmp = `${file}.${process.pid}.tmp`
+            writeFileSync(tmp, JSON.stringify(next))
+            renameSync(tmp, file)
           }
           return result
         }),

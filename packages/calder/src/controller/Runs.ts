@@ -181,6 +181,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     // slots to other projects: three of infra's pull requests once held every plan slot for an hour while
     // every other project's runs stayed in planning.
     plans: Slots.make({ capacity: config.jobs.slots.plans, maxPerProject: 1 }),
+    // Builds' evaluations, one per project at a time like plans, but apart from them: a plan leaves its
+    // builds to them and holds at most 0.3 GiB, while one on srv-2 took up to 113 minutes, and infra's pull
+    // requests' plans waited up to three hours behind them in one slot.
+    evaluations: Slots.make({ capacity: config.jobs.slots.plans, maxPerProject: 1 }),
     builds: Slots.make({ capacity: config.jobs.slots.builds, lane }),
     // Each other system's builds wait for its remote builders apart, so one that is unavailable stalls only its own.
     remoteBuilds: new Map<string, Slots.Slots>(),
@@ -191,7 +195,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     agents: Slots.make({ capacity: 64 }),
   }
   /** Every pool, the remote builds' of each system included. */
-  const pools = () => [slots.plans, slots.builds, ...slots.remoteBuilds.values(), slots.tasks, slots.actions, slots.agents]
+  const pools = () => [slots.plans, slots.evaluations, slots.builds, ...slots.remoteBuilds.values(), slots.tasks, slots.actions, slots.agents]
   const cancels = new Map<string, Deferred.Deferred<string>>()
   const signal = (map: Map<string, Deferred.Deferred<string>>) => (runId: string) => {
     let d = map.get(runId)
@@ -256,10 +260,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index))
     }
     // Taken before any run is driven again, or the run would claim the same slots for new jobs. A build's
-    // job holds a build slot, also before its derivation is known, and evaluating builds a plan slot.
+    // job holds a build slot, also before its derivation is known, and evaluating builds an evaluation slot.
     const row = yield* Rows.loadStep(spec.run.id, spec.step).pipe(Effect.provideService(SqlClient.SqlClient, sql))
     const build = row === undefined ? null : Rows.spec(row).build
-    const held = spec.evaluate !== undefined ? slots.plans : build === null ? slots.tasks : buildSlots(build.system)
+    const held = spec.evaluate !== undefined ? slots.evaluations : build === null ? slots.tasks : buildSlots(build.system)
     const release = held.reserve(spec.run.project)
     yield* jobs.settled(adopted.id).pipe(
       Effect.ensuring(release),
@@ -1121,15 +1125,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const why = (result: JobResult) => (result._tag === "Died" || result._tag === "Lost" ? result.message.split("\n")[0] : result._tag)
 
   /**
-   * One job that evaluates builds (Steps.ts `evaluate`) for `row`'s step. It is plan work and takes a plan
-   * slot, so one project's flake is evaluated once at a time, as the worker's cache lock would have it
-   * anyway, in the larger pull-request unit where the project asks for it, and no build slot sits idle
-   * for the minutes it takes.
+   * One job that evaluates builds (Steps.ts `evaluate`) for `row`'s step. It takes an evaluation slot, so
+   * one project's builds are evaluated once at a time, in the larger pull-request unit where the project
+   * asks for it, no build slot sits idle for the minutes it takes, and no plan waits for it.
    */
   const evaluateHere = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
     execute(run, row, () => job, {
-      slots: slots.plans,
-      what: "a plan slot",
+      slots: slots.evaluations,
+      what: "an evaluation slot",
       expected: 0,
       action: false,
       shard: null,
@@ -1167,7 +1170,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const recordsOf = (result: JobResult, trust: Domain.Trust): Kept =>
     result._tag === "Evaluated" && result.recorded !== undefined ? [{ recorded: result.recorded, trust }] : []
 
-  /** Evaluates builds here, in a plan slot; what it records counts for the run's trust. */
+  /** Evaluates builds here, in an evaluation slot; what it records counts for the run's trust. */
   const evaluateLocally = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
     Effect.map(evaluateHere(run, row, job, critical), (r) => {
       const result = sanitized(r.result)
