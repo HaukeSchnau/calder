@@ -129,7 +129,9 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   neither waits for the project's others nor holds them up, such as an app store build. `artifacts: { ENV: step }` names store paths a task
   deploys: it waits for those steps, gets each path in its variable, and holding the lease publishes them
   to the binary cache first, outside a pull request each pinned as `<project>-<step>-<variable>`, and
-  looks at the head once more. Once the same step of a
+  looks at the head once more. Publishing signs what this host's store holds, so a path the step reused from
+  the binary cache, such as one this store lost to its nightly collection, comes back from there first and
+  stays until the run ends; one neither has fails the step, saying so. A promotion's release does the same. Once the same step of a
   newer run held the lease, an older run's step is skipped instead of running; another step of a newer run,
   or the same step still waiting for its turn, replaces nothing, so a deploy that waits for a slow build
   still happens when its turn comes. Deploys of the same run take the lease in turn. Who holds the lease
@@ -599,9 +601,10 @@ shipped yet, and edits that comment once a run that includes the merge passes.
 each step downstream of one that ended without passing, such as one it blocked, go back to pending, and the
 run's log of each says why. Steps that passed keep their result, and a step that hasn't started yet waits for
 what runs again instead of being blocked by it. A build that keeps its result and that a step running again
-reads gets its output back into this store, from the binary cache if this store lost it, rooted until the run
-ends again; one that left both builds again first. studienbuch-987's bundle had left both by the time its
-preview was rerun, so each rerun's publish failed with `nix-cache-sign: not all paths are valid`. This works while the run still runs, so a build that lost
+reads stays rooted until the run ends again while this store holds its output. One this store lost runs again
+before that step, as in a new run: it takes the output the binary cache still has, or builds. studienbuch-987's
+bundle had left both by the time its preview was rerun, so each rerun's publish failed with
+`nix-cache-sign: not all paths are valid`. The rerun itself never waits on the binary cache. This works while the run still runs, so a build that lost
 its connection to a remote builder runs again at once and not after the run's other steps ended, and after
 it ended, which reopens it. A run that has no failed step, or that was cancelled or never planned, runs again
 as a new run instead, and `--force` always starts a new run that runs everything.

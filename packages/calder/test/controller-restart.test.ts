@@ -114,7 +114,7 @@ const restarted = Effect.gen(function*() {
     const services = yield* Layer.build(Leases.layer.pipe(
       Layer.provideMerge(jobs),
       Layer.provideMerge(Layer.mergeAll(
-        config({ runtimeDir, jobs: { mode: "systemd", slots: { plans: 1, builds: 1, tasks: 1, actions: 1 } } }),
+        config({ runtimeDir, stateDir: join(runtimeDir, "state"), jobs: { mode: "systemd", slots: { plans: 1, builds: 1, tasks: 1, actions: 1 } } }),
         Layer.succeed(Agents)({} as unknown as Agents["Service"]),
         Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(systemd),
         Layer.succeed(SqlClient.SqlClient)(sql),

@@ -2116,16 +2116,23 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (run === undefined || run.plan === null || run.status === "cancelled") return []
       const ended = (yield* db(Rows.loadSteps(runId))).filter((r) => Rows.terminal(r.status))
       const again = options.only ?? retryable(ended.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })))
-      // A build that keeps its result has to hold up for the steps that run again and read it: its output is made
-      // valid here and rooted for the reopened run, or, gone from this store and the binary cache, it builds again.
-      // studienbuch-987's bundle went from both between the run and its reruns, and each rerun's preview failed (F48).
+      // A build that keeps its result has to hold up for the steps that run again and read it. Its output stays rooted
+      // for the reopened run while this store holds it; otherwise the build runs again, which takes what the binary
+      // cache still has as a new run does, or builds. studienbuch-987's bundle had left both by its reruns, and each
+      // rerun's preview failed (F48). Nothing here asks the network: Delivery's round waits for every project's rerun.
       const read = new Set(ended.filter((r) => again.includes(r.name)).flatMap((r) => [...Rows.spec(r).needs, ...Rows.spec(r).exits]))
       const gone = new Map<string, string>()
       for (const r of ended) {
         const out = r.kind === "build" && read.has(r.name) && !again.includes(r.name) && Rows.succeeded(r.status) ? JSON.parse(r.value ?? "null") : null
         if (typeof out !== "string" || hashOf(out) === undefined) continue
-        const kept = yield* Effect.exit(Outputs.realiseBuilt(config.stateDir, runId, out).pipe(Effect.provideService(Exec.SpawnerTag, spawner)))
-        if (Exit.isFailure(kept)) gone.set(r.name, `${out} is in neither this store nor the binary cache any more`)
+        if (!existsSync(out)) {
+          gone.set(r.name, `${out} left this store`)
+          continue
+        }
+        yield* Outputs.rootBuilt(config.stateDir, runId, out).pipe(
+          Effect.provideService(Exec.SpawnerTag, spawner),
+          Effect.catch((e) => Effect.logWarning(`could not keep ${out} from the garbage collector`, e)),
+        )
       }
       const names = [...again, ...gone.keys()]
       // An attempt whose row ended still reports it; its status would land after the retry's.

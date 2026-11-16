@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect, Layer, Scope } from "effect"
+import { ChildProcessSpawner } from "effect/process"
 import { RpcTest } from "effect/rpc"
 import { SqlClient } from "effect/sql"
 import { vi } from "vitest"
@@ -81,6 +82,7 @@ describe("a task with a named lease", () => {
         Layer.succeed(Projects)({ get: () => ({ name: "app", repo: "schnau/app" }) } as unknown as Projects["Service"]),
         Layer.succeed(Cache)({ has: unused, publish: unused } as unknown as Cache["Service"]),
         Layer.succeed(Comments)({} as unknown as Comments["Service"]),
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(ChildProcessSpawner.make(unused)),
       )
       const client = yield* RpcTest.makeClient(WorkerRpcs).pipe(Effect.provide(handlers.pipe(Layer.provide(services))))
 
