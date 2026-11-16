@@ -210,6 +210,27 @@ describe("Slots", () => {
       yield* Deferred.succeed(second.hold, undefined)
     }))
 
+  it.effect("counts a raised background claim's wait from its raise, so it doesn't pass work that queued before", () =>
+    Effect.gen(function*() {
+      let clock = 0
+      const slots = Slots.make({ capacity: 1, now: () => clock })
+      const { order, hold, job } = yield* harness(slots)
+      const raised = yield* Deferred.make<void>()
+      yield* job("busy", { project: "infra", expected: 0, run: 0 })
+      yield* Effect.yieldNow
+      yield* job("check test", { project: "studienbuch", expected: minutes(5), run: 1, background: true, raised })
+      yield* Effect.yieldNow
+      clock = minutes(170)
+      yield* job("pr test", { project: "t3code", expected: minutes(5), run: 2 })
+      yield* Effect.yieldNow
+      clock = minutes(180)
+      yield* Deferred.succeed(raised, undefined)
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(hold, undefined)
+      yield* Effect.yieldNow
+      expect(order).toEqual(["busy", "pr test", "check test"])
+    }))
+
   it.effect("gives up the place in the queue when interrupted while waiting", () =>
     Effect.gen(function*() {
       const slots = Slots.make({ capacity: 1 })

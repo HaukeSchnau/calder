@@ -37,7 +37,8 @@ interface Waiter extends Claim {
   /** The claim as its caller holds it, so `waitsFor` can tell it from the others. */
   readonly claim: Claim
   readonly seq: number
-  readonly since: number
+  /** When it queued, or for a raised background claim, when it was raised. */
+  since: number
   readonly granted: Deferred.Deferred<void>
 }
 
@@ -153,9 +154,13 @@ export const make = (options: {
         return holder
       })
       const granted = Deferred.await(waiter.granted)
-      // Once other work waits for it, the queue looks at the claim again as that work's.
+      // Once other work waits for it, the queue looks at the claim again as that work's, which waits from now on.
+      const raise = Effect.sync(() => {
+        waiter.since = now()
+        grant()
+      })
       const waited = yields(claim) && claim.raised !== undefined
-        ? Effect.raceFirst(granted, Deferred.await(claim.raised).pipe(Effect.andThen(Effect.sync(grant)), Effect.andThen(granted)))
+        ? Effect.raceFirst(granted, Deferred.await(claim.raised).pipe(Effect.andThen(raise), Effect.andThen(granted)))
         : granted
       return waited.pipe(
         Effect.andThen(handOver),
