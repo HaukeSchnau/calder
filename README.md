@@ -598,7 +598,10 @@ shipped yet, and edits that comment once a run that includes the merge passes.
 `calder rerun <run>`, the UI's Rerun and, on a run that still runs, its Rerun failed, run what failed again in the same run: each failed or died step and
 each step downstream of one that ended without passing, such as one it blocked, go back to pending, and the
 run's log of each says why. Steps that passed keep their result, and a step that hasn't started yet waits for
-what runs again instead of being blocked by it. This works while the run still runs, so a build that lost
+what runs again instead of being blocked by it. A build that keeps its result and that a step running again
+reads gets its output back into this store, from the binary cache if this store lost it, rooted until the run
+ends again; one that left both builds again first. studienbuch-987's bundle had left both by the time its
+preview was rerun, so each rerun's publish failed with `nix-cache-sign: not all paths are valid`. This works while the run still runs, so a build that lost
 its connection to a remote builder runs again at once and not after the run's other steps ended, and after
 it ended, which reopens it. A run that has no failed step, or that was cancelled or never planned, runs again
 as a new run instead, and `--force` always starts a new run that runs everything.

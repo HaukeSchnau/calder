@@ -2115,7 +2115,19 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
       if (run === undefined || run.plan === null || run.status === "cancelled") return []
       const ended = (yield* db(Rows.loadSteps(runId))).filter((r) => Rows.terminal(r.status))
-      const names = options.only ?? retryable(ended.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })))
+      const again = options.only ?? retryable(ended.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })))
+      // A build that keeps its result has to hold up for the steps that run again and read it: its output is made
+      // valid here and rooted for the reopened run, or, gone from this store and the binary cache, it builds again.
+      // studienbuch-987's bundle went from both between the run and its reruns, and each rerun's preview failed (F48).
+      const read = new Set(ended.filter((r) => again.includes(r.name)).flatMap((r) => [...Rows.spec(r).needs, ...Rows.spec(r).exits]))
+      const gone = new Map<string, string>()
+      for (const r of ended) {
+        const out = r.kind === "build" && read.has(r.name) && !again.includes(r.name) && Rows.succeeded(r.status) ? JSON.parse(r.value ?? "null") : null
+        if (typeof out !== "string" || hashOf(out) === undefined) continue
+        const kept = yield* Effect.exit(Outputs.realiseBuilt(config.stateDir, runId, out).pipe(Effect.provideService(Exec.SpawnerTag, spawner)))
+        if (Exit.isFailure(kept)) gone.set(r.name, `${out} is in neither this store nor the binary cache any more`)
+      }
+      const names = [...again, ...gone.keys()]
       // An attempt whose row ended still reports it; its status would land after the retry's.
       yield* Effect.forEach(names, (n) => {
         const tail = attempts.get(`${runId}\0${n}`)
@@ -2148,7 +2160,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         stepped.reset(runId, r.name)
         yield* publishStep(runId, r.name)
         if (options.quiet === true) continue
-        yield* logTo(run, r.name, r.span_id, null)({ _tag: "Log", stream: "calder", text: `runs again: ${reason}`, timestamp: Date.now() })
+        yield* logTo(run, r.name, r.span_id, null)({ _tag: "Log", stream: "calder", text: `runs again: ${gone.get(r.name) ?? reason}`, timestamp: Date.now() })
         if (r.kind !== "output") yield* status(run, `calder/${r.name}`, "pending", "runs again")
       }
       const picked = reset.map((r) => r.name)

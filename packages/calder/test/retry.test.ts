@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Fiber, Schedule } from "effect"
 import { SqlClient } from "effect/sql"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 import { vi } from "vitest"
 import { retryable, RunsCore } from "../src/controller/Runs.ts"
 import * as Workflow from "../src/controller/Workflow.ts"
@@ -202,5 +205,74 @@ describe("a rerun in place", () => {
       })
       expect(status).toBe("passed")
       expect(jobs).toEqual(["b", "b"])
+    }))
+})
+
+describe("a rerun in place of a step that reads a build", () => {
+  const out = "/nix/store/0pnbk1rns4wk6azih0kcz7136aid5x6f-studienbuch-bundle"
+  const bundle: PlannedStep = {
+    ...step,
+    name: "bundle",
+    kind: "build",
+    needs: [],
+    detail: "packages.bundle",
+    build: { attr: "packages.bundle", drv: out.replace("bundle", "bundle.drv"), out, system: null },
+  }
+  // Publishing its artifact signs what this store holds.
+  const preview = task("preview", ["bundle"])
+
+  /**
+   * Drives a run whose bundle was in the binary cache and whose preview failed, then `forget`s what held the
+   * bundle and reruns the run. Returns how it ended, and whether the preview's last job found the bundle.
+   */
+  const rerunAfter = (forget: { readonly cache: boolean }) =>
+    Effect.gen(function*() {
+      const stateDir = mkdtempSync(join(tmpdir(), "calder-rerun-"))
+      let cached = true
+      let here = false
+      let previews = 0
+      let found: boolean | undefined
+      const driven = yield* drive({
+        steps: [bundle, preview],
+        stateDir,
+        cache: { has: (path) => Effect.succeed(path === out && cached), publish: () => Effect.void },
+        // `nix-store --realise` substitutes what the cache has.
+        valid: (path) => path === out && (here ||= cached),
+        value: (s) => (s === "bundle" ? out : null),
+        work: (s) => Effect.sync(() => void (s === "bundle" && (here = true))),
+        result: (s) => {
+          if (s !== "preview") return undefined
+          previews++
+          if (previews === 1) return { _tag: "Failed", tag: "Exit", message: "3 previews are running (pr-102, pr-103, pr-106)", error: null, key: null }
+          found = here
+          return found ? undefined : { _tag: "Died", message: `publishing ${out} failed: nix-cache-sign: not all paths are valid` }
+        },
+        meanwhile: Effect.gen(function*() {
+          yield* until(runOf, (r) => r.status === "failed")
+          // srv-2's nightly collection, and maybe the cache's, dropped the bundle between the run and its rerun.
+          if (forget.cache) cached = false
+          yield* rerun
+          yield* until(runOf, (r) => r.status !== "running" && r.retries === 1)
+        }),
+      })
+      return { ...driven, found, stateDir }
+    })
+
+  it.live("builds a kept build again whose output left this store and the binary cache, before the step that reads it", () =>
+    Effect.gen(function*() {
+      const { status, jobs, found, steps } = yield* rerunAfter({ cache: true })
+      expect(found).toBe(true)
+      expect(status).toBe("passed")
+      expect(jobs).toEqual(["preview", "bundle", "preview"])
+      expect(steps.get("bundle")?.status).toBe("passed")
+    }))
+
+  it.live("substitutes a kept build's output the binary cache still has, and keeps it for the reopened run", () =>
+    Effect.gen(function*() {
+      const { status, jobs, commands, stateDir, found } = yield* rerunAfter({ cache: false })
+      expect(found).toBe(true)
+      expect(status).toBe("passed")
+      expect(jobs).toEqual(["preview", "preview"])
+      expect(commands).toContainEqual(["nix-store", "--add-root", join(stateDir, "derivations", "app-2", basename(out)), "--realise", out])
     }))
 })

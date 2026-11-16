@@ -60,9 +60,18 @@ export const rootBuilt = (stateDir: string, runId: string, path: string) =>
   Effect.suspend(() => {
     const link = join(derivationRoots(stateDir), runId, basename(path))
     if (hashOf(path) === undefined || !existsSync(path) || existsSync(link)) return Effect.void
-    mkdirSync(join(derivationRoots(stateDir), runId), { recursive: true })
-    return Exec.run(["nix-store", "--add-root", link, "--realise", ...only([path])]).pipe(Effect.asVoid)
+    return realiseBuilt(stateDir, runId, path)
   })
+
+/**
+ * Makes a build's output valid in this store, substituting it from the binary cache if this store lost it,
+ * and roots it like `rootBuilt`. Fails when neither has it any more, so only building it again brings it back.
+ */
+export const realiseBuilt = (stateDir: string, runId: string, path: string) =>
+  Effect.suspend(() => {
+    mkdirSync(join(derivationRoots(stateDir), runId), { recursive: true })
+    return Exec.run(["nix-store", "--add-root", join(derivationRoots(stateDir), runId, basename(path)), "--realise", ...only([path])])
+  }).pipe(Effect.asVoid)
 
 /** Drops a run's derivation roots. */
 export const unrootDerivations = (stateDir: string, runId: string) =>
