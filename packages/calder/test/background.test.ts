@@ -43,9 +43,9 @@ const pullRequest = (steps: ReadonlyArray<PlannedStep>) =>
     const event: Domain.Event = { _tag: "PullRequest", number: 7, base: "main", head: "feature", fork: false }
     const plan = { version: 1, app: null, trust: "pr", reuse: "all", schedules: [], steps }
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
-        started_at, trace_id, span_id, plan, fork)
-      values ('app-3', 'app', 3, ${JSON.stringify(event)}, 'sha', 'feature', 7, 'title', 'hauke', 3, 'pr', 'running', 3, 3, 't', 's',
-        ${JSON.stringify(plan)}, 0)`
+        started_at, trace_id, span_id, fork)
+      values ('app-3', 'app', 3, ${JSON.stringify(event)}, 'sha', 'feature', 7, 'title', 'hauke', 3, 'pr', 'running', 3, 3, 't', 's', 0)`
+    yield* sql`insert into run_plans (run_id, plan) values ('app-3', ${JSON.stringify(plan)})`
     for (const [position, s] of steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-3', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`

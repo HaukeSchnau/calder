@@ -559,9 +559,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (spec.steps.length === 0) return yield* matchesNoRule(run, event)
       // A cancel that came in while the plan job ran wins.
       const stored = yield* db(sql.withTransaction(Effect.gen(function*() {
-        const updated = yield* sql`update runs set plan = ${JSON.stringify(spec)}, status = 'running', planned_at = ${Date.now()}
+        const updated = yield* sql`update runs set status = 'running', planned_at = ${Date.now()}
           where id = ${runId} and status = 'planning' returning id`
         if (updated.length === 0) return false
+        yield* sql`insert into run_plans (run_id, plan) values (${runId}, ${JSON.stringify(spec)})
+          on conflict do update set plan = excluded.plan`
         for (const [position, step] of spec.steps.entries()) {
           yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
             values (${runId}, ${step.name}, ${step.kind}, 'pending', ${JSON.stringify(step)}, ${position}, ${Telemetry.spanId()})
@@ -1076,7 +1078,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
    * waits for the first of them, or until all of them settled without asking. It runs at once when one
    * of them runs whatever earlier results exist, or when another kind of step waits for it.
    */
-  const asked = (run: Rows.RunRow, setup: string, steps: ReadonlyArray<Rows.StepRow>) => {
+  const asked = (run: Rows.PlannedRunRow, setup: string, steps: ReadonlyArray<Rows.StepRow>) => {
     const reuse = (JSON.parse(run.plan ?? "{}") as PlanSpec).reuse
     const kinds = new Map(steps.map((s) => [s.name, s.kind]))
     const dependents = steps.map(Rows.spec).filter((s) => [...s.needs, ...s.exits, ...s.after].includes(setup))
@@ -1329,8 +1331,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         const attrs = Object.fromEntries(plan.steps.flatMap((s) => (s.build === null || !(s.name in derivations) ? [] : [[s.build.attr, derivations[s.name] ?? null]])))
         // Evaluated at this revision, like the plan's own evaluations, so a trusted run may take them too.
         const trusted = plan.trusted === undefined ? {} : { trusted: [...new Set([...plan.trusted, ...Object.keys(attrs)])].sort() }
-        yield* sql`update runs set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
-          where id = ${run.id}`
+        yield* sql`update run_plans set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
+          where run_id = ${run.id}`
         const updated = steps.filter((s, i) => JSON.stringify(s) !== JSON.stringify(plan.steps[i]))
         for (const s of updated) yield* sql`update steps set spec = ${JSON.stringify(s)} where run_id = ${run.id} and name = ${s.name}`
         return updated.map((s) => s.name)

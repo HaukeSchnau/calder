@@ -381,9 +381,10 @@ describe("a plan of a tree another plan evaluated", () => {
         steps: [check],
         unplanned: true,
         seed: sql((sql) => sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status,
-            created_at, trace_id, span_id, plan, fork, tree)
-          values ('app-0', 'app', 0, ${JSON.stringify(pullRequest)}, ${"1".repeat(40)}, 'feature', 't', 'h', 0, 'pr', 'passed', 0, 't', 's',
-            ${JSON.stringify(second.plan)}, 0, 'tree-1')`),
+            created_at, trace_id, span_id, fork, tree)
+          values ('app-0', 'app', 0, ${JSON.stringify(pullRequest)}, ${"1".repeat(40)}, 'feature', 't', 'h', 0, 'pr', 'passed', 0, 't', 's', 0, 'tree-1')`.pipe(
+            Effect.andThen(sql`insert into run_plans (run_id, plan) values ('app-0', ${JSON.stringify(second.plan)})`),
+          )),
         resume: sql((sql) => sql`update runs set tree = 'tree-1' where id = 'app-2'`),
       })
       const earlier = merge.planJob!.earlier!

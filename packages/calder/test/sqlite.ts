@@ -5,10 +5,10 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite"
 import { migrations } from "../src/controller/Db.ts"
 
 /**
- * A fresh in-memory database with the controller's schema. Vitest runs on Node, so this goes through
- * node:sqlite where the controller uses bun:sqlite; test files mock `@effect/sql-sqlite-bun` away.
+ * A fresh in-memory database without a schema. Vitest runs on Node, so this goes through node:sqlite where
+ * the controller uses bun:sqlite; test files mock `@effect/sql-sqlite-bun` away.
  */
-export const layer = Layer.effect(SqlClient.SqlClient)(Effect.gen(function*() {
+export const client = Effect.gen(function*() {
   const db = new DatabaseSync(":memory:")
   yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
   const all = (sql: string, params: ReadonlyArray<unknown>) =>
@@ -32,7 +32,7 @@ export const layer = Layer.effect(SqlClient.SqlClient)(Effect.gen(function*() {
     semaphore: yield* Semaphore.make(1),
     isTransaction: () => db.isTransaction,
   })
-  const client = yield* SqlClient.make({
+  return yield* SqlClient.make({
     acquirer,
     transactionAcquirer,
     onCommitFailure,
@@ -40,11 +40,16 @@ export const layer = Layer.effect(SqlClient.SqlClient)(Effect.gen(function*() {
     spanAttributes: [],
     releaseSavepoint: (name) => `RELEASE SAVEPOINT ${name}`,
   })
+})
+
+/** A fresh in-memory database with the controller's schema. */
+export const layer = Layer.effect(SqlClient.SqlClient)(Effect.gen(function*() {
+  const sql = yield* client
   yield* Migrator.make({})({ loader: Migrator.fromRecord(migrations), table: "calder_migrations" }).pipe(
-    Effect.provideService(SqlClient.SqlClient, client),
+    Effect.provideService(SqlClient.SqlClient, sql),
     Effect.orDie,
   )
-  return client
+  return sql
 })).pipe(Layer.provide(Reactivity.layer))
 
 /** A finished run `<project>-<number>` of a push to main, created and finished `at`. */
@@ -62,10 +67,11 @@ export const insertRun = (id: string, options: {
     const sql = yield* SqlClient.SqlClient
     const project = id.slice(0, id.lastIndexOf("-"))
     yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
-        finished_at, trace_id, span_id, plan, planned_at, error)
+        finished_at, trace_id, span_id, planned_at, error)
       values (${id}, ${project}, ${Number(id.slice(id.lastIndexOf("-") + 1))}, ${options.event ?? '{"_tag":"Push","branch":"main"}'},
         ${options.sha ?? id}, ${options.branch ?? null}, 'title', 'hauke', ${options.at}, ${options.trust ?? "trusted"}, ${options.status ?? "passed"},
-        ${options.at}, ${options.at}, 't', 's', '{}', ${options.planned === true ? options.at : null}, ${options.error ?? null})`
+        ${options.at}, ${options.at}, 't', 's', ${options.planned === true ? options.at : null}, ${options.error ?? null})`
+    yield* sql`insert into run_plans (run_id, plan) values (${id}, '{}')`
   })
 
 export const insertStep = (runId: string, name: string, options: {
