@@ -239,8 +239,10 @@ the memory.high or memory.max up the cgroup's tree that is closest to being reac
 without `/proc`, PSI or systemd, such as a Mac, leaves those parts out. A pull request's job gets less memory than a trusted run's. A project whose flake
 needs more to evaluate, such as infra, whose srv-2 contract check alone holds 3 GiB, sets
 `largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@` (a fork's in
-`calder-job-fork-large@`), which the host defines with more memory. Plans and build evaluations both take plan slots, one per project at a
-time, so one project's flake is never evaluated twice side by side.
+`calder-job-fork-large@`), which the host defines with more memory. Plans take plan slots and build evaluations
+evaluation slots, as many as plan slots, each one per project at a time. A plan evaluates only dev shells (infra's
+hold at most 0.3 GiB), so it may run beside its project's build evaluation, which takes minutes, and a pull
+request's plan never waits for another run's builds to evaluate.
 
 A plan also records what each attribute's evaluation read of the repository: its footprint. It evaluates
 `path:<source>?rev=…` under strace, which gives the same derivations as the mirror's `git+file:` URL but
@@ -251,10 +253,10 @@ before it in the same `nix eval` read, so attributes evaluate after those their 
 a lockfile's dependencies then keep their record while the app build that uses them changes. The plan
 evaluates only dev shells whose footprint changed, which task keys need, and leaves the builds whose
 footprint changed for later, so tasks start without waiting for them. The first of those builds to run
-evaluates them all in a plan slot, in one evaluator while they fit its job's memory, and records their footprints; the
+evaluates them all in an evaluation slot, in one evaluator while they fit its job's memory, and records their footprints; the
 others wait for it and then build like planned builds, on their system's builders, reused when their output
 exists. A build too large to evaluate fails. Where the evaluation fails twice, each build evaluates its own
-attribute the same way, in a plan slot.
+attribute the same way, in an evaluation slot.
 A record counts for no other commit when its
 derivation's closure, or the deriver of a store path the evaluation read (import from a derivation built
 from `self`), mentions its commit or the whole source (`self.rev`, `self.lastModified`, `src = self`), or
@@ -491,7 +493,7 @@ An evaluator agent (`calder agent --evaluator <store>`) takes the controller's b
 the first build a plan left unevaluated starts, and nothing else: no task or setup of its platform. Evaluation
 needs a fast host more than any other job: infra's 25 builds took 648 s to evaluate on srv-2 under Calder and
 111 s on dev-hauke. While one is connected, every run that isn't a fork's evaluates there, in a slot of the
-agent's rather than the project's plan slot. The worker runs no `.calder/ci.ts`: only Calder's evaluator
+agent's rather than the project's evaluation slot. The worker runs no `.calder/ci.ts`: only Calder's evaluator
 and `nix eval`, in which the flake's Nix runs in pure evaluation, with the builds an import from a derivation
 needs. Only report lines carrying a tag the evaluator draws for each `nix eval` count, so the flake's own code
 can't trace one. It evaluates a full mirror of the project that the
