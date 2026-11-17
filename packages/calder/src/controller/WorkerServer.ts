@@ -158,11 +158,17 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
           : lease.project === project && artifact !== undefined ? Cache.pinName(`${project}-${active.spec.step}-${artifact}`)
           : undefined
         // Publishing signs what this store holds. A build reused from the binary cache, such as one this store
-        // lost to its nightly collection, comes back from there first and stays until the run ends.
+        // lost to its nightly collection, comes back from there first and stays until the run ends. The job holds
+        // its deploy lease meanwhile, so a substituter that stalls gives up after a few minutes.
         if (!existsSync(path)) {
           yield* Outputs.realiseBuilt(config.stateDir, active.spec.run.id, path).pipe(
             Effect.provideService(Exec.SpawnerTag, spawner),
-            Effect.mapError((e) => new Error(`${path} is in neither this store nor the binary cache, so its build has to run again: ${e.message}`)),
+            Effect.timeoutOrElse({
+              duration: "5 minutes",
+              orElse: () =>
+                Effect.fail(new Exec.CommandFailed({ command: `nix-store --realise ${path}`, exitCode: -1, stderr: "timed out after 5 minutes" })),
+            }),
+            Effect.mapError((e) => new Error(`${path} isn't in this store, and fetching it from the binary cache failed: ${e.message}`)),
             Effect.orDie,
           )
         }

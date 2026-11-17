@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Deferred, Effect, Exit, Layer, Scope, Sink, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Scope, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { RpcTest } from "effect/rpc"
+import { TestClock } from "effect/testing"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
@@ -51,11 +52,12 @@ const preview = Effect.gen(function*() {
 })
 
 /**
- * Publishes the preview's bundle, which this store lost, through the worker server. `substitutes` says whether
- * `nix-store --realise` gets it back from the binary cache. Returns the commands Calder ran, what it published
- * and how the call ended.
+ * Publishes the preview's bundle, which this store lost, through the worker server. `fetch` is what
+ * `nix-store --realise` does with it: get it back from the binary cache, fail as Nix does when no substituter
+ * has it, or never end, as against a substituter that stalls. Returns the commands Calder ran, what it
+ * published and how the call ended.
  */
-const publish = (substitutes: boolean) =>
+const publish = (fetch: "substitutes" | "fails" | "stalls") =>
   Effect.gen(function*() {
     const stateDir = mkdtempSync(join(tmpdir(), "calder-publish-"))
     const ran: Array<ReadonlyArray<string>> = []
@@ -65,12 +67,12 @@ const publish = (substitutes: boolean) =>
       ran.push(args)
       return Effect.succeed(ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(1),
-        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(substitutes ? 0 : 1)),
+        exitCode: fetch === "stalls" ? Effect.never : Effect.succeed(ChildProcessSpawner.ExitCode(fetch === "substitutes" ? 0 : 1)),
         isRunning: Effect.succeed(false),
         kill: () => Effect.void,
         stdin: Sink.drain,
         stdout: Stream.empty,
-        stderr: Stream.make(new TextEncoder().encode(substitutes ? "" : `error: path '${bundle}' is required, but there is no substituter that can build it\n`)),
+        stderr: Stream.make(new TextEncoder().encode(fetch === "fails" ? `error: path '${bundle}' is required, but there is no substituter that can build it\n` : "")),
         all: Stream.empty,
         getInputFd: () => Sink.drain,
         getOutputFd: () => Stream.empty,
@@ -94,23 +96,36 @@ const publish = (substitutes: boolean) =>
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(nix),
     )
     const client = yield* RpcTest.makeClient(WorkerRpcs).pipe(Effect.provide(handlers.pipe(Layer.provide(services))))
-    const exit = yield* Effect.exit(client.cachePublish({ job: job.id, token: "", path: bundle, artifact: "CALDER_BUNDLE" }))
-    return { ran, published, exit, root: join(stateDir, "derivations", "studienbuch-987", basename(bundle)) }
+    const call = yield* Effect.forkChild(Effect.exit(client.cachePublish({ job: job.id, token: "", path: bundle, artifact: "CALDER_BUNDLE" })))
+    yield* TestClock.adjust("5 minutes")
+    const exit = yield* Fiber.join(call)
+    const why = Exit.isFailure(exit) ? Cause.pretty(exit.cause) : ""
+    return { ran, published, exit, why, root: join(stateDir, "derivations", "studienbuch-987", basename(bundle)) }
   }).pipe(Effect.provide(sqlite), Effect.scoped)
 
 describe("publishing an artifact", () => {
-  it.live("gets a path this store lost back from the binary cache and keeps it for the run, before it signs it", () =>
+  it.effect("gets a path this store lost back from the binary cache and keeps it for the run, before it signs it", () =>
     Effect.gen(function*() {
-      const { ran, published, exit, root } = yield* publish(true)
+      const { ran, published, exit, root } = yield* publish("substitutes")
       expect(Exit.isSuccess(exit)).toBe(true)
       expect(ran).toEqual([["nix-store", "--add-root", root, "--realise", bundle]])
       expect(published).toEqual([bundle])
     }))
 
-  it.live("says so when neither this store nor the binary cache has the path, and publishes nothing", () =>
+  it.effect("says it couldn't fetch a path from the binary cache, with Nix's reason, and publishes nothing", () =>
     Effect.gen(function*() {
-      const { published, exit } = yield* publish(false)
+      const { published, why } = yield* publish("fails")
       expect(published).toEqual([])
-      expect(Exit.isFailure(exit) ? String(Exit.isFailure(exit) && exit.cause) : "").toContain(`${bundle} is in neither this store nor the binary cache`)
+      expect(why).toContain(`${bundle} isn't in this store, and fetching it from the binary cache failed`)
+      expect(why).toContain("there is no substituter that can build it")
+    }))
+
+  // The job holds its deploy lease while it publishes, so a stalled substituter would hold every other deploy up.
+  it.effect("gives up fetching a path after 5 minutes, and publishes nothing", () =>
+    Effect.gen(function*() {
+      const { published, why } = yield* publish("stalls")
+      expect(published).toEqual([])
+      expect(why).toContain("fetching it from the binary cache failed")
+      expect(why).toContain("timed out after 5 minutes")
     }))
 })

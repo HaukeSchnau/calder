@@ -287,7 +287,7 @@ describe("a rerun in place of a step that reads a build", () => {
       expect(jobs).toEqual(["preview", "preview"])
       expect(history).not.toContain("calder/bundle: pending: runs again")
       // Once as the run took the bundle, and again for the reopened run, since the first root went with the run.
-      const root = ["nix-store", "--add-root", join(stateDir, "derivations", "app-2", basename(held)), "--realise", held]
+      const root = ["nix-store", "--option", "substitute", "false", "--add-root", join(stateDir, "derivations", "app-2", basename(held)), "--realise", held]
       expect(realises(commands, held)).toEqual([root, root])
     }))
 })

@@ -54,23 +54,27 @@ export const rootDerivations = (stateDir: string, runId: string, drvs: ReadonlyA
  * Keeps a build's output in the store until the run ends, beside its derivation roots. Nothing else roots it,
  * and a release that waits for its promotion would otherwise be collected: srv-2's nightly collection deleted
  * t3code-801's release between its build and its promotion. Only a path this store holds is rooted; one only
- * in the binary cache stays there rather than being downloaded.
+ * in the binary cache stays there rather than being downloaded, also when the path left between the check and
+ * the root, since a rerun roots under a lock that Delivery's round waits for.
  */
 export const rootBuilt = (stateDir: string, runId: string, path: string) =>
   Effect.suspend(() => {
     const link = join(derivationRoots(stateDir), runId, basename(path))
     if (hashOf(path) === undefined || !existsSync(path) || existsSync(link)) return Effect.void
-    return realiseBuilt(stateDir, runId, path)
+    return addRoot(stateDir, runId, path, ["--option", "substitute", "false"])
   })
 
 /**
  * Makes a build's output valid in this store, substituting it from the binary cache if this store lost it,
- * and roots it like `rootBuilt`. Fails when neither has it any more, so only building it again brings it back.
+ * and roots it like `rootBuilt`. Fails when the cache can't be asked or has it no more, and then only building
+ * it again may bring it back.
  */
-export const realiseBuilt = (stateDir: string, runId: string, path: string) =>
+export const realiseBuilt = (stateDir: string, runId: string, path: string) => addRoot(stateDir, runId, path, [])
+
+const addRoot = (stateDir: string, runId: string, path: string, options: ReadonlyArray<string>) =>
   Effect.suspend(() => {
     mkdirSync(join(derivationRoots(stateDir), runId), { recursive: true })
-    return Exec.run(["nix-store", "--add-root", join(derivationRoots(stateDir), runId, basename(path)), "--realise", ...only([path])])
+    return Exec.run(["nix-store", ...options, "--add-root", join(derivationRoots(stateDir), runId, basename(path)), "--realise", ...only([path])])
   }).pipe(Effect.asVoid)
 
 /** Drops a run's derivation roots. */
