@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer, Schedule } from "effect"
+import { type Duration, Effect, Layer, Schedule } from "effect"
 import { HttpServerRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { createHmac } from "node:crypto"
@@ -35,11 +35,20 @@ const ran = (id: string, number: number, status = "passed") =>
     yield* sql`update runs set pr = ${number} where id = ${id}`
   })
 
+/** A closed run of pull request `number` that started `at`. */
+const closedRun = (id: string, number: number, at: number) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const event = { _tag: "PullRequestClosed", number, base: "main", head: `pr-${number}` }
+    yield* insertRun(id, { at, status: "running", event: JSON.stringify(event) })
+    yield* sql`update runs set pr = ${number} where id = ${id}`
+  })
+
 /**
- * Gitea with `pulls`, and the runs Calder started and cancelled. A started run leaves no row, as a closed
- * run that matches no rule doesn't.
+ * Gitea with `pulls`, which answers a branch's head after `headDelay`, and the runs Calder started and
+ * cancelled. A started run leaves no row, as a closed run that matches no rule doesn't.
  */
-const world = (pulls: ReadonlyArray<Pull>) =>
+const world = (pulls: ReadonlyArray<Pull>, headDelay: Duration.Input = 0) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     const started: Array<RunInput> = []
@@ -71,7 +80,7 @@ const world = (pulls: ReadonlyArray<Pull>) =>
         audit: unused,
       }),
       Layer.succeed(Gitea)({
-        head: () => Effect.succeed("main-sha"),
+        head: () => Effect.succeed("main-sha").pipe(Effect.delay(headDelay)),
         openPulls: () =>
           Effect.succeed(pulls.filter((p) => p.closedAt === null).map((p) => ({ number: p.number, base: "main", head: p.head, sha: `sha-${p.number}`, fork: false }))),
         closedPulls: (_repo, since) =>
@@ -110,10 +119,7 @@ describe("a closed pull request", () => {
     Effect.gen(function*() {
       // Studienbuch #121: Calder's merge queue merged it while a host switch restarted the controller.
       const merged = secondsAgo(60)
-      const { closed, layer } = yield* world([
-        { number: 121, head: "m1/icons-stickers", closedAt: merged },
-        { number: 7, head: "never-ran", closedAt: merged },
-      ])
+      const { closed, layer } = yield* world([{ number: 121, head: "m1/icons-stickers", closedAt: merged }])
       yield* ran("app-1", 121)
       yield* Effect.gen(function*() {
         const sweep = yield* Catchup.make
@@ -147,5 +153,45 @@ describe("a closed pull request", () => {
         yield* sweep
       }).pipe(Effect.provide(layer))
       expect(closed()).toEqual(["#122 m1/homework@main-sha", "#122 m1/homework@main-sha"])
+    }).pipe(Effect.provide(sqlite)))
+
+  it.live("gets one closed run when its webhook comes while the catch-up handles it", () =>
+    Effect.gen(function*() {
+      const merged = secondsAgo(60)
+      // Gitea answering slowly keeps both inside their closing at once.
+      const { closed, layer } = yield* world([{ number: 121, head: "m1/icons-stickers", closedAt: merged }], "50 millis")
+      yield* ran("app-1", 121)
+      yield* Effect.gen(function*() {
+        const closes = yield* Closes
+        yield* Effect.all([
+          closes.close(project, { number: 121, base: "main", head: "m1/icons-stickers", closedAt: merged }),
+          closes.catchUp(project),
+        ], { concurrency: 2, discard: true })
+      }).pipe(Effect.provide(layer))
+      expect(closed()).toEqual(["#121 m1/icons-stickers@main-sha"])
+    }).pipe(Effect.provide(sqlite)))
+
+  it.live("gets no second closed run from the catch-up when the controller stopped after starting its first", () =>
+    Effect.gen(function*() {
+      const merged = secondsAgo(60)
+      const { closed, layer } = yield* world([{ number: 121, head: "m1/icons-stickers", closedAt: merged }])
+      yield* ran("app-1", 121)
+      yield* closedRun("app-2", 121, merged + 500)
+      yield* Effect.gen(function*() {
+        yield* yield* Catchup.make
+      }).pipe(Effect.provide(layer))
+      expect(closed()).toEqual([])
+    }).pipe(Effect.provide(sqlite)))
+
+  it.live("that never ran gets no closed run from the catch-up, but one from its webhook", () =>
+    Effect.gen(function*() {
+      const closing = { number: 7, base: "main", head: "never-ran", closedAt: secondsAgo(60) }
+      const { closed, layer } = yield* world([{ number: 7, head: "never-ran", closedAt: closing.closedAt }])
+      yield* Effect.gen(function*() {
+        yield* yield* Catchup.make
+        expect(closed()).toEqual([])
+        yield* (yield* Closes).close(project, closing)
+      }).pipe(Effect.provide(layer))
+      expect(closed()).toEqual(["#7 never-ran@main-sha"])
     }).pipe(Effect.provide(sqlite)))
 })
