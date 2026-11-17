@@ -88,7 +88,10 @@ export interface Drive {
   readonly agents?: () => ReadonlyArray<AgentUsage>
   /** RouseAfterStart: none, unless a test asks for the controller's hold. */
   readonly rouseAfterStart?: Duration.Input
-  /** What `nix-store --check-validity --print-invalid` finds valid, such as an evaluator agent's derivations; without it, the store answers nothing. */
+  /**
+   * What `nix-store --check-validity --print-invalid` finds valid, such as an evaluator agent's derivations, and
+   * what `nix-store --realise` can make valid; without it, the store answers nothing.
+   */
   readonly valid?: (path: string) => boolean
   /**
    * Makes `app-2` a rerun of `app-1`, whose steps ended like this: `secrets` is the step's secrets
@@ -242,10 +245,12 @@ export const drive = ({
           }
           const collected = ChildProcess.isStandardCommand(command) && command.command === "nix" && nix !== undefined
           if (collected) nix.push(command.args)
+          const realises = ChildProcess.isStandardCommand(command) && valid !== undefined && command.args.includes("--realise") &&
+            command.args.slice(command.args.indexOf("--realise") + 1).every((a) => valid(a))
           return ChildProcess.isStandardCommand(command) && (command.command === "nix-store" || collected)
             ? Effect.succeed(ChildProcessSpawner.makeHandle({
               pid: ChildProcessSpawner.ProcessId(1),
-              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answers || collected ? 0 : 1)),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answers || collected || realises ? 0 : 1)),
               isRunning: Effect.succeed(false),
               kill: () => Effect.void,
               stdin: Sink.drain,

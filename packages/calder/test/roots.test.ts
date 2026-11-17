@@ -54,6 +54,6 @@ describe("output roots", () => {
       yield* Effect.exit(Outputs.rootBuilt(stateDir, "t3code-801", held).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, recording),
       ))
-      expect(ran).toEqual([["nix-store", "--add-root", join(stateDir, "derivations", "t3code-801", basename(held)), "--realise", held]])
+      expect(ran).toEqual([["nix-store", "--option", "substitute", "false", "--add-root", join(stateDir, "derivations", "t3code-801", basename(held)), "--realise", held]])
     }))
 })

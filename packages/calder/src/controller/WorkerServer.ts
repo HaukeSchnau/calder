@@ -5,6 +5,7 @@ import { RpcMiddleware, RpcSerialization, RpcServer } from "effect/rpc"
 import { SqlClient } from "effect/sql"
 import { chmodSync, chownSync, existsSync, rmSync } from "node:fs"
 import { join } from "node:path"
+import * as Exec from "../Exec.ts"
 import { FleetRejected, type RunInfo, Unauthorized, WorkerRpcs } from "../Protocol.ts"
 import * as Cache from "./Cache.ts"
 import { Comments } from "./Comments.ts"
@@ -14,6 +15,7 @@ import { Gitea } from "./Gitea.ts"
 import { type ActiveJob, Jobs, workersGroup } from "./Jobs.ts"
 import { Leases } from "./Leases.ts"
 import { Live } from "./Live.ts"
+import * as Outputs from "./Outputs.ts"
 import { Projects } from "./Projects.ts"
 import * as Rows from "./Rows.ts"
 import { named, tracked } from "./Stopping.ts"
@@ -63,6 +65,7 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
   const projects = yield* Projects
   const cache = yield* Cache.Cache
   const comments = yield* Comments
+  const spawner = yield* Exec.SpawnerTag
   const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
 
@@ -154,6 +157,21 @@ export const handlers = WorkerRpcs.toLayer(Effect.gen(function*() {
         const pin = !task ? (system === undefined || system === config.system ? project : Cache.pinName(`${project}-${system}`))
           : lease.project === project && artifact !== undefined ? Cache.pinName(`${project}-${active.spec.step}-${artifact}`)
           : undefined
+        // Publishing signs what this store holds. A build reused from the binary cache, such as one this store
+        // lost to its nightly collection, comes back from there first and stays until the run ends. The job holds
+        // its deploy lease meanwhile, so a substituter that stalls gives up after a few minutes.
+        if (!existsSync(path)) {
+          yield* Outputs.realiseBuilt(config.stateDir, active.spec.run.id, path).pipe(
+            Effect.provideService(Exec.SpawnerTag, spawner),
+            Effect.timeoutOrElse({
+              duration: "5 minutes",
+              orElse: () =>
+                Effect.fail(new Exec.CommandFailed({ command: `nix-store --realise ${path}`, exitCode: -1, stderr: "timed out after 5 minutes" })),
+            }),
+            Effect.mapError((e) => new Error(`${path} isn't in this store, and fetching it from the binary cache failed: ${e.message}`)),
+            Effect.orDie,
+          )
+        }
         yield* cache.publish(path, { ...(pin === undefined ? {} : { pin }), urgent: task }).pipe(
           Effect.mapError((e) => new Error(`publishing ${path} to the binary cache failed: ${e.message}`)),
           Effect.orDie,

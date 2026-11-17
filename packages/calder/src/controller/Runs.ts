@@ -2149,7 +2149,25 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const run = yield* db(Rows.loadRun(runId))
       if (run === undefined || run.plan === null || run.status === "cancelled") return []
       const ended = (yield* db(Rows.loadSteps(runId))).filter((r) => Rows.terminal(r.status))
-      const names = options.only ?? retryable(ended.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })))
+      const again = options.only ?? retryable(ended.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })))
+      // A build that keeps its result has to hold up for the steps that run again and read it. Its output stays rooted
+      // for the reopened run while this store holds it; otherwise the build runs again, which takes what the binary
+      // cache still has as a new run does, or builds. studienbuch-987's bundle had left both by its reruns, and each
+      // rerun's preview failed (F48). Nothing here asks the network: Delivery's round waits for every project's rerun.
+      // As `step` reads them: an action reads the outcomes of its exits, a task's (`afterEnded`) only order it.
+      const read = new Set(ended.filter((r) => again.includes(r.name)).map(Rows.spec).flatMap((s) => [...s.needs, ...(s.action === null ? [] : s.exits)]))
+      const gone = new Map<string, string>()
+      for (const r of ended) {
+        const out = r.kind === "build" && read.has(r.name) && !again.includes(r.name) && Rows.succeeded(r.status) ? JSON.parse(r.value ?? "null") : null
+        if (typeof out !== "string" || hashOf(out) === undefined) continue
+        // Rooting fails, without substituting, for a path the nightly collection deleted after it looked.
+        const rooted = yield* Outputs.rootBuilt(config.stateDir, runId, out).pipe(
+          Effect.provideService(Exec.SpawnerTag, spawner),
+          Effect.catch((e) => Effect.logWarning(`could not keep ${out} from the garbage collector`, e).pipe(Effect.as(false))),
+        )
+        if (!rooted) gone.set(r.name, `${out} left this store`)
+      }
+      const names = [...again, ...gone.keys()]
       // An attempt whose row ended still reports it; its status would land after the retry's.
       yield* Effect.forEach(names, (n) => {
         const tail = attempts.get(`${runId}\0${n}`)
@@ -2182,7 +2200,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         stepped.reset(runId, r.name)
         yield* publishStep(runId, r.name)
         if (options.quiet === true) continue
-        yield* logTo(run, r.name, r.span_id, null)({ _tag: "Log", stream: "calder", text: `runs again: ${reason}`, timestamp: Date.now() })
+        yield* logTo(run, r.name, r.span_id, null)({ _tag: "Log", stream: "calder", text: `runs again: ${gone.get(r.name) ?? reason}`, timestamp: Date.now() })
         if (r.kind !== "output") yield* status(run, `calder/${r.name}`, "pending", "runs again")
       }
       const picked = reset.map((r) => r.name)
