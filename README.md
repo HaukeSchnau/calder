@@ -308,6 +308,13 @@ critical path queued. `On.pullRequestClosed` rules run when
 a pull request is merged or closed, as a trusted run of the base branch's head that knows the pull
 request's number, such as to remove its preview. `calder plan --event closed:<n>` shows them.
 
+Gitea doesn't send a webhook again that the controller missed, such as while a host switch restarted it.
+30 s after it starts and every 5 minutes, the controller catches up. Each default branch head and open
+pull request gets its run if it has none. Each pull request that had a run and that Gitea closed in the
+last week gets its closed run if neither the webhook nor an earlier catch-up started one, also when the
+run of that closing matched no rule and left no row. A pull request reopened and closed again gets a
+closed run for each closing.
+
 `Environments.project` from `@calder-ci/std` is the pipeline of a repository whose [Alchemy](https://alchemy.run)
 stack deploys its environments. An environment is a stage of the stack, named by its key, and deploys
 when its trigger fires: pushes to a branch (`{ push: "main" }`) or `calder trigger --inputs` with

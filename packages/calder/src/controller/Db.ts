@@ -323,6 +323,16 @@ export const migrations = {
     yield* sql`drop index file_results_file`
     yield* sql`create index file_results_file on file_results (project, step, file, created_at desc, status, duration_ms)`
   }),
+  "0028_pull_closes": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Per pull request, the time up to which its closings had their closed run (Closes.ts).
+    yield* sql`create table pull_closes (project text not null, pr integer not null, settled integer not null, primary key (project, pr))`
+    // Until now only the webhook started closed runs, and what it missed was handled by hand, such as Studienbuch
+    // #121's preview. Closings up to the newest run count as handled, since the controller before this one still
+    // took webhooks then. The catch-up handles later ones, such as those while this version started.
+    yield* sql`insert into pull_closes (project, pr, settled)
+      select distinct project, pr, (select max(created_at) from runs) from runs where pr is not null`
+  }),
 }
 
 /**
