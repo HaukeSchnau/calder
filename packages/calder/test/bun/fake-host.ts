@@ -1,7 +1,8 @@
 // A stand-in for systemctl and for a host's sandbox command in agent-units.ts: `start --wait <unit>`
 // and `run <pool> <job> <dir> <calder...>` act as the job's worker would, through the job's directory
 // (under $FAKE_UNITS for a unit), and write what it found to $FAKE_OUT/<job>.json. Job 5709 runs until it
-// is stopped, job 0b0b until $FAKE_OUT/go exists, and job 0c0c finds nothing.
+// is stopped, job 0b0b until $FAKE_OUT/go exists, and job 0c0c finds nothing. A call listed in
+// $FAKE_OUT/fail fails once.
 import { Effect } from "effect"
 import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { connect } from "node:net"
@@ -10,7 +11,13 @@ import * as Tunnel from "../../src/Tunnel.ts"
 
 const [verb, ...rest] = process.argv.slice(2)
 const out = process.env.FAKE_OUT!
-appendFileSync(join(out, "calls"), `${[verb, ...rest].join(" ")}\n`)
+const call = [verb, ...rest].join(" ")
+appendFileSync(join(out, "calls"), `${call}\n`)
+const failing = existsSync(join(out, "fail")) ? readFileSync(join(out, "fail"), "utf8").split("\n") : []
+if (failing.includes(call)) {
+  writeFileSync(join(out, "fail"), failing.filter((line) => line !== call).join("\n"))
+  process.exit(1)
+}
 
 if (verb === "show") {
   console.log("0")

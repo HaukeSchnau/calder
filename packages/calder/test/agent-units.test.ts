@@ -28,7 +28,7 @@ describe("an agent's units", () => {
 
   // The agent serves its sockets with Bun's, which vitest's Node lacks: bun/agent-units.ts runs jobs
   // through Agent.runInUnit with a fake systemctl and a fake sandbox command that act as the job's worker.
-  it.skipIf(!hasBun)("run each job in its pool's unit, reaching the controller and, for pull requests, the allowlist through the job's sockets", () => {
+  it.skipIf(!hasBun)("run each job in its pool's unit, reaching the controller and, for pull requests, the allowlist through the job's sockets", { timeout: 30_000 }, () => {
     const ran = spawnSync("bun", [join(import.meta.dirname, "bun", "agent-units.ts")], { encoding: "utf8", timeout: 60_000 })
     expect(ran.status, ran.stderr).toBe(0)
     const result = JSON.parse(ran.stdout.trim().split("\n").at(-1)!)
@@ -60,8 +60,13 @@ describe("an agent's units", () => {
     expect(result.sandbox.found.token).toBe("sandboxed")
     expect(result.sandbox.found.egress).toBe("HTTP/1.1 403 Not On The Allowlist")
     expect(result.sandbox.kept).toBe(false)
-    expect(result.sandbox.calls).toEqual([
+    // What an earlier run left in any sandboxed pool is stopped first, the pools at once, and a pool's jobs
+    // wait until its stop succeeded.
+    expect(result.sandbox.calls.slice(0, 2).sort()).toEqual(["stop fork", "stop pr"])
+    expect(result.sandbox.calls.slice(2)).toEqual([
+      "stop pr",
       "run pr 5a1d <units>/5a1d calder main.ts",
+      "stop pr 5a1d",
       "stop pr 5a1d",
       "run pr 0b0b <units>/0b0b calder main.ts",
       "stop pr 0b0b",

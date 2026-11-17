@@ -66,7 +66,9 @@ const result = await Effect.runPromise(Effect.gen(function*() {
   // A host's sandbox gets the job directory's canonical path, which a profile can match, behind a link.
   const linked = join(root, "linked")
   symlinkSync(units, linked)
-  const inSandbox = { ...options, units: linked, sandbox: Agent.sandbox(join(bin, "sandbox"), ["calder", "main.ts"]) }
+  // The first stops fail: a pool's next job waits until one succeeded.
+  writeFileSync(join(out, "fail"), "stop pr\nstop pr 5a1d")
+  const inSandbox = { ...options, units: linked, sandbox: yield* Agent.startSandbox(join(bin, "sandbox"), ["calder", "main.ts"]) }
   const sandboxCode = yield* Effect.scoped(Agent.runInUnit(inSandbox, {
     _tag: "Start",
     job: "5a1d",

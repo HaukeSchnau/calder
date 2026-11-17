@@ -59,14 +59,17 @@ export interface Options {
  * A host's command that runs a sandboxed pool's job where systemd can't, such as on a Mac (`calder agent
  * --sandbox <command>`). `<command> run <pool> <job> <dir> <calder...>` runs `<calder...> worker <job>` as
  * the pool's user in the host's sandbox, with the job's directory `dir`, and exits with the worker's code.
- * `<command> stop <pool> [<job>]` ends everything the pool's user runs. That can't tell one job's processes
- * from another's, so the agent runs one job of a pool at a time.
+ * `<command> stop <pool> [<job>]` ends everything the pool's user runs, and succeeds for a pool the host
+ * has no sandbox for. A stop can't tell one job's processes from another's, so the agent runs one job of a
+ * pool at a time, and the pool's next job waits until a stop succeeded.
  */
 export interface Sandbox {
   readonly command: string
   /** argv that starts this calder, before `worker <job>`. */
   readonly calder: ReadonlyArray<string>
   readonly lock: (pool: Pool) => Semaphore.Semaphore
+  /** Stops the pool's jobs, trying again until the host's stop succeeds. */
+  readonly stop: (pool: Pool, job?: string) => Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner>
 }
 
 export const sandbox = (command: string, calder: ReadonlyArray<string>): Sandbox => {
@@ -79,8 +82,32 @@ export const sandbox = (command: string, calder: ReadonlyArray<string>): Sandbox
       locks.set(pool, lock)
       return lock
     },
+    stop: (pool, job) =>
+      Exec.exec([command, "stop", pool, ...(job === undefined ? [] : [job])]).pipe(
+        Effect.flatMap((stopped) =>
+          stopped.exitCode === 0 ? Effect.void : Effect.fail(stopped.stderr.trim() || `${command} stop exited with ${stopped.exitCode}`)
+        ),
+        Effect.tapError((error) => Effect.logWarning(`could not stop ${pool}'s jobs, trying again: ${error}`)),
+        Effect.retry({ schedule: Schedule.min([Schedule.exponential("100 millis"), Schedule.spaced("10 seconds")]) }),
+        Effect.orDie,
+      ),
   }
 }
+
+/**
+ * The host's sandbox for an agent's run. What an earlier run left in any sandboxed pool, also one this run
+ * doesn't take, is stopped first, and each pool's jobs wait until that succeeded.
+ */
+export const startSandbox = (command: string, calder: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    const host = sandbox(command, calder)
+    for (const pool of unitPools.filter(sandboxed)) {
+      const lock = host.lock(pool)
+      yield* lock.take(1)
+      yield* Effect.forkDetach(host.stop(pool).pipe(Effect.ensuring(lock.release(1))))
+    }
+    return host
+  })
 
 /** The pools an agent takes jobs of (`Options.pools`), or why it can't take any. */
 export const poolsOf = (
@@ -203,8 +230,8 @@ export const runInUnit = (
     }
     if (sandbox !== null) {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-      // However the job ends, nothing of it outlives its directory.
-      const stop = Exec.exec([sandbox.command, "stop", pool, order.job]).pipe(Effect.ignore)
+      // However the job ends, nothing of it outlives its directory or runs beside the pool's next job.
+      const stop = sandbox.stop(pool, order.job)
       return yield* Effect.gen(function*() {
         const handle = yield* spawner.spawn(ChildProcess.make(sandbox.command, ["run", pool, order.job, dir, ...sandbox.calder], {
           stdin: "ignore",
@@ -270,7 +297,7 @@ export const run = (options: Options) =>
 
     // Units an earlier run of the agent started run on without it: their sockets went with its runtime
     // directory, and new jobs would get their workspaces.
-    const host = options.sandbox === null ? null : sandbox(options.sandbox, options.calder)
+    const host = options.sandbox === null ? null : yield* startSandbox(options.sandbox, options.calder)
     if (options.units !== null && host === null) {
       const listed = yield* systemctl(["list-units", "--plain", "--no-legend", "--state=active,activating,deactivating",
         ...unitPools.map((pool) => unitOf(pool, "*"))])
@@ -283,13 +310,6 @@ export const run = (options: Options) =>
     const pools = poolsOf(options)
     if (typeof pools === "string") return yield* Effect.die(new Error(pools))
     if (options.units !== null) {
-      // Jobs a sandbox ran for an earlier run of the agent, likewise.
-      if (host !== null) {
-        for (const pool of pools.filter(sandboxed)) {
-          const stopped = yield* Exec.exec([host.command, "stop", pool])
-          if (stopped.exitCode !== 0) yield* Effect.logWarning(`could not stop ${pool}'s jobs: ${stopped.stderr.trim()}`)
-        }
-      }
       mkdirSync(options.units, { recursive: true })
       // Only job directories, whatever else the directory holds.
       for (const dir of readdirSync(options.units)) if (/^[0-9a-f]+$/.test(dir)) rmSync(join(options.units, dir), { recursive: true, force: true })
