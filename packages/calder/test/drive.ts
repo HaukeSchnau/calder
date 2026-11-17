@@ -301,6 +301,7 @@ export const drive = ({
         updatePull: unused, mergedPull: unused,
         mergePull: unused,
         openPulls: unused,
+        closedPulls: unused,
       }),
       Layer.succeed(Jobs)({
         run: (job, options) =>

@@ -4,6 +4,7 @@ import { FetchHttpClient } from "effect/http"
 import * as Agents from "./Agents.ts"
 import * as Cache from "./Cache.ts"
 import * as Catchup from "./Catchup.ts"
+import * as Closes from "./Closes.ts"
 import * as Comments from "./Comments.ts"
 import * as Config from "./Config.ts"
 import * as Db from "./Db.ts"
@@ -47,7 +48,8 @@ export const layer = (configPath: string) => {
   ).pipe(Layer.provideMerge(projects))
   const core = named("Runs", Runs.layerCore).pipe(Layer.provideMerge(fleet))
   const runs = named("Workflow", Workflow.layer).pipe(Layer.provideMerge(core))
-  const merging = named("Merges", Merges.layer).pipe(Layer.provideMerge(runs))
+  const closing = named("Closes", Closes.layer).pipe(Layer.provideMerge(runs))
+  const merging = named("Merges", Merges.layer).pipe(Layer.provideMerge(closing))
   const delivery = named("Delivery", Delivery.layer).pipe(Layer.provideMerge(merging))
   return Layer.mergeAll(
     reportWhileStopping,

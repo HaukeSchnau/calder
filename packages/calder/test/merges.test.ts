@@ -109,7 +109,7 @@ const setup = (options: { readonly contained?: boolean; readonly conflicts?: Rea
       mergePull: (_repo, pr) => Effect.sync(() => void merged.push(pr)),
       comment: (_repo, pr, body) => Effect.sync(() => comments.push(`#${pr}: ${body}`)).pipe(Effect.as(1)),
       status: unused, requiredChecks: unused, pullTitle: unused, dispatch: unused, repos: unused, hasFile: unused,
-      updatePull: (_repo, pr) => Effect.sync(() => void updated.push(pr)), mergedPull: unused, openPulls: unused,
+      updatePull: (_repo, pr) => Effect.sync(() => void updated.push(pr)), mergedPull: unused, openPulls: unused, closedPulls: unused,
     }),
   )))
   return { sql, merged, comments, updated, pushed, cancelled, state, layer }

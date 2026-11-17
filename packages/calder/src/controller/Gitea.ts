@@ -18,6 +18,12 @@ const OpenPull = Schema.Struct({
   head: Schema.Struct({ ref: Schema.String, sha: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
   base: Schema.Struct({ ref: Schema.String, repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
 })
+const ClosedPull = Schema.Struct({
+  number: Schema.Number,
+  closed_at: Schema.NullOr(Schema.String),
+  head: Schema.Struct({ ref: Schema.String }),
+  base: Schema.Struct({ ref: Schema.String }),
+})
 const PullState = Schema.Struct({
   state: Schema.String,
   merged: Schema.Boolean,
@@ -40,6 +46,14 @@ const Repo = Schema.Struct({
 const transient = {
   while: (e: HttpClientError.HttpClientError) => e.reason._tag !== "StatusCodeError" || e.reason.response.status >= 500,
   schedule: Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]).pipe(Schedule.upTo({ duration: "5 minutes" })),
+}
+
+/** A pull request's closing: Gitea closed or merged it at `closedAt` (Gitea's `closed_at`, in milliseconds). */
+export interface Closing {
+  readonly number: number
+  readonly base: string
+  readonly head: string
+  readonly closedAt: number
 }
 
 const matches = (pattern: string, branch: string) =>
@@ -86,6 +100,8 @@ export class Gitea extends Context.Service<Gitea, {
     /** The head lives in another repository. */
     readonly fork: boolean
   }>>
+  /** The pull requests closed or merged at or after `since`, the latest closing first. */
+  readonly closedPulls: (repo: string, since: number) => Effect.Effect<ReadonlyArray<Closing>>
 }>()("calder/controller/Gitea") {}
 
 export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
@@ -177,6 +193,18 @@ export const layer = Layer.effect(Gitea)(Effect.gen(function*() {
         ),
         Effect.orDie,
       ),
+    closedPulls: (repo, since) =>
+      Effect.gen(function*() {
+        const found: Array<Closing> = []
+        for (let page = 1;; page++) {
+          const batch = yield* get(`/repos/${repo}/pulls?state=closed&sort=recentclose&limit=50&page=${page}`, Schema.Array(ClosedPull))
+          const closings = batch.flatMap((p) =>
+            p.closed_at === null ? [] : [{ number: p.number, base: p.base.ref, head: p.head.ref, closedAt: Date.parse(p.closed_at) }]
+          )
+          found.push(...closings.filter((c) => c.closedAt >= since))
+          if (batch.length < 50 || closings.some((c) => c.closedAt < since)) return found
+        }
+      }).pipe(Effect.orDie),
     pull: (repo, number) =>
       get(`/repos/${repo}/pulls/${number}`, PullState).pipe(
         Effect.map((p) => ({

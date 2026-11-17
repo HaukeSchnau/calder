@@ -1,12 +1,11 @@
 import { Effect } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { createHmac, timingSafeEqual } from "node:crypto"
+import { Closes } from "./Closes.ts"
 import { Config } from "./Config.ts"
-import { Gitea } from "./Gitea.ts"
 import { Mirror } from "./Mirror.ts"
 import { Projects } from "./Projects.ts"
 import { Runs } from "./Workflow.ts"
-import { SqlClient } from "effect/sql"
 
 interface Payload {
   readonly ref?: string
@@ -15,6 +14,7 @@ interface Payload {
   readonly number?: number
   readonly repository?: { readonly full_name?: string; readonly default_branch?: string }
   readonly pull_request?: {
+    readonly closed_at?: string | null
     readonly head?: { readonly ref?: string; readonly sha?: string; readonly repo?: { readonly full_name?: string } }
     readonly base?: { readonly ref?: string; readonly repo?: { readonly full_name?: string } }
   }
@@ -38,9 +38,8 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     const config = yield* Config
     const mirror = yield* Mirror
     const runs = yield* Runs
-    const sql = yield* SqlClient.SqlClient
     const projects = yield* Projects
-    const gitea = yield* Gitea
+    const closes = yield* Closes
     const body = yield* request.text
     if (!verified(config.webhookSecret, body, request.headers["x-gitea-signature"])) {
       return HttpServerResponse.text("bad signature", { status: 401 })
@@ -83,22 +82,14 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
       const number = payload.number
       if (pr === undefined || number === undefined) return HttpServerResponse.text("ignored")
       if (payload.action === "closed") {
-        const active = yield* sql<{ id: string }>`select id from runs where project = ${project} and pr = ${number}
-          and status in ('queued', 'planning', 'running')`.pipe(Effect.orDie)
-        yield* Effect.forEach(active, (r) => runs.cancel(r.id, "pull request closed"), { discard: true })
-        // `On.pullRequestClosed` rules run the base branch's head, which the repository's owners pushed.
-        const base = pr.base?.ref ?? enrolled.defaultBranch
-        yield* gitea.head(enrolled.repo, base).pipe(
-          Effect.flatMap((sha) =>
-            start(sha, runs.ensure({
-              project,
-              event: { _tag: "PullRequestClosed", number, base, head: pr.head?.ref ?? `pr-${number}` },
-              sha,
-            }))
-          ),
-          Effect.catchCause((cause) => Effect.logError(`closing pull request ${number} of ${project} failed`, cause)),
-        )
-        return HttpServerResponse.text("cancelled")
+        const closedAt = Date.parse(pr.closed_at ?? "")
+        yield* closes.close(enrolled, {
+          number,
+          base: pr.base?.ref ?? enrolled.defaultBranch,
+          head: pr.head?.ref ?? `pr-${number}`,
+          closedAt: Number.isNaN(closedAt) ? Date.now() : closedAt,
+        }).pipe(Effect.forkDetach)
+        return HttpServerResponse.text("accepted", { status: 202 })
       }
       if (!["opened", "reopened", "synchronized"].includes(payload.action ?? "")) return HttpServerResponse.text("ignored")
       const sha = pr.head?.sha

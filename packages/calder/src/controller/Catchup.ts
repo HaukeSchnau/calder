@@ -1,4 +1,5 @@
 import { Effect, Layer, Schedule } from "effect"
+import { Closes } from "./Closes.ts"
 import { Gitea } from "./Gitea.ts"
 import { Mirror } from "./Mirror.ts"
 import { Projects } from "./Projects.ts"
@@ -7,13 +8,15 @@ import { type RunInput, Runs } from "./Workflow.ts"
 /**
  * Gitea gives up on a webhook the controller missed while it restarted. Shortly after start and
  * every five minutes, each project's default branch head and open pull requests get the run they
- * should have, if they don't have it yet.
+ * should have, if they don't have it yet, and its closed pull requests their closed run (Closes.ts).
+ * This is one such pass.
  */
-export const layer = Layer.effectDiscard(Effect.gen(function*() {
+export const make = Effect.gen(function*() {
   const projects = yield* Projects
   const gitea = yield* Gitea
   const mirror = yield* Mirror
   const runs = yield* Runs
+  const closes = yield* Closes
   // Heads already looked at, so a revision whose plan matches no rule isn't planned again and again.
   const seen = new Set<string>()
 
@@ -39,8 +42,14 @@ export const layer = Layer.effectDiscard(Effect.gen(function*() {
           fork: pull.fork,
         })
       }
+      yield* closes.catchUp(project)
     }).pipe(Effect.catchCause((cause) => Effect.logWarning(`catching up on ${project.name} failed`, cause))), { discard: true })
 
+  return sweep
+})
+
+export const layer = Layer.effectDiscard(Effect.gen(function*() {
+  const sweep = yield* make
   yield* sweep.pipe(
     Effect.delay("30 seconds"),
     Effect.repeat(Schedule.spaced("5 minutes")),

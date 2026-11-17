@@ -26,6 +26,7 @@ const gitea = (files: ReadonlyArray<string>) =>
     updatePull: unused, mergedPull: unused,
     mergePull: unused,
     openPulls: unused,
+    closedPulls: unused,
   })
 
 const projects = (files: ReadonlyArray<string>) =>
