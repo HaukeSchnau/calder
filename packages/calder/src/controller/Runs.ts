@@ -181,6 +181,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     // slots to other projects: three of infra's pull requests once held every plan slot for an hour while
     // every other project's runs stayed in planning.
     plans: Slots.make({ capacity: config.jobs.slots.plans, maxPerProject: 1 }),
+    // Builds' evaluations, one per project at a time like plans, but apart from them: a plan leaves its
+    // builds to them and holds at most 0.3 GiB, while one on srv-2 took up to 113 minutes, and infra's pull
+    // requests' plans waited up to three hours behind them in one slot.
+    evaluations: Slots.make({ capacity: config.jobs.slots.plans, maxPerProject: 1 }),
     builds: Slots.make({ capacity: config.jobs.slots.builds, lane }),
     // Each other system's builds wait for its remote builders apart, so one that is unavailable stalls only its own.
     remoteBuilds: new Map<string, Slots.Slots>(),
@@ -191,7 +195,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
     agents: Slots.make({ capacity: 64 }),
   }
   /** Every pool, the remote builds' of each system included. */
-  const pools = () => [slots.plans, slots.builds, ...slots.remoteBuilds.values(), slots.tasks, slots.actions, slots.agents]
+  const pools = () => [slots.plans, slots.evaluations, slots.builds, ...slots.remoteBuilds.values(), slots.tasks, slots.actions, slots.agents]
   const cancels = new Map<string, Deferred.Deferred<string>>()
   const signal = (map: Map<string, Deferred.Deferred<string>>) => (runId: string) => {
     let d = map.get(runId)
@@ -256,10 +260,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index))
     }
     // Taken before any run is driven again, or the run would claim the same slots for new jobs. A build's
-    // job holds a build slot, also before its derivation is known, and evaluating builds a plan slot.
+    // job holds a build slot, also before its derivation is known, and evaluating builds an evaluation slot.
     const row = yield* Rows.loadStep(spec.run.id, spec.step).pipe(Effect.provideService(SqlClient.SqlClient, sql))
     const build = row === undefined ? null : Rows.spec(row).build
-    const held = spec.evaluate !== undefined ? slots.plans : build === null ? slots.tasks : buildSlots(build.system)
+    const held = spec.evaluate !== undefined ? slots.evaluations : build === null ? slots.tasks : buildSlots(build.system)
     const release = held.reserve(spec.run.project)
     yield* jobs.settled(adopted.id).pipe(
       Effect.ensuring(release),
@@ -302,6 +306,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const repoOf = (project: string) => projects.get(project)!.repo
   const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`
   const poolOf = (run: Rows.RunRow): Pool => (run.trust === "trusted" ? "trusted" : run.fork === 1 ? "fork" : "pr")
+  /** A background check's run: its jobs take only slots nothing else wants (Slots `background`). */
+  const backgroundOf = (run: Rows.RunRow) => {
+    const event = JSON.parse(run.event) as Domain.Event
+    return event._tag === "Check" && event.background === true
+  }
   const largeEvaluations = (run: Rows.RunRow) => projects.get(run.project)?.largeEvaluations === true
 
   const publishRun = (runId: string) =>
@@ -554,9 +563,11 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (spec.steps.length === 0) return yield* matchesNoRule(run, event)
       // A cancel that came in while the plan job ran wins.
       const stored = yield* db(sql.withTransaction(Effect.gen(function*() {
-        const updated = yield* sql`update runs set plan = ${JSON.stringify(spec)}, status = 'running', planned_at = ${Date.now()}
+        const updated = yield* sql`update runs set status = 'running', planned_at = ${Date.now()}
           where id = ${runId} and status = 'planning' returning id`
         if (updated.length === 0) return false
+        yield* sql`insert into run_plans (run_id, plan) values (${runId}, ${JSON.stringify(spec)})
+          on conflict do update set plan = excluded.plan`
         for (const [position, step] of spec.steps.entries()) {
           yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
             values (${runId}, ${step.name}, ${step.kind}, 'pending', ${JSON.stringify(step)}, ${position}, ${Telemetry.spanId()})
@@ -858,28 +869,43 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   type Executed = Effect.Success<ReturnType<typeof execute>>
   /** A job that never ran to a result: its run was cancelled, or replaced before the job started. */
   const stopped = (r: object) => "cancelled" in r || "withdrawn" in r
-  const preparing = new Map<string, Deferred.Deferred<Option.Option<Executed>>>()
+  /** Each setup that runs for several runs (`once`): its outcome, its claim's raise (Slots `raised`) and its run. */
+  const preparing = new Map<
+    string,
+    { readonly done: Deferred.Deferred<Option.Option<Executed>>; readonly raised: Deferred.Deferred<void>; readonly run: string }
+  >()
   /**
    * Runs a setup once for concurrent runs that need the same prepared workspace: the others wait and
-   * reuse it, or try themselves if it didn't pass.
+   * reuse it, or try themselves if it didn't pass. One that isn't background work raises the job it
+   * waits for, and says whose it is.
    */
-  const once = <E, R>(key: string, setup: Effect.Effect<Executed, E, R>): Effect.Effect<{ readonly executed: Executed; readonly reused: boolean }, E, R> =>
+  const once = <E, R>(
+    key: string,
+    run: Rows.RunRow,
+    name: string,
+    setup: (raised: Deferred.Deferred<void>) => Effect.Effect<Executed, E, R>,
+  ): Effect.Effect<{ readonly executed: Executed; readonly reused: boolean }, E, R> =>
     Effect.suspend(() => {
       const running = preparing.get(key)
       if (running !== undefined) {
-        return Deferred.await(running).pipe(Effect.flatMap(Option.match({
-          onNone: () => once(key, setup),
-          onSome: (executed) => Effect.succeed({ executed, reused: true }),
-        })))
+        if (!backgroundOf(run)) Deferred.doneUnsafe(running.raised, Effect.void)
+        return waiting(run.id, name, `${running.run}'s setup of the same dependencies`).pipe(
+          Effect.andThen(Deferred.await(running.done)),
+          Effect.tap(() => waiting(run.id, name, null)),
+          Effect.flatMap(Option.match({
+            onNone: () => once(key, run, name, setup),
+            onSome: (executed) => Effect.succeed({ executed, reused: true }),
+          })),
+        )
       }
-      const done = Deferred.makeUnsafe<Option.Option<Executed>>()
-      preparing.set(key, done)
-      return setup.pipe(
+      const entry = { done: Deferred.makeUnsafe<Option.Option<Executed>>(), raised: Deferred.makeUnsafe<void>(), run: run.id }
+      preparing.set(key, entry)
+      return setup(entry.raised).pipe(
         Effect.onExit((exit) =>
           Effect.suspend(() => {
             preparing.delete(key)
             const passed = Exit.isSuccess(exit) && !stopped(exit.value) && exit.value.result._tag === "Passed"
-            return Deferred.succeed(done, passed ? Option.some(exit.value) : Option.none())
+            return Deferred.succeed(entry.done, passed ? Option.some(exit.value) : Option.none())
           })
         ),
         Effect.map((executed) => ({ executed, reused: false })),
@@ -912,6 +938,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       readonly systems?: ReadonlyArray<string>
       /** While it waits here for a slot, an agent may take it instead (Slots `spill`). */
       readonly spill?: Slots.Claim["spill"]
+      /** Completes once another run's work waits for this background run's job (Slots `raised`). */
+      readonly raised?: Deferred.Deferred<void>
       /** Completing it takes the job out of the queue if it hasn't started; a started job runs on. */
       readonly withdraw?: Deferred.Deferred<void>
       /**
@@ -998,18 +1026,17 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         })
         return { ...done, startedAt }
       }))
-      const event = JSON.parse(run.event) as Domain.Event
-      const background = event._tag === "Check" && event.background === true
       const claim = {
         project: run.project,
         expected: options.expected,
         run: run.created_at,
-        background,
+        background: backgroundOf(run),
         critical: options.critical ?? Rows.spec(row).critical === true,
         label: `${run.id} ${row.name}`,
         // An action waits on after its run was superseded, since nothing interrupts it.
         ...(options.action ? {} : { owner: run.id }),
         ...(options.spill === undefined ? {} : { spill: options.spill }),
+        ...(options.raised === undefined ? {} : { raised: options.raised }),
       }
       const work = (reattached ??
         options.slots.with(claim, running, (busy) => waiting(run.id, row.name, `${options.what}: ${busy}`))).pipe(
@@ -1055,7 +1082,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
    * waits for the first of them, or until all of them settled without asking. It runs at once when one
    * of them runs whatever earlier results exist, or when another kind of step waits for it.
    */
-  const asked = (run: Rows.RunRow, setup: string, steps: ReadonlyArray<Rows.StepRow>) => {
+  const asked = (run: Rows.PlannedRunRow, setup: string, steps: ReadonlyArray<Rows.StepRow>) => {
     const reuse = (JSON.parse(run.plan ?? "{}") as PlanSpec).reuse
     const kinds = new Map(steps.map((s) => [s.name, s.kind]))
     const dependents = steps.map(Rows.spec).filter((s) => [...s.needs, ...s.exits, ...s.after].includes(setup))
@@ -1098,15 +1125,14 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const why = (result: JobResult) => (result._tag === "Died" || result._tag === "Lost" ? result.message.split("\n")[0] : result._tag)
 
   /**
-   * One job that evaluates builds (Steps.ts `evaluate`) for `row`'s step. It is plan work and takes a plan
-   * slot, so one project's flake is evaluated once at a time, as the worker's cache lock would have it
-   * anyway, in the larger pull-request unit where the project asks for it, and no build slot sits idle
-   * for the minutes it takes.
+   * One job that evaluates builds (Steps.ts `evaluate`) for `row`'s step. It takes an evaluation slot, so
+   * one project's builds are evaluated once at a time, in the larger pull-request unit where the project
+   * asks for it, no build slot sits idle for the minutes it takes, and no plan waits for it.
    */
   const evaluateHere = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
     execute(run, row, () => job, {
-      slots: slots.plans,
-      what: "a plan slot",
+      slots: slots.evaluations,
+      what: "an evaluation slot",
       expected: 0,
       action: false,
       shard: null,
@@ -1144,7 +1170,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
   const recordsOf = (result: JobResult, trust: Domain.Trust): Kept =>
     result._tag === "Evaluated" && result.recorded !== undefined ? [{ recorded: result.recorded, trust }] : []
 
-  /** Evaluates builds here, in a plan slot; what it records counts for the run's trust. */
+  /** Evaluates builds here, in an evaluation slot; what it records counts for the run's trust. */
   const evaluateLocally = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
     Effect.map(evaluateHere(run, row, job, critical), (r) => {
       const result = sanitized(r.result)
@@ -1308,8 +1334,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         const attrs = Object.fromEntries(plan.steps.flatMap((s) => (s.build === null || !(s.name in derivations) ? [] : [[s.build.attr, derivations[s.name] ?? null]])))
         // Evaluated at this revision, like the plan's own evaluations, so a trusted run may take them too.
         const trusted = plan.trusted === undefined ? {} : { trusted: [...new Set([...plan.trusted, ...Object.keys(attrs)])].sort() }
-        yield* sql`update runs set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
-          where id = ${run.id}`
+        yield* sql`update run_plans set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
+          where run_id = ${run.id}`
         const updated = steps.filter((s, i) => JSON.stringify(s) !== JSON.stringify(plan.steps[i]))
         for (const s of updated) yield* sql`update steps set spec = ${JSON.stringify(s)} where run_id = ${run.id} and name = ${s.name}`
         return updated.map((s) => s.name)
@@ -1618,18 +1644,22 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         const executed = yield* placed(run, row, info, platform, null, (p) =>
           once(
             `${p.remote ? "agent" : "local"}/${poolOf(run)}/${run.project}/${p.platform ?? config.system}/${deps}`,
-            execute(run, row, (ws) => stepJob({ run: p.where, workspace: ws, deps }), {
-              slots: p.remote ? slots.agents : slots.tasks,
-              what: p.remote ? "an agent's slot" : "a task slot",
-              // Every task of the run waits for it.
-              expected: 0,
-              action: false,
-              shard: null,
-              workspace: true,
-              platform: p.platform,
-              remote: p.remote,
-              offload: p.offload,
-            }, collect),
+            run,
+            name,
+            (raised) =>
+              execute(run, row, (ws) => stepJob({ run: p.where, workspace: ws, deps }), {
+                slots: p.remote ? slots.agents : slots.tasks,
+                what: p.remote ? "an agent's slot" : "a task slot",
+                // Every task of the run waits for it.
+                expected: 0,
+                action: false,
+                shard: null,
+                workspace: true,
+                platform: p.platform,
+                remote: p.remote,
+                offload: p.offload,
+                raised,
+              }, collect),
           ).pipe(Effect.map(({ executed, reused }) => ({ ...executed, reused }))), { setup: true })
         const { reused } = executed
         if (stopped(executed)) return yield* settle(run, row, { status: "cancelled" })
@@ -1699,7 +1729,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         reusedFrom: hit.run_id,
       })
       if (reusable) {
-        yield* landing(count === 1 ? [key] : shardKeys)
+        yield* landing(count === 1 ? [key] : shardKeys, { raise: !backgroundOf(run) })
         const hit = yield* lookup(key)
         if (hit !== undefined) return yield* settle(run, row, reused(hit))
       }
@@ -1728,6 +1758,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       if (instead !== null) return yield* settle(run, row, instead)
       const shards = yield* Effect.forEach(pending, (index) =>
         Effect.gen(function*() {
+          const raised = Deferred.makeUnsafe<void>()
           const r = yield* flying([count === 1 ? key : shardKeys[index - 1]!], placed(run, row, info, task.platform, sharded ? index : null, (p) =>
             execute(
               run,
@@ -1754,9 +1785,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 systems: p.systems,
                 spill: p.spill,
                 withdraw,
+                raised,
               },
               collect,
-            ), { here: task.offload === false || preview, systems: task.systems ?? [] }))
+            ), { here: task.offload === false || preview, systems: task.systems ?? [] }), raised)
           if (!sharded || stopped(r)) return r
           const passed = r.result._tag === "Passed"
           const now = Date.now()
@@ -1869,7 +1901,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         // Files another run is checking right now: wait for them rather than check them twice.
         const inAir = each.filter((e) => !passed.has(keys.get(e.file)!) && inFlight(keys.get(e.file)!)).map((e) => keys.get(e.file)!)
         if (inAir.length > 0) {
-          yield* landing(inAir)
+          yield* landing(inAir, { raise: !backgroundOf(run) })
           yield* look(inAir)
         }
       }
@@ -1894,6 +1926,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const job = (files: ReadonlyArray<string>, index: number, total: number, ms: number) =>
         Effect.gen(function*() {
           const mine = { tests: [] as Array<TestRow>, attempts: 0 }
+          const raised = Deferred.makeUnsafe<void>()
           const r = yield* flying(files.map((f) => keys.get(f)!), placed(run, row, context.info, task.platform, index, (p) =>
             execute(
               run,
@@ -1911,9 +1944,10 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
                 offload: p.offload,
                 systems: p.systems,
                 spill: p.spill,
+                raised,
               },
               mine,
-            ), { here: task.offload === false, systems: task.systems ?? [] }))
+            ), { here: task.offload === false, systems: task.systems ?? [] }), raised)
           context.collect.tests.push(...mine.tests)
           context.collect.attempts = Math.max(context.collect.attempts, mine.attempts)
           return { r, tests: mine.tests, files }

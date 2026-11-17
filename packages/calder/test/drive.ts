@@ -142,7 +142,7 @@ export const drive = ({
 }: Drive) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    const trust = event._tag === "PullRequest" ? "pr" : "trusted"
+    const trust = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted"
     const pr = event._tag === "PullRequest" ? event.number : null
     const plan: PlanSpec = { version: 1, app: null, trust, reuse: "all", schedules: [], steps: [...planned], ...extra }
     yield* seed
@@ -159,9 +159,10 @@ export const drive = ({
     }
     const fork = event._tag === "PullRequest" && event.fork ? 1 : 0
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
-        started_at, trace_id, span_id, plan, rerun_of, fork)
+        started_at, trace_id, span_id, rerun_of, fork)
       values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
-        2, 2, 't', 's', ${unplanned ? null : JSON.stringify(plan)}, ${rerunOf === undefined ? null : "app-1"}, ${fork})`
+        2, 2, 't', 's', ${rerunOf === undefined ? null : "app-1"}, ${fork})`
+    if (!unplanned) yield* sql`insert into run_plans (run_id, plan) values ('app-2', ${JSON.stringify(plan)})`
     for (const [position, s] of unplanned ? [] : plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`

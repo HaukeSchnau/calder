@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Option, PlatformError, Sink, Stream } from "effect"
+import { Deferred, Effect, Option, PlatformError, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { sha256 } from "../src/Keys.ts"
 import type { RunInfo } from "../src/Protocol.ts"
 import { askedAttrs, reportTag } from "./expression.ts"
 import * as Footprint from "../src/worker/Footprint.ts"
@@ -164,6 +165,22 @@ describe("derivations", () => {
       expect(calls.filter((c) => c === "nix eval")).toHaveLength(1)
     }))
 
+  it.live("evaluates another revision beside a plan that holds the repository's cache", () =>
+    Effect.gen(function*() {
+      // Each evaluation goes on only once both started.
+      const both = yield* Deferred.make<void>()
+      let started = 0
+      const evaluating = Effect.suspend(() => {
+        started++
+        return started === 2 ? Deferred.succeed(both, undefined) : Deferred.await(both)
+      })
+      const { calls, spawner } = nix(() => true, { evaluating })
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
+      const plan = (flake: string) => derivations(run(flake), ["a"], dir, undefined, unlimited).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      yield* Effect.all([plan("git+file:///mirror?rev=1"), plan("git+file:///mirror?rev=2")], { concurrency: 2 })
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(2)
+    }))
+
   it.effect("takes over the lock of a worker that died holding it", () =>
     Effect.gen(function*() {
       const { calls, spawner } = nix(() => true)
@@ -172,7 +189,7 @@ describe("derivations", () => {
       yield* plan
       // No process has this id: Linux caps them at 2^22.
       for (const name of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
-        writeFileSync(join(dir, `${name}.lock`), String(2 ** 23))
+        writeFileSync(join(dir, `${name}.${sha256("git+file:///mirror?rev=1").slice(0, 16)}.lock`), String(2 ** 23))
       }
       yield* plan
       expect(calls).toEqual(["nix eval", "nix-store --check-validity"])

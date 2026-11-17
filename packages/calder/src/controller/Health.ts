@@ -178,15 +178,18 @@ export const anchored = (project: string, list: ReadonlyArray<Streak>, now: numb
 export const lastPassed = (project: string, branch: string, from: number) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    return yield* sql<{ step: string; at: number }>`with trusted as (
+    // Each step's newest pass comes from the steps_passed index, newest first, so this reads a few index
+    // entries per step name instead of every step of a month of runs.
+    return yield* sql<{ step: string; at: number }>`with trusted as materialized (
         select id, created_at, planned_at, json_extract(event, '$._tag') || coalesce(json_extract(event, '$.cron'), '') as tag from runs
         where project = ${project} and branch = ${branch} and trust = 'trusted' and created_at >= ${from}),
       newest as (
-        select t.id from trusted t where t.planned_at is not null
-          and t.created_at = (select max(n.created_at) from trusted n where n.planned_at is not null and n.tag = t.tag)),
+        select id from (select id, rank() over (partition by tag order by created_at desc) as n from trusted where planned_at is not null)
+        where n = 1),
       current as (select distinct name from steps where run_id in (select id from newest))
-      select c.name as step, coalesce((select max(s.finished_at) from steps s join trusted t on t.id = s.run_id
-          where s.name = c.name and s.status in ('passed', 'reused')), ${from}) as at
+      select c.name as step, coalesce((select s.finished_at from steps s
+          where s.name = c.name and s.status in ('passed', 'reused') and s.run_id in (select id from trusted)
+          order by s.finished_at desc limit 1), ${from}) as at
       from current c order by c.name`
   })
 

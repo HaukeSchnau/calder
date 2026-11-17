@@ -100,7 +100,12 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   than the controller's runs on an agent of that platform (`calder agent`, trusted runs only). An agent of
   the controller's platform with a free slot also takes trusted tasks off the controller, unless the
   task says `offload: false` because it needs the controller's host. Pull-request
-  tasks always run on the controller, because agents run every worker as one user without a sandbox.
+  tasks run on the controller, or on an agent that sandboxes them like it: `--units` starts each job in its
+  host's systemd unit of its pool, and on a host without systemd, such as a Mac, `--sandbox <command>` runs
+  it through the host's command (`<command> run <pool> <job> <dir> <calder...>`, then `<command> stop <pool>
+  <job>`), one job of a pool at a time. A pool's next job waits until a stop succeeded, and at start the agent
+  stops every sandboxed pool, so the stop of a pool the host doesn't sandbox must succeed. `--pools` names the
+  pools it takes where the host's groups can't.
   There a pull request's job runs as its pool's user in the host's unit template for it, `calder-job-pr@`, with
   its own home and workspaces, apart from trusted jobs' `calder-job-trusted@`. A fork's pull request has a pool
   of its own, `calder-job-fork@`, so nothing a fork's job leaves behind reaches a same-repo pull request's job,
@@ -178,8 +183,13 @@ critical steps go first, and they may take one slot beyond the number, so a prev
 long check. A task's `gate`, steps it waits for like `after`, is on its critical path too, with what those
 read: `Environments.project`'s `previews.after` gates the preview, such as on a smoke test of what it
 deploys. Checks a deploy only waits for (`after`, `afterEnded`) take their turn like any other, so a push's checks don't
-jump the queue, and `Project.alchemy`'s previews wait for their checks that way. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
-comment: steps it depends on, a slot and who holds them, a setup, an agent or the deploy lease.
+jump the queue, and `Project.alchemy`'s previews wait for their checks that way. A background check
+(`calder check --background`, or `calder watch`'s) takes a slot only while no other step wants one and another
+stays free. Once another run waits for one of its jobs, its setup of the same dependencies or a task of the
+same key, that job queues like the waiting run's work: Studienbuch's installs once waited 3 hours for a
+background check's install, which srv-2's one task slot could never take. Every waiting step says what it waits for in the UI's data, `calder status` and Calder's
+comment: steps it depends on, a slot and who holds them, a setup or another run's setup of the same
+dependencies, an agent or the deploy lease.
 
 A newer revision supersedes the runs of older ones. A pull request's new revision supersedes the pull
 request's older runs. A push supersedes the older pushes and scheduled runs of its branch, and a check the
@@ -238,8 +248,10 @@ the memory.high or memory.max up the cgroup's tree that is closest to being reac
 without `/proc`, PSI or systemd, such as a Mac, leaves those parts out. A pull request's job gets less memory than a trusted run's. A project whose flake
 needs more to evaluate, such as infra, whose srv-2 contract check alone holds 3 GiB, sets
 `largeEvaluations`: its pull requests' plans and build evaluations run in `calder-job-pr-large@` (a fork's in
-`calder-job-fork-large@`), which the host defines with more memory. Plans and build evaluations both take plan slots, one per project at a
-time, so one project's flake is never evaluated twice side by side.
+`calder-job-fork-large@`), which the host defines with more memory. Plans take plan slots and build evaluations
+evaluation slots, as many as plan slots, each one per project at a time. A plan evaluates only dev shells (infra's
+hold at most 0.3 GiB), so it may run beside its project's build evaluation, which takes minutes, and a pull
+request's plan never waits for another run's builds to evaluate.
 
 A plan also records what each attribute's evaluation read of the repository: its footprint. It evaluates
 `path:<source>?rev=…` under strace, which gives the same derivations as the mirror's `git+file:` URL but
@@ -250,10 +262,10 @@ before it in the same `nix eval` read, so attributes evaluate after those their 
 a lockfile's dependencies then keep their record while the app build that uses them changes. The plan
 evaluates only dev shells whose footprint changed, which task keys need, and leaves the builds whose
 footprint changed for later, so tasks start without waiting for them. The first of those builds to run
-evaluates them all in a plan slot, in one evaluator while they fit its job's memory, and records their footprints; the
+evaluates them all in an evaluation slot, in one evaluator while they fit its job's memory, and records their footprints; the
 others wait for it and then build like planned builds, on their system's builders, reused when their output
 exists. A build too large to evaluate fails. Where the evaluation fails twice, each build evaluates its own
-attribute the same way, in a plan slot.
+attribute the same way, in an evaluation slot.
 A record counts for no other commit when its
 derivation's closure, or the deriver of a store path the evaluation read (import from a derivation built
 from `self`), mentions its commit or the whole source (`self.rev`, `self.lastModified`, `src = self`), or
@@ -481,6 +493,7 @@ calder controller --config <file>      # the service
 calder worker <job>                    # started by the controller in a systemd unit, or by an agent
 calder agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
   [--evaluator <store>]              # with --evaluator, evaluates builds for the controller instead
+  [--units <dir> [--sandbox <cmd>] [--pools pr,trusted]]  # also pull requests' jobs, sandboxed
                                      # runs the controller's jobs for this host's platform
 ```
 
@@ -490,7 +503,7 @@ An evaluator agent (`calder agent --evaluator <store>`) takes the controller's b
 the first build a plan left unevaluated starts, and nothing else: no task or setup of its platform. Evaluation
 needs a fast host more than any other job: infra's 25 builds took 648 s to evaluate on srv-2 under Calder and
 111 s on dev-hauke. While one is connected, every run that isn't a fork's evaluates there, in a slot of the
-agent's rather than the project's plan slot. The worker runs no `.calder/ci.ts`: only Calder's evaluator
+agent's rather than the project's evaluation slot. The worker runs no `.calder/ci.ts`: only Calder's evaluator
 and `nix eval`, in which the flake's Nix runs in pure evaluation, with the builds an import from a derivation
 needs. Only report lines carrying a tag the evaluator draws for each `nix eval` count, so the flake's own code
 can't trace one. It evaluates a full mirror of the project that the

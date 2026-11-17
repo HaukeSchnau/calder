@@ -41,9 +41,10 @@ const insert = (id: string, options: {
     const builds = options.builds ?? []
     const plan = { version: 1, app: null, trust: "trusted", reuse: "all", schedules: [], steps: builds.map(([s]) => s) }
     yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
-        trace_id, span_id, plan)
+        trace_id, span_id)
       values (${id}, ${project}, ${number}, ${JSON.stringify(event)}, ${options.sha ?? id}, 'main', 'title', 'hauke', 1, 'trusted',
-        ${options.status}, ${options.at ?? number}, 't', 's', ${options.status === "queued" || options.status === "planning" ? null : JSON.stringify(plan)})`
+        ${options.status}, ${options.at ?? number}, 't', 's')`
+    if (options.status !== "queued" && options.status !== "planning") yield* sql`insert into run_plans (run_id, plan) values (${id}, ${JSON.stringify(plan)})`
     for (const [position, [s, status]] of builds.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values (${id}, ${s.name}, ${s.kind}, ${status ?? "pending"}, ${JSON.stringify(s)}, ${position}, 's')`

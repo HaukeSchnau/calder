@@ -37,9 +37,10 @@ const deployStep = (run: number, name: string, lease: true | string) =>
         secrets: [], platform: null, lease,
       },
     }
-    yield* sql`insert into runs (id, project, number, event, sha, commit_title, author, commit_time, trust, status, created_at, trace_id, span_id, plan)
-      values (${`app-${run}`}, 'app', ${run}, '{"_tag":"Push","branch":"main"}', ${`rev-${run}`}, 'title', 'hauke', 1, 'trusted', 'running', 1, 't', 's', '{}')
+    yield* sql`insert into runs (id, project, number, event, sha, commit_title, author, commit_time, trust, status, created_at, trace_id, span_id)
+      values (${`app-${run}`}, 'app', ${run}, '{"_tag":"Push","branch":"main"}', ${`rev-${run}`}, 'title', 'hauke', 1, 'trusted', 'running', 1, 't', 's')
       on conflict do nothing`
+    yield* sql`insert into run_plans (run_id, plan) values (${`app-${run}`}, '{}') on conflict do nothing`
     yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
       values (${`app-${run}`}, ${name}, 'task', 'running', ${JSON.stringify(spec)}, 0, 's')`
     const active: ActiveJob = {

@@ -185,6 +185,52 @@ describe("Slots", () => {
       expect(order).toEqual(["check-1", "check-2", "push", "check-3"])
     }))
 
+  it.effect("queues background work like other work once that work waits for it, also when it waited before it queued", () =>
+    Effect.gen(function*() {
+      const slots = Slots.make({ capacity: 1 })
+      const { order, hold, job } = yield* harness(slots)
+      const raised = yield* Deferred.make<void>()
+      yield* job("check install", { project: "studienbuch", expected: 0, run: 0, background: true, raised })
+      yield* Effect.yieldNow
+      // One slot leaves none free for background work.
+      expect(order).toEqual([])
+      expect(slots.waitsFor({ project: "studienbuch", expected: 0, run: 0, background: true }))
+        .toBe("0 of 1 busy; 1 ahead; background work starts only while another slot stays free")
+      // A pull request's install waits for this one.
+      yield* Deferred.succeed(raised, undefined)
+      yield* Effect.yieldNow
+      expect(order).toEqual(["check install"])
+      yield* Deferred.succeed(hold, undefined)
+
+      const before = Slots.make({ capacity: 1 })
+      const second = yield* harness(before)
+      yield* second.job("check lint", { project: "studienbuch", expected: 0, run: 0, background: true, raised })
+      yield* Effect.yieldNow
+      expect(second.order).toEqual(["check lint"])
+      yield* Deferred.succeed(second.hold, undefined)
+    }))
+
+  it.effect("counts a raised background claim's wait from its raise, so it doesn't pass work that queued before", () =>
+    Effect.gen(function*() {
+      let clock = 0
+      const slots = Slots.make({ capacity: 1, now: () => clock })
+      const { order, hold, job } = yield* harness(slots)
+      const raised = yield* Deferred.make<void>()
+      yield* job("busy", { project: "infra", expected: 0, run: 0 })
+      yield* Effect.yieldNow
+      yield* job("check test", { project: "studienbuch", expected: minutes(5), run: 1, background: true, raised })
+      yield* Effect.yieldNow
+      clock = minutes(170)
+      yield* job("pr test", { project: "t3code", expected: minutes(5), run: 2 })
+      yield* Effect.yieldNow
+      clock = minutes(180)
+      yield* Deferred.succeed(raised, undefined)
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(hold, undefined)
+      yield* Effect.yieldNow
+      expect(order).toEqual(["busy", "pr test", "check test"])
+    }))
+
   it.effect("gives up the place in the queue when interrupted while waiting", () =>
     Effect.gen(function*() {
       const slots = Slots.make({ capacity: 1 })

@@ -26,9 +26,9 @@ describe("an agent's units", () => {
     expect([...headers.keys()].sort()).toEqual(["authorization", "content-type"])
   })
 
-  // The agent serves its sockets with Bun's, which vitest's Node lacks: bun/agent-units.ts runs two jobs
-  // through Agent.runInUnit with a fake systemctl that acts as the job's unit.
-  it.skipIf(!hasBun)("run each job in its pool's unit, reaching the controller and, for pull requests, the allowlist through the job's sockets", () => {
+  // The agent serves its sockets with Bun's, which vitest's Node lacks: bun/agent-units.ts runs jobs
+  // through Agent.runInUnit with a fake systemctl and a fake sandbox command that act as the job's worker.
+  it.skipIf(!hasBun)("run each job in its pool's unit, reaching the controller and, for pull requests, the allowlist through the job's sockets", { timeout: 30_000 }, () => {
     const ran = spawnSync("bun", [join(import.meta.dirname, "bun", "agent-units.ts")], { encoding: "utf8", timeout: 60_000 })
     expect(ran.status, ran.stderr).toBe(0)
     const result = JSON.parse(ran.stdout.trim().split("\n").at(-1)!)
@@ -54,5 +54,26 @@ describe("an agent's units", () => {
       "stop calder-job-trusted@5709.service",
     ])
     expect([result.kept, result.keptStopped]).toEqual([false, false])
+    // A host without systemd runs the job through its sandbox command, as the pool's user, with the same
+    // directory at its canonical path, and ends what the job left however it ends.
+    expect(result.sandbox.code).toBe(0)
+    expect(result.sandbox.found.token).toBe("sandboxed")
+    expect(result.sandbox.found.egress).toBe("HTTP/1.1 403 Not On The Allowlist")
+    expect(result.sandbox.kept).toBe(false)
+    // What an earlier run left in any sandboxed pool is stopped first, the pools at once, and a pool's jobs
+    // wait until its stop succeeded.
+    expect(result.sandbox.calls.slice(0, 2).sort()).toEqual(["stop fork", "stop pr"])
+    expect(result.sandbox.calls.slice(2)).toEqual([
+      "stop pr",
+      "run pr 5a1d <units>/5a1d calder main.ts",
+      "stop pr 5a1d",
+      "stop pr 5a1d",
+      "run pr 0b0b <units>/0b0b calder main.ts",
+      "stop pr 0b0b",
+      "run pr 0c0c <units>/0c0c calder main.ts",
+      "stop pr 0c0c",
+    ])
+    // A stop ends everything of the pool's user, so a pool's jobs run one at a time.
+    expect(result.sandbox.whileFirstRan.at(-1)).toBe("run pr 0b0b <units>/0b0b calder main.ts")
   })
 })

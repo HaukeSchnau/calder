@@ -53,7 +53,8 @@ export const handlers = UiRpcs.toLayer(Effect.gen(function*() {
   /** The app the project's latest planned release deploys as. */
   const appOf = (project: string) =>
     Effect.map(
-      db(sql<{ plan: string }>`select plan from runs where project = ${project} and plan is not null order by created_at desc limit 1`),
+      db(sql<{ plan: string }>`select plan from runs join run_plans on run_plans.run_id = runs.id where project = ${project}
+        order by created_at desc limit 1`),
       (rows) => (rows[0] === undefined ? null : (JSON.parse(rows[0].plan) as { app?: string | null }).app) ?? project,
     )
 

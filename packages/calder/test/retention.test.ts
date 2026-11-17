@@ -29,8 +29,12 @@ const fileResult = (runId: string, key: string, status: string, at: number) =>
 const left = (runId: string) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    const run = yield* sql<{ plan: string | null }>`select plan from runs where id = ${runId}`
-    if (run[0] === undefined) return null
+    const run = yield* sql<{ plan: string | null }>`select run_plans.plan from runs left join run_plans on run_plans.run_id = runs.id
+      where runs.id = ${runId}`
+    if (run[0] === undefined) {
+      const plans = yield* sql`select 1 from run_plans where run_id = ${runId}`
+      return plans.length === 0 ? null : "a plan without its run"
+    }
     const count = (table: string) =>
       Effect.map(sql<{ n: number }>`select count(*) as n from ${sql(table)} where run_id = ${runId}`, (rows) => rows[0]!.n)
     const results = yield* sql<{ key: string }>`select key from results where run_id = ${runId} order by key`

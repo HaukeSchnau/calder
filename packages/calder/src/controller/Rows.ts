@@ -36,7 +36,6 @@ export interface RunRow {
   readonly error: string | null
   readonly trace_id: string
   readonly span_id: string
-  readonly plan: string | null
   readonly fork: number
   /** Absent in rows read before migration 0016. */
   readonly planned_at?: number | null
@@ -45,6 +44,11 @@ export interface RunRow {
   readonly rerun_of?: string | null
   /** How often the run ran its failed steps again in place; absent in rows read before migration 0023. */
   readonly retries?: number
+}
+
+/** A run with its plan, which lives in `run_plans`: kept out of `runs`, it can't slow a read of runs that don't need it. */
+export interface PlannedRunRow extends RunRow {
+  readonly plan: string | null
 }
 
 export interface StepRow {
@@ -283,7 +287,7 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
     const sql = yield* SqlClient.SqlClient
     const rows = yield* sql<{ id: string; sha: string; plan: string; event: string; trust: Domain.Trust; fork: number }>`select id, sha, plan, event,
         trust, fork
-      from runs where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha} and plan is not null
+      from runs join run_plans on run_plans.run_id = runs.id where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha}
         and not exists (select 1 from run_records r join audit_mismatches m on m.project = runs.project
           and json_extract(m.detail, '$.record') = r.evaluation where r.run_id = runs.id)
       order by created_at desc limit 20`
@@ -424,7 +428,8 @@ export const keepRecords = (
 export const loadRun = (id: string) =>
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<RunRow>`select * from runs where id = ${id}`
+    const rows = yield* sql<PlannedRunRow>`select runs.*, run_plans.plan from runs left join run_plans on run_plans.run_id = runs.id
+      where runs.id = ${id}`
     return rows[0]
   }).pipe(Effect.orDie)
 
