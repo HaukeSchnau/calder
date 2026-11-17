@@ -46,4 +46,16 @@ describe("query plans", () => {
       expect(passed.join("\n")).toContain("COVERING INDEX steps_passed")
       expect(passed.join("\n")).not.toContain("TEMP B-TREE FOR ORDER BY")
     }).pipe(Effect.provide(layer)))
+
+  it.effect("runs' step counts and a step's file durations read covering indexes, never past a step's spec", () =>
+    Effect.gen(function*() {
+      const counts = yield* plan(`select run_id, case when status = 'reused' and files_total = 0 then 'no-files' else status end as status,
+        count(*) as n from steps where run_id in ('a', 'b') and kind != 'output' group by 1, 2`)
+      expect(counts.join("\n")).toContain("COVERING INDEX steps_outcomes")
+      const durations = yield* plan(`select file, duration_ms from (
+          select file, duration_ms, row_number() over (partition by file order by created_at desc) as n
+          from file_results where project = 'p' and step = 'test' and status != 'failed'
+        ) where n <= 5`)
+      expect(durations.join("\n")).toContain("COVERING INDEX file_results_file")
+    }).pipe(Effect.provide(layer)))
 })

@@ -313,6 +313,16 @@ export const migrations = {
     yield* sql`create index steps_passed on steps (name, finished_at desc, run_id, status) where status in ('passed', 'reused')`
     yield* sql`create index steps_outcomes on steps (run_id, position, name, status, finished_at)`
   }),
+  "0027_counts_and_durations_indexes": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // Covering, so neither read touches the rows: on srv-2's busy disk, runs' step counts (Rows.ts `counts`)
+    // walked each step's spec to its files_total, and a sharded step's file durations (Runs.ts) read one
+    // row per earlier file result, up to 70,000 pages a call, which froze the event loop for seconds.
+    yield* sql`drop index steps_outcomes`
+    yield* sql`create index steps_outcomes on steps (run_id, position, name, status, finished_at, kind, files_total)`
+    yield* sql`drop index file_results_file`
+    yield* sql`create index file_results_file on file_results (project, step, file, created_at desc, status, duration_ms)`
+  }),
 }
 
 /**
@@ -378,12 +388,25 @@ export const prune = (days: number, now = Date.now()) =>
 
 export const layer = Layer.unwrap(Effect.gen(function*() {
   const config = yield* Config
-  const client = SqliteClient.layer({ filename: join(config.stateDir, "calder.db") })
+  const filename = join(config.stateDir, "calder.db")
+  const client = SqliteClient.layer({ filename })
   // The client runs in WAL mode, where a power loss can drop the last commits but never corrupts the
-  // database. The default (full) syncs every commit, and each sync blocks the event loop.
+  // database. The default (full) syncs every commit, and each sync blocks the event loop. So would the
+  // checkpoints a commit runs, which Checkpoints.ts runs on its own thread instead.
   const synchronous = Layer.effectDiscard(Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient
     yield* sql`pragma synchronous = normal`
+    yield* sql`pragma wal_autocheckpoint = 0`
+    const worker = yield* Effect.acquireRelease(
+      Effect.sync(() => new Worker(new URL("./Checkpoints.ts", import.meta.url).href)),
+      (worker) => Effect.sync(() => worker.terminate()),
+    )
+    // Without it the WAL would grow without end, so the controller's commits checkpoint again.
+    worker.addEventListener("error", (event) => {
+      console.error("checkpointing failed, so commits checkpoint again:", event.message)
+      Effect.runFork(sql`pragma wal_autocheckpoint = 1000`.pipe(Effect.ignore))
+    })
+    worker.postMessage(filename)
   }))
   const migrate = SqliteMigrator.layer({ loader: SqliteMigrator.fromRecord(migrations), table: "calder_migrations" })
   const retention = Layer.effectDiscard(
