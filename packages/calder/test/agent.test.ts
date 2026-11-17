@@ -39,6 +39,15 @@ describe("Agent", () => {
       process.kill(other)
     }).pipe(Effect.provide(BunServices.layer)))
 
+  it("takes the pools it is told to, where the host's groups can't say, as on macOS", () => {
+    const groups = (...pools: ReadonlyArray<string>) => (pool: string) => pools.includes(pool)
+    expect(Agent.poolsOf({ units: "/run/jobs", pools: ["pr", "trusted"] }, groups())).toEqual(["pr", "trusted"])
+    expect(Agent.poolsOf({ units: "/run/jobs", pools: null }, groups("pr", "trusted"))).toEqual(["pr", "trusted"])
+    expect(Agent.poolsOf({ units: "/run/jobs", pools: null }, groups())).toContain("--units needs")
+    expect(Agent.poolsOf({ units: null, pools: null }, groups("pr"))).toEqual(["trusted"])
+    expect(Agent.poolsOf({ units: null, pools: ["pr", "trusted"] }, groups())).toContain("need --units")
+  })
+
   it("records a worker's pid after the directory was removed", () => {
     const dir = join(mkdtempSync(join(tmpdir(), "calder-workers-")), ".workers")
     Agent.recordPid(dir, "0123456789abcdef", 42)

@@ -11,6 +11,7 @@ import * as Check from "./Check.ts"
 import * as Cli from "./Cli.ts"
 import * as Controller from "./controller/Main.ts"
 import * as Gen from "./Gen.ts"
+import { Pool } from "./Protocol.ts"
 import * as Remote from "./Remote.ts"
 import * as Watch from "./Watch.ts"
 import * as Load from "./worker/Load.ts"
@@ -85,18 +86,36 @@ const agent = Command.make("agent", {
     ),
     Flag.optional,
   ),
-}, (flags) =>
-  Option.isSome(flags.units) && Option.isSome(flags.evaluator)
+  sandbox: Flag.String("sandbox").pipe(
+    Flag.withDescription(
+      "With --units on a host without systemd: run pull requests' jobs through this command, `<command> run <pool> <job> <dir> <calder...>` and `<command> stop <pool> [<job>]`, one job of a pool at a time; trusted jobs stay child processes",
+    ),
+    Flag.optional,
+  ),
+  pools: Flag.String("pools").pipe(
+    Flag.withDescription("The pools whose jobs to take, comma-separated, such as pr,trusted (default: those whose group calder-<pool> the host has with --units, else trusted)"),
+    Flag.optional,
+  ),
+}, (flags) => {
+  const pools = Option.getOrNull(flags.pools)?.split(",") ?? null
+  return Option.isSome(flags.units) && Option.isSome(flags.evaluator)
     ? Effect.die(new Error("an evaluator agent runs its workers itself: --units and --evaluator don't go together"))
+    : Option.isSome(flags.sandbox) && Option.isNone(flags.units)
+    ? Effect.die(new Error("--sandbox needs --units, where its jobs get their directories"))
+    : pools !== null && !pools.every(Schema.is(Pool))
+    ? Effect.die(new Error(`--pools names a pool other than ${Pool.literals.join(", ")}`))
     : Agent.run({
-    ...flags,
-    platform: system,
-    calder: [process.argv[0]!, process.argv[1]!],
-    slotsFile: Option.getOrNull(flags.slotsFile),
-    admission: Option.getOrNull(flags.admission),
-    evaluator: Option.getOrNull(flags.evaluator),
-    units: Option.getOrNull(flags.units),
-  })).pipe(Command.withDescription("Run the controller's jobs for this host's platform"))
+      ...flags,
+      platform: system,
+      calder: [process.argv[0]!, process.argv[1]!],
+      slotsFile: Option.getOrNull(flags.slotsFile),
+      admission: Option.getOrNull(flags.admission),
+      evaluator: Option.getOrNull(flags.evaluator),
+      units: Option.getOrNull(flags.units),
+      sandbox: Option.getOrNull(flags.sandbox),
+      pools,
+    })
+}).pipe(Command.withDescription("Run the controller's jobs for this host's platform"))
 
 const gen = Command.make("gen", { dir: repository }, ({ dir }) =>
   Effect.gen(function*() {
