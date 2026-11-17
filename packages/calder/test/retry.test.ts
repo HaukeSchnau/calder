@@ -290,4 +290,27 @@ describe("a rerun in place of a step that reads a build", () => {
       const root = ["nix-store", "--option", "substitute", "false", "--add-root", join(stateDir, "derivations", "app-2", basename(held)), "--realise", held]
       expect(realises(commands, held)).toEqual([root, root])
     }))
+
+  it.live("leaves a lost build alone that a task running again only runs after, since the task doesn't read it", () =>
+    Effect.gen(function*() {
+      let cached = true
+      let deploys = 0
+      // `afterEnded: [bundle]`: the deploy goes after the bundle ended, whatever its outcome, and reads nothing of it.
+      const deploy: PlannedStep = { ...task("deploy"), exits: ["bundle"] }
+      const { status, jobs, history } = yield* drive({
+        steps: [bundle(lost), deploy],
+        cache: { has: (path) => Effect.succeed(path === lost && cached), publish: () => Effect.void },
+        value: (s) => (s === "bundle" ? lost : null),
+        result: (s) => (s === "deploy" && deploys++ === 0 ? failed : undefined),
+        meanwhile: Effect.gen(function*() {
+          yield* until(runOf, (r) => r.status === "failed")
+          cached = false
+          yield* rerun
+          yield* until(runOf, (r) => r.status !== "running" && r.retries === 1)
+        }),
+      })
+      expect(status).toBe("passed")
+      expect(jobs).toEqual(["deploy", "deploy"])
+      expect(history).not.toContain("calder/bundle: pending: runs again")
+    }))
 })

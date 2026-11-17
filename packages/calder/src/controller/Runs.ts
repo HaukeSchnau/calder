@@ -2120,7 +2120,8 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       // for the reopened run while this store holds it; otherwise the build runs again, which takes what the binary
       // cache still has as a new run does, or builds. studienbuch-987's bundle had left both by its reruns, and each
       // rerun's preview failed (F48). Nothing here asks the network: Delivery's round waits for every project's rerun.
-      const read = new Set(ended.filter((r) => again.includes(r.name)).flatMap((r) => [...Rows.spec(r).needs, ...Rows.spec(r).exits]))
+      // As `step` reads them: an action reads the outcomes of its exits, a task's (`afterEnded`) only order it.
+      const read = new Set(ended.filter((r) => again.includes(r.name)).map(Rows.spec).flatMap((s) => [...s.needs, ...(s.action === null ? [] : s.exits)]))
       const gone = new Map<string, string>()
       for (const r of ended) {
         const out = r.kind === "build" && read.has(r.name) && !again.includes(r.name) && Rows.succeeded(r.status) ? JSON.parse(r.value ?? "null") : null
