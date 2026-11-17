@@ -34,4 +34,16 @@ describe("query plans", () => {
       expect(fullScan(details, "steps")).toEqual([])
       expect(fullScan(details, "results")).toEqual([])
     }).pipe(Effect.provide(layer)))
+
+  it.effect("the health export reads steps from covering indexes, never past a step's spec", () =>
+    Effect.gen(function*() {
+      const outcomes = yield* plan(`select r.id, s.name, s.status, s.finished_at
+        from (select * from runs where project = 'p' and branch = 'main' and trust = 'trusted' order by created_at desc limit 30) r
+        left join steps s on s.run_id = r.id order by r.created_at, r.id, s.position, s.name`)
+      expect(outcomes.join("\n")).toContain("COVERING INDEX steps_outcomes")
+      const passed = yield* plan(`select s.finished_at from steps s where s.name = 'test' and s.status in ('passed', 'reused')
+        and s.run_id in (select id from runs where project = 'p') order by s.finished_at desc limit 1`)
+      expect(passed.join("\n")).toContain("COVERING INDEX steps_passed")
+      expect(passed.join("\n")).not.toContain("TEMP B-TREE FOR ORDER BY")
+    }).pipe(Effect.provide(layer)))
 })

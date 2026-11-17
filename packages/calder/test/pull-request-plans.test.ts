@@ -49,9 +49,9 @@ describe("a pull request's plan", () => {
         const sql = yield* SqlClient.SqlClient
         const plan = { version: 1, app: "app", trust: "pr", reuse: "all", schedules: [], steps: [], derivations: { a: drv, b: drv }, trusted: ["a", "b", appAttr] }
         yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
-            trace_id, span_id, plan, fork, tree)
-          values ('app-0', 'app', 0, ${JSON.stringify(pullRequest(false))}, 'pr-head', 'feature', 't', 'h', 0, 'pr', 'passed', 0, 't', 's',
-            ${JSON.stringify(plan)}, 0, 'tree-1')`
+            trace_id, span_id, fork, tree)
+          values ('app-0', 'app', 0, ${JSON.stringify(pullRequest(false))}, 'pr-head', 'feature', 't', 'h', 0, 'pr', 'passed', 0, 't', 's', 0, 'tree-1')`
+        yield* sql`insert into run_plans (run_id, plan) values ('app-0', ${JSON.stringify(plan)})`
         yield* sql`insert into run_records (run_id, attr, evaluation) values ('app-0', 'a', 1), ('app-0', 'b', 2)`
       })
       const { planJob, read } = yield* drive({

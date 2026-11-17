@@ -37,9 +37,10 @@ const run = (
       ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
     }
     yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
-        trace_id, span_id, plan, fork, tree)
+        trace_id, span_id, fork, tree)
       values (${id}, 'app', ${Number(id.split("-")[1])}, ${JSON.stringify(options.event ?? { _tag: "Push", branch: "main" })}, ${sha}, 'main', 't', 'h', 0, ${options.trust ?? "trusted"}, 'passed',
-        ${options.at}, 't', 's', ${JSON.stringify(plan)}, ${options.fork === true ? 1 : 0}, ${tree})`
+        ${options.at}, 't', 's', ${options.fork === true ? 1 : 0}, ${tree})`
+    yield* sql`insert into run_plans (run_id, plan) values (${id}, ${JSON.stringify(plan)})`
     return (yield* Rows.loadRun(id))!
   })
 

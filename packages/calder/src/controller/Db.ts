@@ -300,6 +300,19 @@ export const migrations = {
     yield* sql`create index steps_outputs on steps (outputs) where outputs is not null`
     yield* sql`create index results_passed_outputs on results (outputs) where status = 'passed'`
   }),
+  "0026_run_plans": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    // A plan is up to a megabyte of JSON. In its run's row, each read of the row, or of a column added after
+    // the plan, walked its overflow pages: the overview read 48 MB of plans a call, and with srv-2 short of
+    // memory those reads froze the event loop for long enough that every agent dropped its connection.
+    yield* sql`create table run_plans (run_id text primary key, plan text not null)`
+    yield* sql`insert into run_plans (run_id, plan) select id, plan from runs where plan is not null`
+    yield* sql`alter table runs drop column plan`
+    // A step's spec is kilobytes of JSON before most of its columns, so the health export reads steps from these
+    // covering indexes: when each step last passed (Health.ts `lastPassed`), and each run's outcomes (`load`).
+    yield* sql`create index steps_passed on steps (name, finished_at desc, run_id, status) where status in ('passed', 'reused')`
+    yield* sql`create index steps_outcomes on steps (run_id, position, name, status, finished_at)`
+  }),
 }
 
 /**
@@ -319,7 +332,7 @@ export const prune = (days: number, now = Date.now()) =>
       select id, project, event, json_extract(event, '$._tag') as tag, fork, created_at from runs
       where finished_at < ${cutoff} and status not in ('queued', 'planning', 'running')
         and id not in (select id from (
-          select id, row_number() over (partition by project order by created_at desc) as n from runs where plan is not null
+          select id, row_number() over (partition by project order by created_at desc) as n from runs join run_plans on run_plans.run_id = runs.id
         ) where n = 1)
       order by finished_at`
     const counts = { deleted: 0, trimmed: 0 }
@@ -350,9 +363,10 @@ export const prune = (days: number, now = Date.now()) =>
         const holds = (yield* sql`select 1 from results where run_id = ${run.id}
           union all select 1 from file_results where run_id = ${run.id} limit 1`).length > 0
         if (reused || latest || holds) {
-          const trimmed = yield* sql`update runs set plan = null where id = ${run.id} and plan is not null returning id`
+          const trimmed = yield* sql`delete from run_plans where run_id = ${run.id} returning run_id`
           return trimmed.length > 0 ? "trimmed" : "kept"
         }
+        yield* sql`delete from run_plans where run_id = ${run.id}`
         yield* sql`delete from runs where id = ${run.id}`
         return "deleted"
       }))
