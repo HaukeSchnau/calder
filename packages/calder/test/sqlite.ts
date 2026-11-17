@@ -11,11 +11,13 @@ import { migrations } from "../src/controller/Db.ts"
 export const client = Effect.gen(function*() {
   const db = new DatabaseSync(":memory:")
   yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
+  // Yields first, as the controller's client does while its worker runs the statement (Sqlite.ts), so other
+  // fibers run between a run's statements here too.
   const all = (sql: string, params: ReadonlyArray<unknown>) =>
-    Effect.try({
+    Effect.yieldNow.pipe(Effect.andThen(Effect.try({
       try: () => db.prepare(sql).all(...(params as ReadonlyArray<SQLInputValue>)),
       catch: (cause) => new SqlError.SqlError({ reason: SqlError.classifySqliteError(cause, { message: sql, operation: "execute" }) }),
-    })
+    })))
   const values = (sql: string, params: ReadonlyArray<unknown>) => Effect.map(all(sql, params), (rows) => rows.map(Object.values))
   const execute = (sql: string, params: ReadonlyArray<unknown>, transform?: <A extends object>(rows: ReadonlyArray<A>) => ReadonlyArray<A>) =>
     transform === undefined ? all(sql, params) : Effect.map(all(sql, params), transform)

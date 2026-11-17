@@ -1,10 +1,11 @@
-import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun"
+import { SqliteMigrator } from "@effect/sql-sqlite-bun"
 import { Effect, Layer, Schedule } from "effect"
 import { SqlClient } from "effect/sql"
 import { join } from "node:path"
 import { Config } from "./Config.ts"
 import * as Outputs from "./Outputs.ts"
 import * as Rows from "./Rows.ts"
+import * as Sqlite from "./Sqlite.ts"
 
 export const migrations = {
   "0001_init": Effect.gen(function*() {
@@ -378,7 +379,7 @@ export const prune = (days: number, now = Date.now()) =>
 
 export const layer = Layer.unwrap(Effect.gen(function*() {
   const config = yield* Config
-  const client = SqliteClient.layer({ filename: join(config.stateDir, "calder.db") })
+  const client = Sqlite.layer({ filename: join(config.stateDir, "calder.db") })
   // The client runs in WAL mode, where a power loss can drop the last commits but never corrupts the
   // database. The default (full) syncs every commit, and each sync blocks the event loop.
   const synchronous = Layer.effectDiscard(Effect.gen(function*() {
