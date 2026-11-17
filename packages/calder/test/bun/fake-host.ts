@@ -1,6 +1,7 @@
-// A stand-in for systemctl in agent-units.ts: `start --wait` acts as the job's unit would, through the
-// job's directory under $FAKE_UNITS, and writes what it found to $FAKE_OUT/<job>.json. Job 5709 runs
-// until it is stopped.
+// A stand-in for systemctl and for a host's sandbox command in agent-units.ts: `start --wait <unit>`
+// and `run <pool> <job> <dir> <calder...>` act as the job's worker would, through the job's directory
+// (under $FAKE_UNITS for a unit), and write what it found to $FAKE_OUT/<job>.json. Job 5709 runs until it
+// is stopped, job 0b0b until $FAKE_OUT/go exists, and job 0c0c finds nothing.
 import { Effect } from "effect"
 import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { connect } from "node:net"
@@ -10,16 +11,16 @@ import * as Tunnel from "../../src/Tunnel.ts"
 const [verb, ...rest] = process.argv.slice(2)
 const out = process.env.FAKE_OUT!
 appendFileSync(join(out, "calls"), `${[verb, ...rest].join(" ")}\n`)
-const unit = rest.at(-1)!
 
 if (verb === "show") {
   console.log("0")
   process.exit(0)
 }
-if (verb !== "start") process.exit(0)
+if (verb !== "start" && verb !== "run") process.exit(0)
 
-const [, pool, job] = /^calder-job-(\w+)@(\w+)\.service$/.exec(unit)!
-const dir = join(process.env.FAKE_UNITS!, job!)
+const unit = /^calder-job-(\w+)@(\w+)\.service$/.exec(rest.at(-1)!)
+const [pool, job, dir] = verb === "run" ? rest as [string, string, string] : [unit![1]!, unit![2]!, join(process.env.FAKE_UNITS!, unit![2]!)]
+if (job === "0c0c") process.exit(0)
 const mode = (path: string) => (statSync(path).mode & 0o777).toString(8)
 
 /** What the egress proxy answers to a CONNECT, on its socket. */
@@ -68,3 +69,4 @@ const found = await Effect.runPromise(Effect.scoped(Effect.gen(function*() {
 })))
 writeFileSync(join(out, `${job}.json`), JSON.stringify(found))
 if (job === "5709") await new Promise(() => {})
+while (job === "0b0b" && !existsSync(join(out, "go"))) await new Promise((resolve) => setTimeout(resolve, 20))

@@ -1,8 +1,8 @@
 import { BunSocket } from "@effect/platform-bun"
-import { Deferred, Effect, Layer, Schedule, Stream } from "effect"
+import { Deferred, Effect, Layer, Schedule, Semaphore, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { RpcClient, RpcSerialization } from "effect/rpc"
-import { chmodSync, chownSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import * as Build from "./Build.ts"
 import * as ControllerProxy from "./ControllerProxy.ts"
@@ -46,6 +46,54 @@ export interface Options {
    * controller's worker routes (ControllerProxy) and, for pull requests, one to the egress proxy.
    */
   readonly units: string | null
+  /**
+   * Runs pull requests' jobs through this command instead of systemd's units (`Sandbox`), for hosts
+   * without systemd. Trusted jobs stay child processes. Needs `units` for the jobs' directories.
+   */
+  readonly sandbox: string | null
+  /** The pools whose jobs it takes; null takes those the host has a group `calder-<pool>` of, or only trusted ones without `units`. */
+  readonly pools: ReadonlyArray<Pool> | null
+}
+
+/**
+ * A host's command that runs a sandboxed pool's job where systemd can't, such as on a Mac (`calder agent
+ * --sandbox <command>`). `<command> run <pool> <job> <dir> <calder...>` runs `<calder...> worker <job>` as
+ * the pool's user in the host's sandbox, with the job's directory `dir`, and exits with the worker's code.
+ * `<command> stop <pool> [<job>]` ends everything the pool's user runs. That can't tell one job's processes
+ * from another's, so the agent runs one job of a pool at a time.
+ */
+export interface Sandbox {
+  readonly command: string
+  /** argv that starts this calder, before `worker <job>`. */
+  readonly calder: ReadonlyArray<string>
+  readonly lock: (pool: Pool) => Semaphore.Semaphore
+}
+
+export const sandbox = (command: string, calder: ReadonlyArray<string>): Sandbox => {
+  const locks = new Map<Pool, Semaphore.Semaphore>()
+  return {
+    command,
+    calder,
+    lock: (pool) => {
+      const lock = locks.get(pool) ?? Semaphore.makeUnsafe(1)
+      locks.set(pool, lock)
+      return lock
+    },
+  }
+}
+
+/** The pools an agent takes jobs of (`Options.pools`), or why it can't take any. */
+export const poolsOf = (
+  options: Pick<Options, "units" | "pools">,
+  hasGroup: (pool: Pool) => boolean = (pool) => groupId(`calder-${pool}`) !== undefined,
+): ReadonlyArray<Pool> | string => {
+  if (options.units === null) {
+    return options.pools === null || options.pools.every((pool) => !sandboxed(pool))
+      ? ["trusted"]
+      : "pull requests' pools need --units, where their jobs get their directories"
+  }
+  const pools = options.pools ?? unitPools.filter(hasGroup)
+  return pools.length > 0 ? pools : "--units needs the host's calder-pr, calder-fork or calder-trusted group, or --pools"
 }
 
 /** The host's unit that runs a job of `pool` (`calder agent --units`), like the controller's. */
@@ -108,10 +156,11 @@ export const recordPid = (dir: string, job: string, pid: number) => {
 }
 
 /**
- * Runs a job in its pool's unit of the host (`Options.units`) and returns the worker's exit code. The
- * job's directory under `units`, which only the pool's group (`group`) may enter, holds its token, a
- * socket to the controller's worker routes at `url` (ControllerProxy) and, for a sandboxed pool, one to an
- * egress proxy with the job's allowlist. They and the unit go with the scope.
+ * Runs a job in its pool's unit of the host (`Options.units`), or through the host's `sandbox`, and
+ * returns the worker's exit code. The job's directory under `units`, which only the pool's group (`group`)
+ * may enter, holds its token, a socket to the controller's worker routes at `url` (ControllerProxy) and,
+ * for a sandboxed pool, one to an egress proxy with the job's allowlist. They and the unit go when the
+ * job ends.
  */
 export const runInUnit = (
   options: {
@@ -119,14 +168,18 @@ export const runInUnit = (
     readonly url: string
     /** The group of a pool's units; tests, whose user can't hand files to `calder-<pool>`, pass their own. */
     readonly group?: (pool: Pool) => number | undefined
+    readonly sandbox?: Sandbox | null
   },
   order: Extract<AgentOrder, { readonly _tag: "Start" }>,
-) =>
-  Effect.gen(function*() {
-    const pool = order.pool ?? "trusted"
+) => {
+  const pool = order.pool ?? "trusted"
+  const sandbox = options.sandbox ?? null
+  const job = Effect.gen(function*() {
     const group = (options.group ?? ((pool: Pool) => groupId(`calder-${pool}`)))(pool)
     if (group === undefined) return yield* Effect.die(new Error(`the host has no group calder-${pool} for the job's unit`))
-    const dir = join(options.units, order.job)
+    mkdirSync(options.units, { recursive: true })
+    // A sandbox profile matches canonical paths only, such as macOS's /private/var/run for /var/run.
+    const dir = join(realpathSync(options.units), order.job)
     const share = (path: string, mode: number) => {
       chownSync(path, process.getuid!(), group)
       chmodSync(path, mode)
@@ -148,6 +201,19 @@ export const runInUnit = (
         void Effect.runFork(Effect.logInfo(`worker ${order.job}: ${message}`)))
       share(join(dir, "egress.sock"), 0o660)
     }
+    if (sandbox !== null) {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      // However the job ends, nothing of it outlives its directory.
+      const stop = Exec.exec([sandbox.command, "stop", pool, order.job]).pipe(Effect.ignore)
+      return yield* Effect.gen(function*() {
+        const handle = yield* spawner.spawn(ChildProcess.make(sandbox.command, ["run", pool, order.job, dir, ...sandbox.calder], {
+          stdin: "ignore",
+          stdout: "inherit",
+          stderr: "inherit",
+        }))
+        return yield* handle.exitCode
+      }).pipe(Effect.ensuring(stop))
+    }
     const unit = unitOf(pool, order.job)
     // However the wait ends, the unit doesn't outlive the job's directory: systemctl may lose systemd
     // while the unit runs on.
@@ -155,6 +221,8 @@ export const runInUnit = (
     if (started.exitCode !== 0) yield* Effect.logWarning(`worker ${order.job}: ${started.stderr.trim() || `${unit} failed`}`)
     return started.exitCode
   })
+  return sandbox === null ? job : sandbox.lock(pool).withPermit(Effect.scoped(job))
+}
 
 /**
  * `calder agent`: runs workers on this host for the controller's jobs of this platform. Workers outlive
@@ -202,7 +270,8 @@ export const run = (options: Options) =>
 
     // Units an earlier run of the agent started run on without it: their sockets went with its runtime
     // directory, and new jobs would get their workspaces.
-    if (options.units !== null) {
+    const host = options.sandbox === null ? null : sandbox(options.sandbox, options.calder)
+    if (options.units !== null && host === null) {
       const listed = yield* systemctl(["list-units", "--plain", "--no-legend", "--state=active,activating,deactivating",
         ...unitPools.map((pool) => unitOf(pool, "*"))])
       const left = listed.stdout.split("\n").map((line) => line.trim().split(/\s+/)[0] ?? "").filter((unit) => unit.startsWith("calder-job-"))
@@ -210,19 +279,28 @@ export const run = (options: Options) =>
         yield* Effect.logInfo(`stopping ${left.join(" ")}, which an earlier run of this agent started`)
         yield* systemctl(["stop", ...left])
       }
+    }
+    const pools = poolsOf(options)
+    if (typeof pools === "string") return yield* Effect.die(new Error(pools))
+    if (options.units !== null) {
+      // Jobs a sandbox ran for an earlier run of the agent, likewise.
+      if (host !== null) {
+        for (const pool of pools.filter(sandboxed)) {
+          const stopped = yield* Exec.exec([host.command, "stop", pool])
+          if (stopped.exitCode !== 0) yield* Effect.logWarning(`could not stop ${pool}'s jobs: ${stopped.stderr.trim()}`)
+        }
+      }
       mkdirSync(options.units, { recursive: true })
       // Only job directories, whatever else the directory holds.
       for (const dir of readdirSync(options.units)) if (/^[0-9a-f]+$/.test(dir)) rmSync(join(options.units, dir), { recursive: true, force: true })
     }
-    const pools = options.units === null ? ["trusted" as const] : unitPools.filter((pool) => groupId(`calder-${pool}`) !== undefined)
-    if (pools.length === 0) return yield* Effect.die(new Error("--units needs the host's calder-pr, calder-fork or calder-trusted group"))
 
     const worker = (order: Extract<AgentOrder, { readonly _tag: "Start" }>, stop: Deferred.Deferred<void>) =>
       Effect.scoped(Effect.gen(function*() {
         const job = order.job
         if (options.admission !== null) yield* admitted(options.admission)
-        if (options.units !== null) {
-          return yield* runInUnit({ units: options.units, url: options.url }, order)
+        if (options.units !== null && (host === null || sandboxed(order.pool ?? "trusted"))) {
+          return yield* runInUnit({ units: options.units, url: options.url, sandbox: host }, order)
         }
         const [command, ...args] = options.calder
         // Added before the worker, so it runs after the worker's group is gone.
@@ -276,7 +354,7 @@ export const run = (options: Options) =>
 
     yield* Effect.logInfo(
       options.evaluator === null
-        ? `agent ${options.name} serving ${options.platform} jobs from ${options.url}${options.units === null ? "" : `, each in its pool's unit`}`
+        ? `agent ${options.name} serving ${options.platform} jobs from ${options.url}${options.units === null ? "" : host === null ? `, each in its pool's unit` : `, pull requests' through ${host.command}`}`
         : `agent ${options.name} evaluating for ${options.url}, pushing derivations to ${options.evaluator}`,
     )
     yield* Effect.suspend(() => {

@@ -1,9 +1,9 @@
 // Run by agent-units.test.ts under Bun, whose sockets the agent's unit mode uses and vitest's Node lacks:
-// runs two jobs through Agent.runInUnit with fake-systemctl.ts first on PATH as systemctl and prints
-// what happened.
+// runs jobs through Agent.runInUnit, with fake-host.ts first on PATH as systemctl and as a host's sandbox
+// command, and prints what happened.
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Fiber } from "effect"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as Agent from "../../src/Agent.ts"
@@ -17,8 +17,10 @@ process.env.FAKE_UNITS = units
 process.env.FAKE_OUT = out
 const bin = join(root, "bin")
 mkdirSync(bin)
-writeFileSync(join(bin, "systemctl"), `#!/bin/sh\nexec ${process.execPath} ${join(import.meta.dir, "fake-systemctl.ts")} "$@"\n`)
-chmodSync(join(bin, "systemctl"), 0o755)
+for (const command of ["systemctl", "sandbox"]) {
+  writeFileSync(join(bin, command), `#!/bin/sh\nexec ${process.execPath} ${join(import.meta.dir, "fake-host.ts")} "$@"\n`)
+  chmodSync(join(bin, command), 0o755)
+}
 process.env.PATH = `${bin}:${process.env.PATH}`
 
 // The controller's side: what a worker's requests and messages reach.
@@ -58,13 +60,43 @@ const result = await Effect.runPromise(Effect.gen(function*() {
   const stopping = yield* Effect.forkChild(Effect.scoped(Agent.runInUnit(options, { _tag: "Start", job: "5709", token: "t", pool: "trusted" })))
   while (!existsSync(join(out, "5709.json"))) yield* Effect.sleep("20 millis")
   yield* Fiber.interrupt(stopping)
+  const unitCalls = readFileSync(join(out, "calls"), "utf8").trim().split("\n")
+  rmSync(join(out, "calls"))
+
+  // A host's sandbox gets the job directory's canonical path, which a profile can match, behind a link.
+  const linked = join(root, "linked")
+  symlinkSync(units, linked)
+  const inSandbox = { ...options, units: linked, sandbox: Agent.sandbox(join(bin, "sandbox"), ["calder", "main.ts"]) }
+  const sandboxCode = yield* Effect.scoped(Agent.runInUnit(inSandbox, {
+    _tag: "Start",
+    job: "5a1d",
+    token: "sandboxed",
+    pool: "pr",
+    egress: { allow: [], allowPrivate: [] },
+  }))
+  // A second job of the pool waits until the first one is gone.
+  const first = yield* Effect.forkChild(Effect.scoped(Agent.runInUnit(inSandbox, { _tag: "Start", job: "0b0b", token: "t", pool: "pr" })))
+  while (!existsSync(join(out, "0b0b.json"))) yield* Effect.sleep("20 millis")
+  const second = yield* Effect.forkChild(Effect.scoped(Agent.runInUnit(inSandbox, { _tag: "Start", job: "0c0c", token: "t", pool: "pr" })))
+  yield* Effect.sleep("300 millis")
+  const whileFirstRan = readFileSync(join(out, "calls"), "utf8").trim().split("\n")
+  writeFileSync(join(out, "go"), "")
+  yield* Fiber.join(first)
+  yield* Fiber.join(second)
   return {
     code,
     kept,
     keptStopped: existsSync(join(units, "5709")),
     pr: JSON.parse(readFileSync(join(out, "0a1b.json"), "utf8")),
     trusted: JSON.parse(readFileSync(join(out, "5709.json"), "utf8")),
-    calls: readFileSync(join(out, "calls"), "utf8").trim().split("\n"),
+    calls: unitCalls,
+    sandbox: {
+      code: sandboxCode,
+      kept: existsSync(join(units, "5a1d")),
+      found: JSON.parse(readFileSync(join(out, "5a1d.json"), "utf8")),
+      whileFirstRan: whileFirstRan.map((call) => call.replace(realpathSync(units), "<units>")),
+      calls: readFileSync(join(out, "calls"), "utf8").trim().split("\n").map((call) => call.replace(realpathSync(units), "<units>")),
+    },
   }
 }).pipe(Effect.provide(BunServices.layer)))
 
