@@ -541,6 +541,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
 
     const leased = def.lease !== undefined ? yield* deploying(self, job, step.name, def, values) : undefined
     if (leased?._tag === "Ended") return leased.result
+    if (remote === null) yield* fetchArtifacts(self, artifactPaths(def, values).map(([, path]) => path))
 
     const full = yield* inShell(job, workspace, def.shell, ["bash", "-c", `${prelude}; exec "$@"`, "calder-task", ...argv])
     const taskEnv = env(job.run, step.name, {
@@ -638,6 +639,23 @@ const fetchInputs = (self: Job["Service"], values: Record<string, unknown>) =>
       rmSync(dir, { recursive: true, force: true })
       if (added !== path) return yield* Effect.die(new Error(`${path} arrived as ${added}`))
     }), { discard: true })
+
+/**
+ * Makes a task's artifacts valid on the controller's host before its command reads them: a build reused from
+ * the binary cache may be all that's left of one this host's nightly collection deleted (F48). A leased task's
+ * publish fetched them already. Other interpolated paths stay as they are, since infra's deploys name host
+ * closures they never read. A path that can't be fetched leaves the command to fail on its own, saying why.
+ */
+export const fetchArtifacts = (self: Job["Service"], paths: ReadonlyArray<string>) =>
+  Effect.forEach(paths.filter((path) => storePath.test(path) && !existsSync(path)), (path) =>
+    Exec.exec(["nix-store", "--realise", ...only([path])]).pipe(
+      Effect.timeoutOrElse({ duration: "5 minutes", orElse: () => Effect.succeed({ stdout: "", stderr: "timed out after 5 minutes", exitCode: -1 }) }),
+      Effect.flatMap((r) =>
+        self.log("calder", r.exitCode === 0
+          ? `fetched ${path} from the binary cache`
+          : `${path} isn't in this store, and fetching it from the binary cache failed: ${r.stderr.trim().split("\n").at(-1) || `exit code ${r.exitCode}`}`)
+      ),
+    ), { discard: true })
 
 /** Sends an output to the controller, which adds it to its store under the same content-addressed path. */
 const upload = (self: Job["Service"], name: string, path: string) =>

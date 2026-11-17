@@ -2126,14 +2126,12 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       for (const r of ended) {
         const out = r.kind === "build" && read.has(r.name) && !again.includes(r.name) && Rows.succeeded(r.status) ? JSON.parse(r.value ?? "null") : null
         if (typeof out !== "string" || hashOf(out) === undefined) continue
-        if (!existsSync(out)) {
-          gone.set(r.name, `${out} left this store`)
-          continue
-        }
-        yield* Outputs.rootBuilt(config.stateDir, runId, out).pipe(
+        // Rooting fails, without substituting, for a path the nightly collection deleted after it looked.
+        const rooted = yield* Outputs.rootBuilt(config.stateDir, runId, out).pipe(
           Effect.provideService(Exec.SpawnerTag, spawner),
-          Effect.catch((e) => Effect.logWarning(`could not keep ${out} from the garbage collector`, e)),
+          Effect.catch((e) => Effect.logWarning(`could not keep ${out} from the garbage collector`, e).pipe(Effect.as(false))),
         )
+        if (!rooted) gone.set(r.name, `${out} left this store`)
       }
       const names = [...again, ...gone.keys()]
       // An attempt whose row ended still reports it; its status would land after the retry's.

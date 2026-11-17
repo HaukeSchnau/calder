@@ -55,13 +55,15 @@ export const rootDerivations = (stateDir: string, runId: string, drvs: ReadonlyA
  * and a release that waits for its promotion would otherwise be collected: srv-2's nightly collection deleted
  * t3code-801's release between its build and its promotion. Only a path this store holds is rooted; one only
  * in the binary cache stays there rather than being downloaded, also when the path left between the check and
- * the root, since a rerun roots under a lock that Delivery's round waits for.
+ * the root, since a rerun roots under a lock that Delivery's round waits for. Returns whether the path is
+ * rooted for the run, which it isn't when this store no longer holds it.
  */
 export const rootBuilt = (stateDir: string, runId: string, path: string) =>
   Effect.suspend(() => {
     const link = join(derivationRoots(stateDir), runId, basename(path))
-    if (hashOf(path) === undefined || !existsSync(path) || existsSync(link)) return Effect.void
-    return addRoot(stateDir, runId, path, ["--option", "substitute", "false"])
+    if (hashOf(path) === undefined || !existsSync(path)) return Effect.succeed(false)
+    if (existsSync(link)) return Effect.succeed(true)
+    return addRoot(stateDir, runId, path, ["--option", "substitute", "false"]).pipe(Effect.as(true))
   })
 
 /**

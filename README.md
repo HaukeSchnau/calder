@@ -131,7 +131,9 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   to the binary cache first, outside a pull request each pinned as `<project>-<step>-<variable>`, and
   looks at the head once more. Publishing signs what this host's store holds, so a path the step reused from
   the binary cache, such as one this store lost to its nightly collection, comes back from there first and
-  stays until the run ends; one neither has fails the step, saying so. A promotion's release does the same. Once the same step of a
+  stays until the run ends; one neither has fails the step, saying so. A promotion's release does the same.
+  A task on the controller's host that reads artifacts without holding the lease, such as `Alchemy.plan`'s,
+  fetches the ones this store lost before its command runs, giving up after 5 minutes. Once the same step of a
   newer run held the lease, an older run's step is skipped instead of running; another step of a newer run,
   or the same step still waiting for its turn, replaces nothing, so a deploy that waits for a slow build
   still happens when its turn comes. Deploys of the same run take the lease in turn. Who holds the lease

@@ -227,7 +227,11 @@ describe("a rerun in place of a step that reads a build", () => {
    * cache dropped the bundle too if `forget` says so. Returns how it ended, and whether the preview's last job
    * found the bundle: publishing it signs what this store holds, which it substitutes from the cache first.
    */
-  const rerunAfter = (out: string, forget: { readonly cache: boolean }) =>
+  /**
+   * `rootable` says whether `nix-store --realise` without substituting finds the bundle valid, as it does unless
+   * the nightly collection deletes it between the rerun's check and its root.
+   */
+  const rerunAfter = (out: string, forget: { readonly cache: boolean; readonly rootable?: boolean }) =>
     Effect.gen(function*() {
       const stateDir = mkdtempSync(join(tmpdir(), "calder-rerun-"))
       let cached = true
@@ -238,6 +242,7 @@ describe("a rerun in place of a step that reads a build", () => {
         steps: [bundle(out), preview],
         stateDir,
         cache: { has: (path) => Effect.succeed(path === out && cached), publish: () => Effect.void },
+        valid: (path) => path === out && out === held && forget.rootable !== false,
         value: (s) => (s === "bundle" ? out : null),
         work: (s) => Effect.sync(() => void (s === "bundle" && (built = true))),
         result: (s) => {
@@ -289,6 +294,15 @@ describe("a rerun in place of a step that reads a build", () => {
       // Once as the run took the bundle, and again for the reopened run, since the first root went with the run.
       const root = ["nix-store", "--option", "substitute", "false", "--add-root", join(stateDir, "derivations", "app-2", basename(held)), "--realise", held]
       expect(realises(commands, held)).toEqual([root, root])
+    }))
+
+  it.live("puts a kept build back that left this store between the rerun's check and its root", () =>
+    Effect.gen(function*() {
+      const { status, jobs, history } = yield* rerunAfter(held, { cache: false, rootable: false })
+      expect(status).toBe("passed")
+      expect(history).toContain("calder/bundle: pending: runs again")
+      // The cache still has it, so the bundle's step takes it from there instead of building.
+      expect(jobs).toEqual(["preview", "preview"])
     }))
 
   it.live("leaves a lost build alone that a task running again only runs after, since the task doesn't read it", () =>
