@@ -320,7 +320,9 @@ const projects = Command.make("projects", { url }, ({ url }) =>
 const rerun = Command.make("rerun", {
   run: runId,
   force: Flag.Boolean("force").pipe(
-    Flag.withDescription("Start a new run of the revision that runs every step again, also those that passed, such as deploys"),
+    Flag.withDescription(
+      "Start a new run of the revision that isn't a rerun of this one, so deploys run again; other steps are reused by their key as in any new run of its event, builds included",
+    ),
     Flag.withDefault(false),
   ),
   url,

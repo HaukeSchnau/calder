@@ -103,7 +103,7 @@ describe("Calder.plan", () => {
       const secret = Task.make("secret", { run: cmd`cat ${Secret.file("token")}` })
       const both = Calder.project({ rules: [On.preview([secret]), On.pullRequest([secret])] })
       const exit = yield* Effect.exit(Calder.plan(both, Event.pullRequest({ number: 4 })))
-      expect(String(exit)).toContain("don't run steps with grants")
+      expect(String(exit)).toContain(`don't run steps with grants or secrets, but "secret" has them: the secret "token"`)
       // A preview's deploy holds the pull request's own lease; a plain pull-request rule's may not hold any.
       const leased = Task.make("deploy", { lease: true, run: cmd`deploy` })
       const preview = yield* Calder.plan(Calder.project({ rules: [On.preview([leased])] }), Event.pullRequest({ number: 4 }))

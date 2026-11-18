@@ -11,13 +11,22 @@ export const ProjectConfig = Schema.Struct({
   /** Secrets steps of this project may be granted: name to a file the controller can read. */
   secrets: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /**
+   * Secrets only runs of the default branch get (its pushes, schedules and manual runs, `Rows.ofDefaultBranch`),
+   * like `secrets` otherwise. A name in both maps counts as this map's. Needs `defaultBranch`.
+   */
+  defaultBranchSecrets: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /**
    * The flake needs more memory to evaluate than a pull request's job gets: its pull requests' plans and
    * build evaluations run in `calder-job-pr-large@` (a fork's in `calder-job-fork-large@`), which the host gives more.
    */
   largeEvaluations: Schema.optional(Schema.Boolean),
   /** False keeps Calder from rerunning the default branch head's failed deploy (Delivery.ts). */
   retryDeploys: Schema.optional(Schema.Boolean),
-})
+}).check(Schema.makeFilter((p) =>
+  // Without it Calder takes `main` until it has asked Gitea, which may never answer.
+  p.defaultBranch !== undefined || Object.keys(p.defaultBranchSecrets ?? {}).length === 0 ||
+  "a project with defaultBranchSecrets names its defaultBranch"
+))
 export type ProjectConfig = typeof ProjectConfig.Type
 
 export const ConfigSchema = Schema.Struct({

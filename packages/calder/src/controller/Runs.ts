@@ -1670,7 +1670,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       }
 
       if (spec.action !== null) {
-        const secrets = run.trust === "trusted" ? readSecrets(run.project, spec.action.secrets) : {}
+        const granted = grant(run, name, spec.action.secrets, run.trust === "trusted")
+        if ("refused" in granted) return yield* settle(run, row, granted.refused)
+        const { secrets } = granted
         const lease = spec.action.deploy ? leaseOf(info, undefined).key : undefined
         const again = yield* fromRerun(run, name, { inputs }, { secrets, lease })
         if (again !== undefined) return yield* settle(run, row, again)
@@ -1704,7 +1706,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const event = JSON.parse(run.event) as Domain.Event
       const preview = task.preview === true && run.trust === "pr" && run.fork === 0 &&
         event._tag === "PullRequest" && event.fork === false
-      const secrets = run.trust === "trusted" || preview ? readSecrets(run.project, task.secrets) : {}
+      const granted = grant(run, name, task.secrets, run.trust === "trusted" || preview)
+      if ("refused" in granted) return yield* settle(run, row, granted.refused)
+      const { secrets } = granted
       const again = yield* fromRerun(run, name, { key }, { secrets, lease: Rows.leased(task) ? leaseOf(info, task.lease).key : undefined })
       if (again !== undefined) return yield* settle(run, row, again)
 
@@ -1878,7 +1882,9 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       const keys = new Map(each.map((e) => [e.file, task.interpolates.length === 0 ? e.key : taskKey(e.key, values, null)]))
       const key = sha256([...keys.values()])
       yield* db(sql`update steps set key = ${key} where run_id = ${run.id} and name = ${row.name}`)
-      const secrets = run.trust === "trusted" ? readSecrets(run.project, task.secrets) : {}
+      const granted = grant(run, row.name, task.secrets, run.trust === "trusted")
+      if ("refused" in granted) return yield* settle(run, row, granted.refused)
+      const { secrets } = granted
       const lease = Rows.leased(task) ? leaseOf(context.info, task.lease).key : undefined
       const again = yield* fromRerun(run, row.name, { key }, { secrets, lease })
       if (again !== undefined) return yield* settle(run, row, again)
@@ -2066,14 +2072,38 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
       Effect.asVoid,
     )
 
-  /** The project's secrets as their files hold them: a key's format can need its final newline. */
-  const readSecrets = (project: string, names: ReadonlyArray<string>) =>
-    Object.fromEntries(names.flatMap((name) => {
-      const file = projects.get(project)?.secrets[name]
-      if (file !== undefined) return [[name, readFileSync(file, "utf8")]]
-      if (name === "placement-token" && config.placementKey !== null) return [[name, placementToken(config.placementKey, project)]]
-      return []
-    }))
+  /**
+   * The secrets `names` a step gets when its run grants it secrets (`granted`), as their files hold them: a
+   * key's format can need its final newline. A step that names one of the project's default-branch secrets in
+   * a run that isn't the default branch's gets nothing and dies instead, before it runs or takes a result.
+   */
+  const grant = (
+    run: Rows.RunRow,
+    step: string,
+    names: ReadonlyArray<string>,
+    granted: boolean,
+  ): { readonly secrets: Record<string, string> } | { readonly refused: Settled } => {
+    const project = projects.get(run.project)
+    const event = JSON.parse(run.event) as Domain.Event
+    const own = (map: { readonly [name: string]: string } | undefined, name: string) =>
+      map !== undefined && Object.hasOwn(map, name) ? map[name] : undefined
+    const only = names.filter((name) => own(project?.defaultBranchSecrets, name) !== undefined)
+    if (project !== undefined && only.length > 0 && !Rows.ofDefaultBranch(event, project.defaultBranch)) {
+      const list = only.map((name) => `"${name}"`).join(", ")
+      const message = `${step} needs the secret${only.length === 1 ? "" : "s"} ${list}, which only runs of ${project.defaultBranch} ` +
+        `get (its pushes, schedules and manual runs), not this ${Event.describe(event)}`
+      return { refused: { status: "died", error: { tag: "Died", message, json: null } } }
+    }
+    if (!granted) return { secrets: {} }
+    return {
+      secrets: Object.fromEntries(names.flatMap((name) => {
+        const file = own(project?.defaultBranchSecrets, name) ?? own(project?.secrets, name)
+        if (file !== undefined) return [[name, readFileSync(file, "utf8")]]
+        if (name === "placement-token" && config.placementKey !== null) return [[name, placementToken(config.placementKey, run.project)]]
+        return []
+      })),
+    }
+  }
 
   // ----------------------------------------------------------------------------------------- finish
 

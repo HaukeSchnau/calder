@@ -12,6 +12,8 @@ export interface Project {
   readonly targets: ReadonlyArray<string> | null
   /** Secrets steps may be granted: name to a file the controller can read. */
   readonly secrets: { readonly [name: string]: string }
+  /** Secrets only runs of the default branch get (Config's `defaultBranchSecrets`). */
+  readonly defaultBranchSecrets?: { readonly [name: string]: string }
   /** Pull requests' plans and build evaluations run in the larger pull-request unit (Config's `largeEvaluations`). */
   readonly largeEvaluations?: boolean
   /** False keeps Calder from rerunning the head's failed deploy (Config's `retryDeploys`). */
@@ -46,7 +48,7 @@ export const layer = Layer.effect(Projects)(Effect.gen(function*() {
   const branchFromRepo = new Set<string>()
   for (const [name, p] of Object.entries(config.projects)) {
     if (p.defaultBranch === undefined) branchFromRepo.add(name)
-    add({ name, repo: p.repo, defaultBranch: p.defaultBranch ?? "main", targets: p.targets ?? null, secrets: p.secrets ?? {}, largeEvaluations: p.largeEvaluations === true, retryDeploys: p.retryDeploys !== false })
+    add({ name, repo: p.repo, defaultBranch: p.defaultBranch ?? "main", targets: p.targets ?? null, secrets: p.secrets ?? {}, defaultBranchSecrets: p.defaultBranchSecrets ?? {}, largeEvaluations: p.largeEvaluations === true, retryDeploys: p.retryDeploys !== false })
   }
 
   const hasPipeline = (repo: string, ref: string) => gitea.hasFile(repo, ref, ".calder/ci.ts")
