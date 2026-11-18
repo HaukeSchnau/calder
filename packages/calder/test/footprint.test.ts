@@ -169,7 +169,8 @@ describe("records", () => {
       const keeps = (event: unknown) => Rows.writesRecords({ fork: 0, trust: "trusted", event: JSON.stringify(event) }, "main")
       expect(keeps({ _tag: "Schedule", cron: "0 * * * *" })).toBe(true)
       // A manual run without a branch is from before runs recorded it, and counts as the default branch's.
-      expect(keeps({ _tag: "Manual", inputs: {} })).toBe(true)
+      // From before manual runs named their branch, when one of another branch looked the same.
+      expect(keeps({ _tag: "Manual", inputs: {} })).toBe(false)
       expect(keeps({ _tag: "Manual", inputs: {}, branch: "main" })).toBe(true)
       const newest = (trust: "pr" | "trusted", fork: 0 | 1) =>
         Effect.map(Rows.records({ project: "app", trust, fork }), (r) => r?.evaluations.map((e) => e.derivation?.drv))

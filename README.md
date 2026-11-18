@@ -118,7 +118,11 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   test reaches a server it started on port 0 by the address the server reports. `secrets:
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
   `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
-  secret the project doesn't configure dies saying so. The worker replaces the job's secrets and its token
+  secret the project doesn't configure dies saying so. A secret in the project's `defaultBranchSecrets`
+  instead of `secrets`, such as an app store key, goes only to runs of the default branch (its pushes,
+  schedules and manual runs), which run its head's ci.ts; a step that names one in another run, a pull
+  request's preview included, dies before it runs, saying so. A project with them names its `defaultBranch`,
+  since Calder otherwise takes it to be `main` until Gitea told it. The worker replaces the job's secrets and its token
   with `***` in what leaves it, also where JSON, a URL, a form or base64 encodes them: logs, test messages,
   pull-request comments, dispatch inputs and why a step failed or was skipped. A secret counts from 4
   characters. Of one with several, such as a dotenv file, a key or a service account's JSON, each line,
@@ -296,8 +300,8 @@ such a plan among them (infra alerts on that line), and the project's page shows
 run reuses a plan that took a record the audit found wrong.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
-same repository, never for forks or `calder check`. Their tasks may read secrets: whoever can push a branch
-is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
+same repository, never for forks or `calder check`. Their tasks may read the project's `secrets`, not its
+`defaultBranchSecrets`: whoever can push a branch is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
 and home, and so does a preview's action, such as one that waits for the preview to be ready on the
 private network; it keeps the pull request's services. A task with `lease` holds the pull request's own
 lease. Actions with grants stay refused.
@@ -494,7 +498,8 @@ calder rerun <run> [--force]           # runs the run's failed steps again in th
                                      # with no failed step runs again as a new run, whose steps that passed in
                                      # it, deploys and OTA updates included, keep their result unless their key,
                                      # inputs or secrets changed or a newer run deployed them since; --force
-                                     # starts a new run that runs every step
+                                     # starts a new run that isn't a rerun, so deploys run again, while other
+                                     # steps are reused by their key as in any new run of its event
 calder merge <project> <pr>            # merges the pull request once its run on its head passes and the head
                                      # contains its base
 calder cancel <run>                    # run ids look like studienbuch-12
@@ -632,7 +637,8 @@ bundle had left both by the time its preview was rerun, so each rerun's publish 
 `nix-cache-sign: not all paths are valid`. The rerun itself never waits on the binary cache. This works while the run still runs, so a build that lost
 its connection to a remote builder runs again at once and not after the run's other steps ended, and after
 it ended, which reopens it. A run that has no failed step, or that was cancelled or never planned, runs again
-as a new run instead, and `--force` always starts a new run that runs everything.
+as a new run instead, and `--force` always starts a new run that isn't a rerun: deploys run again, and other
+steps are reused by their key as in any new run of its event.
 
 `calder merge <project> <pr>` queues a pull request. Calder merges it once the newest run of its head passed
 and its head contains its base; a pull request behind its base gets the base merged in first. A run that

@@ -162,10 +162,12 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
       state.set(step.name, "visiting")
 
       if (trust === "pr" && hasGrants(step) && !(preview && previewable(step))) {
+        const secrets = step.def._tag === "Action" ? step.def.grants.secrets ?? [] : step.def._tag === "Task" ? taskSecrets(step.def) : []
+        const named = secrets.length === 0 ? "" : `: the secret${secrets.length === 1 ? "" : "s"} ${secrets.map((n) => `"${n}"`).join(", ")}`
         return fail(
           preview
-            ? `previews don't run actions with grants, but "${step.name}" is one`
-            : `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them`,
+            ? `previews don't run actions with grants, but "${step.name}" is one${named}`
+            : `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them${named}`,
         )
       }
 

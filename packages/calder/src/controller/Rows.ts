@@ -370,16 +370,22 @@ export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
   }).pipe(Effect.orDie)
 
 /**
+ * Whether a run is the default branch's: its pushes, schedules and manual runs, which run the ci.ts of the
+ * default branch's head. A push or manual run of another branch runs that branch's ci.ts in the trusted worker,
+ * and so may a manual run from before manual runs named their branch.
+ */
+export const ofDefaultBranch = (event: Domain.Event, defaultBranch: string | undefined) =>
+  event._tag === "Schedule" ||
+  ((event._tag === "Manual" || event._tag === "Push") && event.branch !== undefined && event.branch === defaultBranch)
+
+/**
  * Whether a run's records may be kept: a pull request's (same-repo only) as pull-request trust, and of
- * trusted runs only the default branch's (its pushes, schedules and manual runs). A push or manual run of
- * another branch runs that branch's ci.ts in the trusted worker, so it could forge one.
+ * trusted runs only the default branch's (`ofDefaultBranch`), since another branch's ci.ts could forge one.
  */
 export const writesRecords = (run: Pick<RunRow, "fork" | "trust" | "event">, defaultBranch: string | undefined) => {
   if (run.fork === 1) return false
   if (run.trust === "pr") return true
-  const event = JSON.parse(run.event) as Domain.Event
-  return event._tag === "Schedule" || (event._tag === "Manual" && (event.branch === undefined || event.branch === defaultBranch)) ||
-    (event._tag === "Push" && event.branch === defaultBranch)
+  return ofDefaultBranch(JSON.parse(run.event) as Domain.Event, defaultBranch)
 }
 
 /**
