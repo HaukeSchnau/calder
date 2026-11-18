@@ -11,5 +11,7 @@ export const bridge = (socket: string) =>
       const url = `http://127.0.0.1:${server.port}`
       for (const name of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) process.env[name] = url
       process.env.NO_PROXY = process.env.no_proxy = "localhost,127.0.0.1,::1"
+      // Node's own fetch and http ignore the variables above without it; corepack downloads pnpm so.
+      process.env.NODE_USE_ENV_PROXY = "1"
     })
   ))
