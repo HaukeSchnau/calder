@@ -112,7 +112,10 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   whose plan the default branch may take. A host that defines no unit for a pool fails its jobs, saying so.
   Tasks get `GOMEMLIMIT` at 90% of their worker's memory limit, so Go tools such as tsgo collect
   garbage before the limit throttles them; a task's own `env` overrides it.
-  Pull-request tasks reach the network only through the controller's egress allowlist. `secrets:
+  Pull-request tasks reach the network only through the controller's egress allowlist. Their commands get
+  the proxy in `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`, with `NODE_USE_ENV_PROXY=1` so that Node's own
+  fetch and http use it too. `NO_PROXY` names loopback and the wildcard addresses `0.0.0.0` and `::`, so a
+  test reaches a server it started on port 0 by the address the server reports. `secrets:
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
   `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
   secret the project doesn't configure dies saying so. The worker replaces the job's secrets and its token

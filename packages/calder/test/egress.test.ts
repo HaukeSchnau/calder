@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest"
+import { execFile } from "node:child_process"
+import { createServer } from "node:net"
+import type { AddressInfo } from "node:net"
+import { promisify } from "node:util"
 import { admit, allowed, isPrivate } from "../src/controller/Egress.ts"
+import { environment } from "../src/worker/Egress.ts"
 
 describe("Egress", () => {
   it("refuses private, Tailnet and loopback addresses", () => {
@@ -33,5 +38,39 @@ describe("Egress", () => {
     expect(admit("git.schnau.dev", 22, ["100.118.194.2"], egress)).toMatchObject({ status: "403 Not On The Allowlist" })
     expect(admit("evil.git.schnau.dev", 443, ["100.118.194.2"], { ...egress, allowPrivate: ["*.git.schnau.dev:443"] }))
       .toMatchObject({ status: "403 Not On The Allowlist" })
+  })
+})
+
+/**
+ * A test's server on port 0, which listens on the wildcard address, asked by that address as Effect's
+ * `HttpServer.formatAddress` gives it (`http://[::]:<port>`), by `0.0.0.0` and by `[::1]`.
+ */
+const client = `
+import http from "node:http"
+const server = http.createServer((_, res) => res.end("direct"))
+await new Promise((resolve) => server.listen(0, resolve))
+const viaHttp = (url) => new Promise((resolve) => http.get(url, (res) => res.setEncoding("utf8").on("data", resolve)).on("error", (e) => resolve(e.code)))
+const seen = {}
+for (const host of ["[::]", "0.0.0.0", "[::1]"]) {
+  const url = \`http://\${host}:\${server.address().port}/\`
+  seen[host] = { fetch: await fetch(url).then((r) => r.text(), (e) => e.cause?.code ?? e.message), http: await viaHttp(url) }
+}
+server.close()
+console.log(JSON.stringify(seen))
+`
+
+describe("a sandboxed job's proxy environment", () => {
+  it("leaves out a server the job started itself, by its wildcard and loopback addresses", async () => {
+    // Drops what reaches it, so a request that goes through it fails at once.
+    const proxy = createServer((socket) => socket.destroy())
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve))
+    try {
+      const url = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`
+      const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", client], { env: environment(url) })
+      const direct = { fetch: "direct", http: "direct" }
+      expect(JSON.parse(stdout)).toEqual({ "[::]": direct, "0.0.0.0": direct, "[::1]": direct })
+    } finally {
+      proxy.close()
+    }
   })
 })
