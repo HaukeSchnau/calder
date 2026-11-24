@@ -84,7 +84,7 @@ export function linkScope(root, onChange) {
   return { refresh: apply, tap: (t) => { tapped = t; apply() } }
 }
 
-// The readout: what the pointer or focus is on, as tsc infers it, and one sentence about its shape.
+// The readout: what the pointer or focus is on, as tsrs infers it, and one sentence about its shape.
 const typeLine = (name) => {
   const text = name === "install" ? "install: Setup" : `${name}: Step<${TYPES[name].join(", ")}>`
   return highlight(text, { def: name, marks: { StorePath: "t-val", HttpClient: "t-svc" } }).replace(/(<span class="t-pun">\{<\/span> readonly.*<span class="t-pun">\}<\/span>)/, '<span class="t-grant">$1</span>')
@@ -128,7 +128,7 @@ function readoutFor(src, refusedAt) {
   if (own.includes("f:plate") || own.includes("part:install")) return { type: typeLine("install"), say: SAY.install }
   const part = [...own, ...owner].find((k) => k.startsWith("part:"))?.slice(5)
   if (!part || !SAY[part]) return null
-  if (part === "deploy" && refusedAt) return { type: typeLine(part), say: `Its grant bit stands on the pull-request rail's closed floor, so it doesn't seat. tsc reports ${refusedAt}.` }
+  if (part === "deploy" && refusedAt) return { type: typeLine(part), say: `Its grant bit stands on the pull-request rail's closed floor, so it doesn't seat. tsrs reports ${refusedAt}.` }
   return { type: typeLine(part), say: SAY[part] }
 }
 
@@ -363,7 +363,7 @@ export function setupHero() {
     renderAll({ from, focus: name })
     if (e.tsc.exit) {
       const loc = tscLocation(e.tsc.out)
-      say(`${name} doesn't seat on the pull-request rail. Its grant bit stands on the closed floor. tsc reports ${loc[3]} at line ${loc[1]}, column ${loc[2]}.`)
+      say(`${name} doesn't seat on the pull-request rail. Its grant bit stands on the closed floor. tsrs reports ${loc[3]} at line ${loc[1]}, column ${loc[2]}.`)
     } else if (changed.length) say(`${name} is on the ${rule === "pr" ? "pull-request" : "push"} rail. ${changed.map((n) => `Line ${n} changed.`).join(" ")} No errors.`)
   }
 

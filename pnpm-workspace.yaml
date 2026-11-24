@@ -1,3 +1,13 @@
 packages:
   - packages/*
   - sdk
+minimumReleaseAgeExclude:
+  - '@tsrs/darwin-arm64@7.1.0-beta.tsrs5'
+  - '@tsrs/darwin-x64@7.1.0-beta.tsrs5'
+  - '@tsrs/linux-arm64-gnu@7.1.0-beta.tsrs5'
+  - '@tsrs/linux-arm64-musl@7.1.0-beta.tsrs5'
+  - '@tsrs/linux-x64-gnu@7.1.0-beta.tsrs5'
+  - '@tsrs/linux-x64-musl@7.1.0-beta.tsrs5'
+  - '@tsrs/win32-arm64@7.1.0-beta.tsrs5'
+  - '@tsrs/win32-x64@7.1.0-beta.tsrs5'
+  - tsrs@7.1.0-beta.tsrs5

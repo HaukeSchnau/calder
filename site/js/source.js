@@ -1,4 +1,4 @@
-// The sources of site/example verbatim, what tsc says about the fits' edits to them, and their highlighting.
+// The sources of site/example verbatim, what tsrs says about the fits' edits to them, and their highlighting.
 
 export const CI_TS = [
   'import { Action, Calder, Files, Nix, On, Step, Task, cmd } from "@calder-ci/core"',
@@ -13,7 +13,7 @@ export const CI_TS = [
   "  shell,",
   "  setup: install,",
   '  inputs: Files.of("apps", "tsconfig.json"),',
-  "  run: cmd`pnpm tsc -b`,",
+  "  run: cmd`pnpm tsrs -b`,",
   "})",
   "",
   "const test = Vitest.files({",

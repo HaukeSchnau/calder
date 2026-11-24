@@ -10,7 +10,7 @@ const typecheck = Task.make("typecheck", {
   shell,
   setup: install,
   inputs: Files.of("apps", "tsconfig.json"),
-  run: cmd`pnpm tsc -b`,
+  run: cmd`pnpm tsrs -b`,
 })
 
 const test = Vitest.files({
