@@ -494,7 +494,8 @@ because only the config knows which files its `test.include` names and which `se
 `vite.config.ts` with the repository files that imports, and every tsconfig, whose compiler options Vite's
 transform reads. Those globs must cover every file the config's `test.include` names, since a test file they
 miss never runs. A config names its `setupFiles` as paths, not imports, so add them with
-`inputs: Files.imports("test/setup.ts")`. Vitest gets `--passWithNoTests` either way, so a repository without
+`inputs: Files.imports("test/setup.ts")`, as well as a config other than `vite.config.ts` that `args` name with
+`--config`. Vitest gets `--passWithNoTests` either way, so a repository without
 tests passes, and a file-by-file job whose files the config leaves out passes without running.
 
 `Project.standard` and `Project.alchemy` add both tasks to their checks with `vp`, which `calder gen` writes for
