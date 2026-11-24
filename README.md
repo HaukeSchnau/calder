@@ -51,7 +51,15 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   `derivations/<run>` under the controller's state directory from when its plan or its builds' evaluation
   has them until it ends, so a build that waits hours for a slot still finds its derivation; Nix's nightly
   collection on srv-2 once deleted one that infra-909's mbp build had waited 100 minutes for. A derivation
-  the store lost anyway is evaluated again before the build gives up.
+  the store lost anyway is evaluated again before the build gives up. A build's output has its root there too,
+  so a release that waits for its promotion stays. A deploy that didn't deploy, such as infra's of a host that
+  was asleep or a promotion that failed, keeps the builds it reads rooted in `deploys/<project>/<step>/<run>`
+  after its run ends, so the later run that deploys them, such as infra's hourly one or the rerun of the
+  promotion, finds them in this store instead of fetching them from the binary cache or building them again.
+  They go once the same step of that run or a newer one deploys. A step keeps only its newest run's builds,
+  since no later run deploys an older one's, and a run whose step a newer run's already held the lease keeps
+  none. Runs of pull requests keep none either, and a step no run reached for `retention.days`, such as the
+  deploy of a host that left the fleet, loses what it kept.
   Flake inputs that name another project's repository (`git+ssh` or `git+https` on the forge) come
   from Calder's mirror of it, in plans, builds and tasks alike, so a flake with private inputs
   evaluates without credentials, also in a pull request's sandbox. Agents fetch inputs themselves.

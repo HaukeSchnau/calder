@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, utimesSync } from "node:fs"
 import { basename, join } from "node:path"
 import * as Exec from "../Exec.ts"
 import { only } from "../StorePaths.ts"
@@ -89,6 +89,65 @@ export const sweepDerivations = (stateDir: string, active: ReadonlySet<string>) 
     const dir = derivationRoots(stateDir)
     const runs = existsSync(dir) ? readdirSync(dir) : []
     for (const run of runs) if (!active.has(run)) rmSync(join(dir, run), { recursive: true, force: true })
+  })
+
+/** Where deploys keep the builds they read for a later run (`holdDeploy`): a directory per project and step, in it one per run. */
+export const deployRoots = (stateDir: string) => join(stateDir, "deploys")
+
+const deploySlot = (stateDir: string, project: string, step: string) =>
+  join(deployRoots(stateDir), encodeURIComponent(project), encodeURIComponent(step))
+
+/** The runs, by number, whose builds a step keeps. */
+const holding = (dir: string) => (existsSync(dir) ? readdirSync(dir) : []).map(Number).filter(Number.isInteger)
+
+/**
+ * Keeps the builds a deploy read in the store after its run ends, until the same step of this run or a newer one
+ * deploys (`releaseDeploy`). A run's own roots go when it ends, but what it built may deploy in a later run: infra's
+ * hourly run deploys a host that was asleep, and a promotion that failed runs again hours later. Without a root,
+ * srv-2's nightly collection deletes it in between, and the later run fetches it from the binary cache, if that still
+ * has it, or builds it again. A step keeps one run's builds, the newest's, since no later run deploys an older one's.
+ * Paths this store doesn't hold are left out.
+ */
+export const holdDeploy = (stateDir: string, project: string, step: string, run: number, paths: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    const dir = deploySlot(stateDir, project, step)
+    const held = yield* Effect.try(() => holding(dir))
+    if (held.some((r) => r > run)) return
+    const mine = join(dir, String(run))
+    yield* Effect.try(() => mkdirSync(mine, { recursive: true }))
+    for (const path of paths) {
+      const link = join(mine, basename(path))
+      if (hashOf(path) === undefined || !existsSync(path) || existsSync(link)) continue
+      yield* Exec.run(["nix-store", "--option", "substitute", "false", "--add-root", link, "--realise", ...only([path])])
+    }
+    // The new roots hold before the older run's go. Touched, so `sweepDeploys` tells a step that still deploys.
+    yield* Effect.try(() => {
+      const now = new Date()
+      utimesSync(mine, now, now)
+      for (const r of held) if (r < run) rmSync(join(dir, String(r)), { recursive: true, force: true })
+    })
+  })
+
+/** Drops what a step kept for a later run (`holdDeploy`) once the step of this run or a newer one deployed. */
+export const releaseDeploy = (stateDir: string, project: string, step: string, run: number) =>
+  Effect.try(() => {
+    const dir = deploySlot(stateDir, project, step)
+    for (const r of holding(dir)) if (r <= run) rmSync(join(dir, String(r)), { recursive: true, force: true })
+  })
+
+/**
+ * Drops what steps kept (`holdDeploy`) that no run reached for `days`, such as the deploy of a host that left the
+ * fleet. A step that still deploys keeps its builds afresh in every run that reaches it, such as infra's hourly one.
+ */
+export const sweepDeploys = (stateDir: string, days: number) =>
+  Effect.try(() => {
+    const cutoff = Date.now() - days * 86_400_000
+    const below = (dir: string) => (existsSync(dir) ? readdirSync(dir).map((name) => join(dir, name)) : [])
+    for (const project of below(deployRoots(stateDir))) {
+      for (const step of below(project)) {
+        for (const run of below(step)) if (statSync(run).mtimeMs < cutoff) rmSync(run, { recursive: true, force: true })
+      }
+    }
   })
 
 /** The outputs that steps name, and passed results, which later runs may reuse. */

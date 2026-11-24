@@ -31,7 +31,7 @@ import { named, tracked } from "./Stopping.ts"
  * is the run's revision, so none follows the stage's removal, and removing it checks nothing. Actions
  * (`Release.promote`) check the head themselves.
  */
-export const leaseOf = (run: RunInfo, lease: boolean | string | undefined) => {
+export const leaseOf = (run: Pick<RunInfo, "project" | "branch" | "event">, lease: boolean | string | undefined) => {
   const event = run.event
   if (lease === undefined || lease === false) return { key: run.project, current: null }
   if (event._tag === "PullRequest") return { key: `${run.project}#pr-${event.number}`, current: { pullRequest: event.number } }
