@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { delimiter, join, resolve } from "node:path"
 import * as Exec from "./Exec.ts"
 
@@ -18,16 +18,45 @@ const names = (dir: string, output: string, system: string) =>
     Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
   )
 
-const standard = `import { Project } from "@calder-ci/std"
+/**
+ * The `.calder/ci.ts` of a repository without one: the standard pipeline, with Vite+'s checks when the
+ * repository has a root `vite.config.ts`, `vite-plus` among its root dependencies, a pnpm or Bun lockfile
+ * to install it from and a `ci` dev shell, and no flake check takes the name of a step it adds.
+ */
+export const pipeline = (dir: string, flake: { readonly checks: ReadonlyArray<string>; readonly devShells: ReadonlyArray<string> }) => {
+  const has = (file: string) => existsSync(join(dir, file))
+  const install = has("pnpm-lock.yaml") ? "Pnpm" : has("bun.lock") || has("bun.lockb") ? "Bun" : undefined
+  const vitePlus = has("vite.config.ts") && dependsOn(join(dir, "package.json"), "vite-plus")
+  const named = ["check", "test", "install"].some((name) => flake.checks.includes(name))
+  if (!vitePlus || install === undefined || !flake.devShells.includes("ci") || named) {
+    return `import { Project } from "@calder-ci/std"
 import { flake } from "./flake.ts"
 
 export default Project.standard({ flake })
 `
+  }
+  return `import { ${install}, Project } from "@calder-ci/std"
+import { flake } from "./flake.ts"
+
+const shell = flake.devShells.ci
+
+export default Project.standard({ flake, vp: { shell, setup: ${install}.install({ shell }) } })
+`
+}
+
+const dependsOn = (manifest: string, name: string) => {
+  try {
+    const json = JSON.parse(readFileSync(manifest, "utf8")) as { readonly dependencies?: object; readonly devDependencies?: object }
+    return name in (json.dependencies ?? {}) || name in (json.devDependencies ?? {})
+  } catch {
+    return false
+  }
+}
 
 /**
  * `calder gen`: writes `.calder/flake.ts` from the flake's outputs, a tsconfig for editors, and links
  * `.calder/node_modules` to Calder's SDK so `@calder-ci/core`, `@calder-ci/std` and `effect` resolve. A repository
- * without `.calder/ci.ts` gets the standard pipeline.
+ * without `.calder/ci.ts` gets the standard pipeline (`pipeline`).
  */
 export const gen = (repo: string, system: string) =>
   Effect.gen(function*() {
@@ -55,7 +84,7 @@ export const flake = Flake.make({
     writeFileSync(join(calder, ".gitignore"), "node_modules\n")
     linkCheckout(calder)
     const created = !existsSync(join(calder, "ci.ts"))
-    if (created) writeFileSync(join(calder, "ci.ts"), standard)
+    if (created) writeFileSync(join(calder, "ci.ts"), pipeline(dir, { checks, devShells }))
     return { packages, checks, devShells, created }
   })
 

@@ -173,7 +173,7 @@
   <div class="sec-text">
     <h2 id="libraries-h">Libraries are functions</h2>
     <div class="prose">
-      <p><code>Pnpm.install</code>, <code>Bun.install</code>, <code>Vitest.files</code> and <code>Project.standard</code>, the whole standard pipeline in one call, come from <code>@calder-ci/std</code>. They are ordinary functions that return steps. Your own modules work the same way, like the example's deploy from <code>.calder/deploy.ts</code>.</p>
+      <p><code>Pnpm.install</code>, <code>Bun.install</code>, <code>Vitest.files</code>, <code>Vp.check</code> and <code>Project.standard</code>, the whole standard pipeline in one call, come from <code>@calder-ci/std</code>. They are ordinary functions that return steps. Your own modules work the same way, like the example's deploy from <code>.calder/deploy.ts</code>.</p>
       <p>Actions are Effect code with typed failures. <code>Step.retry</code> and <code>Step.timeout</code> are policies you pipe a step through, as in <code>.pipe(Step.retry({ times: 2 }))</code> on <code class="t-ident">deploy</code>.</p>
     </div>
   </div>
