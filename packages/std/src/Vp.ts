@@ -20,44 +20,43 @@ export const check = (options: CheckOptions) =>
     run: cmd`vp check`,
   })
 
-export interface TestOptions extends Omit<Vitest.FilesOptions, "tests" | "setup" | "vitest"> {
-  /** The setup that installs the repository's `vite-plus`, such as `Pnpm.install`. */
-  readonly setup: Setup.Setup
+/** The whole suite in one task, keyed by the whole repository, since only the config knows what runs. */
+export interface SuiteOptions extends Omit<Vitest.SuiteOptions, "shell" | "setup" | "vitest">, CheckOptions {
+  readonly tests?: undefined
+  // What picks or keys test files applies only with `tests`, so passing it here fails to compile.
+  readonly allowEmpty?: never
+  readonly inputs?: never
+  readonly aliases?: never
+  readonly shards?: never
+}
+
+/** File by file, as `Vitest.files`. */
+export interface FilesOptions extends Omit<Vitest.FilesOptions, "shell" | "setup" | "vitest">, CheckOptions {
+  /** Globs of the test files, relative to `dir`. They must cover the config's `test.include`, or a file they miss never runs. */
+  readonly tests: ReadonlyArray<string>
   /**
-   * Globs of the test files, relative to `dir`, to run them file by file. Without them, `vp test run`
-   * runs the whole suite in one task keyed by the whole repository, because only the config knows which
-   * files its `test.include` names and which `setupFiles` they run with.
-   */
-  readonly tests?: ReadonlyArray<string>
-  /**
-   * With `tests`: more files every test file runs with, such as the config's `setupFiles`, which it names
-   * as paths rather than imports: `Files.imports("test/setup.ts")`. Every test file's key always covers
-   * `vite.config.ts` in `dir` (or the config `args` name with `--config`) with the repository files it imports, and every tsconfig, whose compiler
-   * options Vite's transform reads.
+   * More files every test file runs with, such as the config's `setupFiles`, which it names as paths
+   * rather than imports: `Files.imports("test/setup.ts")`. Every test file's key always covers
+   * `vite.config.ts` in `dir` (or the config `args` name with `--config`) with the repository files it
+   * imports, and every tsconfig, whose compiler options Vite's transform reads.
    */
   readonly inputs?: Files.Files
 }
 
+export type TestOptions = SuiteOptions | FilesOptions
+
 /**
- * `vp test`. Without `tests`, the whole suite in one task. With them, file by file as `Vitest.files`: a
- * test file runs again only when it, what it imports, the config or `inputs` changed, and a job whose files
- * the config leaves out passes. Either way a repository without tests passes (`--passWithNoTests`).
+ * `vp test`. Without `tests`, the whole suite in one task. With them, file by file: a test file runs again
+ * only when it, what it imports, the config or `inputs` changed, and a job whose files the config leaves
+ * out passes. Either way a repository without tests passes (`--passWithNoTests`).
  */
 export const test = (options: TestOptions) => {
-  const dir = options.dir ?? "."
   const args = ["--passWithNoTests", ...(options.args ?? [])]
-  if (options.tests === undefined) {
-    return Task.make(options.name ?? "test", {
-      ...(options.shell === undefined ? {} : { shell: options.shell }),
-      setup: options.setup,
-      ...(options.env === undefined ? {} : { env: options.env }),
-      run: cmd`vp test run ${dir === "." ? [] : ["--root", dir]} ${args}`,
-    })
-  }
+  if (options.tests === undefined) return Vitest.suite({ ...options, args, vitest: ["vp", "test"] })
+  const dir = options.dir ?? "."
   const config = configIn(options.args ?? []) ?? "vite.config.ts"
   return Vitest.files({
     ...options,
-    tests: options.tests,
     inputs: Files.union(
       Files.imports(dir === "." ? config : `${dir}/${config}`),
       Files.optional(Files.glob("**/tsconfig*.json")),
@@ -75,9 +74,11 @@ const configIn = (args: ReadonlyArray<string>) => {
   return args.find((arg) => arg.startsWith("--config="))?.slice("--config=".length)
 }
 
+type WithoutToolchain<T> = T extends unknown ? Omit<T, "shell" | "setup"> : never
+
 export interface TasksOptions extends CheckOptions {
-  /** `test`'s options besides the shell and setup, such as `tests` or `shards`. */
-  readonly test?: Omit<TestOptions, "shell" | "setup">
+  /** `test`'s options besides the shell and setup, such as `tests` and `shards`. */
+  readonly test?: WithoutToolchain<TestOptions>
 }
 
 /** Both tasks of a Vite+ repository: `check` runs `vp check` and `test` runs `vp test`. */

@@ -56,6 +56,25 @@ const script = (before: ReadonlyArray<string>) =>
     'exec "$@" --reporter=default --reporter=json "--outputFile.json=$report"',
   ].join("; ")
 
+/** `Vitest.suite`'s options: those of `files` that don't pick or key test files. */
+export interface SuiteOptions extends Omit<FilesOptions, "tests" | "allowEmpty" | "inputs" | "aliases" | "shards"> {}
+
+/**
+ * A package's whole vitest suite as one task, keyed by the whole repository, for a suite whose config
+ * decides what runs: the files its `test.include` names and the `setupFiles` they run with.
+ */
+export const suite = (options: SuiteOptions) => {
+  const dir = options.dir ?? "."
+  const report = dir === "." ? ".vitest-report.json" : `${dir}/.vitest-report.json`
+  return Task.make(options.name ?? "test", {
+    ...(options.shell === undefined ? {} : { shell: options.shell }),
+    ...(options.setup === undefined ? {} : { setup: options.setup }),
+    ...(options.env === undefined ? {} : { env: options.env }),
+    run: cmd`bash -c ${script(options.before ?? [])} vitest ${dir} ${report} ${options.vitest ?? ["vitest"]} run ${options.args ?? []}`,
+    report: Report.vitest(report),
+  })
+}
+
 /**
  * A package's vitest suite as a task with `each`: a test file runs again only when it, what it
  * imports or `inputs` changed. Vitest runs in `dir` and gets the files relative to it.

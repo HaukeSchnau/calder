@@ -480,6 +480,8 @@ const testServer = Vitest.files({
 test glob starting with `!` leaves files out, such as those of packages with a vitest config of their own
 (`tests: ["**/*.test.ts", "!apps/server/**"]`), so a new package's tests run without a change to ci.ts.
 `allowEmpty: true` lets the globs match no file, such as in a package before its first test.
+`Vitest.suite` runs a package's whole suite as one task keyed by the whole repository instead, in `dir` and with the
+same report, for a config that decides which files run.
 
 `Vp` from `@calder-ci/std` runs the checks of a Vite+ repository. Both tasks take the `setup` that installs
 `vite-plus`. `Vp.check` runs `vp check`: oxfmt, oxlint and, with `lint.options.typeAware` and `typeCheck` in

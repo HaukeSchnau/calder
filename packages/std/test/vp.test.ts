@@ -35,18 +35,34 @@ describe("Vp.check", () => {
 describe("Vp.test", () => {
   const tests = ["**/*.test.ts"]
 
-  it("without `tests`, runs the whole suite in one task keyed by the whole repository", () => {
-    const test = task(Vp.test({ shell, setup }))
-    if (typeof test.run === "function") return expect.unreachable()
-    expect(Cmd.render(test.run, {})).toEqual(["vp", "test", "run", "--passWithNoTests"])
-    expect(test.each).toBeUndefined()
-    expect(test.inputs).toEqual(Files.all())
+  /** The whole-suite task's command from the script's arguments on: `vitest`, `dir`, the report, then vitest's own. */
+  const suiteCommand = (step: Step.Any) => {
+    const { run } = task(step)
+    if (typeof run === "function") throw new Error("a task with each")
+    const argv = Cmd.render(run, {})
+    return argv.slice(argv.indexOf("vitest"))
+  }
+
+  it("without `tests`, runs the whole suite in one task keyed by the whole repository, with its report", () => {
+    const step = Vp.test({ shell, setup })
+    expect(suiteCommand(step)).toEqual(["vitest", ".", ".vitest-report.json", "vp", "test", "run", "--passWithNoTests"])
+    expect(task(step).each).toBeUndefined()
+    expect(task(step).inputs).toEqual(Files.all())
+    expect(task(step).report).toBeDefined()
   })
 
-  it("runs the whole suite of `dir` with the arguments it's given", () => {
-    const test = task(Vp.test({ setup, dir: "site", args: ["--maxWorkers", "2"] }))
-    if (typeof test.run === "function") return expect.unreachable()
-    expect(Cmd.render(test.run, {})).toEqual(["vp", "test", "run", "--root", "site", "--passWithNoTests", "--maxWorkers", "2"])
+  it("runs the whole suite in `dir`, after `before`, with the arguments it's given", () => {
+    const step = Vp.test({ setup, dir: "site", before: ["node", "fetch.ts"], args: ["--maxWorkers", "2"] })
+    expect(suiteCommand(step)).toEqual(["vitest", "site", "site/.vitest-report.json", "vp", "test", "run", "--passWithNoTests", "--maxWorkers", "2"])
+    const { run } = task(step)
+    if (typeof run === "function") return expect.unreachable()
+    expect(Cmd.render(run, {})[2]).toContain("'node' 'fetch.ts'")
+  })
+
+  it("takes the options that pick or key test files only with `tests`", () => {
+    // @ts-expect-error: without `tests`, the config decides what runs, so shards and inputs don't apply
+    Vp.test({ setup, shards: 2, inputs: Files.imports("test/setup.ts") })
+    expect(Vp.test({ setup, tests, shards: 2 })).toBeDefined()
   })
 
   it("with `tests`, runs `vp test` file by file, passing a job whose files the config leaves out", () => {
