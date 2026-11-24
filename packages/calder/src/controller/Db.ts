@@ -425,6 +425,7 @@ export const layer = Layer.unwrap(Effect.gen(function*() {
         deleted + trimmed === 0 ? Effect.void : Effect.logInfo(`pruned runs past retention: deleted ${deleted}, trimmed ${trimmed}`)
       ),
       Effect.andThen(Outputs.sweep(config.stateDir)),
+      Effect.andThen(Outputs.sweepDeploys(config.stateDir, config.retention.days)),
       Effect.catchCause((cause) => Effect.logWarning("pruning history failed", cause)),
       Effect.repeat(Schedule.spaced("6 hours")),
       Effect.forkScoped,
