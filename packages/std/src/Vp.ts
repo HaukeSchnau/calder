@@ -20,22 +20,18 @@ export const check = (options: CheckOptions) =>
     run: cmd`vp check`,
   })
 
-const extensions = ["", "c", "m"].flatMap((module) => ["js", "jsx", "ts", "tsx"].map((ext) => `${module}${ext}`))
-
-/** Vitest's default `test.include` as globs Calder reads: `.test` and `.spec` files of every JS and TS extension. */
-export const defaultTests: ReadonlyArray<string> = ["test", "spec"].flatMap((kind) => extensions.map((ext) => `**/*.${kind}.${ext}`))
-
 export interface TestOptions extends Omit<Vitest.FilesOptions, "tests" | "setup" | "vitest"> {
   /** The setup that installs the repository's `vite-plus`, such as `Pnpm.install`. */
   readonly setup: Setup.Setup
   /**
-   * Globs of the test files, relative to `dir`. Vitest's default `test.include` by default, which may
-   * match no file. A file these match that the config leaves out passes without running.
+   * Globs of the test files, relative to `dir`, to run them file by file. Without them, `vp test run`
+   * runs the whole suite in one task keyed by the whole repository, because only the config knows which
+   * files its `test.include` names and which `setupFiles` they run with.
    */
   readonly tests?: ReadonlyArray<string>
   /**
-   * More files every test file runs with, such as the config's `setupFiles`, which it names as paths
-   * rather than imports: `Files.imports("test/setup.ts")`. Every test file's key always covers
+   * With `tests`: more files every test file runs with, such as the config's `setupFiles`, which it names
+   * as paths rather than imports: `Files.imports("test/setup.ts")`. Every test file's key always covers
    * `vite.config.ts` in `dir` with the repository files it imports, and every tsconfig, whose compiler
    * options Vite's transform reads.
    */
@@ -43,22 +39,30 @@ export interface TestOptions extends Omit<Vitest.FilesOptions, "tests" | "setup"
 }
 
 /**
- * `vp test` file by file, as `Vitest.files`: a test file runs again only when it, what it imports, the
- * config or `inputs` changed. A job whose files the config leaves out passes (`--passWithNoTests`), so
- * `tests` may match more than the config's `test.include`.
+ * `vp test`. Without `tests`, the whole suite in one task. With them, file by file as `Vitest.files`: a
+ * test file runs again only when it, what it imports, the config or `inputs` changed, and a job whose files
+ * the config leaves out passes. Either way a repository without tests passes (`--passWithNoTests`).
  */
 export const test = (options: TestOptions) => {
   const dir = options.dir ?? "."
+  const args = ["--passWithNoTests", ...(options.args ?? [])]
+  if (options.tests === undefined) {
+    return Task.make(options.name ?? "test", {
+      ...(options.shell === undefined ? {} : { shell: options.shell }),
+      setup: options.setup,
+      ...(options.env === undefined ? {} : { env: options.env }),
+      run: cmd`vp test run ${dir === "." ? [] : ["--root", dir]} ${args}`,
+    })
+  }
   return Vitest.files({
     ...options,
-    tests: options.tests ?? defaultTests,
-    allowEmpty: options.allowEmpty ?? options.tests === undefined,
+    tests: options.tests,
     inputs: Files.union(
       Files.imports(dir === "." ? "vite.config.ts" : `${dir}/vite.config.ts`),
       Files.optional(Files.glob("**/tsconfig*.json")),
       ...(options.inputs === undefined ? [] : [options.inputs]),
     ),
-    args: ["--passWithNoTests", ...(options.args ?? [])],
+    args,
     vitest: ["vp", "test"],
   })
 }

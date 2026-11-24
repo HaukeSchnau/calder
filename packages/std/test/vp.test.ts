@@ -1,8 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Calder, Cmd, Event, Files, Flake, type Step } from "@calder-ci/core"
 import { Effect } from "effect"
-import { matchesGlob } from "node:path"
-import { defaultInclude } from "vitest/config"
 import * as Pnpm from "../src/Pnpm.ts"
 import * as Project from "../src/Project.ts"
 import * as Vp from "../src/Vp.ts"
@@ -35,20 +33,36 @@ describe("Vp.check", () => {
 })
 
 describe("Vp.test", () => {
-  it("runs `vp test` file by file over vitest's default include, passing a job whose files the config leaves out", () => {
-    const step = Vp.test({ shell, setup })
-    expect(task(step).each).toEqual(Files.optional(Files.imports(Vp.defaultTests)))
+  const tests = ["**/*.test.ts"]
+
+  it("without `tests`, runs the whole suite in one task keyed by the whole repository", () => {
+    const test = task(Vp.test({ shell, setup }))
+    if (typeof test.run === "function") return expect.unreachable()
+    expect(Cmd.render(test.run, {})).toEqual(["vp", "test", "run", "--passWithNoTests"])
+    expect(test.each).toBeUndefined()
+    expect(test.inputs).toEqual(Files.all())
+  })
+
+  it("runs the whole suite of `dir` with the arguments it's given", () => {
+    const test = task(Vp.test({ setup, dir: "site", args: ["--maxWorkers", "2"] }))
+    if (typeof test.run === "function") return expect.unreachable()
+    expect(Cmd.render(test.run, {})).toEqual(["vp", "test", "run", "--root", "site", "--passWithNoTests", "--maxWorkers", "2"])
+  })
+
+  it("with `tests`, runs `vp test` file by file, passing a job whose files the config leaves out", () => {
+    const step = Vp.test({ shell, setup, tests })
+    expect(task(step).each).toEqual(Files.imports(tests))
     expect(command(step, ["src/a.test.ts"])).toEqual(["vp", "test", "run", "--passWithNoTests", "src/a.test.ts"])
   })
 
   it("is keyed by vite.config.ts with what it imports and every tsconfig", () => {
-    expect(task(Vp.test({ setup })).inputs).toEqual(
+    expect(task(Vp.test({ setup, tests })).inputs).toEqual(
       Files.union(Files.imports("vite.config.ts"), Files.optional(Files.glob("**/tsconfig*.json"))),
     )
   })
 
   it("keeps the config and tsconfigs in the key when given more inputs, such as setup files", () => {
-    expect(task(Vp.test({ setup, inputs: Files.imports("test/setup.ts") })).inputs).toEqual(
+    expect(task(Vp.test({ setup, tests, inputs: Files.imports("test/setup.ts") })).inputs).toEqual(
       Files.union(
         Files.imports("vite.config.ts"),
         Files.optional(Files.glob("**/tsconfig*.json")),
@@ -66,7 +80,7 @@ describe("Vp.test", () => {
   })
 
   it("keeps the arguments it's given after its own", () => {
-    expect(command(Vp.test({ setup, args: ["--maxWorkers", "2"] }), ["a.test.ts"])).toEqual([
+    expect(command(Vp.test({ setup, tests, args: ["--maxWorkers", "2"] }), ["a.test.ts"])).toEqual([
       "vp",
       "test",
       "run",
@@ -75,16 +89,6 @@ describe("Vp.test", () => {
       "2",
       "a.test.ts",
     ])
-  })
-
-  it("selects the files vitest's default include does", () => {
-    const ours = Files.matcher(Vp.defaultTests)
-    const [vitest] = defaultInclude
-    const names = ["a", "b.test", "b.spec", "b.bench", "b.test.ts.snap"].flatMap((stem) =>
-      ["js", "jsx", "ts", "tsx", "cjs", "mjs", "cts", "mts", "mtsx", "cjsx", "json", "d.ts", "tsxx"].map((ext) => `src/x/${stem}.${ext}`)
-    )
-    expect(names.filter(ours)).toEqual(names.filter((name) => matchesGlob(name, vitest!)))
-    expect(names.filter(ours)).toContain("src/x/b.spec.mts")
   })
 })
 

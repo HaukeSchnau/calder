@@ -486,12 +486,14 @@ test glob starting with `!` leaves files out, such as those of packages with a v
 `vite.config.ts`, the type check. Its key is the whole repository, because oxfmt reads nearly every text file and
 the config can name any file, such as a lint plugin's.
 
-`Vp.test` runs `vp test` through `Vitest.files`. By default its tests are the files vitest's default
-`test.include` matches, which may be none. Each test file's key covers its imports, `vite.config.ts` with the
-repository files that imports, and every tsconfig, whose compiler options Vite's transform reads. Vitest gets
-`--passWithNoTests`, so a file the config's `test.include` leaves out passes without running; narrowing `tests`
-only saves those jobs. A config names its `setupFiles` as paths, not imports, so add them with
-`inputs: Files.imports("test/setup.ts")`.
+`Vp.test` runs `vp test run`. By default it runs the whole suite in one task keyed by the whole repository,
+because only the config knows which files its `test.include` names and which `setupFiles` they run with. Given
+`tests` globs, it runs file by file through `Vitest.files` instead: each test file's key covers its imports,
+`vite.config.ts` with the repository files that imports, and every tsconfig, whose compiler options Vite's
+transform reads. Those globs must cover every file the config's `test.include` names, since a test file they
+miss never runs. A config names its `setupFiles` as paths, not imports, so add them with
+`inputs: Files.imports("test/setup.ts")`. Vitest gets `--passWithNoTests` either way, so a repository without
+tests passes, and a file-by-file job whose files the config leaves out passes without running.
 
 `Project.standard` and `Project.alchemy` add both tasks to their checks with `vp`, which `calder gen` writes for
 a repository with a root `vite.config.ts` and `vite-plus` among its root dependencies:
@@ -502,7 +504,7 @@ const shell = flake.devShells.ci
 export default Project.standard({ flake, vp: { shell, setup: Pnpm.install({ shell }) } })
 ```
 
-`vp.test` takes `Vp.test`'s options, such as `{ shards: 2 }`. `vp` is off unless given. The tasks are named
+`vp.test` takes `Vp.test`'s options, such as `{ tests: ["src/**/*.test.ts"], shards: 2 }`. `vp` is off unless given. The tasks are named
 `check` and `test`, and a second step with either name fails the plan, so a repository that runs `vp fmt`,
 `vp lint` or its tests in tasks of its own drops them when it turns `vp` on. `Environments.project` has no `vp`,
 because its deploys wait only for the checks their `after` lists. Call `Vp.tasks` once and spread the same steps
