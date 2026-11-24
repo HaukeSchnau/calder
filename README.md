@@ -566,6 +566,13 @@ the steps' workers and stops the others, such as plans. Stopping them itself wou
 which needs polkit, and the host switch that restarts the controller stops polkit at the same moment, so
 srv-2's controller hung until systemd killed it two minutes later.
 
+`GET /idle` on `listen` says whether a restart of the controller would cut anything off: `200 idle` while
+every job is a local step's worker that the next controller adopts and none holds a deploy lease, or 503
+with a line for each job it would cut off, such as `infra-912 plan starts over` or `infra-912 deploy-srv-1
+holds the deploy lease infra`. Plans, actions and agents' jobs start over; a job that still waits for an
+agent only waits again. srv-2's switch leaves the controller running, and infra's deferred restarts restart
+it once `/idle` answers 200, or a day later.
+
 The controller wakes agents whose hosts sleep while idle. Its config's `agents.wake` lists them, each
 with its `name`, `platform` and the `command` that wakes its host, such as
 `["systemctl", "start", "calder-wake@tower.service"]`. While a job waits for a platform and no connected
