@@ -57,6 +57,8 @@ const deployStep = (run: number, name: string, lease: true | string) =>
       pool: "trusted" as ActiveJob["pool"],
       template: "calder-job-trusted",
       remote: false,
+      persisted: true,
+      running: true,
       onEvent: () => Effect.void,
       result: yield* Deferred.make<JobResult>(),
       samples: [],

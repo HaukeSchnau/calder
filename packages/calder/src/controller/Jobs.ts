@@ -42,6 +42,10 @@ export interface ActiveJob {
   readonly template: string
   /** Runs on an agent, which fetches over HTTP what local workers read from disk. */
   readonly remote: boolean
+  /** A local step's worker in the journal, which the next controller adopts if this one stops. */
+  readonly persisted: boolean
+  /** Its worker runs: a local job's from the start, a remote job's once an agent took it. */
+  running: boolean
   readonly onEvent: (event: JobEvent) => Effect.Effect<void>
   readonly result: Deferred.Deferred<JobResult>
   readonly samples: Array<Sample>
@@ -318,6 +322,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         pool: row.pool,
         template,
         remote: false,
+        persisted: true,
+        running: true,
         onEvent: (event) => sink.target?.(event) ?? Effect.sync(() => sink.buffer.push(event)),
         result: Deferred.makeUnsafe<JobResult>(),
         samples: [],
@@ -352,6 +358,7 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         const refused: JobResult = { _tag: "Died", message: "agents don't evaluate forks' pull requests" }
         return { result: refused, usage: { cpuSeconds: null, memoryPeakBytes: null }, id }
       }
+      const persisted = options.adoptable === true && !remote && config.jobs.mode === "systemd" && spec._tag === "Step"
       const job: ActiveJob = {
         id,
         tokenHash: sha256(token),
@@ -359,6 +366,8 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         pool: options.pool,
         template: templateOf(options.pool, options.large === true),
         remote,
+        persisted,
+        running: !remote,
         onEvent: options.onEvent,
         result,
         samples: [],
@@ -366,7 +375,6 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
         lease: undefined,
       }
       const tokenFile = join(jobsDir, `${id}.token`)
-      const persisted = options.adoptable === true && !remote && config.jobs.mode === "systemd" && spec._tag === "Step"
 
       const start = Effect.gen(function*() {
         jobs.set(id, job)
@@ -449,13 +457,15 @@ export const layer = Layer.effect(Jobs)(Effect.gen(function*() {
           // The controller evaluates what no evaluator agent takes soon, as it did without one.
           ...(options.evaluation === true ? { within: evaluatorWait } : {}),
           onPlaced: (agent) =>
-            Effect.andThen(
-              options.evaluation === true
-                ? log(`evaluating on ${agent}`)
-                : job.spec.run.system !== platform
-                ? log(`running on ${agent}, a ${job.spec.run.system} agent, in its dev shell`)
-                : Effect.void,
-              onStart,
+            Effect.sync(() => (job.running = true)).pipe(
+              Effect.andThen(
+                options.evaluation === true
+                  ? log(`evaluating on ${agent}`)
+                  : job.spec.run.system !== platform
+                  ? log(`running on ${agent}, a ${job.spec.run.system} agent, in its dev shell`)
+                  : Effect.void,
+              ),
+              Effect.andThen(onStart),
             ),
           ...(options.onWaiting === undefined ? {} : { onWaiting: options.onWaiting }),
           onLog: log,
