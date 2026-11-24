@@ -594,7 +594,7 @@ function fitServices(root, pinout) {
     } else {
       custom[38] = highlight("    On.pullRequest([typecheck, test, site]),")
       custom[39] = `<span class="squiggle">${highlight("On")}</span>`.replace(/^/, "    ") + `${highlight('.push("main", [deploy, ')}${btn("Move comment back to the pull-request rule")}${highlight("]),")}`
-      after[39] = h("div", { class: "diag", html: diagHTML(TSC.commentInPush) + '<span class="oline diag-cut">tsc goes on to compare PullRequest with Gitea; cut here.</span>' })
+      after[39] = h("div", { class: "diag", html: diagHTML(TSC.commentInPush) + '<span class="oline diag-cut">tsrs goes on to compare PullRequest with Gitea; cut here.</span>' })
     }
     renderCode(it.code, VAR, { from: 32, to: 41, defs: { 32: "comment" }, marks: { 33: { PullRequest: "t-svc" } }, custom, after, cls: rule === "push" ? { 39: "is-error" } : {} })
     syncEdit(it, rule === "push", () => {

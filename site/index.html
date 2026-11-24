@@ -64,7 +64,7 @@
         </div>
         <div class="titleblock" data-titleblock>
           <div class="tb-row"><span class="tb-k">Drawn from</span><span class="tb-v"><code>.calder/ci.ts</code></span></div>
-          <div class="tb-row" data-checked><span class="tb-k">Checked by</span><span class="tb-v"><code>tsc -p .calder --noEmit</code> <span class="tb-result" data-tsc>no errors</span><span class="tb-why" data-why hidden></span></span></div>
+          <div class="tb-row" data-checked><span class="tb-k">Checked by</span><span class="tb-v"><code>tsrs -p .calder --noEmit</code> <span class="tb-result" data-tsc>no errors</span><span class="tb-why" data-why hidden></span></span></div>
           <div class="tb-row tb-events"><span class="tb-k" id="events-label">Plan for</span>
             <div class="tb-v seg" role="radiogroup" aria-labelledby="events-label" data-events>
               <button type="button" role="radio" data-event="pr" aria-checked="true">Pull request #7</button>
@@ -91,7 +91,7 @@
       <p><code class="t-ident">site</code> is a Nix build, and its value is the store path. <code class="t-ident">deploy</code> names it in <code>needs</code>, so its body gets that <code class="t-val">StorePath</code> and hands it to <code>publish</code> in <code>deploy.ts</code>. It ships the exact build that the checks in <code>after: [typecheck, test]</code> gated.</p>
     </div>
     <div class="pane emit">
-      <div class="pane-head"><span class="pane-title">ci.d.ts</span><span class="pane-note">what tsc infers</span></div>
+      <div class="pane-head"><span class="pane-title">ci.d.ts</span><span class="pane-note">what tsrs infers</span></div>
       <div class="code" data-emit></div>
     </div>
   </div>
@@ -111,7 +111,7 @@
   <div class="sec-text">
     <h2 id="fits-h">Every fit is a compiler check</h2>
     <div class="prose">
-      <p>Each place where two parts meet in the drawing is a check <code>tsc</code> makes on <code>ci.ts</code>. Below are the five, each with an edit to the example you can make, the section where the fit is decided, and what the compiler says.</p>
+      <p>Each place where two parts meet in the drawing is a check <code>tsrs</code> makes on <code>ci.ts</code>. Below are the five, each with an edit to the example you can make, the section where the fit is decided, and what the compiler says.</p>
     </div>
   </div>
   <div class="fits" data-fits></div>

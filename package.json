@@ -4,13 +4,13 @@
   "type": "module",
   "packageManager": "pnpm@11.27.0",
   "scripts": {
-    "check": "tsc -p packages/core && tsc -p packages/std && tsc -p packages/api && tsc -p packages/calder && tsc -p packages/ui",
+    "check": "tsrs -p packages/core && tsrs -p packages/std && tsrs -p packages/api && tsrs -p packages/calder && tsrs -p packages/ui",
     "test": "vitest run"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.0",
     "@types/bun": "1.4.2",
-    "typescript": "7.0.2",
+    "tsrs": "7.1.0-beta.tsrs5",
     "vitest": "5.0.3"
   }
 }

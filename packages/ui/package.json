@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "mock": "bun mock/server.ts",
-    "check": "tsc -p ."
+    "check": "tsrs -p ."
   },
   "dependencies": {
     "@effect/atom-react": "4.0.0",

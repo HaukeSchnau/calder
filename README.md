@@ -684,7 +684,7 @@ retried. `retryDeploys: false` in a project's configuration turns the reruns off
 
 ```
 pnpm install
-pnpm check      # tsc for every package
+pnpm check      # tsrs for every package
 pnpm test       # vitest
 nix build .#calder
 ```

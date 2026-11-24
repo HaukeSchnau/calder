@@ -41,8 +41,8 @@ export const size: Promise<number> = Bun.file("x").text().then((text) => text.le
 export default Project.standard({ flake, checks: [qa] })
 `,
     )
-    const tsc = spawnSync(resolve(import.meta.dirname, "../../../node_modules/.bin/tsc"), ["-p", calder], { encoding: "utf8" })
-    expect(tsc.stdout + tsc.stderr).toBe("")
-    expect(tsc.status).toBe(0)
+    const tsrs = spawnSync(resolve(import.meta.dirname, "../../../node_modules/.bin/tsrs"), ["-p", calder], { encoding: "utf8" })
+    expect(tsrs.stdout + tsrs.stderr).toBe("")
+    expect(tsrs.status).toBe(0)
   })
 })

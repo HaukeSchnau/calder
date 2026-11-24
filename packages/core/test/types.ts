@@ -1,4 +1,4 @@
-// Checked by tsc, not run. Each @ts-expect-error is an error the API must produce.
+// Checked by tsrs, not run. Each @ts-expect-error is an error the API must produce.
 import { Effect, Schema } from "effect"
 import type { HttpClient } from "effect/http"
 import { Action, Busy, type Cache, type Fleet, Calder, On, PullRequest, Step, Task, cmd, type CurrentRun } from "../src/index.ts"
