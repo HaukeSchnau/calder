@@ -71,6 +71,14 @@ describe("Vp.test", () => {
     )
   })
 
+  it("keys file by file on the config `--config` names instead of vite.config.ts", () => {
+    const keyed = (args: ReadonlyArray<string>) => task(Vp.test({ setup, dir: "site", tests, args })).inputs
+    const on = (config: string) => Files.union(Files.imports(config), Files.optional(Files.glob("**/tsconfig*.json")))
+    expect(keyed(["--config", "config/unit.ts"])).toEqual(on("site/config/unit.ts"))
+    expect(keyed(["--config=config/unit.ts"])).toEqual(on("site/config/unit.ts"))
+    expect(keyed(["-c", "config/unit.ts"])).toEqual(on("site/config/unit.ts"))
+  })
+
   it("holds the globs it's given to matching a file, and reads the config of `dir`", () => {
     const test = task(Vp.test({ setup, dir: "site", tests: ["src/**/*.test.ts"] }))
     expect(test.each).toEqual(Files.imports(["site/src/**/*.test.ts"]))

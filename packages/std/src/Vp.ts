@@ -32,7 +32,7 @@ export interface TestOptions extends Omit<Vitest.FilesOptions, "tests" | "setup"
   /**
    * With `tests`: more files every test file runs with, such as the config's `setupFiles`, which it names
    * as paths rather than imports: `Files.imports("test/setup.ts")`. Every test file's key always covers
-   * `vite.config.ts` in `dir` with the repository files it imports, and every tsconfig, whose compiler
+   * `vite.config.ts` in `dir` (or the config `args` name with `--config`) with the repository files it imports, and every tsconfig, whose compiler
    * options Vite's transform reads.
    */
   readonly inputs?: Files.Files
@@ -54,17 +54,25 @@ export const test = (options: TestOptions) => {
       run: cmd`vp test run ${dir === "." ? [] : ["--root", dir]} ${args}`,
     })
   }
+  const config = configIn(options.args ?? []) ?? "vite.config.ts"
   return Vitest.files({
     ...options,
     tests: options.tests,
     inputs: Files.union(
-      Files.imports(dir === "." ? "vite.config.ts" : `${dir}/vite.config.ts`),
+      Files.imports(dir === "." ? config : `${dir}/${config}`),
       Files.optional(Files.glob("**/tsconfig*.json")),
       ...(options.inputs === undefined ? [] : [options.inputs]),
     ),
     args,
     vitest: ["vp", "test"],
   })
+}
+
+/** The config `--config` (or `-c`) names in vitest's arguments, relative to the directory vitest runs in. */
+const configIn = (args: ReadonlyArray<string>) => {
+  const at = args.findIndex((arg) => arg === "--config" || arg === "-c")
+  if (at !== -1) return args[at + 1]
+  return args.find((arg) => arg.startsWith("--config="))?.slice("--config=".length)
 }
 
 export interface TasksOptions extends CheckOptions {
