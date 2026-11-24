@@ -2,6 +2,7 @@ import { Action, type Base, CurrentRun, type Files, Flake, Calder, Nix, On, type
 import * as Alchemy from "./Alchemy.ts"
 import * as Environments from "./Environments.ts"
 import * as Release from "./Release.ts"
+import * as Vp from "./Vp.ts"
 
 /** The parts of `.calder/flake.ts` the standard pipeline reads. */
 export interface StandardFlake {
@@ -17,6 +18,11 @@ export interface StandardOptions {
   readonly flake: StandardFlake
   /** Checks beyond the flake's own, such as tasks running the repository's QA. They run on both events. */
   readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
+  /**
+   * Vite+'s checks besides `checks` (`Vp.tasks`): `check` runs `vp check` and `test` runs `vp test`. Off
+   * unless given, since a repository may run the same in tasks of its own.
+   */
+  readonly vp?: Vp.TasksOptions
   /** A URL whose JSON `revision` must report the deployed commit before the deploy counts. */
   readonly readiness?: string
   /**
@@ -54,8 +60,7 @@ export interface StandardOptions {
  * same-repo pull requests) and promotes the release once every check passed.
  */
 export const standard = (options: StandardOptions): Calder.Project => {
-  const flakeChecks = Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name }))
-  const checks = [...flakeChecks, ...(options.checks ?? [])]
+  const checks = checksOf(options)
   const branch = options.defaultBranch ?? "main"
   const shared = options.shared === undefined ? {} : { shared: options.shared }
   const nightly = options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)]
@@ -97,6 +102,8 @@ export interface AlchemyOptions<A = void> {
   readonly stack: Alchemy.Stack<A>
   /** Checks beyond the flake's own. They run on pull requests and pushes, and gate every deploy. */
   readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
+  /** As in `standard`: Vite+'s checks, which gate every deploy like `checks`. */
+  readonly vp?: Vp.TasksOptions
   /** The stage the default branch deploys, `prod` by default. */
   readonly production?: string
   /**
@@ -119,8 +126,7 @@ export interface AlchemyOptions<A = void> {
  * `Environments.project`, which composes environments, previews before checks and readiness.
  */
 export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project => {
-  const flakeChecks = Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name }))
-  const checks = [...flakeChecks, ...(options.checks ?? [])]
+  const checks = checksOf(options)
   const branch = options.defaultBranch ?? "main"
   return Environments.project({
     stack: options.stack,
@@ -134,3 +140,10 @@ export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project =>
     ...(options.previews === undefined ? {} : { rules: Environments.preview(options, { url: options.previews.url, after: checks }) }),
   })
 }
+
+/** Each flake check as a build, then `checks`, then Vite+'s. */
+const checksOf = (options: Pick<AlchemyOptions<unknown>, "flake" | "checks" | "vp">) => [
+  ...Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name })),
+  ...(options.checks ?? []),
+  ...(options.vp === undefined ? [] : Vp.tasks(options.vp)),
+]

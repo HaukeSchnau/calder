@@ -481,11 +481,45 @@ test glob starting with `!` leaves files out, such as those of packages with a v
 (`tests: ["**/*.test.ts", "!apps/server/**"]`), so a new package's tests run without a change to ci.ts.
 `allowEmpty: true` lets the globs match no file, such as in a package before its first test.
 
+`Vp` from `@calder-ci/std` runs the checks of a Vite+ repository. Both tasks take the `setup` that installs
+`vite-plus`. `Vp.check` runs `vp check`: oxfmt, oxlint and, with `lint.options.typeAware` and `typeCheck` in
+`vite.config.ts`, the type check. Its key is the whole repository, because oxfmt reads nearly every text file and
+the config can name any file, such as a lint plugin's.
+
+`Vp.test` runs `vp test` through `Vitest.files`. By default its tests are the files vitest's default
+`test.include` matches, which may be none. Each test file's key covers its imports, `vite.config.ts` with the
+repository files that imports, and every tsconfig, whose compiler options Vite's transform reads. Vitest gets
+`--passWithNoTests`, so a file the config's `test.include` leaves out passes without running; narrowing `tests`
+only saves those jobs. A config names its `setupFiles` as paths, not imports, so add them with
+`inputs: Files.imports("test/setup.ts")`.
+
+`Project.standard` and `Project.alchemy` add both tasks to their checks with `vp`, which `calder gen` writes for
+a repository with a root `vite.config.ts` and `vite-plus` among its root dependencies:
+
+```ts
+const shell = flake.devShells.ci
+
+export default Project.standard({ flake, vp: { shell, setup: Pnpm.install({ shell }) } })
+```
+
+`vp.test` takes `Vp.test`'s options, such as `{ shards: 2 }`. `vp` is off unless given. The tasks are named
+`check` and `test`, and a second step with either name fails the plan, so a repository that runs `vp fmt`,
+`vp lint` or its tests in tasks of its own drops them when it turns `vp` on. `Environments.project` has no `vp`,
+because its deploys wait only for the checks their `after` lists. Call `Vp.tasks` once and spread the same steps
+into `checks` and into those lists, since a second call makes steps of the same names that fail the plan:
+
+```ts
+const checks = [...Vp.tasks({ shell, setup })]
+
+export default Environments.project({ stack, checks, environments: { prod: { on: { push: "main" }, after: checks } } })
+```
+
 ## Commands
 
 ```
 calder gen [dir]                       # writes .calder/flake.ts, .calder/tsconfig.json, links .calder/node_modules,
-                                     # and the standard .calder/ci.ts if there is none
+                                     # and the standard .calder/ci.ts if there is none, with Vite+'s checks
+                                     # (`vp`) when there is a root vite.config.ts and vite-plus
 calder plan [dir] --event push:main    # what push[:branch], pr[:n], check[:ref], schedule:<cron> or
                                      # manual[:<json object>] would run; exits 1 when a path or pattern
                                      # matches no file of the working copy (jj or git); --json prints
@@ -675,7 +709,7 @@ retried. `retryDeploys: false` in a project's configuration turns the reruns off
 | Path | What |
 | --- | --- |
 | `packages/core` | `@calder-ci/core`: the API and the plan engine (`Calder.plan` is pure and testable) |
-| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Expo` (runtime versions, EAS updates, TestFlight, Play internal), `Release.promote` (deploy lease, a release per host system, preflight, head check, fencing token, readiness; fails when a host can't be reached, none runs the app or a host's system has no release), `Pnpm.install`, `Bun.install`, `Vitest.files` |
+| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Expo` (runtime versions, EAS updates, TestFlight, Play internal), `Release.promote` (deploy lease, a release per host system, preflight, head check, fencing token, readiness; fails when a host can't be reached, none runs the app or a host's system has no release), `Pnpm.install`, `Bun.install`, `Vitest.files`, `Vp` (`vp check` and `vp test`) |
 | `packages/api` | Schemas and the RPC group the UI speaks |
 | `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
 | `packages/ui` | The web UI (React, Vite), served by the controller |
