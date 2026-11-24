@@ -666,6 +666,29 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
         Effect.catch((e) => Effect.logWarning(`could not keep ${path} from the garbage collector`, e)),
       ), { discard: true })
 
+  /**
+   * A deploy that didn't deploy keeps the builds it reads for a later run (Outputs `holdDeploy`), and one that deployed
+   * drops what its step kept from this run or older ones. Once the same step of a newer run held the lease, nothing
+   * deploys this run's builds. Pull requests' previews and their removal keep nothing.
+   */
+  const keepForDeploy = (run: Rows.RunRow, row: Rows.StepRow, status: Domain.StepStatus) =>
+    Effect.gen(function*() {
+      const spec = Rows.spec(row)
+      const event = JSON.parse(run.event) as Domain.Event
+      if (!Rows.deploys(spec) || run.trust !== "trusted" || event._tag === "PullRequestClosed") return
+      if (Rows.succeeded(status)) return yield* Outputs.releaseDeploy(config.stateDir, run.project, row.name, run.number)
+      const lease = leaseOf({ project: run.project, branch: run.branch, event }, Rows.leased(spec.task) ? spec.task!.lease : undefined).key
+      const [newest] = yield* db(sql<{ run: number }>`select run from lease_steps where project = ${lease} and step = ${row.name}`)
+      if (newest !== undefined && newest.run > run.number) return
+      const steps = new Map((yield* db(Rows.loadSteps(run.id))).map((s) => [s.name, s]))
+      const built = spec.needs.flatMap((name) => {
+        const dep = steps.get(name)
+        const out: unknown = dep?.kind === "build" && Rows.succeeded(dep.status) ? JSON.parse(dep.value ?? "null") : null
+        return typeof out === "string" ? [out] : []
+      })
+      if (built.length > 0) yield* Outputs.holdDeploy(config.stateDir, run.project, row.name, run.number, built).pipe(Effect.provideService(Exec.SpawnerTag, spawner))
+    }).pipe(Effect.catch((e) => Effect.logWarning(`could not keep what ${run.id}'s ${row.name} deploys from the garbage collector`, e)))
+
   const settle = (run: Rows.RunRow, stale: Rows.StepRow, s: Settled) =>
     Effect.gen(function*() {
       // The step's row changed while it ran (started_at, attempts); read it again.
@@ -723,6 +746,7 @@ export const layerCore = Layer.effect(RunsCore)(Effect.gen(function*() {
           Effect.catch((e) => Effect.logWarning(`could not keep ${s.value} from the garbage collector`, e)),
         )
       }
+      yield* keepForDeploy(run, row, s.status)
       live.finish(run.id, row.name)
       yield* publishStep(run.id, row.name)
       if (row.kind !== "output") {

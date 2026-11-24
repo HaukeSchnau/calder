@@ -51,6 +51,8 @@ export interface Drive {
   readonly settled?: (steps: ReadonlyMap<string, Domain.StepRun>) => boolean
   /** The run's event, a push to main by default. */
   readonly event?: Domain.Event
+  /** `app-2`'s run number, 2 by default; a higher one stands for a later run. */
+  readonly number?: number
   /** What the run's plan says besides its steps. */
   readonly plan?: Partial<PlanSpec>
   /** `app-2` is queued without its plan, which a plan job of `.calder/` tree `tree` returns. */
@@ -120,6 +122,7 @@ export const drive = ({
   result = () => undefined,
   settled = () => true,
   event = { _tag: "Push", branch: "main" },
+  number = 2,
   plan: extra = {},
   unplanned = false,
   seed = Effect.void,
@@ -160,7 +163,7 @@ export const drive = ({
     const fork = event._tag === "PullRequest" && event.fork ? 1 : 0
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, rerun_of, fork)
-      values ('app-2', 'app', 2, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
+      values ('app-2', 'app', ${number}, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
         2, 2, 't', 's', ${rerunOf === undefined ? null : "app-1"}, ${fork})`
     if (!unplanned) yield* sql`insert into run_plans (run_id, plan) values ('app-2', ${JSON.stringify(plan)})`
     for (const [position, s] of unplanned ? [] : plan.steps.entries()) {
