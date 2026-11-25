@@ -24,8 +24,8 @@ export const make = Effect.gen(function* () {
   // Heads already looked at, so a revision whose plan matches no rule isn't planned again and again.
   const seen = new Set<string>();
 
-  // A head is looked at again once a webhook said who pushed it, so a run the catch-up started like a
-  // fork's runs as trusted when a webhook said someone trusted pushed it after all.
+  // A head is looked at again once a webhook said who pushed it, so its run follows what the webhook said,
+  // also when the webhook's own attempt to start it again failed.
   const ensure = (project: string, sha: string, run: RunInput) =>
     Effect.gen(function* () {
       const pushed = yield* Rows.pushedTrusted(project, sha).pipe(
@@ -39,7 +39,7 @@ export const make = Effect.gen(function* () {
       yield* mirror.fetch(project);
 
       if (!(yield* mirror.hasPipeline(project, sha))) return;
-      yield* runs.ensure(run, { overrule: "upward" });
+      yield* runs.ensure(run);
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning(`catching up on ${project}@${sha.slice(0, 12)} failed`, cause),

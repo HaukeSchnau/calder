@@ -309,23 +309,26 @@ disagree. It logs each as `footprint record wrong:` with the runs whose plans to
 such a plan among them (infra alerts on that line), and the project's page shows it for two weeks. No
 run reuses a plan that took a record the audit found wrong.
 
-Calder trusts the code of each repository's owner, of the Gitea users the controller's `trustedPushers` names,
-and of its own Gitea user on the default branch, where it lands the merge train. Anyone else's code, such as
-the bot `renovate`'s, runs like a fork's pull request. A branch push by such a user gets the fork pool, no
-`secrets` or `defaultBranchSecrets` and no deploy lease, and no trusted run takes its results, plan or
-records. Its push rules still apply, and its plan fails on a step with grants or secrets, as a pull request's
-does, so it never deploys, also on the default branch. Calder's own push to another branch is the base merged
-into a pull request's branch (`calder merge`), whose code is the pull request's, so it runs like that too.
-Calder keeps, per revision, whether a webhook said someone trusted pushed it: a push's `pusher`, the sender of
-a pull request's `synchronized` whose `after` is the revision, or Calder merging the default branch into a
-revision someone trusted pushed (its `before`). A revision someone trusted pushed once stays trusted. Every run
-of a branch's revision, a pull request's included, runs like a fork's unless someone trusted pushed it,
-whoever opened the pull request. The default branch's head, which branch protection leaves to the trusted, is
-trusted unless a webhook said someone else pushed it, and so are its schedules and the closed runs of pull
-requests into it; an untrusted push's plan doesn't change the schedules. Manual runs stay trusted. A webhook
-that says otherwise of a revision than its run assumed cancels the run and starts another. The catch-up,
-which can't tell who pushed, only does that toward trusted, and looks at a head again once a webhook said who
-pushed it. The controller logs each run it doesn't trust.
+Calder trusts the code of each repository's owner and of the Gitea users the controller's `trustedPushers`
+names. Anyone else's code, such as the bot `renovate`'s, runs like a fork's pull request. A branch push by such
+a user gets the fork pool, no `secrets` or `defaultBranchSecrets` and no deploy lease, and no trusted run takes
+its results, plan or records. Its push rules still apply, and its plan fails on a step with grants or secrets,
+as a pull request's does, so it never deploys, also on the default branch. Calder's own Gitea user pushes only
+what it merged, so its push is as trusted as that: the merge train or a pull request it lands on the default
+branch is trusted unless a webhook said someone else pushed the head it lands on, and the default branch merged
+into a pull request's branch (`calder merge`) is trusted when someone trusted pushed the branch's head and no
+webhook said someone else pushed the default branch's revision. Calder keeps, per revision, whether a webhook
+said someone trusted pushed it: a push's `pusher`, the sender of a pull request's `synchronized` whose `after`
+is the revision, or Calder's own push as above. When Gitea doesn't say which user Calder is, no push counts as
+Calder's. A revision someone trusted pushed once stays trusted. Every run of a branch's revision, a pull
+request's included, runs like a fork's unless someone trusted pushed it, whoever opened the pull request. The
+default branch's head, which branch protection leaves to the trusted, is trusted unless a webhook said someone
+else pushed it, and so are its schedules, its nightly audit and the closed runs of pull requests into it; an
+untrusted push's plan doesn't change the schedules, and its head isn't audited. Manual runs stay trusted. When a
+webhook says otherwise of a revision than one of its runs assumed, Calder cancels that run and starts another:
+the push's or pull request's run, and any other of the revision still running, such as a schedule's. The
+catch-up does the same from what the webhooks said, and looks at a head again once a webhook said who pushed
+it. The controller logs each run it doesn't trust.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository that Calder trusts, never for forks, what runs like one or `calder check`. Their tasks may

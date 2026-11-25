@@ -6,6 +6,7 @@ import { SqlClient } from "effect/sql";
 import { type AgentUsage, Agents, make as makeAgents } from "../src/controller/Agents.ts";
 import { Cache } from "../src/controller/Cache.ts";
 import { Comments } from "../src/controller/Comments.ts";
+import type { Config } from "../src/controller/Config.ts";
 import { Gitea } from "../src/controller/Gitea.ts";
 import { Jobs } from "../src/controller/Jobs.ts";
 import * as Live from "../src/controller/Live.ts";
@@ -85,8 +86,19 @@ export interface Drive {
   readonly project?: Partial<Project>;
   /** What `nix-store --query --requisites` answers; any other query of the store finds nothing. */
   readonly requisites?: ReadonlyArray<string>;
-  /** Runs beside the run, such as a newer run that supersedes it; the run's services stay up until it ends. */
-  readonly meanwhile?: Effect.Effect<void, never, RunsCore | Workflow.Runs | SqlClient.SqlClient>;
+  /**
+   * Runs beside the run, such as a newer run that supersedes it or a webhook; the run's services stay up
+   * until it ends.
+   */
+  readonly meanwhile?: Effect.Effect<
+    void,
+    never,
+    RunsCore | Workflow.Runs | SqlClient.SqlClient | Config | Mirror | Projects | Gitea
+  >;
+  /** What the controller does when it hands out a plan job, before the job answers. */
+  readonly planning?: Effect.Effect<void, never, SqlClient.SqlClient>;
+  /** The head Gitea names of each branch, such as the one the nightly audit plans. */
+  readonly head?: string;
   /** How long Gitea takes to take a commit status, none by default. */
   readonly statusDelay?: (
     context: string,
@@ -153,6 +165,8 @@ export const drive = ({
   resume = Effect.void,
   project: configured = {},
   meanwhile = Effect.void,
+  planning = Effect.void,
+  head,
   requisites,
   rerunOf,
   placementKey,
@@ -250,6 +264,15 @@ export const drive = ({
 
     /** The pool each step's job ran in, and the plan's as `plan`. */
     const pools = new Map<string, string>();
+
+    /** Every job the controller handed out, of any run, with its pool and the secrets a step's was handed. */
+    const handed: Array<{
+      readonly run: string;
+      readonly job: string;
+      readonly pool: string;
+      readonly secrets?: Readonly<Record<string, string>>;
+    }> = [];
+
     /** The jobs that ran in the larger pull-request unit. */
     const large: Array<string> = [];
     /** The jobs that went to an evaluator agent (Jobs `evaluation`). */
@@ -402,11 +425,15 @@ export const drive = ({
               );
         }),
       ),
-      Layer.succeed(Projects)({ get: () => project, all: () => [project], byRepo: unused }),
+      Layer.succeed(Projects)({
+        get: () => project,
+        all: () => [project],
+        byRepo: () => Effect.succeed(project),
+      }),
       Layer.succeed(Mirror)({
         path: () => "/mirror",
         fetch: () => Effect.void,
-        hasPipeline: unused,
+        hasPipeline: () => Effect.succeed(true),
         pipelineTree: () => Effect.succeed("tree"),
         commit: (_project, sha) =>
           Effect.succeed({
@@ -419,6 +446,7 @@ export const drive = ({
           }),
         between: unused,
         contains: unused,
+        parents: unused,
         pipelineDir: () => Effect.succeed("/calder"),
         flake: () => "git+file:///mirror",
         byUrl: () => ({ "ssh://git@gitea.test/schnau/lib.git": "/state/mirrors/lib.git" }),
@@ -447,7 +475,7 @@ export const drive = ({
           return delay === undefined ? record : Effect.sleep(delay).pipe(Effect.andThen(record));
         },
         requiredChecks: () => Effect.succeed([]),
-        head: unused,
+        head: head === undefined ? unused : () => Effect.succeed(head),
         pullTitle: unused,
         comment: unused,
         dispatch: unused,
@@ -463,9 +491,17 @@ export const drive = ({
       Layer.succeed(Jobs)({
         run: (job, options) =>
           Effect.gen(function* () {
+            handed.push({
+              run: job.run.id,
+              job: job._tag === "Step" ? job.step : "plan",
+              pool: options.pool,
+              ...(job._tag === "Step" ? { secrets: job.secrets } : {}),
+            });
+
             if (job._tag === "Plan") {
               jobs.push(job.rules === true ? "rules" : "plan");
               pools.set(job.rules === true ? "rules" : "plan", options.pool);
+              yield* planning.pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
               if (job.rules !== true) planJob = job;
 
@@ -548,7 +584,9 @@ export const drive = ({
       // What runs beside may run the run again, such as a rerun once it ended.
       return yield* ended;
     }).pipe(
-      Effect.provide(Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provide(services))),
+      Effect.provide(
+        Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provideMerge(services)),
+      ),
     );
 
     const load = Effect.map(
@@ -573,6 +611,7 @@ export const drive = ({
     return {
       status,
       jobs,
+      handed,
       statuses,
       history,
       steps,

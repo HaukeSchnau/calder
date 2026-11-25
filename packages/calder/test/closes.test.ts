@@ -78,6 +78,7 @@ const world = (pulls: ReadonlyArray<Pull>, headDelay: Duration.Input = 0) =>
             commit: unused,
             between: unused,
             contains: unused,
+            parents: unused,
             pipelineDir: unused,
             flake: () => "",
             byUrl: () => ({}),

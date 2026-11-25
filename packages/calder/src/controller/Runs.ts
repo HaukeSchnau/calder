@@ -866,7 +866,8 @@ export const layerCore = Layer.effect(RunsCore)(
           yield* rememberPushes(run, tree, spec.pushes);
 
         // The default branch's plan says which schedules exist, even when its push runs nothing. Code Calder
-        // doesn't trust planned an untrusted push's, so it says nothing.
+        // doesn't trust planned an untrusted push's, so it says nothing, nor does a run cancelled meanwhile,
+        // such as one a webhook said that of (Workflow.ts `ensure`).
         if (
           run.trust === "trusted" &&
           event._tag === "Push" &&
@@ -875,6 +876,10 @@ export const layerCore = Layer.effect(RunsCore)(
           yield* db(
             sql.withTransaction(
               Effect.gen(function* () {
+                const planning =
+                  yield* sql`select id from runs where id = ${runId} and status = 'planning'`;
+
+                if (planning.length === 0) return;
                 yield* sql`delete from schedules where project = ${run.project}`;
 
                 for (const cron of spec.schedules)
@@ -3890,6 +3895,17 @@ export const layerCore = Layer.effect(RunsCore)(
         if (p === undefined) return [];
         const branch = p.defaultBranch;
         const sha = yield* gitea.head(p.repo, branch);
+
+        // Its ci.ts would plan in the trusted pool, and its records count as trusted: so not a head a webhook
+        // said someone Calder doesn't trust pushed (Workflow.ts `untrusted`).
+        if ((yield* db(Rows.pushedTrusted(project, sha))) === false) {
+          yield* Effect.logWarning(
+            `the audit of ${project} skipped ${sha.slice(0, 12)}: someone Calder doesn't trust pushed it`,
+          );
+
+          return [];
+        }
+
         yield* mirror.fetch(project);
         const dir = yield* mirror.pipelineDir(project, sha);
 

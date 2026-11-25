@@ -108,6 +108,20 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.forkDetach,
       );
 
+    // Who Calder trusts. When Gitea doesn't say which user Calder is, no push counts as Calder's: its own
+    // run like a fork's, and everyone else's as they would.
+    const whom = gitea.self.pipe(
+      Effect.map((bot): Trust.Trusted => ({ pushers: config.trustedPushers, bot })),
+      Effect.catch((why) =>
+        Effect.logWarning(why).pipe(
+          Effect.as<Trust.Trusted>({ pushers: config.trustedPushers, bot: undefined }),
+        ),
+      ),
+    );
+
+    const said = (sha: string | undefined) =>
+      sha === undefined || zero.test(sha) ? Effect.undefined : db(Rows.pushedTrusted(project, sha));
+
     if (event === "push") {
       const sha = payload.after;
 
@@ -117,13 +131,17 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
 
       // `calder check` pushes its working copies here and starts their runs itself.
       if (branch.startsWith("calder/check/")) return HttpServerResponse.text("ignored");
-      const trusted = { pushers: config.trustedPushers, bot: yield* gitea.self };
-      const pusher = payload.pusher?.login;
-      yield* db(Rows.pushed(project, sha, Trust.push(trusted, enrolled, branch, pusher)));
-      yield* start(
-        sha,
-        runs.ensure({ project, event: { _tag: "Push", branch }, sha }, { overrule: "any" }),
+
+      const trusted = Trust.push(
+        yield* whom,
+        enrolled,
+        branch,
+        payload.pusher?.login,
+        yield* said(payload.before),
       );
+
+      yield* db(Rows.pushed(project, sha, trusted));
+      yield* start(sha, runs.ensure({ project, event: { _tag: "Push", branch }, sha }));
 
       return HttpServerResponse.text("accepted", { status: 202 });
     }
@@ -164,26 +182,37 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
         pr.head?.repo?.full_name !== undefined &&
         pr.head.repo.full_name !== pr.base?.repo?.full_name;
 
-      // `sender` pushed `after`. Calder merging the default branch, which only the trusted push, into a
-      // revision someone trusted pushed (Merges.ts `update`) keeps it trusted.
-      if (!fork && synchronized && payload.after !== undefined) {
-        const sender = payload.sender?.login;
-        const trusted = { pushers: config.trustedPushers, bot: yield* gitea.self };
+      // `sender` pushed `after`. Calder's own push there merged the default branch into the head it moved
+      // from (Merges.ts `update`), which Gitea's merge commit names first and the default branch's revision
+      // second; the mirror, fetched by now, knows them.
+      const vouch =
+        !fork && synchronized && payload.after !== undefined
+          ? Effect.gen(function* () {
+              const parents = yield* mirror
+                .parents(project, sha)
+                .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
 
-        const vouched =
-          Trust.person(trusted, enrolled, sender) ||
-          (Trust.bot(trusted, sender) &&
-            pr.base?.ref === enrolled.defaultBranch &&
-            payload.before !== undefined &&
-            (yield* db(Rows.pushedTrusted(project, payload.before))) === true);
+              const merged =
+                parents.length === 2 && parents[0] === payload.before ? parents[1]! : null;
 
-        yield* db(Rows.pushed(project, sha, vouched));
-      }
+              const trusted = Trust.update(
+                yield* whom,
+                enrolled,
+                pr.base?.ref,
+                payload.sender?.login,
+                yield* said(payload.before),
+                merged === null ? null : yield* said(merged),
+              );
+
+              yield* db(Rows.pushed(project, sha, trusted));
+            })
+          : Effect.void;
 
       yield* start(
         sha,
-        runs.ensure(
-          {
+        Effect.andThen(
+          vouch,
+          runs.ensure({
             project,
             event: {
               _tag: "PullRequest",
@@ -194,8 +223,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
             },
             sha,
             fork,
-          },
-          { overrule: "any" },
+          }),
         ),
       );
 

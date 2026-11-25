@@ -45,15 +45,12 @@ export class Runs extends Context.Service<
     ) => Effect.Effect<Domain.Run, RunError>;
     /**
      * `create`, unless a run of the same project, revision and event exists: what the webhook and the
-     * catch-up after a restart use, so one push never starts two runs. With `overrule`, a run that trusts
-     * the code otherwise than a new one would (`untrusted`) is cancelled and replaced: `any`, as the
-     * webhook passes, or only one that ran like a fork's (`upward`), as the catch-up does, which can't
-     * tell who pushed.
+     * catch-up after a restart use, so one push never starts two runs. A run of the revision that trusts its
+     * code otherwise than a new one would, as webhooks said who pushed it (`untrusted`), is cancelled and
+     * started again: the newest of the event, and any other that still runs, such as a schedule's that
+     * started before the push's webhook came.
      */
-    readonly ensure: (
-      input: RunInput,
-      options?: { readonly overrule?: "any" | "upward" },
-    ) => Effect.Effect<Domain.Run, RunError>;
+    readonly ensure: (input: RunInput) => Effect.Effect<Domain.Run, RunError>;
     /** Audits a project's footprint records (RunsCore's `audit`). */
     readonly audit: (project: string) => Effect.Effect<ReadonlyArray<Domain.AuditMismatch>>;
   }
@@ -333,41 +330,87 @@ export const layer = Layer.effect(Runs)(
         return run;
       });
 
-    // One at a time, so the catch-up's run and a webhook's that overrules it never start side by side.
-    const ensuring = Semaphore.makeUnsafe(1);
+    // Per project and revision, so the catch-up's run and a webhook's that overrules it never start side by
+    // side, while runs of other revisions start meanwhile.
+    const ensuring = new Map<string, { readonly lock: Semaphore.Semaphore; users: number }>();
 
-    const ensure: Runs["Service"]["ensure"] = (input, options = {}) =>
-      ensuring.withPermits(1)(
+    const exclusive =
+      (key: string) =>
+      <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const entry = ensuring.get(key) ?? { lock: Semaphore.makeUnsafe(1), users: 0 };
+            entry.users++;
+            ensuring.set(key, entry);
+
+            return entry;
+          }),
+          (entry) => entry.lock.withPermits(1)(effect),
+          (entry) =>
+            Effect.sync(() => {
+              entry.users--;
+
+              if (entry.users === 0) ensuring.delete(key);
+            }),
+        );
+
+    /** What starts a run like `row` again; null for a run whose trust no webhook changes. */
+    const again = (row: Rows.RunRow): RunInput | null => {
+      const event = JSON.parse(row.event) as Domain.Event;
+
+      if (event._tag === "Manual" || event._tag === "Check") return null;
+
+      return {
+        project: row.project,
+        event,
+        sha: row.sha,
+        ...(event._tag === "PullRequest" ? { fork: event.fork ?? row.fork === 1 } : {}),
+      };
+    };
+
+    const ensure: Runs["Service"]["ensure"] = (input) =>
+      exclusive(`${input.project}|${input.sha}`)(
         Effect.gen(function* () {
-          const event = JSON.stringify(input.event);
-
-          const existing =
-            yield* db(sql<Rows.RunRow>`select * from runs where project = ${input.project} and sha = ${input.sha}
-          and event = ${event} order by created_at desc limit 1`);
-
-          const found = existing[0];
           const defaultBranch = projects.get(input.project)?.defaultBranch;
 
-          // Decided here, after the webhook that told Calder who pushed wrote it down.
-          const fork =
-            found !== undefined &&
-            options.overrule !== undefined &&
-            defaultBranch !== undefined &&
-            (yield* db(untrusted(input, defaultBranch)));
+          if (defaultBranch === undefined) return yield* create(input);
+          const event = JSON.stringify(input.event);
 
-          const overruled =
-            found !== undefined &&
-            (options.overrule === "any"
-              ? found.fork !== (fork ? 1 : 0)
-              : options.overrule === "upward" && found.fork === 1 && !fork);
-
-          if (found !== undefined && !overruled) return Rows.run(found);
-
-          if (overruled)
-            yield* core.cancel(
-              found.id,
-              `a webhook said who pushed ${input.sha.slice(0, 12)}, so it runs again ${fork ? "like a fork's pull request" : "as trusted"}`,
+          /** Whether `row` trusts the code otherwise than `create` of `of` would now. */
+          const stale = (row: Rows.RunRow, of: RunInput) =>
+            Effect.map(db(untrusted(of, defaultBranch)), (fork) =>
+              row.fork === (fork ? 1 : 0)
+                ? null
+                : `a webhook said who pushed ${input.sha.slice(0, 12)}, so it runs again ${fork ? "like a fork's pull request" : "as trusted"}`,
             );
+
+          const running =
+            yield* db(sql<Rows.RunRow>`select * from runs where project = ${input.project}
+          and sha = ${input.sha} and event != ${event} and status in ('queued', 'planning', 'running') order by number`);
+
+          for (const row of running) {
+            const of = again(row);
+            const reason = of === null ? null : yield* stale(row, of);
+
+            if (of === null || reason === null) continue;
+            yield* core.cancel(row.id, reason);
+            yield* create(of).pipe(
+              Effect.catch((e) => Effect.logError(`starting ${row.id} again failed`, e)),
+            );
+          }
+
+          // The newest by number too: a run and the one that replaced it may share their millisecond.
+          const existing =
+            yield* db(sql<Rows.RunRow>`select * from runs where project = ${input.project} and sha = ${input.sha}
+          and event = ${event} order by created_at desc, number desc limit 1`);
+
+          const found = existing[0];
+
+          if (found === undefined) return yield* create(input);
+          const reason = yield* stale(found, input);
+
+          if (reason === null) return Rows.run(found);
+          yield* core.cancel(found.id, reason);
 
           return yield* create(input);
         }),

@@ -96,6 +96,7 @@ const setup = (
             commit: unused,
             between: unused,
             contains: unused,
+            parents: unused,
             pipelineDir: unused,
             flake: () => "",
             byUrl: () => ({}),

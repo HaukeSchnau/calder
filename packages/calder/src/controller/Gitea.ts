@@ -92,8 +92,8 @@ const matches = (pattern: string, branch: string) =>
 export class Gitea extends Context.Service<
   Gitea,
   {
-    /** The login of the user Calder acts as, its token's. */
-    readonly self: Effect.Effect<string>;
+    /** The login of the user Calder acts as, its token's; fails with why when Gitea doesn't say. */
+    readonly self: Effect.Effect<string, string>;
     readonly status: (
       repo: string,
       sha: string,
@@ -206,15 +206,19 @@ export const layer = Layer.effect(Gitea)(
         );
 
     // Asked once it is needed and kept once Gitea answered, so a Gitea that is down at start costs nothing.
+    // Not retried: a webhook waits for it, and without it takes no push for Calder's (Webhook.ts).
     let login: string | undefined;
 
     return {
       self: Effect.suspend(() =>
         login !== undefined
           ? Effect.succeed(login)
-          : get("/user", User).pipe(
-              Effect.map((u) => (login = u.login)),
-              Effect.orDie,
+          : client.get(`${base}/user`).pipe(
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(User)),
+              Effect.mapBoth({
+                onSuccess: (u) => (login = u.login),
+                onFailure: (e) => `Gitea didn't say which user Calder is: ${e.message}`,
+              }),
             ),
       ),
       status: (repo, sha, s) =>

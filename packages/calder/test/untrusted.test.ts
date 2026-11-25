@@ -1,4 +1,4 @@
-import type { Domain } from "@calder-ci/api";
+import { Domain } from "@calder-ci/api";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Schedule } from "effect";
 import { HttpServerRequest } from "effect/http";
@@ -9,16 +9,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vite-plus/test";
 import * as Catchup from "../src/controller/Catchup.ts";
-import { layer as closes } from "../src/controller/Closes.ts";
+import { Closes, layer as closes } from "../src/controller/Closes.ts";
 import { Gitea } from "../src/controller/Gitea.ts";
 import { Mirror } from "../src/controller/Mirror.ts";
 import { type Project, Projects } from "../src/controller/Projects.ts";
 import * as Rows from "../src/controller/Rows.ts";
+import { RunsCore } from "../src/controller/Runs.ts";
 import * as Webhook from "../src/controller/Webhook.ts";
 import { type RunInput, Runs, untrusted } from "../src/controller/Workflow.ts";
 import type { PlannedStep } from "../src/Protocol.ts";
 import { config } from "./config.ts";
-import { drive, step, unused } from "./drive.ts";
+import { type Drive, drive, step, unused } from "./drive.ts";
 import { layer as sqlite } from "./sqlite.ts";
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
@@ -31,20 +32,28 @@ const project: Project = {
   secrets: {},
 };
 
-/** A run the webhook, the catch-up or a closing asked for, with how far it may overrule one there is. */
+/** A run the webhook, the catch-up or a closing asked for. */
 interface Asked {
   readonly input: RunInput;
-  readonly overrule?: "any" | "upward" | undefined;
 }
+
+/** The pull request's head before a push to its branch. */
+const older = "c".repeat(40);
+
+/** A revision of main. */
+const merged = "m".repeat(40);
 
 /**
  * The webhook, the catch-up and the closings in front of a Gitea whose open pull requests are `open`, with
- * the controller's `trustedPushers`. Returns the runs they asked for.
+ * the controller's `trustedPushers`. Gitea names Calder's user by `self`, and the mirror a revision's
+ * `parents`, by default those of main merged into `older`. Returns the runs they asked for.
  */
 const world = (
   options: {
     readonly open?: ReadonlyArray<number>;
     readonly trustedPushers?: ReadonlyArray<string>;
+    readonly self?: Effect.Effect<string, string>;
+    readonly parents?: ReadonlyArray<string>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -67,6 +76,7 @@ const world = (
         commit: unused,
         between: unused,
         contains: unused,
+        parents: () => Effect.succeed(options.parents ?? [older, merged]),
         pipelineDir: unused,
         flake: () => "",
         byUrl: () => ({}),
@@ -77,16 +87,14 @@ const world = (
       Layer.succeed(Runs)({
         create: (input) =>
           Effect.sync(() => void asked.push({ input })).pipe(Effect.as({} as never)),
-        ensure: (input, o) =>
-          Effect.sync(() => void asked.push({ input, overrule: o?.overrule })).pipe(
-            Effect.as({} as never),
-          ),
+        ensure: (input) =>
+          Effect.sync(() => void asked.push({ input })).pipe(Effect.as({} as never)),
         cancel: () => Effect.void,
         rerun: unused,
         audit: unused,
       }),
       Layer.succeed(Gitea)({
-        self: Effect.succeed("calder"),
+        self: options.self ?? Effect.succeed("calder"),
         head: (_repo, branch) => Effect.succeed(`${branch}-head`),
         openPulls: () =>
           Effect.succeed(
@@ -152,9 +160,11 @@ const hook = (event: "push" | "pull_request", payload: object) => {
 /** The revision the pushes and pull request #7 of these tests are at. */
 const head = "b".repeat(40);
 
+/** Gitea's webhook of `pusher`'s push of `head` to `branch`, which was at `older`. */
 const push = (branch: string, pusher: string | null) =>
   hook("push", {
     ref: `refs/heads/${branch}`,
+    before: older,
     after: head,
     ...(pusher === null ? {} : { pusher: { login: pusher }, sender: { login: pusher } }),
   });
@@ -177,7 +187,7 @@ const pull = (
     number: 7,
     sender: { login: sender },
     ...(action === "synchronized" && options.after !== null
-      ? { before: options.before ?? "c".repeat(40), after: options.after ?? head }
+      ? { before: options.before ?? older, after: options.after ?? head }
       : {}),
     pull_request: {
       closed_at: new Date().toISOString(),
@@ -212,10 +222,7 @@ describe("a webhook says who pushed a revision", () => {
 
         expect(yield* said(head)).toBe(trusted);
         expect(yield* runs(1)).toEqual([
-          {
-            input: { project: "app", event: { _tag: "Push", branch }, sha: head },
-            overrule: "any",
-          },
+          { input: { project: "app", event: { _tag: "Push", branch }, sha: head } },
         ]);
       }).pipe(Effect.provide(sqlite)),
     );
@@ -230,6 +237,37 @@ describe("a webhook says who pushed a revision", () => {
     }).pipe(Effect.provide(sqlite)),
   );
 
+  it.live(
+    "of Calder landing the merge train on a main renovate pushed past its protection: not trusted",
+    () =>
+      Effect.gen(function* () {
+        yield* pushed(older, false);
+        const { layer } = yield* world();
+        yield* push("main", "calder").pipe(Effect.provide(layer));
+
+        expect(yield* said(head)).toBe(false);
+      }).pipe(Effect.provide(sqlite)),
+  );
+
+  for (const [who, pusher, trusted] of [
+    ["the owner", "schnau", true],
+    ["Calder", "calder", false],
+  ] as const) {
+    it.live(
+      `of a push to main by ${who} while Gitea doesn't say which user Calder is: ${trusted ? "trusted" : "not trusted"}`,
+      () =>
+        Effect.gen(function* () {
+          const { runs, layer } = yield* world({ self: Effect.fail("Gitea is down") });
+          yield* push("main", pusher).pipe(Effect.provide(layer));
+
+          expect(yield* said(head)).toBe(trusted);
+          expect((yield* runs(1)).map((r) => r.input.event)).toEqual([
+            { _tag: "Push", branch: "main" },
+          ]);
+        }).pipe(Effect.provide(sqlite)),
+    );
+  }
+
   it.live("and once someone trusted pushed it, it stays trusted", () =>
     Effect.gen(function* () {
       yield* pushed(head, true);
@@ -239,7 +277,9 @@ describe("a webhook says who pushed a revision", () => {
     }).pipe(Effect.provide(sqlite)),
   );
 
-  const pulls: ReadonlyArray<[string, Seed, string, string, object, boolean | undefined]> = [
+  const pulls: ReadonlyArray<
+    [string, Seed, string, string, object, boolean | undefined, ReadonlyArray<string>?]
+  > = [
     ["the owner pushed to a pull request", Effect.void, "synchronized", "schnau", {}, true],
     ["renovate pushed to one", Effect.void, "synchronized", "renovate", {}, false],
     // Gitea says who opened or reopened it, not who pushed its head.
@@ -263,15 +303,32 @@ describe("a webhook says who pushed a revision", () => {
     ],
     [
       "Calder merged main into one the owner pushed",
-      pushed("c".repeat(40), true),
+      pushed(older, true),
       "synchronized",
       "calder",
       {},
       true,
     ],
     [
+      "Calder merged main, which renovate pushed past its protection, into one the owner pushed",
+      Effect.all([pushed(older, true), pushed(merged, false)]),
+      "synchronized",
+      "calder",
+      {},
+      false,
+    ],
+    [
+      "Calder pushed to one the owner pushed what isn't main merged into it",
+      pushed(older, true),
+      "synchronized",
+      "calder",
+      {},
+      false,
+      [older],
+    ],
+    [
       "Calder merged main into one renovate pushed",
-      pushed("c".repeat(40), false),
+      pushed(older, false),
       "synchronized",
       "calder",
       {},
@@ -288,7 +345,7 @@ describe("a webhook says who pushed a revision", () => {
     // The base, which Calder merged in, may be anyone's.
     [
       "Calder merged another base into one the owner pushed",
-      pushed("c".repeat(40), true),
+      pushed(older, true),
       "synchronized",
       "calder",
       { base: "feature-base" },
@@ -296,13 +353,13 @@ describe("a webhook says who pushed a revision", () => {
     ],
   ];
 
-  for (const [what, seed, action, sender, options, trusted] of pulls) {
+  for (const [what, seed, action, sender, options, trusted, parents] of pulls) {
     it.live(
       `when ${what}: ${trusted === undefined ? "nothing" : trusted ? "trusted" : "not trusted"}`,
       () =>
         Effect.gen(function* () {
           yield* seed;
-          const { runs, layer } = yield* world();
+          const { runs, layer } = yield* world(parents === undefined ? {} : { parents });
           yield* pull(action, sender, options).pipe(Effect.provide(layer));
 
           // The event stays the pull request's, so the catch-up finds the run.
@@ -319,7 +376,6 @@ describe("a webhook says who pushed a revision", () => {
               sha: head,
               fork: false,
             },
-            overrule: "any",
           });
           expect(yield* said(head)).toBe(trusted);
         }).pipe(Effect.provide(sqlite)),
@@ -440,7 +496,7 @@ describe("a run's code runs like a fork's pull request", () => {
 
 describe("the catch-up", () => {
   it.live(
-    "only moves runs toward trusted, and looks at a head again once a webhook said who pushed it",
+    "asks for the heads' runs, and looks at a head again once a webhook said who pushed it",
     () =>
       Effect.gen(function* () {
         const { runs, layer } = yield* world({ open: [1] });
@@ -453,10 +509,10 @@ describe("the catch-up", () => {
           yield* sweep;
         }).pipe(Effect.provide(layer));
 
-        expect((yield* runs(3)).map((r) => [r.input.event._tag, r.input.sha, r.overrule])).toEqual([
-          ["Push", "main-head", "upward"],
-          ["PullRequest", "sha-1", "upward"],
-          ["PullRequest", "sha-1", "upward"],
+        expect((yield* runs(3)).map((r) => [r.input.event._tag, r.input.sha])).toEqual([
+          ["Push", "main-head"],
+          ["PullRequest", "sha-1"],
+          ["PullRequest", "sha-1"],
         ]);
       }).pipe(Effect.provide(sqlite)),
   );
@@ -561,22 +617,37 @@ describe("a push to main", () => {
     }),
   );
 
-  it.live("by renovate leaves the schedules, which run main's head as trusted, alone", () =>
-    Effect.gen(function* () {
-      const schedules = (untrusted: boolean) =>
-        Effect.map(
-          drive({
-            steps: [task("qa", [])],
-            untrusted,
-            unplanned: true,
-            plan: { schedules: ["0 3 * * *"] },
-            read: reading((sql) => sql`select cron from schedules`),
-          }),
-          (r) => r.read,
-        );
+  /** The schedules once a push to main whose plan names 03:00 ran, where 04:00 was before. */
+  const schedules = (options: Partial<Drive> = {}) =>
+    Effect.map(
+      drive({
+        steps: [task("qa", [])],
+        unplanned: true,
+        plan: { schedules: ["0 3 * * *"] },
+        seed: reading(
+          (sql) => sql`insert into schedules (project, cron) values ('app', '0 4 * * *')`,
+        ),
+        read: reading((sql) => sql`select cron from schedules`),
+        ...options,
+      }),
+      (r) => r.read,
+    );
 
-      expect(yield* schedules(true)).toEqual([]);
-      expect(yield* schedules(false)).toEqual([{ cron: "0 3 * * *" }]);
+  it.live("by renovate leaves the schedules as they were", () =>
+    Effect.gen(function* () {
+      expect(yield* schedules({ untrusted: true })).toEqual([{ cron: "0 4 * * *" }]);
+      expect(yield* schedules()).toEqual([{ cron: "0 3 * * *" }]);
+    }),
+  );
+
+  it.live("cancelled while it planned leaves the schedules as they were", () =>
+    Effect.gen(function* () {
+      // As `cancel` does once the plan job answered, too late to stop it.
+      const cancel = reading((sql) => sql`update runs set status = 'cancelled' where id = 'app-2'`);
+
+      expect(yield* schedules({ planning: Effect.orDie(Effect.asVoid(cancel)) })).toEqual([
+        { cron: "0 4 * * *" },
+      ]);
     }),
   );
 
@@ -603,49 +674,202 @@ describe("a push to main", () => {
     }),
   );
 
+  const input = {
+    project: "app",
+    event: { _tag: "Push", branch: "main" },
+    sha: "sha",
+  } satisfies RunInput;
+
+  const ensure = Effect.gen(function* () {
+    return (yield* (yield* Runs).ensure(input).pipe(Effect.orDie)).id;
+  });
+
+  it.live("runs again when a webhook says otherwise of who pushed it", () =>
+    Effect.gen(function* () {
+      const { read } = yield* drive({
+        steps: [task("qa", [])],
+        seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
+        meanwhile: Effect.gen(function* () {
+          yield* Rows.pushed("app", "sha", false);
+          const overruled = yield* ensure;
+          const same = yield* ensure;
+          yield* Rows.pushed("app", "sha", true);
+          const trusted = yield* ensure;
+          const again = yield* ensure;
+
+          expect([overruled, same, trusted, again]).toEqual(["app-3", "app-3", "app-4", "app-4"]);
+        }),
+        read: reading((sql) => sql`select id, trust, fork from runs order by id`),
+      });
+
+      expect(read).toEqual([
+        { id: "app-1", trust: "trusted", fork: 0 },
+        { id: "app-2", trust: "trusted", fork: 0 },
+        { id: "app-3", trust: "pr", fork: 1 },
+        { id: "app-4", trust: "trusted", fork: 0 },
+      ]);
+    }),
+  );
+
   it.live(
-    "runs again when a webhook says otherwise of who pushed it, but only toward trusted on the catch-up's word",
+    "by renovate starts its revision's schedule run again like a fork's, which began before the webhook came",
     () =>
       Effect.gen(function* () {
-        const input = {
-          project: "app",
-          event: { _tag: "Push", branch: "main" },
-          sha: "sha",
-        } satisfies RunInput;
+        const schedule = { _tag: "Schedule", cron: "0 3 * * *" } as const;
 
         const { read } = yield* drive({
           steps: [task("qa", [])],
+          event: schedule,
+          // Still running when the webhook comes.
+          work: () => Effect.sleep("300 millis"),
           seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
           meanwhile: Effect.gen(function* () {
-            const runs = yield* Runs;
-
-            const ensure = (overrule: "any" | "upward") =>
-              Effect.map(runs.ensure(input, { overrule }).pipe(Effect.orDie), (r) => r.id);
-
             yield* Rows.pushed("app", "sha", false);
-            const caughtUp = yield* ensure("upward");
-            const overruled = yield* ensure("any");
-            yield* Rows.pushed("app", "sha", true);
-            const trusted = yield* ensure("upward");
-            const again = yield* ensure("any");
-
-            expect([caughtUp, overruled, trusted, again]).toEqual([
-              "app-2",
-              "app-3",
-              "app-4",
-              "app-4",
-            ]);
+            yield* ensure;
           }),
-          read: reading((sql) => sql`select id, trust, fork from runs order by id`),
+          read: reading(
+            (sql) => sql`select id, event, trust, fork from runs where sha = 'sha' order by id`,
+          ),
         });
 
         expect(read).toEqual([
-          { id: "app-1", trust: "trusted", fork: 0 },
-          { id: "app-2", trust: "trusted", fork: 0 },
-          { id: "app-3", trust: "pr", fork: 1 },
-          { id: "app-4", trust: "trusted", fork: 0 },
+          { id: "app-2", event: JSON.stringify(schedule), trust: "trusted", fork: 0 },
+          { id: "app-3", event: JSON.stringify(schedule), trust: "pr", fork: 1 },
+          { id: "app-4", event: JSON.stringify(input.event), trust: "pr", fork: 1 },
         ]);
       }),
+  );
+
+  it.live("takes the newest of its runs, also one that started in the same millisecond", () =>
+    Effect.gen(function* () {
+      const { read } = yield* drive({
+        steps: [task("qa", [])],
+        seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 3)`),
+        meanwhile: Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          // What replaced app-2, in its millisecond, once a webhook said renovate pushed it.
+          yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status,
+              created_at, trace_id, span_id, fork)
+            values ('app-3', 'app', 3, ${JSON.stringify(input.event)}, 'sha', 'main', 'title', 'hauke', 2, 'pr', 'passed', 2, 't', 's', 1)`.pipe(
+            Effect.orDie,
+          );
+          yield* Rows.pushed("app", "sha", false);
+
+          expect(yield* ensure).toBe("app-3");
+        }),
+        read: reading((sql) => sql`select id from runs where sha = 'sha' order by id`),
+      });
+
+      expect(read).toEqual([{ id: "app-2" }, { id: "app-3" }]);
+    }),
+  );
+
+  /**
+   * Gitea's signed webhook of `pusher`'s push of a revision to main, through the real `ensure` and the run it
+   * starts, beside app-2, a manual run of the revision. Returns the push's runs and their jobs.
+   */
+  const pushedBy = (pusher: string) =>
+    Effect.gen(function* () {
+      const event = JSON.stringify({ _tag: "Push", branch: "main" });
+
+      const { read, handed } = yield* drive({
+        steps,
+        event: { _tag: "Manual", inputs: {}, branch: "main" },
+        unplanned: true,
+        // Each run runs its steps, rather than take the other's results.
+        plan: { reuse: "none" },
+        project: configured,
+        seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
+        meanwhile: Effect.gen(function* () {
+          yield* hook("push", {
+            ref: "refs/heads/main",
+            before: older,
+            after: "sha",
+            pusher: { login: pusher },
+          }).pipe(Effect.provideService(Closes, { close: unused, catchUp: unused }));
+
+          // The webhook starts its run in the background.
+          yield* Rows.loadRun("app-3").pipe(
+            Effect.repeat({
+              until: (r) => r !== undefined && Domain.ended.has(r.status),
+              schedule: Schedule.spaced("10 millis"),
+            }),
+            Effect.timeout("5 seconds"),
+            Effect.orDie,
+          );
+        }),
+        read: reading(
+          (sql) =>
+            sql`select id, trust, fork, status from runs where sha = 'sha' and event = ${event} order by id`,
+        ),
+      });
+
+      return {
+        runs: read,
+        jobs: handed
+          .filter((h) => h.run === "app-3")
+          .map((h) => ({
+            job: h.job,
+            pool: h.pool,
+            ...(h.secrets === undefined ? {} : { secrets: h.secrets }),
+          })),
+      };
+    });
+
+  it.live("by renovate, signed by Gitea, plans and runs in the fork pool without secrets", () =>
+    Effect.gen(function* () {
+      expect(yield* pushedBy("renovate")).toEqual({
+        runs: [{ id: "app-3", trust: "pr", fork: 1, status: "passed" }],
+        jobs: [
+          { job: "plan", pool: "fork" },
+          { job: "qa", pool: "fork", secrets: {} },
+          { job: "deploy", pool: "fork", secrets: {} },
+          { job: "testflight", pool: "fork", secrets: {} },
+        ],
+      });
+    }),
+  );
+
+  it.live("by the owner, signed by Gitea, plans and runs trusted with its secrets", () =>
+    Effect.gen(function* () {
+      expect(yield* pushedBy("schnau")).toEqual({
+        runs: [{ id: "app-3", trust: "trusted", fork: 0, status: "passed" }],
+        jobs: [
+          { job: "plan", pool: "trusted" },
+          { job: "qa", pool: "trusted", secrets: {} },
+          { job: "deploy", pool: "trusted", secrets: { cloudflare: "cloudflare-token" } },
+          { job: "testflight", pool: "trusted", secrets: { "app-store-connect": "store-key" } },
+        ],
+      });
+    }),
+  );
+});
+
+describe("the nightly audit", () => {
+  /** The pools the audit of main's head `head` planned in. */
+  const audited = (seed: Seed) =>
+    Effect.map(
+      drive({
+        steps: [task("qa", [])],
+        head: "head",
+        seed,
+        meanwhile: Effect.gen(function* () {
+          yield* (yield* RunsCore).audit("app");
+        }),
+      }),
+      (r) => r.handed.filter((h) => h.job === "plan").map((h) => h.pool),
+    );
+
+  it.live("plans main's head in the trusted pool", () =>
+    Effect.gen(function* () {
+      expect(yield* audited(Effect.void)).toEqual(["trusted"]);
+    }),
+  );
+
+  it.live("but not a head renovate pushed past its protection", () =>
+    Effect.gen(function* () {
+      expect(yield* audited(Rows.pushed("app", "head", false))).toEqual([]);
+    }),
   );
 });
 

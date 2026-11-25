@@ -9,8 +9,9 @@ export const PullRequest = Schema.TaggedStruct("PullRequest", {
 });
 
 /**
- * A pull request was merged or closed. Its run plans the base branch's head, so it is trusted when someone
- * the controller trusts pushed that head, as it takes of the default branch's unless told otherwise.
+ * A pull request was merged or closed. Its run plans the base branch's head. It is trusted when a webhook
+ * said someone the controller trusts pushed that head. The default branch's head is also trusted when no
+ * webhook said who pushed it, since only the trusted may; one a webhook said someone else pushed isn't.
  */
 export const PullRequestClosed = Schema.TaggedStruct("PullRequestClosed", {
   number: Schema.Number,

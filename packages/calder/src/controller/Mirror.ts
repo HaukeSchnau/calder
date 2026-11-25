@@ -52,6 +52,11 @@ export class Mirror extends Context.Service<
       ReadonlyArray<{ readonly sha: string; readonly at: number }>,
       Exec.ExecError
     >;
+    /** The parents of a commit, the first first. */
+    readonly parents: (
+      project: string,
+      sha: string,
+    ) => Effect.Effect<ReadonlyArray<string>, Exec.ExecError>;
     /** Whether `revision` is `commit` or descends from it. False also when the mirror lacks either. */
     readonly contains: (
       project: string,
@@ -360,6 +365,10 @@ export const layer = Layer.effect(Mirror)(
                 return { sha: sha!, at: Number(at) * 1000 };
               }),
           ),
+        ),
+      parents: (project, sha) =>
+        git(project, ["show", "--no-patch", "--format=%P", "--end-of-options", sha]).pipe(
+          Effect.map((out) => out.trim().split(" ").filter(Boolean)),
         ),
       contains: (project, revision, commit) =>
         git(project, ["merge-base", "--is-ancestor", commit, revision]).pipe(
