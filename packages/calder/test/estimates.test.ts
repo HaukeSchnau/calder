@@ -21,6 +21,7 @@ const history = (n: number) =>
           started: i * 100_000,
           finished: i * 100_000 + i * 1000,
         });
+
         for (const shard of [1, 2, 3]) {
           yield* sql`insert into shards (run_id, step, shard, key, status, started_at, finished_at)
           values (${`p-${i}`}, 'shard', ${shard}, 'k', 'passed', ${i * 100_000}, ${i * 100_000 + i * 1000})`;
@@ -47,6 +48,7 @@ describe("Estimates", () => {
       yield* history(3);
       const estimates = yield* Estimates.Estimates;
       expect((yield* estimates.steps("p")).get("test")).toBe(2000);
+
       const settled = {
         run_id: "p-4",
         name: "test",
@@ -54,6 +56,7 @@ describe("Estimates", () => {
         started_at: 400_000,
         finished_at: 460_000,
       };
+
       yield* estimates.stepSettled("p", { ...settled, status: "running", finished_at: null });
       expect((yield* estimates.steps("p")).get("test")).toBe(2000);
       yield* estimates.stepSettled("p", settled);
@@ -62,6 +65,7 @@ describe("Estimates", () => {
       expect((yield* estimates.steps("p")).get("test")).toBe(3000);
 
       expect((yield* estimates.shards("p")).get("shard")).toBe(2000);
+
       for (const index of [1, 2, 3, 4, 4]) {
         yield* estimates.shardSettled("p", {
           run: "p-4",
@@ -71,6 +75,7 @@ describe("Estimates", () => {
           finishedAt: 460_000,
         });
       }
+
       // Three shards each of 1 s, 2 s and 3 s, and four of 60 s.
       expect((yield* estimates.shards("p")).get("shard")).toBe(3000);
     }).pipe(Effect.provide(layer)),

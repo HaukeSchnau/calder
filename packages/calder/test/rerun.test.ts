@@ -71,6 +71,7 @@ describe("a rerun", () => {
             { name: "announce", status: "blocked" },
           ],
         });
+
         expect(status).toBe("passed");
         expect(jobs.toSorted()).toEqual(["announce", "testflight"]);
         expect(steps.get("ota")).toMatchObject({ status: "reused", reusedFrom: { id: "app-1" } });
@@ -89,6 +90,7 @@ describe("a rerun", () => {
         const token = join(mkdtempSync(join(tmpdir(), "calder-secret-")), "token");
         writeFileSync(token, "token-2");
         const digest = (value: string) => secretsDigest("placement key", { TOKEN: value });
+
         const { jobs } = yield* drive({
           steps: [deploy("server", [], ["TOKEN"]), deploy("ota"), deploy("tower", [], ["TOKEN"])],
           project: { secrets: { TOKEN: token } },
@@ -113,6 +115,7 @@ describe("a rerun", () => {
             },
           ],
         });
+
         expect(jobs.toSorted()).toEqual(["ota", "server"]);
       }),
   );
@@ -123,6 +126,7 @@ describe("a rerun", () => {
       Effect.gen(function* () {
         const token = join(mkdtempSync(join(tmpdir(), "calder-secret-")), "token");
         writeFileSync(token, "1234");
+
         const { jobs, steps } = yield* drive({
           steps: [deploy("server", [], ["TOKEN"]), deploy("ota")],
           project: { secrets: { TOKEN: token } },
@@ -138,6 +142,7 @@ describe("a rerun", () => {
             { name: "ota", status: "passed", key: key("ota"), lease: 1 },
           ],
         });
+
         expect(jobs).toEqual(["server"]);
         expect(steps.get("server")?.status).toBe("passed");
       }),
@@ -160,6 +165,7 @@ describe("a rerun", () => {
         ],
         value: (name) => (name === "ota" ? "update-2" : null),
       });
+
       expect(jobs.toSorted()).toEqual(["ota", "promote", "server"]);
     }),
   );

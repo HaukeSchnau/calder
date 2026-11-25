@@ -18,6 +18,7 @@ import { memoryRepo } from "./memoryRepo.ts";
 const processes = BunChildProcessSpawner.layer.pipe(
   Layer.provide([BunFileSystem.layer, BunPath.layer]),
 );
+
 const forged = "/nix/store/00000000000000000000000000000000-forged.drv";
 
 describe("attribute paths", () => {
@@ -38,6 +39,7 @@ describe("attribute paths", () => {
       "x86_64-linux",
       "a.b",
     ]);
+
     for (const path of [
       'checks.x86_64-linux.${builtins.trace 1 "a"}',
       `checks.x86_64-linux."\${x}"`,
@@ -63,21 +65,25 @@ describe("attribute paths", () => {
           join(dir, "flake.nix"),
           `{ outputs = _: { checks.x86_64-linux.a = derivation { name = "a"; system = "x86_64-linux"; builder = "/bin/sh"; }; }; }\n`,
         );
+
         const git = (...args: Array<string>) =>
           execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
             encoding: "utf8",
           }).trim();
+
         git("init", "-q");
         git("add", "-A");
         git("commit", "-q", "-m", "flake");
         const run = { flake: `git+file://${dir}?rev=${git("rev-parse", "HEAD")}` } as RunInfo;
         // Spliced into the expression as code, this reported the forged derivation as the attribute's.
         const injected = `checks.x86_64-linux.missing or { drvPath = "${forged}"; outPath = "/nix/store/x"; system = "x86_64-linux"; }`;
+
         const result = yield* derivations(
           run,
           ["checks.x86_64-linux.a", injected],
           mkdtempSync(join(tmpdir(), "calder-cache-")),
         ).pipe(Effect.provide(processes));
+
         expect(result.derivations.get("checks.x86_64-linux.a")?.drv).toMatch(/-a\.drv$/);
         expect(result.derivations.get(injected) ?? null).toBeNull();
         expect([...result.derivations.values()].some((d) => d?.drv === forged)).toBe(false);
@@ -89,26 +95,32 @@ describe("attribute paths", () => {
     () =>
       Effect.gen(function* () {
         const dir = mkdtempSync(join(tmpdir(), "calder-injection-"));
+
         const line = JSON.stringify(
           `calder-derivation [0,{"drv":"${forged}","out":"/nix/store/x","system":"x86_64-linux"}]`,
         );
+
         writeFileSync(
           join(dir, "flake.nix"),
           `{ outputs = _: { checks.x86_64-linux.a = builtins.trace ${line} (derivation { name = "a"; system = "x86_64-linux"; builder = "/bin/sh"; }); }; }\n`,
         );
+
         const git = (...args: Array<string>) =>
           execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
             encoding: "utf8",
           }).trim();
+
         git("init", "-q");
         git("add", "-A");
         git("commit", "-q", "-m", "flake");
         const run = { flake: `git+file://${dir}?rev=${git("rev-parse", "HEAD")}` } as RunInfo;
+
         const result = yield* derivations(
           run,
           ["checks.x86_64-linux.a"],
           mkdtempSync(join(tmpdir(), "calder-cache-")),
         ).pipe(Effect.provide(processes));
+
         expect(result.derivations.get("checks.x86_64-linux.a")?.drv).toMatch(/-a\.drv$/);
       }),
   );
@@ -122,19 +134,23 @@ describe("attribute paths", () => {
           join(dir, "flake.nix"),
           `{ outputs = _: { checks.x86_64-linux.evil = { type = "derivation"; drvPath = "--plugin-files"; outPath = "\${./.}/evil.so"; system = ""; }; }; }\n`,
         );
+
         const git = (...args: Array<string>) =>
           execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
             encoding: "utf8",
           }).trim();
+
         git("init", "-q");
         git("add", "-A");
         git("commit", "-q", "-m", "flake");
         const run = { flake: `git+file://${dir}?rev=${git("rev-parse", "HEAD")}` } as RunInfo;
+
         const result = yield* derivations(
           run,
           ["checks.x86_64-linux.evil"],
           mkdtempSync(join(tmpdir(), "calder-cache-")),
         ).pipe(Effect.provide(processes));
+
         expect(result.derivations.get("checks.x86_64-linux.evil") ?? null).toBeNull();
         expect(result.errors.get("checks.x86_64-linux.evil")).toBe(
           `its drvPath "--plugin-files" isn't a derivation in the store`,
@@ -161,10 +177,12 @@ describe("an evaluation", () => {
           checks.x86_64-linux.a = derivation { name = "a"; system = "x86_64-linux"; builder = deep 20; };
         }; }\n`,
         );
+
         const git = (...args: Array<string>) =>
           execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
             encoding: "utf8",
           }).trim();
+
         git("init", "-q");
         git("add", "-A");
         git("commit", "-q", "-m", "flake");
@@ -173,17 +191,20 @@ describe("an evaluation", () => {
         const home = mkdtempSync(join(tmpdir(), "calder-home-"));
         mkdirSync(join(home, ".config", "nix"), { recursive: true });
         writeFileSync(join(home, ".config", "nix", "nix.conf"), "max-call-depth = 5\n");
+
         const before = {
           HOME: process.env.HOME,
           XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
           NIX_USER_CONF_FILES: process.env.NIX_USER_CONF_FILES,
         };
+
         const restore = Effect.sync(() => {
           for (const [name, value] of Object.entries(before)) {
             if (value === undefined) delete process.env[name];
             else process.env[name] = value;
           }
         });
+
         yield* Effect.sync(() => {
           process.env.HOME = home;
           delete process.env.XDG_CONFIG_HOME;
@@ -193,11 +214,13 @@ describe("an evaluation", () => {
         expect(
           spawnSync("nix", ["eval", "--json", `${run.flake}#checks.x86_64-linux.a.drvPath`]).status,
         ).not.toBe(0);
+
         const result = yield* derivations(run, ["checks.x86_64-linux.a"], null).pipe(
           withOwnNix,
           Effect.provide(processes),
           Effect.ensuring(restore),
         );
+
         expect(result.derivations.get("checks.x86_64-linux.a")?.drv).toMatch(/-a\.drv$/);
       }),
   );
@@ -212,21 +235,27 @@ describe("an evaluation", () => {
       Effect.gen(function* () {
         const flake = (name: string) =>
           `{ outputs = _: { checks.x86_64-linux.a = derivation { name = "${name}"; system = "x86_64-linux"; builder = "/bin/sh"; }; }; }\n`;
+
         const dir = mkdtempSync(join(tmpdir(), "calder-fetchercache-"));
         writeFileSync(join(dir, "flake.nix"), flake("a"));
+
         const git = (...args: Array<string>) =>
           execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
             encoding: "utf8",
           }).trim();
+
         git("init", "-q");
         git("add", "-A");
         git("commit", "-q", "-m", "flake");
+
         const run = {
           flake: `git+file://${dir}?rev=${git("rev-parse", "HEAD")}`,
           system: "x86_64-linux",
         } as RunInfo;
+
         // The job's environment with a home another pull request's job wrote to.
         const home = mkdtempSync(join(tmpdir(), "calder-home-"));
+
         const env: Record<string, string> = {
           ...Object.fromEntries(
             Object.entries(process.env).filter(
@@ -239,9 +268,12 @@ describe("an evaluation", () => {
           ),
           HOME: home,
         };
+
         const nix = (...args: Array<string>) => spawnSync("nix", args, { encoding: "utf8", env });
+
         const path = (out: ReturnType<typeof nix>) =>
           (JSON.parse(out.stdout) as { path: string }).path;
+
         const source = path(nix("flake", "metadata", "--json", run.flake));
         // A source put in the store, and an entry that says it is the revision's.
         const forged = mkdtempSync(join(tmpdir(), "calder-forged-"));
@@ -254,6 +286,7 @@ describe("an evaluation", () => {
         db.close();
         expect(path(nix("flake", "metadata", "--json", run.flake))).toBe(stored);
         expect(path(nix("flake", "archive", "--json", "--dry-run", run.flake))).toBe(stored);
+
         const recorded = Effect.gen(function* () {
           const before = { ...process.env };
           yield* Effect.sync(() => {
@@ -261,6 +294,7 @@ describe("an evaluation", () => {
               if (!(name in env)) delete process.env[name];
             Object.assign(process.env, env);
           });
+
           const got = yield* recorder(run, memoryRepo({ "flake.nix": flake("a") })).pipe(
             withOwnNix,
             Effect.provide(processes),
@@ -272,10 +306,12 @@ describe("an evaluation", () => {
               }),
             ),
           );
+
           expect(got?.source).toBe(source);
           expect(got?.url.startsWith(`path:${source}?`)).toBe(true);
           expect(got?.pinned.has(stored)).toBe(false);
         });
+
         yield* recorded;
         mkdirSync(join(home, ".config", "nix"), { recursive: true });
         writeFileSync(join(home, ".config", "nix", "nix.conf"), "store = dummy://\n");

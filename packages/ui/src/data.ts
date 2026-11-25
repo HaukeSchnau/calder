@@ -32,6 +32,7 @@ const changesAtom = Calder.runtime
         Stream.runForEach((change) => PubSub.publish(hub, change)),
         Effect.forkScoped,
       );
+
       return hub;
     }),
   )
@@ -65,14 +66,17 @@ function live<A, E>(
   },
 ): Stream.Stream<A, Exclude<E, RpcClientError>, Calder> {
   const { load, apply, refresh: timer } = options;
+
   const step = (state: Snapshot<A>, change: Domain.Change): Snapshot<A> => ({
     seq: change.seq,
     value: apply(state.value, change),
   });
+
   const connected = Stream.unwrap(
     Effect.gen(function* () {
       const changes = yield* PubSub.subscribe(yield* get.result(changesAtom));
       const initial = yield* load;
+
       const ticks: Stream.Stream<typeof refresh> =
         timer === undefined
           ? Stream.empty
@@ -80,6 +84,7 @@ function live<A, E>(
               Stream.drop(1),
               Stream.map((): typeof refresh => refresh),
             );
+
       return Stream.fromSubscription(changes).pipe(
         Stream.merge(ticks),
         Stream.scanEffect(
@@ -95,9 +100,12 @@ function live<A, E>(
                   )
                 : Effect.succeed(state);
             }
+
             if (state.seq === null || message.seq === state.seq + 1)
               return Effect.succeed(step(state, message));
+
             if (message.seq <= state.seq) return Effect.succeed(state);
+
             // A change went missing: start over from a fresh snapshot.
             return load.pipe(
               Effect.map((fresh) =>
@@ -111,6 +119,7 @@ function live<A, E>(
       );
     }),
   );
+
   return retryWhileOffline(connected);
 }
 
@@ -122,11 +131,13 @@ function poll<A, E>(
     every === null
       ? Stream.fromEffect(load)
       : Stream.tick(every).pipe(Stream.mapEffect(() => load));
+
   return retryWhileOffline(stream);
 }
 
 export const isActive = (status: Domain.RunStatus) =>
   status === "queued" || status === "planning" || status === "running";
+
 export const isTerminal = (status: Domain.StepStatus) =>
   status === "passed" ||
   status === "reused" ||
@@ -146,7 +157,9 @@ function upsert<A>(
   at: "start" | "end",
 ): ReadonlyArray<A> {
   const i = list.findIndex(same);
+
   if (i >= 0) return list.map((x, j) => (j === i ? item : x));
+
   return at === "start" ? [item, ...list] : [...list, item];
 }
 
@@ -170,6 +183,7 @@ function applyOverview(ov: Domain.Overview, change: Domain.Change): Domain.Overv
       return ov;
     case "DeploymentChanged": {
       const d = change.deployment;
+
       return {
         ...ov,
         seq: change.seq,
@@ -180,21 +194,27 @@ function applyOverview(ov: Domain.Overview, change: Domain.Change): Domain.Overv
         ),
       };
     }
+
     case "RunChanged": {
       const run = change.run;
+
       const projects = ov.projects.map((p) => {
         if (p.name !== run.project || !onDefaultBranch(run, p.defaultBranch)) return p;
         const entry = { id: run.id, status: run.status, durationMs: durationOf(run) };
+
         const history = p.history.some((h) => h.id === run.id)
           ? p.history.map((h) => (h.id === run.id ? entry : h))
           : [...p.history, entry].slice(-20);
+
         return {
           ...p,
           main: p.main === null || run.number >= p.main.number ? run : p.main,
           history,
         };
       });
+
       const others = ov.active.filter((r) => r.id !== run.id);
+
       return {
         ...ov,
         seq: change.seq,
@@ -230,7 +250,9 @@ const applyRun =
     switch (change._tag) {
       case "RunChanged": {
         const run = change.run;
+
         if (run.id === id) return { ...d, seq: change.seq, run };
+
         return isSibling(d.run, run)
           ? {
               ...d,
@@ -239,10 +261,13 @@ const applyRun =
             }
           : d;
       }
+
       case "StepChanged": {
         const step = change.step;
+
         if (step.runId !== id) return d;
         const failed = step.status === "failed" || step.status === "died";
+
         return {
           ...d,
           seq: change.seq,
@@ -252,6 +277,7 @@ const applyRun =
             : d.failingTests,
         };
       }
+
       case "DeploymentChanged":
       case "DeploymentRecorded":
         return d;
@@ -280,12 +306,15 @@ const applyRuns =
   (runs: ReadonlyArray<Domain.Run>, change: Domain.Change): ReadonlyArray<Domain.Run> => {
     if (change._tag !== "RunChanged") return runs;
     const run = change.run;
+
     if (run.project !== key.project) return runs;
+
     if (
       key.pullRequest !== null &&
       !(run.event._tag === "PullRequest" && run.event.number === key.pullRequest)
     )
       return runs;
+
     return upsert(runs, run, (r) => r.id === run.id, "start");
   };
 
@@ -386,9 +415,12 @@ const applyHistory =
   ): ReadonlyArray<Domain.DeploymentRecord> => {
     if (change._tag !== "DeploymentRecorded") return records;
     const r = change.record;
+
     if (r.project !== key.project || (key.host !== null && r.host !== key.host)) return records;
+
     if (records.some((x) => x.runId === r.runId && x.host === r.host && x.at === r.at))
       return records;
+
     return [r, ...records].slice(0, key.limit);
   };
 
@@ -423,13 +455,18 @@ export interface AgentWait {
 /** Queued or running steps of active runs whose platform no connected agent serves. */
 export const agentWaitsAtom = Atom.make((get): ReadonlyArray<AgentWait> => {
   const ov = get(overviewAtom);
+
   if (!AsyncResult.isSuccess(ov)) return [];
   const { agents, active } = ov.value;
+
   const served = (platform: string) =>
     agents.some((a) => a.connected && a.current && a.platform === platform);
+
   return active.flatMap((run) => {
     const detail = get(runAtom(run.id));
+
     if (!AsyncResult.isSuccess(detail)) return [];
+
     return detail.value.steps.flatMap((step) =>
       (step.status === "queued" || step.status === "running") &&
       step.platform !== null &&

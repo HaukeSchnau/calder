@@ -11,12 +11,15 @@ export const memoryRepo = (tree: Record<string, string>): Repo => {
     oid: hash(text),
     mode: "100644",
   }));
+
   const id = (path: string) => {
     const below = entries.filter(
       (e) => path === "." || e.path === path || e.path.startsWith(`${path}/`),
     );
+
     return below.length === 0 ? [] : [[path, hash(JSON.stringify(below))] as const];
   };
+
   return {
     files: Effect.succeed(Object.keys(tree)),
     entries: Effect.succeed(entries),

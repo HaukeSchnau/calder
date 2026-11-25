@@ -23,9 +23,11 @@ const repository = Argument.String("dir").pipe(
   Argument.withDescription("The repository, by default the current directory"),
   Argument.withDefault("."),
 );
+
 const runId = Argument.String("run").pipe(
   Argument.withDescription("The run id, such as calder-12"),
 );
+
 const url = Flag.String("url").pipe(
   Flag.withDescription("The controller (default $CALDER_URL, then https://ci.schnau.dev)"),
   Flag.withDefault(process.env.CALDER_URL ?? "https://ci.schnau.dev"),
@@ -139,6 +141,7 @@ const agent = Command.make(
   },
   (flags) => {
     const pools = Option.getOrNull(flags.pools)?.split(",") ?? null;
+
     return Option.isSome(flags.units) && Option.isSome(flags.evaluator)
       ? Effect.die(
           new Error(
@@ -169,6 +172,7 @@ const gen = Command.make("gen", { dir: repository }, ({ dir }) =>
     yield* Console.log(
       `wrote .calder/flake.ts (${outputs.packages.length} packages, ${outputs.checks.length} checks, ${outputs.devShells.length} dev shells)`,
     );
+
     if (outputs.created) yield* Console.log("wrote .calder/ci.ts with the standard pipeline");
   }),
 ).pipe(
@@ -202,14 +206,18 @@ const plan = Command.make(
     Effect.gen(function* () {
       const parsed = yield* Cli.parseEvent(event);
       const pipelineDir = resolve(dir, ".calder");
+
       // A link from an older `calder gen` may point at a Calder that is gone; planning repairs it.
       if (existsSync(pipelineDir)) Gen.linkCheckout(pipelineDir);
       const project = yield* Load.project(pipelineDir);
+
       const requiredChecks = Option.match(required, {
         onNone: () => [],
         onSome: (r) => r.split(","),
       });
+
       const planned = yield* Calder.plan(project, parsed, { requiredChecks });
+
       if (json) {
         const steps = planned.steps.map(
           ({ kind, name, target, needs, after, exits, required }) => ({
@@ -222,6 +230,7 @@ const plan = Command.make(
             required,
           }),
         );
+
         yield* Console.log(
           JSON.stringify(
             { event: planned.event, trust: planned.trust, reuse: planned.reuse, steps },
@@ -229,11 +238,14 @@ const plan = Command.make(
             2,
           ),
         );
+
         return yield* Check.checkFiles(dir, project);
       }
+
       yield* Console.log(
         `${Event.describe(planned.event)}: ${planned.trust}, reuse ${planned.reuse}`,
       );
+
       for (const step of planned.steps) {
         const deps = [
           ...step.needs.map((n) => `needs ${n}`),
@@ -242,10 +254,12 @@ const plan = Command.make(
             step.required.includes(n) ? `after ${n} (required)` : `after ${n}`,
           ),
         ];
+
         yield* Console.log(
           `  ${step.kind.padEnd(6)} ${step.name}${step.target ? "" : " (pulled in)"}${deps.length > 0 ? `  ← ${deps.join(", ")}` : ""}`,
         );
       }
+
       yield* Check.checkFiles(dir, project);
     }),
 ).pipe(
@@ -267,17 +281,21 @@ const audit = Command.make(
     Effect.gen(function* () {
       const client = yield* Remote.client;
       const mismatches = yield* client.audit({ project });
+
       if (mismatches.length === 0)
         yield* Console.log(
           `${project}: every footprint record that holds at the default branch's head agrees with a fresh evaluation`,
         );
+
       for (const m of mismatches) {
         yield* Console.log(
           `${m.attr}: recorded ${m.recorded ?? "nothing"}, evaluated ${m.evaluated ?? "nothing"}; dropped its records`,
         );
+
         if (m.missed.length > 0)
           yield* Console.log(`  the fresh evaluation also read ${m.missed.join(", ")}`);
       }
+
       if (mismatches.length > 0)
         return yield* Effect.fail(new Error(`${mismatches.length} records were wrong`));
     }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))),
@@ -316,13 +334,16 @@ const trigger = Command.make(
   ({ project, branch, schedule, inputs, url }) =>
     Effect.gen(function* () {
       const client = yield* Remote.client;
+
       const run = yield* client.trigger({
         project,
         ...Option.match(branch, { onNone: () => ({}), onSome: (b) => ({ branch: b }) }),
         ...Option.match(schedule, { onNone: () => ({}), onSome: (cron) => ({ schedule: cron }) }),
         ...Option.match(inputs, { onNone: () => ({}), onSome: (i) => ({ inputs: i }) }),
       });
+
       const ended = yield* Cli.follow(client, run);
+
       if (ended.status !== "passed")
         return yield* Effect.fail(new Error(`${ended.id} ${ended.status}`));
     }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))),
@@ -355,18 +376,22 @@ const check = Command.make(
   ({ dir, key, background, url }) =>
     Effect.gen(function* () {
       const client = yield* Remote.client;
+
       const submitted = yield* Check.submit(client, resolve(dir), {
         ...Option.match(key, { onNone: () => ({}), onSome: (k) => ({ key: k }) }),
         background,
       });
+
       // A background check runs on its own; its ref stays until the next check under the same key.
       if (background)
         return yield* Console.log(
           `${submitted.run.id} checks ${submitted.copy.sha.slice(0, 12)} in the background`,
         );
+
       const ended = yield* Cli.follow(client, submitted.run).pipe(
         Effect.ensuring(Check.drop(submitted.copy, submitted.remote, submitted.pushed)),
       );
+
       if (ended.status !== "passed")
         return yield* Effect.fail(new Error(`the check ${ended.status}`));
     }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))),
@@ -422,10 +447,12 @@ const runs = Command.make(
   ({ project, limit, url }) =>
     Effect.gen(function* () {
       const client = yield* Remote.client;
+
       const listed = yield* client.runs({
         limit,
         ...Option.match(project, { onNone: () => ({}), onSome: (p) => ({ project: p }) }),
       });
+
       if (listed.runs.length === 0) {
         return yield* Console.log(
           Option.match(project, {
@@ -434,6 +461,7 @@ const runs = Command.make(
           }),
         );
       }
+
       const failed = yield* Effect.forEach(
         listed.runs,
         (r) =>
@@ -445,7 +473,9 @@ const runs = Command.make(
             : Effect.succeed([]),
         { concurrency: 5 },
       );
+
       const now = Date.now();
+
       for (const line of Cli.table(
         listed.runs.map((r, i) => [
           r.id,
@@ -470,6 +500,7 @@ const projects = Command.make("projects", { url }, ({ url }) =>
     const client = yield* Remote.client;
     const overview = yield* client.overview();
     const now = Date.now();
+
     for (const line of Cli.table(
       overview.projects.map((p) => [
         p.name,
@@ -551,9 +582,11 @@ const status = Command.make("status", { run: runId, url }, ({ run, url }) =>
       `${r.project} #${r.number} ${r.status}${r.error ? `: ${r.error}` : ""}  ${r.commit.sha.slice(0, 12)} ${r.commit.title}`,
     );
     const steps = detail.steps;
+
     const critical = steps.filter(
       (s) => s.critical === true && s.queuedAt !== null && s.startedAt !== null,
     );
+
     yield* Console.log(
       [
         r.finishedAt === null ? `  ${total} so far` : `  took ${total}`,
@@ -567,10 +600,12 @@ const status = Command.make("status", { run: runId, url }, ({ run, url }) =>
     );
     const rows = Cli.timings(steps, now);
     const lines = Cli.table(rows);
+
     for (const [i, step] of steps.filter((s) => s.kind !== "output").entries()) {
       yield* Console.log(
         `  ${lines[i]!.trimEnd()}${Domain.unneeded(step) ? " (not needed: no task that starts from it ran)" : ""}`,
       );
+
       for (const o of step.outputs)
         yield* Console.log(
           `    ${o.name}: ${url.replace(/\/$/, "")}/${Domain.outputPath(r.id, step.name, o.name)}`,
@@ -617,6 +652,7 @@ const logs = Command.make(
   ({ run, step, all, follow, limit, url }) =>
     Effect.gen(function* () {
       const client = yield* Remote.client;
+
       const print = (one: string | undefined, prefixed: boolean) =>
         client
           .logs({
@@ -633,16 +669,20 @@ const logs = Command.make(
               ]
                 .filter((x) => x !== null)
                 .join(" ");
+
               return Console.log(
                 `${where === "" ? "" : `${where} | `}${line.stream === "calder" ? "[calder] " : ""}${line.text}`,
               );
             }),
           );
+
       if (Option.isSome(step)) return yield* print(step.value, false);
       const detail = yield* client.run({ id: run });
       const failed = detail.run.status === "failed" && !all ? Cli.failedSteps(detail.steps) : [];
+
       if (failed.length === 0) return yield* print(undefined, true);
       yield* Console.error(`${run} failed in ${failed.join(", ")}; --all prints every step`);
+
       for (const name of failed) yield* print(name, true);
     }).pipe(Effect.scoped, Effect.provide(Remote.layer(url))),
 ).pipe(
@@ -689,6 +729,7 @@ const calder = Command.make("calder").pipe(
 const unknownSubcommand = Effect.suspend(() => {
   const typed = process.argv[2];
   const names: ReadonlyArray<string> = subcommands.map((c) => c.name);
+
   return typed === undefined || typed.startsWith("-") || names.includes(typed)
     ? Effect.void
     : Effect.fail(

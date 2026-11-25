@@ -14,6 +14,7 @@ vi.mock("@effect/sql-sqlite-bun", () => ({}));
 const file = (name: string, value: string) => {
   const path = join(mkdtempSync(join(tmpdir(), "calder-secret-")), name);
   writeFileSync(path, value);
+
   return path;
 };
 
@@ -55,6 +56,7 @@ const granted = (
 ) =>
   Effect.gen(function* () {
     const handed = new Map<string, Record<string, string>>();
+
     const ran = yield* drive({
       steps,
       event,
@@ -62,9 +64,11 @@ const granted = (
       passed,
       result: (name, job) => {
         handed.set(name, job.secrets);
+
         return undefined;
       },
     });
+
     return { ...ran, handed };
   });
 
@@ -74,6 +78,7 @@ describe("a default-branch secret", () => {
       const { status, handed } = yield* granted({ _tag: "Push", branch: "main" }, [
         task("testflight", ["app-store-connect"]),
       ]);
+
       expect(status).toBe("passed");
       expect(handed.get("testflight")).toEqual({ "app-store-connect": "store-key" });
     }),
@@ -85,6 +90,7 @@ describe("a default-branch secret", () => {
         { _tag: "Manual", inputs: { release: "native" }, branch: "main" },
         [task("testflight", ["app-store-connect"])],
       );
+
       expect(handed.get("testflight")).toEqual({ "app-store-connect": "store-key" });
     }),
   );
@@ -98,6 +104,7 @@ describe("a default-branch secret", () => {
           [task("testflight", ["app-store-connect"]), task("deploy", ["cloudflare"])],
           ["testflight"],
         );
+
         expect(status).toBe("failed");
         expect(handed.has("testflight")).toBe(false);
         expect(steps.get("testflight")).toMatchObject({
@@ -115,12 +122,14 @@ describe("a default-branch secret", () => {
     // From before manual runs named their branch, when one of another branch looked the same; a rerun keeps it.
     ["no branch", { _tag: "Manual", inputs: {} }],
   ];
+
   for (const [what, event] of manual) {
     it.live(`is refused to a manual run of ${what}`, () =>
       Effect.gen(function* () {
         const { handed, steps } = yield* granted(event, [
           task("testflight", ["app-store-connect"]),
         ]);
+
         expect(handed.has("testflight")).toBe(false);
         expect(steps.get("testflight")?.status).toBe("died");
       }),
@@ -138,6 +147,7 @@ describe("a default-branch secret", () => {
             task("preview", ["cloudflare"], true),
           ],
         );
+
         expect(handed.has("preview-store")).toBe(false);
         expect(steps.get("preview-store")).toMatchObject({
           status: "died",

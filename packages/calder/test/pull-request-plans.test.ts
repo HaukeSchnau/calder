@@ -56,6 +56,7 @@ describe("a pull request's plan", () => {
             }),
             (driven) => driven.plan.trusted,
           );
+
         expect(yield* plan({ a: 1 })).toEqual(["a", "b", appAttr]);
         // An attribute it took from a pull request's record isn't one, the others are.
         expect(yield* plan({ a: 1, b: 2 })).toEqual(["a", appAttr]);
@@ -71,6 +72,7 @@ describe("a pull request's plan", () => {
       Effect.gen(function* () {
         const seed = Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+
           const plan = {
             version: 1,
             app: "app",
@@ -81,12 +83,14 @@ describe("a pull request's plan", () => {
             derivations: { a: drv, b: drv },
             trusted: ["a", "b", appAttr],
           };
+
           yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
             trace_id, span_id, fork, tree)
           values ('app-0', 'app', 0, ${JSON.stringify(pullRequest(false))}, 'pr-head', 'feature', 't', 'h', 0, 'pr', 'passed', 0, 't', 's', 0, 'tree-1')`;
           yield* sql`insert into run_plans (run_id, plan) values ('app-0', ${JSON.stringify(plan)})`;
           yield* sql`insert into run_records (run_id, attr, evaluation) values ('app-0', 'a', 1), ('app-0', 'b', 2)`;
         });
+
         const { planJob, read } = yield* drive({
           steps: [check],
           unplanned: true,
@@ -106,6 +110,7 @@ describe("a pull request's plan", () => {
               sql`select attr, evaluation from run_records where run_id = 'app-2' order by attr`,
           ),
         });
+
         expect(planJob?.earlier?.revision).toBe("pr-head");
         expect(read).toEqual([{ attr: "a", evaluation: 1 }]);
       }),

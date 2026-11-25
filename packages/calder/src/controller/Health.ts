@@ -50,12 +50,16 @@ const outcomeOf = (status: string) =>
 export const streaks = (runs: ReadonlyArray<RunOutcomes>): ReadonlyArray<Streak> => {
   const current = new Map<string, Streak & { readonly tag: string }>();
   const passed = new Set<string>();
+
   for (const run of runs) {
     const outcomes = [...run.steps].map(([step, s]) => [step, s.outcome, s.at ?? run.at] as const);
+
     if (run.plan !== "pending")
       outcomes.push([planStep, run.plan === "planned" ? "passed" : "failed", run.at]);
+
     for (const [step, outcome, at] of outcomes) {
       const streak = current.get(step);
+
       if (outcome === "failed") {
         current.set(
           step,
@@ -73,10 +77,12 @@ export const streaks = (runs: ReadonlyArray<RunOutcomes>): ReadonlyArray<Streak>
         );
       } else if (outcome === "passed") {
         passed.add(step);
+
         if (streak !== undefined && streak.endedAt === null)
           current.set(step, { ...streak, endedAt: at });
       }
     }
+
     // A step that left the pipeline ends its streak with the first run of the same event planned without it.
     if (run.plan === "planned" && !run.partial) {
       for (const streak of current.values()) {
@@ -91,6 +97,7 @@ export const streaks = (runs: ReadonlyArray<RunOutcomes>): ReadonlyArray<Streak>
       }
     }
   }
+
   return [...current.values()].map(({ tag: _, ...streak }) => streak);
 };
 
@@ -104,10 +111,13 @@ type Loaded = RunOutcomes & {
  */
 const unsettled = (runs: ReadonlyArray<Loaded>, follow: ReadonlyArray<string>) => {
   const oldest = new Map<string, "passed" | "failed">();
+
   for (const run of runs.toReversed()) {
     if (run.plan !== "pending") oldest.set(planStep, run.plan === "planned" ? "passed" : "failed");
+
     for (const [step, s] of run.steps) if (s.outcome !== null) oldest.set(step, s.outcome);
   }
+
   return [
     ...[...oldest].flatMap(([step, outcome]) => (outcome === "failed" ? [step] : [])),
     ...follow.filter((step) => !oldest.has(step)),
@@ -131,9 +141,11 @@ export const load = (
     const sql = yield* SqlClient.SqlClient;
     let runs: Array<Loaded> = [];
     let wanted: ReadonlyArray<string> | null = null;
+
     while (wanted === null || wanted.length > 0) {
       const before = runs[0]?.at ?? Number.MAX_SAFE_INTEGER;
       const names = wanted?.filter((name) => name !== planStep);
+
       const rows = yield* sql<{
         id: string;
         created_at: number;
@@ -149,10 +161,13 @@ export const load = (
           and created_at >= ${from} and created_at < ${before} order by created_at desc limit ${wanted === null ? page : page * 4}) r
         left join steps s on s.run_id = r.id ${names === undefined ? sql`` : names.length === 0 ? sql`and 0` : sql`and ${sql.in("s.name", names)}`}
         order by r.created_at, r.id, s.position, s.name`;
+
       if (rows.length === 0) break;
       const older: Array<Loaded> = [];
+
       for (const row of rows) {
         let run = older.at(-1);
+
         if (run?.id !== row.id) {
           run = {
             id: row.id,
@@ -169,15 +184,18 @@ export const load = (
           };
           older.push(run);
         }
+
         if (row.name !== null)
           run.steps.set(row.name, {
             outcome: outcomeOf(row.step_status ?? ""),
             at: row.finished_at,
           });
       }
+
       runs = [...older, ...runs];
       wanted = unsettled(runs, follow);
     }
+
     return runs;
   });
 
@@ -189,6 +207,7 @@ export const load = (
 export const anchored = (project: string, list: ReadonlyArray<Streak>, now: number) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<{
       step: string;
       first_run: string;
@@ -196,32 +215,42 @@ export const anchored = (project: string, list: ReadonlyArray<Streak>, now: numb
       ended_at: number | null;
     }>`select step, first_run, since, ended_at
       from streak_starts where project = ${project}`;
+
     const stored = new Map(rows.map((row) => [row.step, row]));
+
     const result = yield* Effect.forEach(list, (streak) =>
       Effect.gen(function* () {
         const row = stored.get(streak.step);
+
         // A row of a streak that ended before this one started says nothing about this one.
         const same =
           row !== undefined &&
           !streak.settled &&
           (row.ended_at === null || row.ended_at === streak.endedAt);
+
         const start = same
           ? { firstRun: row.first_run, since: row.since }
           : { firstRun: streak.firstRun, since: streak.since };
+
         if (row?.first_run !== start.firstRun || row.ended_at !== streak.endedAt) {
           yield* sql`insert into streak_starts (project, step, first_run, since, ended_at)
             values (${project}, ${streak.step}, ${start.firstRun}, ${start.since}, ${streak.endedAt})
             on conflict (project, step) do update set first_run = excluded.first_run, since = excluded.since, ended_at = excluded.ended_at`;
         }
+
         return { ...streak, ...start };
       }),
     );
+
     const listed = new Set(list.map((s) => s.step));
+
     const lost = rows
       .filter((row) => row.ended_at === null && !listed.has(row.step))
       .map((row) => row.step);
+
     if (lost.length > 0)
       yield* sql`update streak_starts set ended_at = ${now} where project = ${project} and ${sql.in("step", lost)}`;
+
     return result;
   });
 
@@ -234,6 +263,7 @@ export const anchored = (project: string, list: ReadonlyArray<Streak>, now: numb
 export const lastPassed = (project: string, branch: string, from: number) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     // Each step's newest pass comes from the steps_passed index, newest first, so this reads a few index
     // entries per step name instead of every step of a month of runs.
     return yield* sql<{ step: string; at: number }>`with trusted as materialized (
@@ -277,11 +307,14 @@ export const layer = Layer.effectDiscard(
       const now = Date.now();
       const points = [];
       const passes = [];
+
       for (const project of projects.all()) {
         const open = yield* sql<{
           step: string;
         }>`select step from streak_starts where project = ${project.name} and ended_at is null`;
+
         const from = now - config.retention.days * 86_400_000;
+
         const list = yield* load(
           project.name,
           project.defaultBranch,
@@ -292,6 +325,7 @@ export const layer = Layer.effectDiscard(
           Effect.flatMap((runs) => anchored(project.name, streaks(runs), now)),
           Effect.provideService(SqlClient.SqlClient, sql),
         );
+
         for (const { step, at } of yield* lastPassed(
           project.name,
           project.defaultBranch,
@@ -302,6 +336,7 @@ export const layer = Layer.effectDiscard(
             value: Math.floor(at / 1000),
           });
         }
+
         for (const streak of list) {
           if (streak.endedAt !== null && now - streak.endedAt > keepRecovered) continue;
           points.push({
@@ -316,6 +351,7 @@ export const layer = Layer.effectDiscard(
           });
         }
       }
+
       yield* telemetry.gauge(
         "calder.failing_runs",
         "Runs of the default branch in a row in which the step failed; 0 once it passed again",

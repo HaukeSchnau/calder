@@ -21,12 +21,19 @@ import * as Agent from "../../src/Agent.ts";
 const root = mkdtempSync(join(tmpdir(), "calder-units-"));
 const units = join(root, "jobs");
 const out = join(root, "out");
+
 mkdirSync(units);
+
 mkdirSync(out);
+
 process.env.FAKE_UNITS = units;
+
 process.env.FAKE_OUT = out;
+
 const bin = join(root, "bin");
+
 mkdirSync(bin);
+
 for (const command of ["systemctl", "sandbox"]) {
   writeFileSync(
     join(bin, command),
@@ -34,6 +41,7 @@ for (const command of ["systemctl", "sandbox"]) {
   );
   chmodSync(join(bin, command), 0o755);
 }
+
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
 // The controller's side: what a worker's requests and messages reach.
@@ -42,9 +50,11 @@ const controller = Bun.serve<undefined, never>({
   port: 0,
   async fetch(request, server) {
     const url = new URL(request.url);
+
     if (url.pathname === "/worker" && server.upgrade(request, { data: undefined }))
       return undefined;
     const body = request.method === "POST" ? await request.text() : "";
+
     return new Response(
       `${request.method} ${url.pathname}${url.search} ${request.headers.get("authorization") ?? ""} ${body}`.trim(),
     );
@@ -57,6 +67,7 @@ const controller = Bun.serve<undefined, never>({
 });
 
 process.env.FAKE_PORT = String(controller.port);
+
 const options = {
   units,
   url: `http://127.0.0.1:${controller.port}`,
@@ -75,12 +86,15 @@ const result = await Effect.runPromise(
         egress: { allow: ["registry.npmjs.org"], allowPrivate: [`localhost:${controller.port}`] },
       }),
     );
+
     const kept = existsSync(join(units, "0a1b"));
+
     const stopping = yield* Effect.forkChild(
       Effect.scoped(
         Agent.runInUnit(options, { _tag: "Start", job: "5709", token: "t", pool: "trusted" }),
       ),
     );
+
     while (!existsSync(join(out, "5709.json"))) yield* Effect.sleep("20 millis");
     yield* Fiber.interrupt(stopping);
     const unitCalls = readFileSync(join(out, "calls"), "utf8").trim().split("\n");
@@ -91,11 +105,13 @@ const result = await Effect.runPromise(
     symlinkSync(units, linked);
     // The first stops fail: a pool's next job waits until one succeeded.
     writeFileSync(join(out, "fail"), "stop pr\nstop pr 5a1d");
+
     const inSandbox = {
       ...options,
       units: linked,
       sandbox: yield* Agent.startSandbox(join(bin, "sandbox"), ["calder", "main.ts"]),
     };
+
     const sandboxCode = yield* Effect.scoped(
       Agent.runInUnit(inSandbox, {
         _tag: "Start",
@@ -105,23 +121,28 @@ const result = await Effect.runPromise(
         egress: { allow: [], allowPrivate: [] },
       }),
     );
+
     // A second job of the pool waits until the first one is gone.
     const first = yield* Effect.forkChild(
       Effect.scoped(
         Agent.runInUnit(inSandbox, { _tag: "Start", job: "0b0b", token: "t", pool: "pr" }),
       ),
     );
+
     while (!existsSync(join(out, "0b0b.json"))) yield* Effect.sleep("20 millis");
+
     const second = yield* Effect.forkChild(
       Effect.scoped(
         Agent.runInUnit(inSandbox, { _tag: "Start", job: "0c0c", token: "t", pool: "pr" }),
       ),
     );
+
     yield* Effect.sleep("300 millis");
     const whileFirstRan = readFileSync(join(out, "calls"), "utf8").trim().split("\n");
     writeFileSync(join(out, "go"), "");
     yield* Fiber.join(first);
     yield* Fiber.join(second);
+
     return {
       code,
       kept,
@@ -144,6 +165,9 @@ const result = await Effect.runPromise(
 );
 
 console.log(JSON.stringify(result));
+
 controller.stop(true);
+
 rmSync(root, { recursive: true, force: true });
+
 process.exit(0);

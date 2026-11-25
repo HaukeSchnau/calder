@@ -22,6 +22,7 @@ const p = (name: string, fields: Partial<PlannedStep>): PlannedStep => ({
   output: null,
   ...fields,
 });
+
 const task = (lease: boolean, preview: boolean) => ({
   shell: null,
   keyBase: "",
@@ -60,6 +61,7 @@ describe("the critical path", () => {
     // A plan's own word doesn't count.
     p("bulk", { critical: true }),
   ];
+
   it("is every step whose value a deploy reads or that gates it, not the checks a deploy merely waits for", () => {
     expect(
       criticalPath(steps, false)

@@ -23,9 +23,11 @@ export const make = Effect.gen(function* () {
   const ensure = (project: string, sha: string, run: RunInput) =>
     Effect.gen(function* () {
       const key = `${project}|${sha}|${JSON.stringify(run.event)}`;
+
       if (seen.has(key)) return;
       seen.add(key);
       yield* mirror.fetch(project);
+
       if (!(yield* mirror.hasPipeline(project, sha))) return;
       yield* runs.ensure(run);
     }).pipe(
@@ -44,6 +46,7 @@ export const make = Effect.gen(function* () {
           event: { _tag: "Push", branch: project.defaultBranch },
           sha: head,
         });
+
         for (const pull of yield* gitea.openPulls(project.repo)) {
           yield* ensure(project.name, pull.sha, {
             project: project.name,
@@ -58,6 +61,7 @@ export const make = Effect.gen(function* () {
             fork: pull.fork,
           });
         }
+
         yield* closes.catchUp(project);
       }).pipe(
         Effect.catchCause((cause) =>

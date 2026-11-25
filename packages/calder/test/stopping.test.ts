@@ -16,6 +16,7 @@ describe("a stopping controller's report", () => {
       const closing = yield* Effect.forkChild(Scope.close(scope, Exit.void), {
         startImmediately: true,
       });
+
       yield* Effect.yieldNow;
       expect(report(Date.now()).map((line) => line.split(" ")[0])).toEqual(["Outer"]);
 
@@ -28,9 +29,11 @@ describe("a stopping controller's report", () => {
   it.effect("lists a worker call while it runs", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
+
       const call = yield* Effect.forkChild(tracked("cachePublish", Deferred.await(gate)), {
         startImmediately: true,
       });
+
       expect(report(Date.now())).toEqual(["worker calls in flight: cachePublish for 0 s"]);
       yield* Deferred.succeed(gate, undefined);
       yield* Fiber.join(call);

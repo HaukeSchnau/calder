@@ -42,6 +42,7 @@ const noProcesses = ChildProcessSpawner.make(() =>
 const plan = (tree: Record<string, string>, steps: ReadonlyArray<Step.Any>) =>
   Effect.gen(function* () {
     const project = Calder.project({ rules: [On.push("main", steps)] });
+
     return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo(tree));
   }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses));
 
@@ -65,12 +66,16 @@ describe("resolve", () => {
           run: ({ files }) => cmd`vitest run ${files}`,
           report: Report.junit("junit.xml"),
         });
+
       const before = task(yield* plan(app, [test([])]), "test");
+
       const npmrc = task(
         yield* plan({ ...app, ".npmrc": "node-linker=hoisted" }, [test([])]),
         "test",
       );
+
       const args = task(yield* plan(app, [test(["--trust-lockfile"])]), "test");
+
       for (const changed of [npmrc, args]) {
         expect(changed.inputs).toEqual(["package.json"]);
         expect(changed.keyBase).not.toBe(before.keyBase);
@@ -83,6 +88,7 @@ describe("resolve", () => {
     Effect.gen(function* () {
       const publish = (secret: string) =>
         Task.make("publish", { secrets: { TOKEN: Secret.file(secret) }, run: cmd`publish` });
+
       const staging = task(yield* plan(app, [publish("staging-token")]), "publish");
       const production = task(yield* plan(app, [publish("production-token")]), "publish");
       expect(production.keyBase).not.toBe(staging.keyBase);
@@ -98,6 +104,7 @@ describe("resolve", () => {
             run: cmd`publish`,
             ...(offload === undefined ? {} : { offload }),
           });
+
         const anywhere = task(yield* plan(app, [publish(undefined)]), "publish");
         const here = task(yield* plan(app, [publish(false)]), "publish");
         expect([anywhere.offload, here.offload]).toEqual([true, false]);
@@ -111,9 +118,11 @@ describe("resolve", () => {
       Effect.gen(function* () {
         const smoke = Task.make("smoke", { run: cmd`smoke` });
         const lint = Task.make("lint", { run: cmd`lint` });
+
         const spec = yield* plan(app, [
           Task.make("deploy", { run: cmd`deploy`, after: [lint], gate: [smoke] }),
         ]);
+
         expect(spec.steps.find((s) => s.name === "deploy")).toMatchObject({
           after: ["lint", "smoke"],
           gates: ["smoke"],
@@ -137,11 +146,13 @@ describe("resolve", () => {
   it.effect("a path or pattern that matches no file fails the plan, unless it is optional", () =>
     Effect.gen(function* () {
       const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` });
+
       const inputs = Files.union(
         Files.glob("src/**", "!dist/**"),
         Files.of("static"),
         Files.imports("src/**/*.tsx"),
       );
+
       const error = yield* plan(app, [build(inputs)]).pipe(Effect.flip);
       expect(error.message).toContain(
         `No file matches "!dist/**" (build's inputs), "static" (build's inputs), "src/**/*.tsx" (build's inputs).`,
@@ -157,6 +168,7 @@ describe("resolve", () => {
     () =>
       Effect.gen(function* () {
         const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` });
+
         const error = yield* plan(app, [
           build(
             Files.union(
@@ -165,12 +177,15 @@ describe("resolve", () => {
             ),
           ),
         ]).pipe(Effect.flip);
+
         expect(error.message).toContain(
           `No file matches "!package.json" (build's inputs). "src/*.test.ts" (build's inputs) matches only files the negations leave out.`,
         );
+
         const negated = yield* plan(app, [build(Files.optional(Files.glob("!src/**")))]).pipe(
           Effect.flip,
         );
+
         expect(negated.message).toBe(
           `"build" has globs that only leave files out, ["!src/**"]: add one that includes files`,
         );
@@ -180,12 +195,14 @@ describe("resolve", () => {
   it.effect("a pattern starting with ! leaves files out of a task's inputs and its each", () =>
     Effect.gen(function* () {
       const repo = { ...app, "src/b.test.ts": `import { a } from "./a"`, "legacy/c.test.ts": "" };
+
       const test = Task.make("test", {
         inputs: Files.glob("src/**", "!src/*.test.ts"),
         each: Files.imports(["**/*.test.ts", "!legacy/**"]),
         run: ({ files }) => cmd`vitest run ${files}`,
         report: Report.junit("junit.xml"),
       });
+
       const planned = task(yield* plan(repo, [test]), "test");
       expect(planned.inputs).toEqual(["src/a.ts"]);
       expect(planned.each!.map((e) => e.file)).toEqual(["src/a.test.ts", "src/b.test.ts"]);
@@ -200,6 +217,7 @@ describe("resolve", () => {
           run: ({ files }) => cmd`vitest run ${files}`,
           report: Report.junit("junit.xml"),
         });
+
       const error = yield* plan(app, [test(Files.imports("test/**/*.test.ts"))]).pipe(Effect.flip);
       expect(error.message).toContain(`No file matches "test/**/*.test.ts" (test's each)`);
       expect(
@@ -228,9 +246,11 @@ describe("resolve", () => {
         "packages/ui/package.json": JSON.stringify({ name: "ui" }),
         "packages/api/package.json": JSON.stringify({ name: "api" }),
       });
+
       const files = yield* paths(repo, Files.workspace("packages/web")).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses),
       );
+
       expect(files).toEqual([
         "package.json",
         "tsconfig.base.json",

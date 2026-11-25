@@ -10,15 +10,21 @@ export const groupId = (name: string) => {
     const found = spawnSync("/usr/bin/dscacheutil", ["-q", "group", "-a", "name", name], {
       encoding: "utf8",
     });
+
     const gid = /^gid: (\d+)$/m.exec(found.stdout ?? "")?.[1];
+
     return gid === undefined ? undefined : Number(gid);
   }
+
   let groups: string;
+
   try {
     groups = readFileSync("/etc/group", "utf8");
   } catch {
     return undefined;
   }
+
   const line = groups.split("\n").find((l) => l.startsWith(`${name}:`));
+
   return line === undefined ? undefined : Number(line.split(":")[2]);
 };

@@ -31,6 +31,7 @@ export const SERVICES = [
   "Cache",
   'Secret<"deploy-token">',
 ];
+
 export const pinX = (service) => DIM.pin.first + DIM.pin.pitch * SERVICES.indexOf(service);
 
 // What each rule supplies (packages/core/src/Services.ts: PrBase and Base), and its floor.
@@ -75,12 +76,15 @@ const round = (n) => Math.round(n * 100) / 100;
 
 const offsetLine = (p, q, d) => {
   const n = unit({ x: -(q.y - p.y), y: q.x - p.x });
+
   return [add(p, scale(n, -d)), add(q, scale(n, -d))];
 };
+
 const intersect = ([p1, p2], [q1, q2]) => {
   const r = sub(p2, p1);
   const s = sub(q2, q1);
   const t = cross(sub(q1, p1), s) / cross(r, s);
+
   return add(p1, scale(r, t));
 };
 
@@ -90,23 +94,29 @@ const intersect = ([p1, p2], [q1, q2]) => {
  */
 const offsetProfile = (points, clearance) => {
   const segs = points.slice(0, -1).map((p, i) => offsetLine(p, points[i + 1], -clearance));
+
   const base = [
     { x: 0, y: 0 },
     { x: 1, y: 0 },
   ];
+
   const out = [intersect(segs[0], base)];
+
   for (let i = 0; i < segs.length - 1; i++) out.push(intersect(segs[i], segs[i + 1]));
   out.push(intersect(segs[segs.length - 1], base));
+
   return out.map((p, i) => {
     if (i === 0 || i === out.length - 1) return { x: p.x, y: p.y, r: 0 };
     const convex = cross(sub(points[i], points[i - 1]), sub(points[i + 1], points[i])) < 0;
     const r = points[i].r ?? 0;
+
     return { x: p.x, y: p.y, r: convex ? r + clearance : Math.max(0, r - clearance) };
   });
 };
 
 const TENON = (() => {
   const { depth, root, tip, fillet } = DIM.tenon;
+
   return [
     { x: -root / 2, y: 0, r: 0 },
     { x: -tip / 2, y: depth, r: fillet },
@@ -114,20 +124,24 @@ const TENON = (() => {
     { x: root / 2, y: 0, r: 0 },
   ];
 })();
+
 const SOCKET = offsetProfile(TENON, DIM.c);
 
 /** Rounded polygon to an SVG path: each vertex carries its own corner radius. */
 export const toPath = (vertices, closed = true) => {
   const n = vertices.length;
   const parts = [];
+
   for (let i = 0; i < n; i++) {
     const p = vertices[i];
     const r = p.r ?? 0;
     const first = i === 0 ? "M" : "L";
+
     if (!r || (!closed && (i === 0 || i === n - 1))) {
       parts.push(`${first}${round(p.x)} ${round(p.y)}`);
       continue;
     }
+
     const a = vertices[(i - 1 + n) % n];
     const b = vertices[(i + 1) % n];
     const u1 = unit(sub(a, p));
@@ -141,12 +155,14 @@ export const toPath = (vertices, closed = true) => {
     parts.push(`${first}${round(p1.x)} ${round(p1.y)}`);
     parts.push(`A${round(radius)} ${round(radius)} 0 0 ${sweep} ${round(p2.x)} ${round(p2.y)}`);
   }
+
   return parts.join("") + (closed ? "Z" : "");
 };
 
 /** Outward offset of a clockwise outline (focus and highlight rings). */
 export const offsetOutline = (vertices, d) => {
   const n = vertices.length;
+
   return vertices.map((p, i) => {
     const a = vertices[(i - 1 + n) % n];
     const b = vertices[(i + 1) % n];
@@ -154,6 +170,7 @@ export const offsetOutline = (vertices, d) => {
     const l1 = offsetLine(a, p, d);
     const q = Math.abs(turn) < 1e-9 ? l1[1] : intersect(l1, offsetLine(p, b, d));
     const r = p.r ?? 0;
+
     return { x: q.x, y: q.y, r: turn > 0 ? r + d : Math.max(0, r - d) };
   });
 };
@@ -166,19 +183,24 @@ export const offsetOutline = (vertices, d) => {
 export const bodyOutline = ({ W, H, tenon = false, socket = false }) => {
   const R = DIM.corner;
   const cy = H / 2;
+
   const v = [
     { x: 0, y: 0, r: R },
     { x: W, y: 0, r: R },
   ];
+
   if (tenon) for (const p of TENON) v.push({ x: W + p.y, y: cy + p.x, r: p.r });
   v.push({ x: W, y: H, r: R }, { x: 0, y: H, r: R });
+
   if (socket) for (const p of SOCKET.slice().reverse()) v.push({ x: p.y, y: cy + p.x, r: p.r });
+
   return v;
 };
 
 /** The tenon alone (the part beyond the output edge), for its wash. */
 export const tenonOutline = ({ W, H }) => {
   const cy = H / 2;
+
   return TENON.map((p) => ({ x: W + p.y, y: cy + p.x, r: p.r })).concat([]);
 };
 
@@ -190,6 +212,7 @@ export const tenonEdge = ({ W, H }) => TENON.map((p) => ({ x: W + p.y, y: H / 2 
 export const pinOutline = (service, H) => {
   const { w, len: l, chamfer: k } = DIM.pin;
   const x = pinX(service);
+
   return [
     { x, y: H - 1 },
     { x: x + w, y: H - 1 },
@@ -205,8 +228,10 @@ export const eyelet = (W) => ({ x: W / 2, y: 0, r: DIM.eyelet.r, hole: DIM.eyele
 
 /** The grant bit under the part, near its output edge. */
 export const bitX = (W) => W - DIM.bit.inset - DIM.bit.w;
+
 export const bitOutline = (W, H) => {
   const x0 = bitX(W);
+
   return BIT.map(([x, y], i) => ({
     x: x0 + x,
     y: H - (i === 0 || i === BIT.length - 1 ? 1 : 0) + y,
@@ -226,10 +251,13 @@ export const silhouette = (part, H) =>
 export const fit = (part, rule) => {
   const r = RULES[rule];
   const contacts = [];
+
   for (const s of part.pins ?? [])
     if (!r.supplies.includes(s)) contacts.push({ kind: "pin", service: s, rest: DIM.pin.len });
+
   if (part.bit && r.floor === "closed") contacts.push({ kind: "bit", rest: DIM.bit.depth });
   const rest = Math.max(0, ...contacts.map((c) => c.rest));
+
   return { rest, contacts: contacts.filter((c) => c.rest === rest && rest > 0) };
 };
 
@@ -238,9 +266,12 @@ export const contactMarks = (part, H, contacts) =>
   contacts.map((c) => {
     if (c.kind === "bit") {
       const x0 = bitX(part.W);
+
       return { x0: x0 - 3, x1: x0 + DIM.bit.w + 3, y: H + DIM.bit.depth };
     }
+
     const x = pinX(c.service);
+
     return { x0: x - 3, x1: x + DIM.pin.w + 3, y: H + DIM.pin.len };
   });
 
@@ -271,49 +302,62 @@ export const railSection = ({
   const r = RULES[rule];
   const holes = [];
   const slots = [];
+
   for (const seat of seats) {
     for (const s of r.supplies) {
       const hx = seat.x + pinX(s) - DIM.pin.clear;
       holes.push({ x0: hx, x1: hx + DIM.pin.w + 2 * DIM.pin.clear, service: s });
     }
+
     if (r.floor === "open" && seat.W >= DIM.minW) {
       const cx = seat.x + bitX(seat.W) + DIM.bit.w / 2;
       slots.push({ x0: cx - slot / 2, x1: cx + slot / 2 });
     }
   }
+
   holes.sort((a, b) => a.x0 - b.x0);
   slots.sort((a, b) => a.x0 - b.x0);
   const spans = [];
   let a = x0;
+
   for (const s of slots) {
     spans.push([a, s.x0]);
     a = s.x1;
   }
+
   spans.push([a, x1]);
+
   const polys = spans.map(([s0, s1]) => {
     const v = [{ x: s0, y: t }];
+
     if (s0 === x0 && lipStart)
       v.push({ x: s0, y: -lipH }, { x: s0 + lipW, y: -lipH }, { x: s0 + lipW, y: 0 });
     else if (s0 === x0 && cutStart)
       v.push(...BREAK.map(([dx, f]) => ({ x: s0 - dx, y: t * (1 - f) })), { x: s0, y: 0 });
     else v.push({ x: s0, y: 0 });
+
     for (const h of holes) {
       if (h.x0 < s0 || h.x1 > s1) continue;
       v.push({ x: h.x0, y: 0 }, { x: h.x0, y: socket }, { x: h.x1, y: socket }, { x: h.x1, y: 0 });
     }
+
     if (s1 === x1 && lipEnd)
       v.push({ x: s1 - lipW, y: 0 }, { x: s1 - lipW, y: -lipH }, { x: s1, y: -lipH });
     else v.push({ x: s1, y: 0 });
+
     if (s1 === x1 && cutEnd) v.push(...BREAK.map(([dx, f]) => ({ x: s1 + dx, y: t * f })));
     v.push({ x: s1, y: t });
+
     return v;
   });
+
   return { polys, holes, slots };
 };
 
 /** A setup plate under the parts that start from it. */
 export const plateOutline = (x0, x1) => {
   const { t } = DIM.plate;
+
   return [
     { x: x0, y: -t, r: 2 },
     { x: x1, y: -t, r: 2 },
@@ -325,9 +369,12 @@ export const plateOutline = (x0, x1) => {
 /** Part width for a sheet: four parts plus an empty seat must fit, on the 4 px grid. */
 const FIXED = () => {
   const { lipW, pad, land } = DIM.rail;
+
   return 2 * lipW + 4 * pad + 2 * land + DIM.emptySeat + DIM.tenon.depth + 2 * DIM.c + 2;
 };
+
 export const partWidth = (available) =>
   Math.max(DIM.minW, Math.min(DIM.maxW, Math.floor((available - FIXED()) / 4 / 4) * 4));
+
 /** The width the widest arrangement takes at part width W; below it the drawing is scaled. */
 partWidth.need = (W) => 4 * W + FIXED();

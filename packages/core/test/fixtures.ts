@@ -25,6 +25,7 @@ export const flake = Flake.make({
 export class Live extends Calder.Result<Live>("@test/Release")("Live", {
   revision: Schema.String,
 }) {}
+
 export class Skipped extends Calder.Result<Skipped>("@test/Release")("Skipped", {
   reason: Schema.Literals(["Superseded"]),
 }) {}
@@ -32,8 +33,10 @@ export class Skipped extends Calder.Result<Skipped>("@test/Release")("Skipped", 
 export const promoteRelease = Effect.fn("promote")(function* (release: string) {
   const run = yield* CurrentRun;
   const lease = yield* Fleet.deploying(run.project, { queue: "latest-wins" });
+
   if (lease._tag === "Replaced") return new Skipped({ reason: "Superseded" });
   yield* Cache.publish(release as never);
+
   return new Live({ revision: `${run.revision}:${release}` });
 }, Effect.scoped);
 
@@ -41,6 +44,7 @@ export class DevController extends Context.Service<
   DevController,
   { readonly ensure: (path: string) => Effect.Effect<string> }
 >()("@test/DevController") {}
+
 export const DevControllerLive = Layer.succeed(DevController, {
   ensure: (path: string) => Effect.succeed(`https://preview/${path}`),
 });

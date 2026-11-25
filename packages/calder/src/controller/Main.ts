@@ -33,10 +33,12 @@ export const layer = (configPath: string) => {
   const platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunCrypto.layer);
   const config = Config.fromFile(configPath);
   const db = named("Db", Db.layer);
+
   const jobs = named("Jobs", Jobs.layer).pipe(
     Layer.provideMerge(named("Agents", Agents.layer)),
     Layer.provide(db),
   );
+
   const base = Layer.mergeAll(
     db,
     named("Telemetry", Telemetry.layer),
@@ -44,7 +46,9 @@ export const layer = (configPath: string) => {
     named("Live", Live.layer),
     jobs,
   ).pipe(Layer.provideMerge(config), Layer.provideMerge(platform));
+
   const projects = named("Projects", Projects.layer).pipe(Layer.provideMerge(base));
+
   const fleet = Layer.mergeAll(
     named("Cache", Cache.layer),
     named("Comments", Comments.layer),
@@ -52,11 +56,13 @@ export const layer = (configPath: string) => {
     named("Leases", Leases.layer),
     named("Mirror", Mirror.layer),
   ).pipe(Layer.provideMerge(projects));
+
   const core = named("Runs", Runs.layerCore).pipe(Layer.provideMerge(fleet));
   const runs = named("Workflow", Workflow.layer).pipe(Layer.provideMerge(core));
   const closing = named("Closes", Closes.layer).pipe(Layer.provideMerge(runs));
   const merging = named("Merges", Merges.layer).pipe(Layer.provideMerge(closing));
   const delivery = named("Delivery", Delivery.layer).pipe(Layer.provideMerge(merging));
+
   return Layer.mergeAll(
     reportWhileStopping,
     named("WorkerServer", WorkerServer.layer),

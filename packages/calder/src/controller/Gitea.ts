@@ -10,9 +10,11 @@ const Protection = Schema.Struct({
   enable_status_check: Schema.optional(Schema.Boolean),
   status_check_contexts: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
 });
+
 const Branch = Schema.Struct({ commit: Schema.Struct({ id: Schema.String }) });
 const Comment = Schema.Struct({ id: Schema.Number });
 const Pull = Schema.Struct({ title: Schema.String });
+
 const OpenPull = Schema.Struct({
   number: Schema.Number,
   head: Schema.Struct({
@@ -25,12 +27,14 @@ const OpenPull = Schema.Struct({
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
   }),
 });
+
 const ClosedPull = Schema.Struct({
   number: Schema.Number,
   closed_at: Schema.NullOr(Schema.String),
   head: Schema.Struct({ ref: Schema.String }),
   base: Schema.Struct({ ref: Schema.String }),
 });
+
 const PullState = Schema.Struct({
   state: Schema.String,
   merged: Schema.Boolean,
@@ -43,12 +47,15 @@ const PullState = Schema.Struct({
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
   }),
 });
+
 const MergedPull = Schema.Struct({
   number: Schema.Number,
   merged: Schema.Boolean,
   merge_commit_sha: Schema.NullOr(Schema.String),
 });
+
 const ErrorBody = Schema.Struct({ message: Schema.optional(Schema.String) });
+
 const Repo = Schema.Struct({
   full_name: Schema.String,
   default_branch: Schema.String,
@@ -156,20 +163,25 @@ export const layer = Layer.effect(Gitea)(
   Effect.gen(function* () {
     const config = yield* Config;
     const base = `${config.gitea.url.replace(/\/$/, "")}/api/v1`;
+
     const raw = (yield* HttpClient.HttpClient).pipe(
       HttpClient.mapRequest(
         HttpClientRequest.setHeader("Authorization", `token ${config.giteaToken}`),
       ),
     );
+
     const client = raw.pipe(HttpClient.filterStatusOk);
+
     const get = <A>(path: string, schema: Schema.Decoder<A>) =>
       client
         .get(`${base}${path}`)
         .pipe(Effect.retry(transient), Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)));
+
     const send = (method: "post" | "patch", path: string, body: unknown) =>
       client.execute(
         HttpClientRequest[method](`${base}${path}`).pipe(HttpClientRequest.bodyJsonUnsafe(body)),
       );
+
     /** A request whose refusal matters: fails with Gitea's message instead of dying. */
     const attempt = (path: string, body: unknown) =>
       raw
@@ -232,12 +244,15 @@ export const layer = Layer.effect(Gitea)(
             Effect.flatMap(HttpClientResponse.schemaBodyJson(Comment)),
             Effect.map((c) => c.id),
           );
+
         const post = id(send("post", `/repos/${repo}/issues/${number}/comments`, { body }));
+
         // A comment someone deleted can't be edited; a new one takes its place. Other refusals stay errors.
         const gone = (error: unknown) =>
           HttpClientError.isHttpClientError(error) &&
           error.reason._tag === "StatusCodeError" &&
           error.reason.response.status === 404;
+
         return (
           existing === null
             ? post
@@ -255,14 +270,18 @@ export const layer = Layer.effect(Gitea)(
       repos: (owner) =>
         Effect.gen(function* () {
           const found: Array<typeof Repo.Type> = [];
+
           for (let page = 1; ; page++) {
             const batch = yield* get(
               `/users/${owner}/repos?limit=50&page=${page}`,
               Schema.Array(Repo),
             );
+
             found.push(...batch);
+
             if (batch.length < 50) break;
           }
+
           return found
             .filter((r) => !r.archived && !r.empty)
             .map((r) => ({ repo: r.full_name, defaultBranch: r.default_branch }));
@@ -283,11 +302,13 @@ export const layer = Layer.effect(Gitea)(
       closedPulls: (repo, since) =>
         Effect.gen(function* () {
           const found: Array<Closing> = [];
+
           for (let page = 1; ; page++) {
             const batch = yield* get(
               `/repos/${repo}/pulls?state=closed&sort=recentclose&limit=50&page=${page}`,
               Schema.Array(ClosedPull),
             );
+
             const closings = batch.flatMap((p) =>
               p.closed_at === null
                 ? []
@@ -300,7 +321,9 @@ export const layer = Layer.effect(Gitea)(
                     },
                   ],
             );
+
             found.push(...closings.filter((c) => c.closedAt >= since));
+
             if (batch.length < 50 || closings.some((c) => c.closedAt < since)) return found;
           }
         }).pipe(Effect.orDie),

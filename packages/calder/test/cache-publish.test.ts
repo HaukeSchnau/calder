@@ -73,6 +73,7 @@ const preview = Effect.gen(function* () {
     scope: yield* Scope.make(),
     lease: { project: "studienbuch#pr-104", app: "studienbuch", targets: null },
   };
+
   return active;
 });
 
@@ -87,11 +88,14 @@ const publish = (fetch: "substitutes" | "fails" | "stalls") =>
     const stateDir = mkdtempSync(join(tmpdir(), "calder-publish-"));
     const ran: Array<ReadonlyArray<string>> = [];
     const published: Array<string> = [];
+
     const nix = ChildProcessSpawner.make((command) => {
       const args = ChildProcess.isStandardCommand(command)
         ? [command.command, ...command.args]
         : [];
+
       ran.push(args);
+
       return Effect.succeed(
         ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(1),
@@ -117,7 +121,9 @@ const publish = (fetch: "substitutes" | "fails" | "stalls") =>
         }),
       );
     });
+
     const job = yield* preview;
+
     const services = Layer.mergeAll(
       config({ stateDir }),
       Layer.succeed(Jobs)({ authorize: () => Effect.succeed(job) } as unknown as Jobs["Service"]),
@@ -133,17 +139,21 @@ const publish = (fetch: "substitutes" | "fails" | "stalls") =>
       Layer.succeed(Comments)({} as unknown as Comments["Service"]),
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(nix),
     );
+
     const client = yield* RpcTest.makeClient(WorkerRpcs).pipe(
       Effect.provide(handlers.pipe(Layer.provide(services))),
     );
+
     const call = yield* Effect.forkChild(
       Effect.exit(
         client.cachePublish({ job: job.id, token: "", path: bundle, artifact: "CALDER_BUNDLE" }),
       ),
     );
+
     yield* TestClock.adjust("5 minutes");
     const exit = yield* Fiber.join(call);
     const why = Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "";
+
     return {
       ran,
       published,

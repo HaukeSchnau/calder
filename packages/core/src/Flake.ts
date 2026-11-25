@@ -33,6 +33,7 @@ export const make = <const T extends Outputs>(
     Object.fromEntries(
       (outputs[output] ?? []).map((name) => [name, { _tag: "FlakeRef", output, name }]),
     );
+
   return {
     packages: refs("packages"),
     checks: refs("checks"),
@@ -68,7 +69,9 @@ export const attrPath = (ref: FlakeRef, system: string): string =>
  */
 export const components = (path: string): ReadonlyArray<string> | null => {
   const parts = path.match(/"[A-Za-z0-9_'.+-]+"|[A-Za-z0-9_'+-]+/g);
+
   if (parts === null || parts.join(".") !== path) return null;
+
   return parts.map((part) => (part.startsWith('"') ? part.slice(1, -1) : part));
 };
 

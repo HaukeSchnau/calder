@@ -7,6 +7,7 @@ import { Job } from "../src/worker/Client.ts";
 import * as Steps from "../src/worker/Steps.ts";
 
 const bundle = "/nix/store/0pnbk1rns4wk6azih0kcz7136aid5x6f-studienbuch-bundle";
+
 // The runtime running this test lives in the store, so this store holds it.
 const held = realpathSync(process.execPath).split("/").slice(0, 4).join("/");
 
@@ -19,8 +20,10 @@ const fetched = (paths: ReadonlyArray<string>, fetch: "substitutes" | "fails" | 
   Effect.gen(function* () {
     const ran: Array<ReadonlyArray<string>> = [];
     const logged: Array<string> = [];
+
     const nix = ChildProcessSpawner.make((command) => {
       ran.push(ChildProcess.isStandardCommand(command) ? [command.command, ...command.args] : []);
+
       return Effect.succeed(
         ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(1),
@@ -46,17 +49,21 @@ const fetched = (paths: ReadonlyArray<string>, fetch: "substitutes" | "fails" | 
         }),
       );
     });
+
     const self = {
       remote: null,
       log: (_stream: string, text: string) => Effect.sync(() => void logged.push(text)),
     } as unknown as Job["Service"];
+
     const fiber = yield* Effect.forkChild(
       Steps.fetchArtifacts(self, paths).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, nix),
       ),
     );
+
     yield* TestClock.adjust("5 minutes");
     yield* Fiber.join(fiber);
+
     return { ran, logged };
   });
 

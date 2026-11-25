@@ -9,6 +9,7 @@ import { memoryRepo } from "./memoryRepo.ts";
 const noProcesses = ChildProcessSpawner.make(() =>
   Effect.die(new Error("no processes in this test")),
 );
+
 const graphOf = (
   r: Repo,
   workspace: ReadonlyArray<string> = ["packages/contracts", "apps/server", "apps/web"],
@@ -45,10 +46,12 @@ describe("Imports", () => {
   it.effect("follows relative, workspace, type-only and mocked imports to repository files", () =>
     Effect.gen(function* () {
       const graph = yield* graphOf(fixture);
+
       const closure = yield* graph.closure(["apps/server/src/git.test.ts"], {
         aliases: {},
         types: true,
       });
+
       expect([...closure].sort()).toEqual([
         "apps/server/src/fixtures/repo",
         "apps/server/src/git.test.ts",
@@ -115,6 +118,7 @@ describe("Imports", () => {
         }),
         [],
       );
+
       expect(graph.data(graph.packageOf("src/a.test.ts"))).toEqual([
         "package.json",
         "src/__snapshots__/a.test.ts.snap",

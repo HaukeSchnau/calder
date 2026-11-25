@@ -8,8 +8,10 @@ import { sha256 } from "./Keys.ts";
  */
 export const nixSettings = Effect.gen(function* () {
   const nix = (yield* Exec.run(["nix", "--version"])).trim();
+
   const ifd = (yield* Exec.run(["nix", "config", "show", "allow-import-from-derivation"]).pipe(
     Effect.orElseSucceed(() => "?"),
   )).trim();
+
   return { nix, ifd, config: sha256(process.env.NIX_CONFIG ?? "").slice(0, 12) };
 });

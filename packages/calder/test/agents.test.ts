@@ -33,6 +33,7 @@ const connect = (
 ) =>
   Effect.gen(function* () {
     const orders: Array<AgentOrder> = [];
+
     const fiber = yield* agents
       .connect(
         { ...auth, name },
@@ -51,18 +52,22 @@ const connect = (
         Stream.runForEach((order) => Effect.sync(() => orders.push(order))),
         Effect.forkChild,
       );
+
     yield* ticks;
+
     return { orders, fiber };
   });
 
 /** The tower, which sleeps while idle; `wake` stands for its wake command, and counts its runs. */
 const sleeping = (wake: Effect.Effect<unknown, { readonly message: string }>) => {
   const woken = { count: 0 };
+
   const tower = {
     name: "tower",
     platform: "x86_64-linux",
     wake: Effect.suspend(() => (woken.count++, wake)),
   };
+
   return { agents: Agents.make("secret", 1, [tower]), woken };
 };
 
@@ -71,13 +76,16 @@ const waitFor = (agents: Agents.Agents["Service"], id: string, platform = "x86_6
   Effect.gen(function* () {
     const reasons: Array<string> = [];
     const log: Array<string> = [];
+
     const fiber = yield* Effect.forkChild(
       agents.run({ id, token: `t${id}` }, platform, {
         onWaiting: (reason) => Effect.sync(() => void reasons.push(reason)),
         onLog: (text) => Effect.sync(() => void log.push(text)),
       }),
     );
+
     yield* ticks;
+
     return { reasons, log, fiber };
   });
 
@@ -91,9 +99,11 @@ describe("Agents", () => {
     Effect.gen(function* () {
       const agents = Agents.make("secret", 1);
       const first = yield* Effect.forkChild(agents.run({ id: "a", token: "ta" }, "aarch64-darwin"));
+
       const second = yield* Effect.forkChild(
         agents.run({ id: "b", token: "tb" }, "aarch64-darwin"),
       );
+
       yield* ticks;
       const mac = yield* connect(agents);
       expect(mac.orders).toEqual([{ _tag: "Start", job: "a", token: "ta", pool: "trusted" }]);
@@ -170,9 +180,11 @@ describe("Agents", () => {
     () =>
       Effect.gen(function* () {
         const agents = Agents.make("secret", 1);
+
         const job = yield* Effect.forkChild(
           agents.run({ id: "new", token: "tn" }, "aarch64-darwin"),
         );
+
         yield* ticks;
         const mac = yield* connect(agents, { running: ["old"], slots: 2 });
         expect(mac.orders).toEqual([{ _tag: "Stop", job: "old" }]);
@@ -201,6 +213,7 @@ describe("Agents", () => {
         yield* ticks;
         yield* Fiber.interrupt(before.fiber);
         yield* agents.stop("a");
+
         const waiting = yield* Effect.forkChild(
           agents.run({ id: "b", token: "tb" }, "aarch64-darwin"),
         );
@@ -225,14 +238,17 @@ describe("Agents", () => {
       const agents = Agents.make("secret", 1);
       const mac = yield* connect(agents);
       yield* agents.offer(auth, 0);
+
       const offloaded = yield* agents.run({ id: "a", token: "ta" }, "aarch64-darwin", {
         wait: false,
       });
+
       expect(offloaded).toBe(-2);
 
       const waiting = yield* Effect.forkChild(
         agents.run({ id: "b", token: "tb" }, "aarch64-darwin"),
       );
+
       yield* ticks;
       expect(mac.orders).toEqual([]);
       yield* agents.offer(auth, 2);
@@ -261,6 +277,7 @@ describe("Agents", () => {
         const waiting = yield* Effect.forkChild(
           agents.run({ id: "b", token: "tb" }, "aarch64-darwin", { onPlaced: onPlaced("b") }),
         );
+
         yield* ticks;
         expect(started).toEqual([]);
         yield* connect(agents);
@@ -280,8 +297,10 @@ describe("Agents", () => {
               "systemctl start calder-wake@tower.service exited with 1: Job failed.\nSee the journal.",
           }),
         );
+
         const failed =
           "an agent of x86_64-linux to take it; waking tower failed: systemctl start calder-wake@tower.service exited with 1: Job failed.";
+
         const a = yield* waitFor(agents, "a");
         expect(woken.count).toBe(1);
         expect(a.log).toEqual([
@@ -388,6 +407,7 @@ describe("Agents", () => {
     () =>
       Effect.gen(function* () {
         const agents = Agents.make("secret", 1);
+
         // dev-hauke's evaluator, x86_64-linux too, offers no slot yet.
         const dev = yield* connect(agents, {
           name: "dev-hauke",
@@ -395,16 +415,20 @@ describe("Agents", () => {
           slots: 0,
           evaluator: true,
         });
+
         const reasons: Array<string> = [];
+
         const task = yield* Effect.forkChild(
           agents.run({ id: "task", token: "tt" }, "x86_64-linux"),
         );
+
         const evaluation = yield* Effect.forkChild(
           agents.run({ id: "eval", token: "te" }, "aarch64-linux", {
             evaluation: true,
             onWaiting: (r) => Effect.sync(() => void reasons.push(r)),
           }),
         );
+
         yield* ticks;
         expect(reasons).toEqual(["an evaluator agent to take it"]);
         // An x86_64-linux agent that isn't an evaluator takes the task, never the evaluation.
@@ -416,9 +440,11 @@ describe("Agents", () => {
         yield* agents.offer({ ...auth, name: "dev-hauke" }, 2);
         yield* ticks;
         expect(dev.orders).toEqual([{ _tag: "Start", job: "eval", token: "te", pool: "trusted" }]);
+
         const another = yield* Effect.forkChild(
           agents.run({ id: "task2", token: "t2" }, "x86_64-linux"),
         );
+
         yield* ticks;
         expect(dev.orders).toHaveLength(1);
         expect(tower.orders.at(-1)).toEqual({
@@ -459,16 +485,20 @@ describe("Agents", () => {
           platform: "x86_64-linux",
           evaluator: true,
         });
+
         const busy = yield* Effect.forkChild(
           agents.run({ id: "busy", token: "tb" }, "aarch64-linux", { evaluation: true }),
         );
+
         yield* ticks;
+
         const waiting = yield* Effect.forkChild(
           agents.run({ id: "late", token: "tl" }, "aarch64-linux", {
             evaluation: true,
             within: "2 minutes",
           }),
         );
+
         yield* ticks;
         yield* TestClock.adjust("5 minutes");
         expect(waiting.pollUnsafe()).toBeUndefined();
@@ -486,13 +516,16 @@ describe("Agents", () => {
         const hung = yield* Effect.forkChild(
           agents.run({ id: "hung", token: "th" }, "aarch64-linux", { evaluation: true }),
         );
+
         yield* ticks;
+
         const behind = yield* Effect.forkChild(
           agents.run({ id: "behind", token: "tbh" }, "aarch64-linux", {
             evaluation: true,
             within: "2 minutes",
           }),
         );
+
         yield* ticks;
         yield* TestClock.adjust("14 minutes");
         expect(behind.pollUnsafe()).toBeUndefined();
@@ -503,12 +536,14 @@ describe("Agents", () => {
 
         // An evaluator that offers no slots and runs nothing has stalled: the job gives up after two minutes.
         yield* agents.offer({ token: "secret", name: "dev-hauke" }, 0);
+
         const stalled = yield* Effect.forkChild(
           agents.run({ id: "stalled", token: "ts" }, "aarch64-linux", {
             evaluation: true,
             within: "2 minutes",
           }),
         );
+
         yield* ticks;
         yield* TestClock.adjust("119 seconds");
         expect(stalled.pollUnsafe()).toBeUndefined();
@@ -525,27 +560,32 @@ describe("Agents", () => {
             within: "2 minutes",
           }),
         );
+
         yield* ticks;
         yield* Fiber.interrupt(dev.fiber);
         yield* ticks;
         yield* TestClock.adjust("10 seconds");
+
         const again = yield* connect(agents, {
           name: "dev-hauke",
           platform: "x86_64-linux",
           evaluator: true,
           slots: 0,
         });
+
         yield* ticks;
         yield* TestClock.adjust("10 seconds");
         yield* Fiber.interrupt(again.fiber);
         yield* ticks;
         yield* TestClock.adjust("15 seconds");
         expect(flapping.pollUnsafe()).toBeUndefined();
+
         const dev2 = yield* connect(agents, {
           name: "dev-hauke",
           platform: "x86_64-linux",
           evaluator: true,
         });
+
         yield* ticks;
         expect(dev2.orders.map((o) => (o._tag === "Start" ? o.job : o._tag))).toEqual(["flapping"]);
         yield* agents.exited({ token: "secret", name: "dev-hauke" }, "flapping", 0);
@@ -558,18 +598,22 @@ describe("Agents", () => {
             within: "2 minutes",
           }),
         );
+
         yield* ticks;
+
         const back = yield* Effect.forkChild(
           agents.run({ id: "back", token: "tbk" }, "aarch64-linux", {
             evaluation: true,
             within: "2 minutes",
           }),
         );
+
         yield* ticks;
         yield* Fiber.interrupt(dev2.fiber);
         yield* ticks;
         yield* TestClock.adjust("10 seconds");
         expect(left.pollUnsafe()).toBeUndefined();
+
         // Asked while the evaluator is away for a moment, an evaluation waits too.
         const meanwhile = yield* Effect.forkChild(
           agents.run({ id: "meanwhile", token: "tm" }, "aarch64-linux", {
@@ -577,6 +621,7 @@ describe("Agents", () => {
             within: "2 minutes",
           }),
         );
+
         yield* ticks;
         expect(meanwhile.pollUnsafe()).toBeUndefined();
         yield* TestClock.adjust("25 seconds");
@@ -601,12 +646,14 @@ describe("Agents", () => {
         const tower = yield* connect(agents, { name: "tower", platform: "x86_64-linux" });
         const vm = yield* connect(agents, { name: "m1-linux", platform: "aarch64-linux" });
         const heard: Array<string> = [];
+
         const assigned =
           (job: string, orders: ReadonlyArray<AgentOrder>) =>
           (agent: { name: string; platform: string }) =>
             void heard.push(
               `${job} to ${agent.name} (${agent.platform}) after ${orders.length} orders`,
             );
+
         const first = yield* Effect.forkChild(
           agents.run({ id: "a", token: "ta" }, "aarch64-linux", {
             wait: false,
@@ -614,7 +661,9 @@ describe("Agents", () => {
             assigned: assigned("a", vm.orders),
           }),
         );
+
         yield* ticks;
+
         const second = yield* Effect.forkChild(
           agents.run({ id: "b", token: "tb" }, "aarch64-linux", {
             wait: false,
@@ -622,6 +671,7 @@ describe("Agents", () => {
             assigned: assigned("b", tower.orders),
           }),
         );
+
         yield* ticks;
         expect(heard).toEqual([
           "a to m1-linux (aarch64-linux) after 0 orders",
@@ -645,12 +695,14 @@ describe("Agents", () => {
     () =>
       Effect.gen(function* () {
         const agents = Agents.make("secret", 1);
+
         const dev = yield* connect(agents, {
           name: "dev-hauke-tasks",
           platform: "x86_64-linux",
           slots: 2,
           portableOnly: true,
         });
+
         // Pinned to x86_64-linux, such as an Android build that needs the tower's SDK.
         expect(
           yield* agents.run({ id: "pinned", token: "tp" }, "x86_64-linux", { wait: false }),
@@ -661,19 +713,23 @@ describe("Agents", () => {
         // With a plain agent of the job's own platform free too, the portable task takes the slot only the
         // portable-only agent can fill, and leaves the plain one to jobs that need it.
         const vm = yield* connect(agents, { name: "m1-linux", platform: "aarch64-linux" });
+
         const portable = yield* Effect.forkChild(
           agents.run({ id: "portable", token: "tq" }, "aarch64-linux", {
             wait: false,
             also: ["x86_64-linux"],
           }),
         );
+
         yield* ticks;
         expect(dev.orders).toEqual([
           { _tag: "Start", job: "portable", token: "tq", pool: "trusted" },
         ]);
+
         const pinned = yield* Effect.forkChild(
           agents.run({ id: "aarch64", token: "ta" }, "aarch64-linux", { wait: false }),
         );
+
         yield* ticks;
         expect(vm.orders).toEqual([
           { _tag: "Start", job: "aarch64", token: "ta", pool: "trusted" },
@@ -702,17 +758,20 @@ describe("Agents", () => {
           }),
         ).toBe(-2);
         expect(plain.orders).toEqual([]);
+
         const tower = yield* connect(agents, {
           name: "tower",
           platform: "x86_64-linux",
           slots: 3,
           pools: ["pr", "fork", "trusted"],
         });
+
         expect(agents.usage().find((a) => a.name === "tower")?.pools).toEqual([
           "pr",
           "fork",
           "trusted",
         ]);
+
         const jobs = yield* Effect.forEach(
           [
             ["pr", "pr"],
@@ -724,6 +783,7 @@ describe("Agents", () => {
               agents.run({ id, token: `t${id}` }, "x86_64-linux", { wait: false, pool }),
             ),
         );
+
         yield* ticks;
         expect(tower.orders).toEqual([
           { _tag: "Start", job: "pr", token: "tpr", pool: "pr", egress },
@@ -733,8 +793,10 @@ describe("Agents", () => {
         expect(plain.orders).toEqual([
           { _tag: "Start", job: "push", token: "tpush", pool: "trusted" },
         ]);
+
         for (const id of ["pr", "fork"]) yield* agents.exited({ ...auth, name: "tower" }, id, 0);
         yield* agents.exited({ ...auth, name: "m1-linux" }, "push", 0);
+
         for (const job of jobs) expect(yield* Fiber.join(job)).toBe(0);
       }),
   );
@@ -747,6 +809,7 @@ describe("Agents", () => {
           { platform: "aarch64-darwin", slots: 1, running: [], build: "b1", compatibility: 1 },
         )
         .pipe(Stream.runDrain, Effect.flip);
+
       expect(refused._tag).toBe("Unauthorized");
     }),
   );

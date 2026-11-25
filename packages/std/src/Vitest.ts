@@ -69,6 +69,7 @@ export interface SuiteOptions extends Omit<
 export const suite = (options: SuiteOptions) => {
   const dir = options.dir ?? ".";
   const report = dir === "." ? ".vitest-report.json" : `${dir}/.vitest-report.json`;
+
   return Task.make(options.name ?? "test", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     ...(options.setup === undefined ? {} : { setup: options.setup }),
@@ -85,12 +86,16 @@ export const suite = (options: SuiteOptions) => {
 export const files = (options: FilesOptions) => {
   const dir = options.dir ?? ".";
   const inDir = (path: string) => (dir === "." ? path : `${dir}/${path}`);
+
   const pattern = (glob: string) =>
     glob.startsWith("!") ? `!${inDir(glob.slice(1))}` : inDir(glob);
+
   const fromDir = (file: string) =>
     dir !== "." && file.startsWith(`${dir}/`) ? file.slice(dir.length + 1) : file;
+
   const report = inDir(".vitest-report.json");
   const each = Files.imports(options.tests.map(pattern), { aliases: options.aliases ?? {} });
+
   return Task.make(options.name ?? "test", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     ...(options.setup === undefined ? {} : { setup: options.setup }),

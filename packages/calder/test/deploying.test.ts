@@ -8,12 +8,14 @@ import { deploying } from "../src/worker/Steps.ts";
 const flake = Flake.make({ packages: ["bundle", "tool"], checks: [], devShells: [] });
 const bundle = Nix.build(flake.packages.bundle, { name: "bundle" });
 const tool = Nix.build(flake.packages.tool, { name: "tool" });
+
 // `tool` is interpolated, not declared: it never goes to the cache, as a NixOS host's closure wouldn't.
 const deploy = Task.make("deploy-beta", {
   run: cmd`${tool}/bin/deploy beta`,
   artifacts: { CALDER_BUNDLE: bundle },
   lease: true,
 });
+
 const def = deploy.def._tag === "Task" ? deploy.def : undefined!;
 const path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-bundle";
 const revision = "a".repeat(40);
@@ -33,6 +35,7 @@ const harness = (options: {
 }) => {
   const calls: Array<string> = [];
   const heads = [...(options.heads ?? [revision])];
+
   const client = {
     fleetAcquire: () =>
       Effect.sync(() => calls.push("acquire")).pipe(
@@ -48,6 +51,7 @@ const harness = (options: {
         Effect.andThen(options.publish ?? Effect.void),
       ),
   };
+
   const self = {
     id: "job",
     token: "token",
@@ -57,9 +61,11 @@ const harness = (options: {
     log: () => Effect.void,
     flush: Effect.void,
   } as unknown as Job["Service"];
+
   const job = {
     run: { project: "app", revision, branch: "main", event: { _tag: "Push", branch: "main" } },
   } as unknown as Extract<JobSpec, { _tag: "Step" }>;
+
   return {
     calls,
     run: Effect.scoped(
@@ -89,6 +95,7 @@ describe("a task that holds the deploy lease", () => {
         const { calls, run } = harness({
           lease: { _tag: "Stale", reason: "main moved on to bbbbbbbbbbbb" },
         });
+
         expect(yield* run).toEqual({
           _tag: "Ended",
           result: {
@@ -130,6 +137,7 @@ describe("a task that holds the deploy lease", () => {
         lease: { _tag: "Held", fence: 7 },
         publish: Effect.die(new Error(`${path} is not in the binary cache after publishing`)),
       });
+
       expect(yield* run).toEqual({
         _tag: "Ended",
         result: { _tag: "Died", message: `${path} is not in the binary cache after publishing` },
@@ -145,6 +153,7 @@ describe("a task that holds the deploy lease", () => {
           lease: { _tag: "Held", fence: 7 },
           head: Effect.die(new Error("Gitea answered 502")),
         });
+
         expect(yield* run).toEqual({ _tag: "Held", fence: 7 });
         expect(calls).toEqual(["acquire", `publish CALDER_BUNDLE ${path}`, "head main", "release"]);
       }),

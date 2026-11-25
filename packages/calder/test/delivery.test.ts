@@ -19,6 +19,7 @@ const fakes = (options: { readonly giteaDown?: { count: number } } = {}) => {
   const comments: Array<{ pr: number; body: string; existing: number | null }> = [];
   const reruns: Array<string> = [];
   const history = ["m1", "m2"];
+
   const services = Layer.mergeAll(
     config(),
     Layer.succeed(Projects)({
@@ -30,6 +31,7 @@ const fakes = (options: { readonly giteaDown?: { count: number } } = {}) => {
       rerun: (id: string) =>
         Effect.sync(() => {
           reruns.push(id);
+
           return { id: `${id}-again` };
         }),
     } as unknown as Runs["Service"]),
@@ -42,6 +44,7 @@ const fakes = (options: { readonly giteaDown?: { count: number } } = {}) => {
       comment: (_repo: string, pr: number, body: string, existing: number | null) =>
         Effect.sync(() => {
           comments.push({ pr, body, existing });
+
           return existing ?? 100;
         }),
     } as unknown as Gitea["Service"]),
@@ -59,6 +62,7 @@ const fakes = (options: { readonly giteaDown?: { count: number } } = {}) => {
         ),
     } as unknown as Mirror["Service"]),
   );
+
   return { comments, reruns, services };
 };
 
@@ -67,6 +71,7 @@ describe("delivery", () => {
     "tells a merge's pull request that its run failed, once, and that it shipped once a run including it passed",
     () => {
       const { comments, services } = fakes();
+
       return Effect.gen(function* () {
         yield* insertRun("p-1", {
           at: 1,
@@ -136,6 +141,7 @@ describe("delivery", () => {
 
   it.effect("leaves a failed merge alone when a run including it passed already", () => {
     const { comments, services } = fakes();
+
     return Effect.gen(function* () {
       yield* insertRun("p-1", {
         at: 1,
@@ -158,6 +164,7 @@ describe("delivery", () => {
 
   it.effect("asks again after Gitea failed to answer which pull request a merge was", () => {
     const { comments, services } = fakes({ giteaDown: { count: 1 } });
+
     return Effect.gen(function* () {
       yield* insertRun("p-1", {
         at: 1,
@@ -177,6 +184,7 @@ describe("delivery", () => {
 
 describe("converge", () => {
   const hour = 3_600_000;
+
   /** m1 deployed by p-1; m2, the head, failed in p-2 at a deploy (or, with `check`, a check). */
   const failedHead = (options: { readonly check?: boolean } = {}) =>
     Effect.gen(function* () {
@@ -200,6 +208,7 @@ describe("converge", () => {
     "says how far the deploy is behind, and reruns the head's failed deploy once its backoff passed",
     () => {
       const { reruns, services } = fakes();
+
       return Effect.gen(function* () {
         yield* failedHead();
         const behind = { commits: 1, since: 10_000 };
@@ -249,6 +258,7 @@ describe("converge", () => {
 
   it.effect("counts each time a rerun ran the head's run again in place as an attempt", () => {
     const { services } = fakes();
+
     return Effect.gen(function* () {
       yield* failedHead();
       const sql = yield* SqlClient.SqlClient;
@@ -266,6 +276,7 @@ describe("converge", () => {
     "reruns no older failed run of the head while one that ran again in place still runs",
     () => {
       const { reruns, services } = fakes();
+
       return Effect.gen(function* () {
         yield* failedHead();
         const sql = yield* SqlClient.SqlClient;
@@ -282,6 +293,7 @@ describe("converge", () => {
     "tells a merge's pull request it shipped when its failed run passed once it ran again in place",
     () => {
       const { comments, services } = fakes();
+
       return Effect.gen(function* () {
         yield* insertRun("p-1", {
           at: 1,
@@ -298,6 +310,7 @@ describe("converge", () => {
             comment: (_repo: string, pr: number, body: string, existing: number | null) =>
               Effect.sync(() => {
                 comments.push({ pr, body, existing });
+
                 return existing ?? 100;
               }),
           } as unknown as Gitea["Service"]),
@@ -316,6 +329,7 @@ describe("converge", () => {
     "waits its backoff from the try that ended last, also when that is an older one that ran again in place",
     () => {
       const { services } = fakes();
+
       return Effect.gen(function* () {
         yield* failedHead();
         const sql = yield* SqlClient.SqlClient;
@@ -333,6 +347,7 @@ describe("converge", () => {
 
   it.effect("leaves a failed check and a project that opts out to people", () => {
     const { reruns, services } = fakes();
+
     return Effect.gen(function* () {
       yield* failedHead({ check: true });
       expect((yield* converge(project, 10 * hour))?.retry).toBeNull();
@@ -346,6 +361,7 @@ describe("converge", () => {
 
   it.effect("counts a nightly that passed at the head as deployed only when it deploys", () => {
     const { services } = fakes();
+
     return Effect.gen(function* () {
       yield* failedHead();
       yield* insertRun("p-3", {
@@ -380,6 +396,7 @@ describe("converge", () => {
 
   it.effect("says a deploy that is still running isn't stalled", () => {
     const { services } = fakes();
+
     return Effect.gen(function* () {
       yield* insertRun("p-1", { at: 1, branch: "main", sha: "m1", planned: true });
       yield* insertStep("p-1", "deploy", { critical: true });
@@ -401,6 +418,7 @@ describe("converge", () => {
 
   it.effect("says nothing for a project whose pushes don't deploy", () => {
     const { services } = fakes();
+
     return Effect.gen(function* () {
       yield* insertRun("p-1", { at: 1, branch: "main", sha: "m1", planned: true });
       yield* insertStep("p-1", "test");

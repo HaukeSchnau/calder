@@ -86,7 +86,9 @@ const toResult = <A>(
       key: extra.key ?? null,
     };
   }
+
   const failure = Cause.findErrorOption(exit.cause);
+
   if (Option.isSome(failure) && isCalderFailure(failure.value)) {
     return {
       _tag: "Failed",
@@ -97,6 +99,7 @@ const toResult = <A>(
       outputs: extra.outputs ?? {},
     };
   }
+
   return { _tag: "Died", message: Cause.pretty(exit.cause) };
 };
 
@@ -129,6 +132,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
     const parse = NixLog.parser();
     // The controller sends a build only once it has its derivation (Runs.ts `evaluation`).
     const drv = job.derivation;
+
     if (drv === null)
       return { _tag: "Died", message: `${attr} has no derivation to build` } satisfies JobResult;
     yield* log("calder", `nix build ${attr}`);
@@ -136,9 +140,11 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
     let lost = false;
     /** What Nix said in the last attempt, which says whether it failed for an infrastructure reason. */
     let said: Array<string> = [];
+
     const attempt = Effect.gen(function* () {
       const out: Array<string> = [];
       said = [];
+
       const exitCode = yield* Exec.stream(
         [
           "nix",
@@ -156,9 +162,12 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
           Effect.gen(function* () {
             if (stream === "stdout") {
               out.push(line.trim());
+
               return;
             }
+
             if (line.includes("failed to obtain derivation of") && line.includes(drv)) lost = true;
+
             for (const msg of parse(line, Date.now())) {
               if (msg._tag === "Activity")
                 yield* emit({ _tag: "Activity", activity: msg.activity });
@@ -170,14 +179,18 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
             }
           }),
       );
+
       if (exitCode !== 0) {
         const cause = BuildFailure.infrastructure(said);
+
         return yield* cause === null
           ? new Calder.BuildFailed({ attr, drv })
           : new Calder.Infrastructure({ attr, drv, cause });
       }
+
       return out.find((l) => l.startsWith("/nix/store/")) as Calder.StorePath;
     });
+
     // The controller roots a run's derivations once its plan or evaluation has them (Runs.ts
     // `rootDerivations`), so this is for a derivation the store lost anyway: one evaluated before the
     // controller rooted it, or one whose root couldn't be made. Evaluating the attribute again writes it back.
@@ -188,6 +201,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
         Effect.gen(function* () {
           lost = false;
           yield* log("calder", `the store lost ${drv}, so ${attr} is evaluated again`);
+
           const evaluated = yield* Exec.run(
             ["nix", "eval", "--raw", `${job.run.flake}#${attr}.drvPath`],
             { env: env(job.run, step.name) },
@@ -195,6 +209,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
             Effect.map((out) => out.trim()),
             Effect.orElseSucceed(() => null),
           );
+
           // Evaluating again won't give it back either, so trying again would only repeat this: no
           // infrastructure failure.
           if (evaluated !== drv) {
@@ -204,12 +219,16 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
                 ? `evaluating ${attr} again failed`
                 : `${attr} evaluates to ${evaluated} now, not ${drv}`,
             );
+
             return yield* new Calder.BuildFailed({ attr, drv });
           }
+
           return yield* attempt;
         }),
     );
+
     const exit = yield* Effect.exit(withPolicies(again, step.policies));
+
     return toResult(exit, { key: drv });
   });
 
@@ -228,10 +247,12 @@ export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =
     yield* say(
       `evaluating the ${attrs.length} builds the plan left for when the first of them runs`,
     );
+
     if ((yield* Job).remote !== null)
       yield* say(
         contextNote(yield* nixSettings.pipe(Effect.orElseSucceed(() => null)), what.controller),
       );
+
     const evaluated = yield* Resolve.derivations(
       job.run,
       attrs,
@@ -249,19 +270,23 @@ export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =
         } as Resolve.Evaluated),
       ),
     );
+
     const derivation = (attr: string) => evaluated.derivations.get(attr) ?? null;
+
     const uses = yield* Resolve.buildEdges([
       ...what.planned,
       ...what.builds.flatMap((b) =>
         derivation(b.attr) === null ? [] : [{ name: b.name, drv: derivation(b.attr)!.drv }],
       ),
     ]);
+
     return {
       _tag: "Evaluated",
       derivations: Object.fromEntries(what.builds.map((b) => [b.name, derivation(b.attr)])),
       tooLarge: Object.fromEntries(
         what.builds.flatMap((b) => {
           const e = evaluated.tooLarge.get(b.attr);
+
           return e === undefined ? [] : [[b.name, e.message]];
         }),
       ),
@@ -269,6 +294,7 @@ export const evaluate = (job: StepJob, what: NonNullable<StepJob["evaluate"]>) =
       errors: Object.fromEntries(
         what.builds.flatMap((b) => {
           const error = evaluated.errors.get(b.attr);
+
           return error === undefined ? [] : [[b.name, error]];
         }),
       ),
@@ -286,9 +312,12 @@ export const contextNote = (
   controller: { readonly nix: string; readonly ifd: string; readonly config: string } | undefined,
 ) => {
   if (agent === null) return "could not read this agent's Nix version";
+
   const describe = (s: typeof agent) =>
     `${s.nix}, allow-import-from-derivation ${s.ifd}, NIX_CONFIG ${s.config}`;
+
   const mine = `this agent evaluates with ${describe(agent)}`;
+
   if (
     controller === undefined ||
     (controller.nix === agent.nix &&
@@ -296,6 +325,7 @@ export const contextNote = (
       controller.config === agent.config)
   )
     return mine;
+
   return (
     `${mine}; warning: the controller has ${describe(controller)}, ` +
     "so its runs can't take what this evaluation records and evaluate these builds again"
@@ -322,18 +352,23 @@ export const evaluationCache = (
 export const pushed = (result: Extract<JobResult, { _tag: "Evaluated" }>) =>
   Effect.gen(function* () {
     const { remote, log } = yield* Job;
+
     if (remote === null) return result as JobResult;
+
     if (remote.store === undefined) {
       return {
         _tag: "Died",
         message: "this agent has no store to push derivations to (calder agent --evaluator)",
       } satisfies JobResult;
     }
+
     const drvs = [
       ...new Set(Object.values(result.derivations).flatMap((d) => (d === null ? [] : [d.drv]))),
     ];
+
     if (drvs.length === 0) return result;
     const started = Date.now();
+
     const copy = yield* Exec.exec([
       "nix",
       "--extra-experimental-features",
@@ -345,17 +380,21 @@ export const pushed = (result: Extract<JobResult, { _tag: "Evaluated" }>) =>
       "--",
       ...only(drvs),
     ]);
+
     if (copy.exitCode !== 0) {
       const why = copy.stderr.trim().split("\n").slice(-3).join(" ");
+
       return {
         _tag: "Died",
         message: `pushing the derivations to the controller's store failed: ${why}`,
       } satisfies JobResult;
     }
+
     yield* log(
       "calder",
       `pushed the derivations of ${drvs.length} builds to the controller's store in ${Math.round((Date.now() - started) / 1000)} s`,
     );
+
     return result;
   });
 
@@ -365,7 +404,9 @@ export const pushed = (result: Extract<JobResult, { _tag: "Evaluated" }>) =>
 // runners' contract. Remove this once no branch carries `.ci/`.
 const preserved = (workspace: string): ReadonlyArray<string> => {
   const file = join(workspace, ".ci/preserve");
+
   if (!existsSync(file)) return [];
+
   return readFileSync(file, "utf8")
     .split("\n")
     .map((l) => l.trim())
@@ -377,13 +418,16 @@ const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const self = yield* Job;
     const { log } = self;
+
     const git = (args: ReadonlyArray<string>) =>
       Exec.run(["git", "-C", src, ...args], { env: { ...process.env, ...gitEnv(self) } });
+
     if (!existsSync(join(src, ".git"))) yield* git(["init", "-q"]);
     const started = Date.now();
     yield* git(["remote", "add", "origin", job.run.mirror]).pipe(
       Effect.catch(() => git(["remote", "set-url", "origin", job.run.mirror])),
     );
+
     if (self.remote === null) {
       // A local worker reads the mirror's objects in place, history included. A shallow fetch from it
       // packed the whole tree again every time: half a minute and 100 MB per t3code checkout. The
@@ -399,9 +443,11 @@ const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
         Effect.as(true),
         Effect.orElseSucceed(() => false),
       );
+
       if (!has)
         yield* fetching(git(["fetch", "-q", "--no-tags", "--depth=1", "origin", job.run.revision]));
     }
+
     yield* git([
       "-c",
       "advice.detachedHead=false",
@@ -412,6 +458,7 @@ const checkout = (job: StepJob, src: string, keep: ReadonlyArray<string>) =>
       job.run.revision,
     ]);
     yield* git(["clean", "-q", "-ffdx", ...keep.flatMap((p) => ["-e", p])]);
+
     // What `calder gen` sets up locally, so the repository's own tools (type-aware lint) resolve ci.ts too.
     if (existsSync(join(src, ".calder"))) link(join(src, ".calder", "node_modules"), sdkPath);
     yield* log(
@@ -450,18 +497,24 @@ const lockedNixpkgs = (workspace: string) =>
         }
       >;
     };
+
     // An input that follows another names the path to it from the root.
     const node = (from: string, name: string): string | undefined => {
       const input = lock.nodes[from]?.inputs?.[name];
+
       if (typeof input === "string" || input === undefined) return input;
+
       return input.reduce<string | undefined>(
         (at, step) => (at === undefined ? undefined : node(at, step)),
         lock.root,
       );
     };
+
     const locked = lock.nodes[node(lock.root, "nixpkgs") ?? ""]?.locked;
+
     if (locked === undefined) return undefined;
     const expr = `builtins.flakeRefToString (builtins.fromJSON (builtins.getEnv "CALDER_NIXPKGS"))`;
+
     return (yield* Exec.run(["nix", "eval", "--impure", "--raw", "--expr", expr], {
       env: { CALDER_NIXPKGS: JSON.stringify(locked) },
     })).trim();
@@ -485,8 +538,10 @@ export const inShell = (
     if (shell === undefined) return argv;
     const attr = Flake.attrPath(shell, job.run.system);
     const drv = job.shells?.[attr];
+
     if (drv !== undefined && existsSync(drv)) {
       const nixpkgs = yield* lockedNixpkgs(workspace);
+
       return [
         "nix",
         "develop",
@@ -496,11 +551,13 @@ export const inShell = (
         ...argv,
       ];
     }
+
     // An agent's workspace is a shallow checkout, which Nix only takes when told so.
     const flake =
       job.run.flake === ""
         ? `git+file://${workspace}?rev=${job.run.revision}&shallow=1`
         : job.run.flake;
+
     return ["nix", "develop", `${flake}#${attr}`, "--command", ...argv];
   });
 
@@ -517,19 +574,23 @@ const prepare = (
 ) =>
   Effect.gen(function* () {
     const { log, redact, remote } = yield* Job;
+
     if (job.workspace === null) return yield* Effect.die(new Error(`${name} needs a workspace`));
     const opened = Date.now();
+
     const slot = yield* Workspace.open(
       isAbsolute(job.workspace) || remote === null
         ? job.workspace
         : join(remote.workspaces, job.workspace),
       job.deps,
     );
+
     if (slot.restored)
       yield* log("calder", `cloned a prepared workspace in ${Date.now() - opened} ms`);
     const workspace = slot.src;
     yield* checkout(job, workspace, setup === undefined ? preserved(workspace) : setup.keep);
     const tmp = freshTmp(slot.root);
+
     const prelude = [
       "set -euo pipefail",
       `if [ -n "\${CALDER_PATH:-}" ]; then export PATH="$CALDER_PATH:$PATH"; fi`,
@@ -537,6 +598,7 @@ const prepare = (
         ? ["if [ -f .ci/environment ]; then source .ci/environment; fi"]
         : []),
     ].join("; ");
+
     const extraEnv: Record<string, string> = {
       ...setup?.env,
       CALDER_PATH: (setup?.path ?? []).map((dir) => join(workspace, dir)).join(":"),
@@ -550,15 +612,18 @@ const prepare = (
         : {}),
       CI_WORKSPACE_SLOT: job.workspace.split("/").at(-1) ?? "",
     };
+
     const command =
       setup === undefined
         ? existsSync(join(workspace, ".ci/setup"))
           ? [".ci/setup"]
           : null
         : Cmd.render(setup.run, {});
+
     if (slot.fresh && command !== null) {
       const started = Date.now();
       const last = lastWords(redact);
+
       const exitCode = yield* Exec.stream(
         yield* inShell(job, workspace, setup === undefined ? legacyShell : setup.shell, [
           "bash",
@@ -570,6 +635,7 @@ const prepare = (
         { cwd: workspace, env: env(job.run, name, extraEnv) },
         (stream, line) => log(stream, last.see(line)),
       );
+
       if (exitCode !== 0) {
         return {
           _tag: "Failed",
@@ -578,12 +644,15 @@ const prepare = (
           ),
         } as const;
       }
+
       yield* log(
         "calder",
         `set up in ${Math.round((Date.now() - started) / 1000)} s; other slots clone this one`,
       );
     }
+
     if (slot.fresh && job.deps !== null) yield* remember(slot, job.deps);
+
     return {
       _tag: "Ready",
       slot,
@@ -607,8 +676,10 @@ export const freshTmp = (slot: string, root = "/tmp") => {
     realpathSync(root),
     `calder-${createHash("sha256").update(slot).digest("hex").slice(0, 10)}`,
   );
+
   rmSync(path, { recursive: true, force: true });
   mkdirSync(path, { mode: 0o700 });
+
   return path;
 };
 
@@ -616,9 +687,12 @@ export const freshTmp = (slot: string, root = "/tmp") => {
 export const setup = (job: StepJob, step: Step.Any) =>
   Effect.gen(function* () {
     const def = step.def;
+
     if (def._tag !== "Setup") return yield* Effect.die(new Error(`${step.name} is not a setup`));
     const prepared = yield* prepare(job, step.name, def, undefined);
+
     if (prepared._tag === "Failed") return prepared.result;
+
     return toResult(Exit.succeed({ fresh: prepared.fresh }), { key: job.deps });
   });
 
@@ -627,6 +701,7 @@ const shardFiles = (files: ReadonlyArray<string>, index: number, count: number) 
 
 const limitIn = (file: string) => {
   const text = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+
   return /^\d+$/.test(text) ? Number(text) : null;
 };
 
@@ -635,6 +710,7 @@ const ownCgroup = () => {
   const line = existsSync("/proc/self/cgroup")
     ? /^0::(\/.*)$/m.exec(readFileSync("/proc/self/cgroup", "utf8"))
     : null;
+
   return line === null ? null : join("/sys/fs/cgroup", line[1]!);
 };
 
@@ -649,6 +725,7 @@ export const goMemLimit = (cgroup = ownCgroup()): Record<string, string> => {
     cgroup === null
       ? null
       : (limitIn(join(cgroup, "memory.high")) ?? limitIn(join(cgroup, "memory.max")));
+
   return limit === null ? {} : { GOMEMLIMIT: `${Math.floor((limit * 0.9) / 2 ** 20)}MiB` };
 };
 
@@ -673,6 +750,7 @@ type TaskDef = Extract<Step.Any["def"], { readonly _tag: "Task" }>;
 const artifactPaths = (def: TaskDef, values: Record<string, unknown>) =>
   Object.entries(def.artifacts).flatMap(([env, s]) => {
     const value = values[s.name];
+
     return typeof value === "string" ? [[env, value] as const] : [];
   });
 
@@ -693,43 +771,56 @@ export const deploying = (
   Effect.gen(function* () {
     const { log } = self;
     const auth = { job: self.id, token: self.token };
+
     const lease = yield* Effect.acquireRelease(
       Effect.orDie(reconnecting(self.client.fleetAcquire({ ...auth, project: job.run.project }))),
       () => Effect.orDie(reconnecting(self.client.fleetRelease(auth))),
     );
+
     const end = (result: JobResult) => ({ _tag: "Ended", result }) as const;
+
     const skip = (reason: string) =>
       log("calder", reason).pipe(Effect.as(end({ _tag: "Skipped", reason })));
+
     if (lease._tag === "Replaced")
       return yield* skip(
         `#${lease.by} took ${name}'s deploy lease, so this older run doesn't deploy`,
       );
+
     if (lease._tag === "Stale") return yield* skip(`${lease.reason}, so this run doesn't deploy`);
     yield* log("calder", `holding the deploy lease, fence ${lease.fence}`);
     const artifacts = artifactPaths(def, values).filter(([, path]) => storePath.test(path));
+
     for (const [artifact, path] of artifacts) {
       const started = Date.now();
+
       const published = yield* Effect.exit(
         reconnecting(self.client.cachePublish({ ...auth, path, artifact })),
       );
+
       if (Exit.isFailure(published)) {
         const message = Cause.squash(published.cause);
+
         return end({
           _tag: "Died",
           message: message instanceof Error ? message.message : String(message),
         });
       }
+
       yield* log(
         "calder",
         `${artifact}: ${path} is in the binary cache (${Date.now() - started} ms)`,
       );
     }
+
     // Like the controller's check, Gitea not answering in time doesn't stop the deploy.
     const branch = job.run.event._tag === "PullRequestClosed" ? null : job.run.branch;
+
     if (artifacts.length > 0 && branch !== null) {
       const head = yield* Effect.exit(
         reconnecting(self.client.gitHead({ ...auth, branch })).pipe(Effect.timeout("10 seconds")),
       );
+
       if (Exit.isFailure(head))
         yield* log(
           "calder",
@@ -740,10 +831,12 @@ export const deploying = (
           `${branch} moved on to ${head.value.slice(0, 12)}, so this run doesn't deploy`,
         );
     }
+
     return { _tag: "Held", fence: lease.fence } as const;
   });
 
 const ansi = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
 /** What a wrapper prints after the command it ran failed: pnpm, just, and Go's `exit status 1`. */
 const wrapperNote = /^ELIFECYCLE\b|^error: Recipe `[^`]+` failed\b|^exit status \d+$/i;
 
@@ -755,11 +848,14 @@ const wrapperNote = /^ELIFECYCLE\b|^error: Recipe `[^`]+` failed\b|^exit status 
  */
 export const lastWords = (redact: (text: string) => string) => {
   let last: string | undefined;
+
   return {
     /** Takes a line as it goes to the log. */
     see: (line: string) => {
       const text = line.replace(ansi, "").trim();
+
       if (text !== "" && !wrapperNote.test(text)) last = redact(text).slice(0, 500);
+
       return line;
     },
     said: (): { readonly lastLine?: string } => (last === undefined ? {} : { lastLine: last }),
@@ -769,24 +865,30 @@ export const lastWords = (redact: (text: string) => string) => {
 export const task = (job: StepJob, step: Step.Any, values: Record<string, unknown>) =>
   Effect.gen(function* () {
     const def = step.def;
+
     if (def._tag !== "Task") return yield* Effect.die(new Error(`${step.name} is not a task`));
     const self = yield* Job;
     const { emit, log, redact, remote } = self;
     const setup = def.setup?.def._tag === "Setup" ? def.setup.def : undefined;
     const prepared = yield* prepare(job, step.name, setup, def.shell);
+
     if (prepared._tag === "Failed") return prepared.result;
     const { workspace, prelude, extraEnv } = prepared;
+
     if (remote !== null) yield* fetchInputs(self, values);
 
     const shard = job.shard ?? { index: 1, count: 1 };
     let files: ReadonlyArray<string> = job.files ?? [];
+
     if (job.files === null && typeof def.run === "function" && def.shards?.split !== undefined) {
       const repo = yield* Repo.make(
         remote === null ? job.run.mirror : join(workspace, ".git"),
         job.run.revision,
       );
+
       files = shardFiles(yield* paths(repo, def.shards.split), shard.index, shard.count);
     }
+
     const command =
       typeof def.run === "function"
         ? def.run({ index: shard.index, count: shard.count, files })
@@ -794,10 +896,13 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
 
     const secretNames = Step.taskSecrets(def);
     const secrets = yield* secretFiles(job, step.name, secretNames);
+
     const secretEnv = Object.fromEntries(
       Object.entries(def.secrets).map(([env, ref]) => [env, secrets[ref.name]!.path]),
     );
+
     const pullRequest = Event.pullRequestNumber(job.run.event);
+
     const argv = Cmd.render(command, values, {
       secrets: Object.fromEntries(secretNames.map((name) => [name, secrets[name]!.path])),
       ...(pullRequest === undefined ? {} : { pullRequest }),
@@ -805,7 +910,9 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
 
     const leased =
       def.lease !== undefined ? yield* deploying(self, job, step.name, def, values) : undefined;
+
     if (leased?._tag === "Ended") return leased.result;
+
     if (remote === null)
       yield* fetchArtifacts(
         self,
@@ -819,6 +926,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       "calder-task",
       ...argv,
     ]);
+
     const taskEnv = env(job.run, step.name, {
       ...goMemLimit(),
       ...extraEnv,
@@ -832,24 +940,34 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
 
     let attempt = 0;
     let skipped: string | undefined;
+
     const once = Effect.gen(function* () {
       attempt += 1;
+
       if (attempt > 1) yield* emit({ _tag: "Attempt", attempt, reason: "retry" });
+
       // An attempt that writes no report must not report the previous attempt's tests again.
       if (def.report !== undefined) rmSync(join(workspace, def.report.path), { force: true });
+
       if (def.value !== undefined) rmSync(join(workspace, def.value.path), { force: true });
       yield* log("calder", `$ ${argv.join(" ")}`);
       const last = lastWords(redact);
+
       const exitCode = yield* Exec.stream(full, { cwd: workspace, env: taskEnv }, (stream, line) =>
         log(stream, last.see(line)),
       );
+
       if (def.skipCode !== undefined && exitCode === def.skipCode) {
         skipped = last.said().lastLine ?? `exited with ${exitCode}`;
+
         return undefined;
       }
+
       let failures: ReadonlyArray<Calder.TestFailure> = [];
+
       if (def.report !== undefined) {
         const path = join(workspace, def.report.path);
+
         if (existsSync(path)) {
           const results = yield* Effect.try(() =>
             Report.parse(def.report!, readFileSync(path, "utf8")),
@@ -859,6 +977,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
             ),
             Effect.orElseSucceed(() => []),
           );
+
           // Reporters name files by absolute path; the controller compares them with repository paths.
           const relative = (file: string | undefined) =>
             file === undefined
@@ -866,6 +985,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
               : file.startsWith(`${workspace}/`)
                 ? file.slice(workspace.length + 1)
                 : file;
+
           yield* emit({
             _tag: "Tests",
             results: results.map((r) => ({
@@ -879,27 +999,35 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
           yield* log("calder", `no report at ${def.report.path}`);
         }
       }
+
       if (exitCode !== 0)
         return yield* new Calder.TaskFailed({ exitCode, failures, ...last.said() });
+
       return def.value === undefined ? undefined : yield* readValue(workspace, def.value);
     });
+
     const exit = yield* Effect.exit(withPolicies(once, step.policies));
+
     if (skipped !== undefined && Exit.isSuccess(exit))
       return { _tag: "Skipped", reason: skipped } satisfies JobResult;
     const passed = Exit.isSuccess(exit);
 
     const outputs: Record<string, string> = {};
+
     for (const [name, path] of Object.entries(def.outputs)) {
       const source = join(workspace, path);
+
       // A failed task keeps what it wrote, such as screenshots of what went wrong, and fails no worse for the rest.
       if (!passed && !existsSync(source)) continue;
       const storeName = `${step.name}-${name}`.replace(/[^A-Za-z0-9+._?=-]/g, "-");
+
       const stored =
         remote === null
           ? Exec.run(["nix", "store", "add", "--name", storeName, source]).pipe(
               Effect.map((out) => out.trim()),
             )
           : upload(self, storeName, source);
+
       const kept = yield* passed
         ? stored
         : stored.pipe(
@@ -909,8 +1037,10 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
               ),
             ),
           );
+
       if (kept !== null) outputs[name] = kept;
     }
+
     return toResult(exit, { outputs });
   }).pipe(Effect.scoped);
 
@@ -926,19 +1056,24 @@ const fetchInputs = (self: Job["Service"], values: Record<string, unknown>) =>
     (value) =>
       Effect.gen(function* () {
         const match = typeof value === "string" ? storePath.exec(value) : null;
+
         if (match === null || existsSync(value as string)) return;
         const path = value as string;
+
         if ((yield* Exec.exec(["nix-store", "--realise", ...only([path])])).exitCode === 0) return;
         const dir = mkdtempSync(join(tmpdir(), "calder-input-"));
+
         const response = yield* Effect.tryPromise(() =>
           fetch(`${self.remote!.url}/store?path=${encodeURIComponent(path)}`, {
             headers: { Authorization: `Bearer ${self.id}:${self.token}` },
           }),
         );
+
         if (!response.ok)
           return yield* Effect.die(new Error(`fetching ${path} failed: ${response.status}`));
         yield* Effect.tryPromise(() => Bun.write(join(dir, "input.tar"), response));
         yield* Exec.run(["tar", "-x", "-C", dir, "-f", join(dir, "input.tar")]);
+
         const added = (yield* Exec.run([
           "nix",
           "store",
@@ -947,7 +1082,9 @@ const fetchInputs = (self: Job["Service"], values: Record<string, unknown>) =>
           match[1]!,
           join(dir, match[1]!),
         ])).trim();
+
         rmSync(dir, { recursive: true, force: true });
+
         if (added !== path) return yield* Effect.die(new Error(`${path} arrived as ${added}`));
       }),
     { discard: true },
@@ -986,6 +1123,7 @@ const upload = (self: Job["Service"], name: string, path: string) =>
   Effect.gen(function* () {
     const archive = join(mkdtempSync(join(tmpdir(), "calder-output-")), "output.tar");
     yield* Exec.run(["tar", "-c", "-f", archive, "-C", dirname(path), basename(path)]);
+
     const response = yield* Effect.tryPromise(() =>
       fetch(`${self.remote!.url}/outputs?name=${encodeURIComponent(name)}`, {
         method: "PUT",
@@ -993,10 +1131,13 @@ const upload = (self: Job["Service"], name: string, path: string) =>
         headers: { Authorization: `Bearer ${self.id}:${self.token}` },
       }),
     );
+
     const text = yield* Effect.tryPromise(() => response.text());
     rmSync(dirname(archive), { recursive: true, force: true });
+
     if (!response.ok)
       return yield* Effect.die(new Error(`uploading ${name} failed: ${response.status} ${text}`));
+
     return text.trim();
   });
 
@@ -1004,6 +1145,7 @@ const upload = (self: Job["Service"], name: string, path: string) =>
 
 const outcome = (o: Outcome | undefined, step: string): Step.Outcome<unknown, unknown> => {
   if (o === undefined) return { _tag: "Blocked", step };
+
   switch (o._tag) {
     case "Passed":
       return { _tag: "Passed", step, value: Values.decode(o.value) };
@@ -1022,10 +1164,12 @@ const inputsOf = (needs: Step.Needs, job: StepJob) =>
     Object.entries(needs).map(([key, need]) => {
       if ("_tag" in need && need._tag === "Exit")
         return [key, outcome(job.inputs[need.step.name], need.step.name)];
+
       if ("_tag" in need && need._tag === "Exits")
         return [key, need.steps.map((s) => outcome(job.inputs[s.name], s.name))];
       const step = need as Step.Any;
       const o = job.inputs[step.name];
+
       return [key, o?._tag === "Passed" ? Values.decode(o.value) : undefined];
     }),
   );
@@ -1039,8 +1183,10 @@ type SecretFile = { readonly value: string; readonly path: string };
 const secretFiles = (job: StepJob, step: string, names: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const missing = names.filter((name) => job.secrets[name] === undefined);
+
     if (missing.length > 0) {
       const list = missing.map((name) => `"${name}"`).join(", ");
+
       return yield* Effect.die(
         new Error(
           `${step} needs the secret ${list}, but project ${job.run.project} has none by that name ` +
@@ -1048,18 +1194,23 @@ const secretFiles = (job: StepJob, step: string, names: ReadonlyArray<string>) =
         ),
       );
     }
+
     const files: Record<string, SecretFile> = {};
+
     if (names.length === 0) return files;
+
     const dir = yield* Effect.acquireRelease(
       Effect.sync(() => mkdtempSync(join(tmpdir(), "calder-secrets-"))),
       (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
     );
+
     for (const name of names) {
       const value = job.secrets[name]!;
       const path = join(dir, name);
       writeFileSync(path, value, { mode: 0o600 });
       files[name] = { value, path };
     }
+
     return files;
   });
 
@@ -1070,6 +1221,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
     const rpc = <A, E>(effect: Effect.Effect<A, E>) => Effect.orDie(reconnecting(effect));
     const run = job.run;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
     const descriptor = yield* Effect.cached(
       Exec.run(["nix", "eval", "--json", `${run.flake}#lib.project`]).pipe(
         Effect.map((s) => JSON.parse(s) as unknown),
@@ -1088,6 +1240,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
       system: run.system,
       descriptor,
     });
+
     if (run.trust === "trusted") {
       context = context.pipe(
         Context.add(Git, {
@@ -1117,6 +1270,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
         }),
       );
     }
+
     if (run.event._tag === "PullRequest") {
       const pr = run.event;
       context = context.pipe(
@@ -1128,6 +1282,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
         }),
       );
     }
+
     // A check runs the pull-request rules without a pull request; its comments go to the log.
     if (run.event._tag === "Check") {
       context = context.pipe(
@@ -1139,6 +1294,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
         }),
       );
     }
+
     if (grants.deploy === true && run.trust === "trusted") {
       context = context.pipe(
         Context.add(Fleet, {
@@ -1206,8 +1362,10 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
         }),
       );
     }
+
     if (run.trust === "trusted") {
       const files = yield* secretFiles(job, step, grants.secrets ?? []);
+
       for (const [name, { value, path }] of Object.entries(files)) {
         // Code gets the value without the final newline a file may end with; the file keeps it.
         context = context.pipe(
@@ -1215,7 +1373,9 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
         );
       }
     }
+
     const base = Layer.succeedContext(context).pipe(Layer.merge(FetchHttpClient.layer));
+
     // ci.ts was type-checked: Calder.project only accepts rules whose services Base and the layer provide.
     return (
       project.layer === undefined ? base : Layer.provideMerge(project.layer, base)
@@ -1225,13 +1385,16 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
 export const action = (job: StepJob, project: Calder.Project, step: Step.Any) =>
   Effect.gen(function* () {
     const def = step.def;
+
     if (def._tag !== "Action") return yield* Effect.die(new Error(`${step.name} is not an action`));
     const layer = yield* services(job, project, step.name, def.grants);
     const inputs = inputsOf(def.needs, job);
     const body = Effect.gen(() => def.body(inputs)) as Effect.Effect<unknown, unknown, never>;
+
     const exit = yield* Effect.exit(
       Effect.scoped(withPolicies(body, step.policies)).pipe(Effect.provide(layer)),
     );
+
     return toResult(exit);
   }).pipe(Effect.scoped);
 

@@ -34,10 +34,12 @@ const setup = (
     const pushed: Array<string> = [];
     const cancelled: Array<string> = [];
     const state = { base: "main-sha", heads: {} as Record<number, string> };
+
     const trains = new Map<
       string,
       { base: string; heads: ReadonlyArray<{ pr: number; sha: string }> }
     >();
+
     const project = {
       name: "app",
       repo: "o/app",
@@ -45,9 +47,11 @@ const setup = (
       targets: null,
       secrets: {},
     };
+
     // `git merge-base --is-ancestor <a> <b>`: a head is in the base once a train with it was pushed there,
     // and the base is in every head unless `contained` is false.
     const landed = new Set<string>();
+
     const spawner = ChildProcessSpawner.make((command) =>
       ChildProcess.isStandardCommand(command) && command.command === "git"
         ? Effect.succeed(
@@ -55,9 +59,11 @@ const setup = (
               pid: ChildProcessSpawner.ProcessId(1),
               exitCode: Effect.sync(() => {
                 const ancestor = command.args[command.args.length - 2] ?? "";
+
                 const yes = ancestor.startsWith("sha-")
                   ? landed.has(ancestor)
                   : options.contained !== false;
+
                 return ChildProcessSpawner.ExitCode(yes ? 0 : 1);
               }),
               isRunning: Effect.succeed(false),
@@ -75,6 +81,7 @@ const setup = (
             PlatformError.systemError({ _tag: "NotFound", module: "test", method: "spawn" }),
           ),
     );
+
     const layer = merges.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -97,6 +104,7 @@ const setup = (
                 const kept = heads.filter((h) => !(options.conflicts ?? []).includes(h.pr));
                 const sha = `train-${trains.size + 1}`;
                 trains.set(sha, { base, heads: kept });
+
                 return {
                   sha: kept.length === 0 ? null : sha,
                   conflicts: heads.filter((h) => !kept.includes(h)).map((h) => h.pr),
@@ -114,8 +122,10 @@ const setup = (
                   )
                 : Effect.sync(() => {
                     pushed.push(`${sha} ${ref}`);
+
                     if (ref === "refs/heads/main") {
                       state.base = sha;
+
                       for (const head of trains.get(sha)!.heads) landed.add(head.sha);
                     }
                   }),
@@ -127,6 +137,7 @@ const setup = (
                 const branch = event._tag === "Check" ? event.ref : null;
                 yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
               trace_id, span_id) values (${id}, ${project}, 0, ${JSON.stringify(event)}, ${sha}, ${branch}, 'title', 'hauke', 0, 'pr', 'running', 0, 't', 's')`;
+
                 return { id } as never;
               }).pipe(Effect.orDie),
             cancel: (runId) => Effect.sync(() => void cancelled.push(runId)),
@@ -161,6 +172,7 @@ const setup = (
         ),
       ),
     );
+
     return { sql, merged, comments, updated, pushed, cancelled, state, layer };
   });
 
@@ -185,9 +197,11 @@ describe("the merge queue", () => {
     Effect.gen(function* () {
       const { sql, layer } = yield* setup();
       yield* sql`insert into merges (project, pr, base, status, message, requested_at) values ('app', 1, 'main', 'updating', null, 1)`;
+
       const request = yield* Effect.gen(function* () {
         return yield* (yield* Merges).request("app", 1);
       }).pipe(Effect.provide(layer));
+
       expect(request).toMatchObject({ status: "updating", requestedAt: 1 });
     }).pipe(Effect.provide(sqlite)),
   );
@@ -202,6 +216,7 @@ describe("the merge queue", () => {
         yield* sql`update runs set pr = substr(id, 5)`;
         yield* sql`insert into merges (project, pr, base, status, message, requested_at)
         values ('app', 1, 'main', 'waiting', null, 1), ('app', 2, 'main', 'waiting', null, 2)`;
+
         const request = yield* Effect.gen(function* () {
           const queue = yield* Merges;
           yield* TestClock.adjust("1 second");
@@ -211,8 +226,10 @@ describe("the merge queue", () => {
           // The rerun in place passed.
           yield* sql`update runs set status = 'passed' where id = 'app-1'`;
           yield* TestClock.adjust("30 seconds");
+
           return held;
         }).pipe(Effect.provide(layer));
+
         expect(request).toMatchObject({
           status: "waiting",
           message: expect.stringContaining("its run app-1 failed"),
@@ -232,11 +249,14 @@ describe("the merge queue", () => {
         yield* insertRun("app-1", { at: 1, status: "failed", sha: "sha-1" });
         yield* sql`update runs set pr = 1`;
         yield* sql`insert into merges (project, pr, base, status, message, requested_at) values ('app', 1, 'main', 'waiting', null, 1)`;
+
         const request = yield* Effect.gen(function* () {
           const queue = yield* Merges;
           yield* TestClock.adjust("31 seconds");
+
           return (yield* queue.list("app"))[0];
         }).pipe(Effect.provide(layer));
+
         expect(updated).toEqual([]);
         expect(request).toMatchObject({
           status: "waiting",
@@ -253,14 +273,17 @@ describe("the merge queue", () => {
       yield* sql`update runs set pr = substr(id, 5)`;
       yield* sql`insert into merges (project, pr, base, status, message, requested_at)
         values ('app', 1, 'main', 'waiting', null, 1), ('app', 2, 'main', 'waiting', null, 2)`;
+
       const requests = yield* Effect.gen(function* () {
         const queue = yield* Merges;
         yield* TestClock.adjust("1 second");
         // The train's run passes.
         yield* sql`update runs set status = 'passed' where id = 'app-t1'`;
         yield* TestClock.adjust("30 seconds");
+
         return yield* queue.list("app");
       }).pipe(Effect.provide(layer));
+
       expect(updated).toEqual([]);
       expect(pushed).toEqual(["train-1 refs/calder/check/train-main", "train-1 refs/heads/main"]);
       expect(merged).toEqual([]);
@@ -277,18 +300,22 @@ describe("the merge queue", () => {
     () =>
       Effect.gen(function* () {
         const { sql, updated, layer } = yield* setup({ contained: false, conflicts: [2] });
+
         for (const pr of [1, 2, 3])
           yield* insertRun(`app-${pr}`, { at: pr, status: "passed", sha: `sha-${pr}` });
         yield* sql`update runs set pr = substr(id, 5)`;
         yield* sql`insert into merges (project, pr, base, status, message, requested_at)
         values ('app', 1, 'main', 'waiting', null, 1), ('app', 2, 'main', 'waiting', null, 2), ('app', 3, 'main', 'waiting', null, 3)`;
+
         const requests = yield* Effect.gen(function* () {
           const queue = yield* Merges;
           yield* TestClock.adjust("1 second");
           yield* sql`update runs set status = 'passed' where id = 'app-t1'`;
           yield* TestClock.adjust("30 seconds");
+
           return yield* queue.list("app");
         }).pipe(Effect.provide(layer));
+
         expect(updated).toEqual([2]);
         expect(Object.fromEntries(requests.map((r) => [r.pr, r.status]))).toEqual({
           1: "merged",
@@ -345,6 +372,7 @@ describe("the merge queue", () => {
     () =>
       Effect.gen(function* () {
         const { sql, updated, pushed, layer } = yield* setup({ contained: false, conflicts: [2] });
+
         for (const pr of [1, 2, 3])
           yield* insertRun(`app-${pr}`, { at: pr, status: "passed", sha: `sha-${pr}` });
         yield* sql`update runs set pr = substr(id, 5)`;

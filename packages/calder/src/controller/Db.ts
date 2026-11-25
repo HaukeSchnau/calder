@@ -109,6 +109,7 @@ export const migrations = {
   }),
   "0004_no_workflow_engine": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     // Runs are driven from the journal; effect/cluster's tables held the old workflow engine's state.
     for (const table of [
       "cluster_messages",
@@ -354,6 +355,7 @@ export const prune = (days: number, now = Date.now()) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const cutoff = now - days * 86_400_000;
+
     const old = yield* sql<{
       id: string;
       project: string;
@@ -368,7 +370,9 @@ export const prune = (days: number, now = Date.now()) =>
           select id, row_number() over (partition by project order by created_at desc) as n from runs join run_plans on run_plans.run_id = runs.id
         ) where n = 1)
       order by finished_at`;
+
     const counts = { deleted: 0, trimmed: 0 };
+
     for (const run of old) {
       // A run can have tens of thousands of test results, too many for one statement.
       while (
@@ -377,46 +381,58 @@ export const prune = (days: number, now = Date.now()) =>
       ) {
         yield* Rows.pause;
       }
+
       const outcome = yield* sql.withTransaction(
         Effect.gen(function* () {
           const recent = sql`(runs.finished_at is null or runs.finished_at >= ${cutoff})`;
+
           const reused =
             (yield* sql`select 1 from steps join runs on runs.id = steps.run_id where steps.reused_from = ${run.id} and ${recent}
           union all select 1 from shards join runs on runs.id = shards.run_id where shards.reused_from = ${run.id} and ${recent}
           limit 1`).length > 0;
+
           const latest =
             (run.tag === "Push" || run.tag === "PullRequest") &&
             (yield* sql`select 1 from runs
           where project = ${run.project} and event = ${run.event} and created_at > ${run.created_at} limit 1`)
               .length === 0;
+
           if (!reused) {
             yield* sql`delete from results where run_id = ${run.id} and exists (
             select 1 from results as newer join runs on runs.id = newer.run_id
             where newer.key = results.key and newer.status = results.status and newer.trust = results.trust
               and runs.fork = ${run.fork} and newer.created_at > results.created_at)`;
           }
+
           yield* sql`delete from file_results where run_id = ${run.id} and (status = 'failed' or exists (
           select 1 from file_results as newer join runs on runs.id = newer.run_id
           where newer.key = file_results.key and newer.trust = file_results.trust and newer.status != 'failed'
             and runs.fork = ${run.fork} and newer.created_at > file_results.created_at))`;
           yield* sql`delete from shards where run_id = ${run.id}`;
           yield* sql`delete from steps where run_id = ${run.id}`;
+
           const holds =
             (yield* sql`select 1 from results where run_id = ${run.id}
           union all select 1 from file_results where run_id = ${run.id} limit 1`).length > 0;
+
           if (reused || latest || holds) {
             const trimmed =
               yield* sql`delete from run_plans where run_id = ${run.id} returning run_id`;
+
             return trimmed.length > 0 ? "trimmed" : "kept";
           }
+
           yield* sql`delete from run_plans where run_id = ${run.id}`;
           yield* sql`delete from runs where id = ${run.id}`;
+
           return "deleted";
         }),
       );
+
       if (outcome !== "kept") counts[outcome]++;
       yield* Rows.pause;
     }
+
     return counts;
   });
 
@@ -425,6 +441,7 @@ export const layer = Layer.unwrap(
     const config = yield* Config;
     const filename = join(config.stateDir, "calder.db");
     const client = SqliteClient.layer({ filename });
+
     // The client runs in WAL mode, where a power loss can drop the last commits but never corrupts the
     // database. The default (full) syncs every commit, and each sync blocks the event loop. So would the
     // checkpoints a commit runs, which Checkpoints.ts runs on its own thread instead.
@@ -433,10 +450,12 @@ export const layer = Layer.unwrap(
         const sql = yield* SqlClient.SqlClient;
         yield* sql`pragma synchronous = normal`;
         yield* sql`pragma wal_autocheckpoint = 0`;
+
         const worker = yield* Effect.acquireRelease(
           Effect.sync(() => new Worker(new URL("./Checkpoints.ts", import.meta.url).href)),
           (worker) => Effect.sync(() => worker.terminate()),
         );
+
         // Without it the WAL would grow without end, so the controller's commits checkpoint again.
         worker.addEventListener("error", (event) => {
           console.error("checkpointing failed, so commits checkpoint again:", event.message);
@@ -445,10 +464,12 @@ export const layer = Layer.unwrap(
         worker.postMessage(filename);
       }),
     );
+
     const migrate = SqliteMigrator.layer({
       loader: SqliteMigrator.fromRecord(migrations),
       table: "calder_migrations",
     });
+
     const retention = Layer.effectDiscard(
       prune(config.retention.days).pipe(
         Effect.tap(({ deleted, trimmed }) =>
@@ -463,6 +484,7 @@ export const layer = Layer.unwrap(
         Effect.forkScoped,
       ),
     );
+
     return retention.pipe(
       Layer.provideMerge(migrate),
       Layer.provideMerge(synchronous),

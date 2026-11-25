@@ -36,12 +36,16 @@ export const leaseOf = (
   lease: boolean | string | undefined,
 ) => {
   const event = run.event;
+
   if (lease === undefined || lease === false) return { key: run.project, current: null };
+
   if (event._tag === "PullRequest")
     return { key: `${run.project}#pr-${event.number}`, current: { pullRequest: event.number } };
+
   if (event._tag === "PullRequestClosed")
     return { key: `${run.project}#pr-${event.number}`, current: null };
   const key = lease === true ? run.project : `${run.project}#${lease}`;
+
   return { key, current: run.branch === null ? null : { branch: run.branch } };
 };
 
@@ -80,6 +84,7 @@ export const handlers = WorkerRpcs.toLayer(
     const cache = yield* Cache.Cache;
     const comments = yield* Comments;
     const spawner = yield* Exec.SpawnerTag;
+
     const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
       effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 
@@ -89,8 +94,10 @@ export const handlers = WorkerRpcs.toLayer(
     const trusted = (job: string, token: string) =>
       Effect.gen(function* () {
         const active = yield* jobs.authorize(job, token);
+
         if (active.spec._tag !== "Step" || active.spec.run.trust !== "trusted")
           return yield* refuse("only steps of trusted runs may do this");
+
         return active;
       });
 
@@ -98,11 +105,14 @@ export const handlers = WorkerRpcs.toLayer(
     const deployer = (job: string, token: string) =>
       Effect.gen(function* () {
         const active = yield* trusted(job, token);
+
         if (active.spec._tag !== "Step") return yield* refuse("not a step");
         const row = yield* db(Rows.loadStep(active.spec.run.id, active.spec.step));
         const spec = row === undefined ? undefined : Rows.spec(row);
+
         if (spec?.action?.deploy !== true && !Rows.leased(spec?.task))
           return yield* refuse(`${active.spec.step} has no deploy grant`);
+
         return active;
       });
 
@@ -110,9 +120,12 @@ export const handlers = WorkerRpcs.toLayer(
 
     const holding = (active: ActiveJob) => {
       const lease = active.lease;
+
       if (lease === undefined)
         return refuse("deploy calls need the project's lease (Fleet.deploying)");
+
       if (lease.targets === null) return refuse("a task's lease has no promotion endpoints");
+
       return Effect.succeed({
         ...lease,
         targets: lease.targets,
@@ -145,6 +158,7 @@ export const handlers = WorkerRpcs.toLayer(
                 if (batch <= (active.batch ?? 0)) return;
                 active.batch = batch;
               }
+
               yield* Effect.forEach(events, active.onEvent, { discard: true });
             }),
           );
@@ -157,6 +171,7 @@ export const handlers = WorkerRpcs.toLayer(
       gitHead: ({ job, token, branch }) =>
         Effect.gen(function* () {
           const active = yield* trusted(job, token);
+
           return yield* gitea.head(projects.get(runOf(active).project)!.repo, branch);
         }),
       giteaDispatch: ({ job, token, workflow, ref, inputs }) =>
@@ -174,9 +189,11 @@ export const handlers = WorkerRpcs.toLayer(
       cachePublish: ({ job, token, path, artifact, system }) =>
         Effect.gen(function* () {
           const active = yield* trusted(job, token);
+
           if (Cache.hashOf(path) === undefined)
             return yield* Effect.die(new Error(`not a store path: ${path}`));
           const lease = active.lease;
+
           if (lease === undefined || active.spec._tag !== "Step")
             return yield* refuse(
               "publishing a release needs the project's lease (Fleet.deploying)",
@@ -185,11 +202,14 @@ export const handlers = WorkerRpcs.toLayer(
           // each kept as that artifact's release of the step; a pull request's previews keep none. A
           // promotion's targets say whether a host other than this one substitutes the release.
           const task = lease.targets === null;
+
           if (system !== undefined && (task || !(lease.systems ?? []).includes(system))) {
             return yield* refuse(`no target of the lease runs ${system}`);
           }
+
           if (!task && !Cache.leavesHost(lease.targets!, config.host)) return;
           const project = active.spec.run.project;
+
           // A promotion keeps a release per system: the controller's as the project's, others with the system.
           const pin = !task
             ? system === undefined || system === config.system
@@ -198,6 +218,7 @@ export const handlers = WorkerRpcs.toLayer(
             : lease.project === project && artifact !== undefined
               ? Cache.pinName(`${project}-${active.spec.step}-${artifact}`)
               : undefined;
+
           // Publishing signs what this store holds. A build reused from the binary cache, such as one this store
           // lost to its nightly collection, comes back from there first and stays until the run ends. The job holds
           // its deploy lease meanwhile, so a substituter that stalls gives up after a few minutes.
@@ -224,12 +245,14 @@ export const handlers = WorkerRpcs.toLayer(
               Effect.orDie,
             );
           }
+
           yield* cache.publish(path, { ...(pin === undefined ? {} : { pin }), urgent: task }).pipe(
             Effect.mapError(
               (e) => new Error(`publishing ${path} to the binary cache failed: ${e.message}`),
             ),
             Effect.orDie,
           );
+
           if (!(yield* cache.has(path)))
             return yield* Effect.die(
               new Error(`${path} is not in the binary cache after publishing`),
@@ -238,17 +261,21 @@ export const handlers = WorkerRpcs.toLayer(
       pullRequestComment: ({ job, token, markdown }) =>
         Effect.gen(function* () {
           const active = yield* jobs.authorize(job, token);
+
           if (active.spec._tag !== "Step") return yield* refuse("not a step");
           const run = runOf(active);
           const event = run.event as Domain.Event;
+
           if (event._tag !== "PullRequest") return yield* refuse("not a pull-request run");
           yield* comments.note(run.id, active.spec.step, markdown);
         }),
       fleetAcquire: ({ job, token, project }) =>
         Effect.gen(function* () {
           const active = yield* deployer(job, token);
+
           if (active.spec._tag !== "Step") return yield* refuse("not a step");
           const { run, step } = active.spec;
+
           if (project !== run.project)
             return yield* refuse(`a run of ${run.project} can't deploy ${project}`);
           const row = yield* db(Rows.loadStep(run.id, step));
@@ -256,6 +283,7 @@ export const handlers = WorkerRpcs.toLayer(
           const task = Rows.leased(row === undefined ? undefined : Rows.spec(row).task);
           const { key, current } = leaseOf(run, lease);
           const repo = projects.get(project)!.repo;
+
           // Why the run no longer deploys what it was for; Leases treats a slow or failing Gitea as current.
           const stale =
             current === null
@@ -277,14 +305,19 @@ export const handlers = WorkerRpcs.toLayer(
                         pullRequestStale(current.pullRequest, pull, run.revision),
                       ),
                     );
+
           const holder = leases.holder(key);
+
           const reason =
             holder === undefined || holder.job === active.id
               ? null
               : `the deploy lease, which #${holder.run} ${holder.step} holds`;
+
           const waits = (text: string | null) =>
             db(sql`update steps set waiting = ${text} where run_id = ${run.id} and name = ${step}`);
+
           if (reason !== null) yield* waits(reason);
+
           const grant = yield* Effect.uninterruptibleMask((restore) =>
             restore(
               leases.acquire(key, {
@@ -302,15 +335,20 @@ export const handlers = WorkerRpcs.toLayer(
               ),
             ),
           );
+
           if (reason !== null) yield* waits(null);
+
           if (grant._tag !== "Held") return grant;
+
           // A task deploys through its own tool, such as an Alchemy stack, so the promotion endpoints don't
           // matter to it: asking them would wait up to a minute for one that doesn't answer.
           if (task) {
             active.lease = { project: key, app: project, targets: null };
             yield* leases.keep(key, active.id, active.lease);
+
             return { _tag: "Held" as const, fence: grant.fence, targets: [], unreachable: [] };
           }
+
           const app = yield* appOf(run.id, project);
           const { targets, unreachable } = yield* fleet.deployTargets(projects.get(project)!, app);
           active.lease = {
@@ -320,6 +358,7 @@ export const handlers = WorkerRpcs.toLayer(
             systems: [...new Set(targets.map((t) => t.system))],
           };
           yield* leases.keep(key, active.id, active.lease);
+
           return {
             _tag: "Held" as const,
             fence: grant.fence,
@@ -330,6 +369,7 @@ export const handlers = WorkerRpcs.toLayer(
       fleetRelease: ({ job, token }) =>
         Effect.gen(function* () {
           const active = yield* jobs.authorize(job, token);
+
           if (active.lease !== undefined) yield* leases.release(active.lease.project, active.id);
           active.lease = undefined;
         }),
@@ -338,6 +378,7 @@ export const handlers = WorkerRpcs.toLayer(
           const active = yield* deployer(job, token);
           const { project, app, targets } = yield* holding(active);
           const url = targetUrl(targets, target);
+
           if (url === undefined)
             return yield* new FleetRejected({
               target,
@@ -352,8 +393,10 @@ export const handlers = WorkerRpcs.toLayer(
         Effect.gen(function* () {
           const active = yield* deployer(job, token);
           const { project, app, targets, fence } = yield* holding(active);
+
           if (fence === undefined) return yield* refuse("the lease was lost");
           const url = targetUrl(targets, target);
+
           if (url === undefined)
             return yield* new FleetRejected({
               target,
@@ -361,10 +404,12 @@ export const handlers = WorkerRpcs.toLayer(
               reason: `${target} is not a target of ${project}`,
             });
           const run = runOf(active);
+
           if (revision !== run.revision)
             return yield* refuse("a run may only deploy its own revision");
           const parent = yield* stepSpan(run.id, active);
           yield* fleet.deploy(url, app, { revision, storePath, fence }, parent);
+
           const row: Rows.DeploymentRow = {
             project,
             host: target,
@@ -373,6 +418,7 @@ export const handlers = WorkerRpcs.toLayer(
             run_id: run.id,
             at: Date.now(),
           };
+
           yield* db(sql`insert into deployments ${sql.insert(row)}`);
           yield* live.publish({ _tag: "DeploymentRecorded", record: Rows.deployment(row) });
         }),
@@ -381,10 +427,12 @@ export const handlers = WorkerRpcs.toLayer(
     function stepSpan(runId: string, active: ActiveJob) {
       return Effect.gen(function* () {
         const run = yield* db(Rows.loadRun(runId));
+
         const step =
           active.spec._tag === "Step"
             ? yield* db(Rows.loadStep(runId, active.spec.step))
             : undefined;
+
         return { traceId: run?.trace_id ?? "", spanId: step?.span_id ?? run?.span_id ?? "" };
       });
     }
@@ -413,20 +461,25 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* Config;
     const path = join(config.runtimeDir, "worker.sock");
+
     if (existsSync(path)) rmSync(path);
+
     const permissions = Layer.effectDiscard(
       Effect.sync(() => {
         chmodSync(path, 0o660);
         const group = workersGroup(config.jobs.mode);
+
         if (group !== undefined) chownSync(path, process.getuid!(), group);
       }),
     );
+
     const server = named("WorkerServer's RPC server", RpcServer.layer(TrackedRpcs)).pipe(
       Layer.provide(handlers),
       Layer.provide(tracking),
       Layer.provide(protocol),
       Layer.provide(RpcSerialization.layerNdjson),
     );
+
     // Workers exit right after reporting, which resets their connection; that's not worth an error log.
     return Layer.provideMerge(permissions, server).pipe(
       Layer.provide(named("WorkerServer's socket", BunSocketServer.layer({ path }))),

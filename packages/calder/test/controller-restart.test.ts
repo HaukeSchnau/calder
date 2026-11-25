@@ -25,6 +25,7 @@ import { step } from "./drive.ts";
 import { layer as sqlite } from "./sqlite.ts";
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
+
 // On a Calder host the test's user may not hand files to the pools' groups, which the controller does.
 vi.mock("node:fs", async (original) => ({
   ...(await original<typeof import("node:fs")>()),
@@ -43,6 +44,7 @@ class Disconnected extends Data.TaggedError("RpcClientError")<{}> {}
 const systemd = ChildProcessSpawner.make((command) => {
   const args = ChildProcess.isStandardCommand(command) ? command.args : [];
   const stdout = args.includes("ActiveState") ? "ActiveState=active\nResult=success\n" : "";
+
   return Effect.succeed(
     ChildProcessSpawner.makeHandle({
       pid: ChildProcessSpawner.ProcessId(1),
@@ -64,6 +66,7 @@ const systemd = ChildProcessSpawner.make((command) => {
 const deployStep = (run: number, name: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const task = {
       shell: null,
       keyBase: "k",
@@ -77,12 +80,14 @@ const deployStep = (run: number, name: string) =>
       platform: null,
       lease: true,
     };
+
     yield* sql`insert into runs (id, project, number, event, sha, commit_title, author, commit_time, trust, status, created_at, trace_id, span_id)
       values (${`app-${run}`}, 'app', ${run}, '{"_tag":"Push","branch":"main"}', ${`rev-${run}`}, 'title', 'hauke', 1, 'trusted', 'running', 1, 't', 's')
       on conflict do nothing`;
     yield* sql`insert into run_plans (run_id, plan) values (${`app-${run}`}, '{}') on conflict do nothing`;
     yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
       values (${`app-${run}`}, ${name}, 'task', 'running', ${JSON.stringify({ ...step, name, kind: "task", needs: [], detail: name, task })}, 0, 's')`;
+
     return {
       _tag: "Step",
       run: {
@@ -121,16 +126,19 @@ const restarted = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => rmSync(runtimeDir, { recursive: true, force: true })),
   );
+
   // Jobs learns from SIGTERM that the controller stops rather than cancels its jobs; only its listeners hear this test's signal.
   const signals = (["SIGTERM", "SIGINT"] as const).map((signal) => ({
     signal,
     listeners: process.listeners(signal),
   }));
+
   for (const { signal } of signals) process.removeAllListeners(signal);
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       for (const { signal, listeners } of signals) {
         process.removeAllListeners(signal);
+
         for (const listener of listeners) process.on(signal, listener);
       }
     }),
@@ -138,19 +146,24 @@ const restarted = Effect.gen(function* () {
 
   // One worker connection that outlives the controllers behind it, as the worker's socket reconnects.
   let server: RpcServer.RpcServer<any> | undefined;
+
   const { client, write } = yield* RpcClient.makeNoSerialization(WorkerRpcs, {
     supportsAck: true,
     onFromClient: ({ message }) =>
       server === undefined ? Effect.fail(new Disconnected()) : server.write(0, message),
   });
+
   const published: Array<{ readonly path: string; readonly pin: string | undefined }> = [];
+
   const cache = {
     has: (path: string) => Effect.succeed(published.some((p) => p.path === path)),
     publish: (path: string, options?: { readonly pin?: string }) =>
       Effect.sync(() => void published.push({ path, pin: options?.pin })),
   };
+
   const start = Effect.gen(function* () {
     const scope = yield* Scope.make();
+
     const services = yield* Layer.build(
       Leases.layer.pipe(
         Layer.provideMerge(jobs),
@@ -168,6 +181,7 @@ const restarted = Effect.gen(function* () {
         ),
       ),
     ).pipe(Scope.provide(scope));
+
     server = yield* RpcServer.makeNoSerialization(WorkerRpcs, { onFromServer: write }).pipe(
       Effect.provide(
         handlers.pipe(
@@ -192,40 +206,48 @@ const restarted = Effect.gen(function* () {
       ),
       Scope.provide(scope),
     );
+
     return {
       jobs: Context.get(services, Jobs),
       leases: Context.get(services, Leases.Leases),
       scope,
       stop: Effect.suspend(() => {
         server = undefined;
+
         return Scope.close(scope, Exit.void);
       }),
     };
   });
 
   const before = yield* start;
+
   for (const name of ["deploy-srv-2", "deploy-srv-1"]) {
     const spec = yield* deployStep(10, name);
     yield* before.jobs
       .run(spec, { pool: "trusted", adoptable: true, onEvent: () => Effect.void })
       .pipe(Effect.forkIn(before.scope));
   }
+
   // A plan, which no controller adopts.
   const plan = {
     ...(yield* deployStep(11, "plan")),
     _tag: "Plan",
     requiredChecks: [],
   } as unknown as Job;
+
   yield* before.jobs
     .run(plan, { pool: "trusted", onEvent: () => Effect.void })
     .pipe(Effect.forkIn(before.scope));
   yield* Effect.yieldNow;
+
   const job = (name: string) =>
     before.jobs.active().find((j) => j.spec._tag === "Step" && j.spec.step === name)!.id;
+
   const auth = (id: string) => ({
     job: id,
     token: readFileSync(join(runtimeDir, "jobs", `${id}.token`), "utf8"),
   });
+
   const srv2 = job("deploy-srv-2");
   const srv1 = job("deploy-srv-1");
   expect((yield* client.fleetAcquire({ ...auth(srv2), project: "app" }))._tag).toBe("Held");
@@ -233,6 +255,7 @@ const restarted = Effect.gen(function* () {
   const waiting = yield* reconnecting(client.fleetAcquire({ ...auth(srv1), project: "app" })).pipe(
     Effect.forkChild,
   );
+
   yield* Effect.yieldNow;
   process.emit("SIGTERM");
   // The stop leaves every worker to the next controller instead of waiting for systemd.
@@ -245,6 +268,7 @@ const restarted = Effect.gen(function* () {
   yield* TestClock.adjust("5 seconds");
   expect(after.leases.holder("app")?.job).toBe(srv2);
   expect(waiting.pollUnsafe()).toBeUndefined();
+
   return { client, auth, srv1, srv2, waiting, after, published };
 });
 
@@ -259,6 +283,7 @@ describe("a controller restart", () => {
         const reattached = yield* after.jobs
           .reattach(srv2, () => Effect.void)
           .pipe(Effect.forkChild);
+
         yield* Effect.yieldNow;
         yield* Deferred.succeed(after.jobs.get(srv2)!.result, {
           _tag: "Skipped",
@@ -292,18 +317,22 @@ describe("a controller restart", () => {
     Effect.gen(function* () {
       const { client, auth, srv2, after } = yield* restarted;
       const logged: Array<string> = [];
+
       const reattached = yield* after.jobs
         .reattach(srv2, (event) =>
           Effect.sync(() => void (event._tag === "Log" && logged.push(event.text))),
         )
         .pipe(Effect.forkChild);
+
       yield* Effect.yieldNow;
+
       const send = (batch: number, text: string) =>
         client.events({
           ...auth(srv2),
           events: [{ _tag: "Log", stream: "calder", text, timestamp: 1 }],
           batch,
         });
+
       // The connection dropped before the controller answered, so the worker sends batch 1 again.
       yield* send(1, "Still evaluating after 7 min 0 s");
       yield* send(1, "Still evaluating after 7 min 0 s");
@@ -325,13 +354,16 @@ describe("a controller restart", () => {
     () =>
       Effect.gen(function* () {
         let tries = 0;
+
         // The controller is away, then a restarted one takes the call for 10 minutes, as a lease wait, and stops; no other comes back.
         const call = Effect.suspend(() => {
           tries++;
+
           return tries === 2
             ? Effect.sleep("10 minutes").pipe(Effect.andThen(Effect.interrupt))
             : Effect.fail(new Disconnected());
         });
+
         const result = yield* reconnecting(call).pipe(Effect.forkChild);
         yield* TestClock.adjust("24 minutes");
         expect(result.pollUnsafe()).toBeUndefined();

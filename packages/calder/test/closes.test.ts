@@ -59,6 +59,7 @@ const world = (pulls: ReadonlyArray<Pull>, headDelay: Duration.Input = 0) =>
     const sql = yield* SqlClient.SqlClient;
     const started: Array<RunInput> = [];
     const cancelled: Array<string> = [];
+
     const layer = closes.pipe(
       Layer.provideMerge(
         Layer.mergeAll(
@@ -131,12 +132,14 @@ const world = (pulls: ReadonlyArray<Pull>, headDelay: Duration.Input = 0) =>
         ),
       ),
     );
+
     const closed = () =>
       started.map((r) =>
         r.event._tag === "PullRequestClosed"
           ? `#${r.event.number} ${r.event.head}@${r.sha}`
           : r.event._tag,
       );
+
     return { started, cancelled, closed, layer };
   });
 
@@ -152,6 +155,7 @@ const webhook = (pull: Pull) => {
       base: { ref: "main" },
     },
   });
+
   return Webhook.handle(
     HttpServerRequest.fromWeb(
       new Request("http://calder.test/hooks/gitea", {
@@ -176,9 +180,11 @@ describe("a closed pull request", () => {
       Effect.gen(function* () {
         // Studienbuch #121: Calder's merge queue merged it while a host switch restarted the controller.
         const merged = secondsAgo(60);
+
         const { closed, layer } = yield* world([
           { number: 121, head: "m1/icons-stickers", closedAt: merged },
         ]);
+
         yield* ran("app-1", 121);
         yield* Effect.gen(function* () {
           const sweep = yield* Catchup.make;
@@ -228,11 +234,13 @@ describe("a closed pull request", () => {
   it.live("gets one closed run when its webhook comes while the catch-up handles it", () =>
     Effect.gen(function* () {
       const merged = secondsAgo(60);
+
       // Gitea answering slowly keeps both inside their closing at once.
       const { closed, layer } = yield* world(
         [{ number: 121, head: "m1/icons-stickers", closedAt: merged }],
         "50 millis",
       );
+
       yield* ran("app-1", 121);
       yield* Effect.gen(function* () {
         const closes = yield* Closes;
@@ -258,9 +266,11 @@ describe("a closed pull request", () => {
     () =>
       Effect.gen(function* () {
         const merged = secondsAgo(60);
+
         const { closed, layer } = yield* world([
           { number: 121, head: "m1/icons-stickers", closedAt: merged },
         ]);
+
         yield* ran("app-1", 121);
         yield* closedRun("app-2", 121, merged + 500);
         yield* Effect.gen(function* () {
@@ -273,9 +283,11 @@ describe("a closed pull request", () => {
   it.live("that never ran gets no closed run from the catch-up, but one from its webhook", () =>
     Effect.gen(function* () {
       const closing = { number: 7, base: "main", head: "never-ran", closedAt: secondsAgo(60) };
+
       const { closed, layer } = yield* world([
         { number: 7, head: "never-ran", closedAt: closing.closedAt },
       ]);
+
       yield* Effect.gen(function* () {
         yield* yield* Catchup.make;
         expect(closed()).toEqual([]);

@@ -69,10 +69,12 @@ export const stageName = (stage: string) => {
       `Alchemy stage "${stage}": use letters, digits, ".", "_" and "-", starting with a letter or digit`,
     );
   }
+
   if (/^pr-\d+$/.test(stage))
     throw new Error(
       `Alchemy stage "${stage}" is a pull request's preview stage; pick another name`,
     );
+
   return stage;
 };
 
@@ -108,6 +110,7 @@ const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan") => {
   const config = stack.config === undefined ? "" : ` --config ${quote([stack.config])}`;
   const outputs = verb === "deploy" ? stack.outputs : undefined;
   const cache = `"$ALCHEMY_HOME"/profiles/default/state-stores`;
+
   return [
     "set -euo pipefail",
     "root=$PWD",
@@ -147,6 +150,7 @@ type Part = { readonly text: string } | Cmd.Interpolation;
 const command = (parts: ReadonlyArray<Part>) => {
   const strings: Array<string> = [""];
   const values: Array<Cmd.Interpolation> = [];
+
   for (const part of parts) {
     if (typeof part === "object" && "text" in part) strings[strings.length - 1] += part.text;
     else {
@@ -154,6 +158,7 @@ const command = (parts: ReadonlyArray<Part>) => {
       strings.push("");
     }
   }
+
   return cmd(
     Object.assign(strings, { raw: strings }) as unknown as TemplateStringsArray,
     ...values,
@@ -231,6 +236,7 @@ export const ready = <A>(
   Action.make(options.name, { needs: { outputs: deployed } }, function* ({ outputs }) {
     const current = yield* CurrentRun;
     yield* Release.awaitReadiness(options.readiness(outputs), current.revision);
+
     return outputs;
   });
 
@@ -261,14 +267,18 @@ export const preview = <A = void>(
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...valueOf(stack),
   });
+
   const link = Action.make("preview-url", { needs: { outputs: upload } }, function* ({ outputs }) {
     const pr = yield* PullRequest;
     const current = yield* CurrentRun;
+
     if (options.readiness !== undefined)
       yield* Release.awaitReadiness(options.readiness(outputs), current.revision);
     yield* pr.comment(`Preview: ${options.url(pr.number, outputs)}`);
+
     return outputs;
   });
+
   return [upload, link] as const;
 };
 

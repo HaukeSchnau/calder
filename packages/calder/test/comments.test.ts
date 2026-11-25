@@ -3,6 +3,7 @@ import type { Domain } from "@calder-ci/api";
 import { render } from "../src/controller/Comments.ts";
 
 const at = 1_000_000;
+
 const run = {
   id: "studienbuch-21",
   number: 21,
@@ -67,6 +68,7 @@ describe("Calder's comment on a pull request", () => {
         step("fmt-check", { status: "reused" }),
       ],
     });
+
     expect(body).toBe(
       [
         "Preview: https://pr-5.example",
@@ -96,6 +98,7 @@ describe("Calder's comment on a pull request", () => {
       notes: [],
       steps: [step("test-ui", { status: "reused", files: { total: 0, ran: 0, flaky: 0 } })],
     });
+
     expect(body.split("\n").slice(2)).toEqual([
       "| Step | Status | Waited | Took |",
       "| --- | --- | ---: | ---: |",
@@ -118,6 +121,7 @@ describe("Calder's comment on a pull request", () => {
       ],
       steps: [],
     });
+
     expect(body.split("\n").slice(0, 2)).toEqual([
       "Preview: u",
       "<sub>from run 20; run 21 hasn't said it yet</sub>",

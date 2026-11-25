@@ -68,6 +68,7 @@ esac
       mode: 0o755,
     },
   );
+
   if (
     step.def._tag !== "Task" ||
     typeof step.def.run === "function" ||
@@ -75,19 +76,23 @@ esac
   ) {
     throw new Error("not a task with one command and a value");
   }
+
   const [command, ...args] = Cmd.render(
     step.def.run,
     {},
     { secrets: { npm: join(repo, "token") } },
   );
+
   // With a socket for stdin, as in Calder's workers, NixOS's bash sources /etc/bashrc, which resets PATH.
   execFileSync(command!, args, {
     cwd: repo,
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
     stdio: ["ignore", "pipe", "pipe"],
   });
+
   const read = (file: string) =>
     existsSync(join(repo, file)) ? readFileSync(join(repo, file), "utf8").trim() : undefined;
+
   return {
     repo,
     calls: read("calls"),
@@ -134,6 +139,7 @@ describe("Npm.publish", () => {
       version: "1.2.0",
       registry: { staged: [{ id: "stg-7", version: "1.2.0", status: "pending" }] },
     });
+
     expect(waiting.calls).toBeUndefined();
     expect(waiting.value).toEqual({
       name: "@scope/pkg",
@@ -147,6 +153,7 @@ describe("Npm.publish", () => {
       version: "1.2.0",
       registry: { staged: [{ id: "stg-7", version: "1.2.0", status: "rejected" }] },
     });
+
     expect(rejected.value.staged).toBe(true);
   });
 
@@ -163,6 +170,7 @@ describe("Npm.publish", () => {
       registry: "https://npm.example/",
       access: "restricted",
     });
+
     const result = run(other, { version: "0.1.0", dir: "packages/lib" });
     expect(result.calls).toMatch(
       new RegExp(

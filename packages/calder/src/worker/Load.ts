@@ -31,6 +31,7 @@ export const step = (project: Calder.Project, name: string) =>
     Effect.mapError((e) => new LoadFailed({ message: e.message })),
     Effect.flatMap((all): Effect.Effect<Step.Any, LoadFailed> => {
       const found = all.get(name);
+
       return found === undefined
         ? Effect.fail(new LoadFailed({ message: `no step named "${name}" in .calder/ci.ts` }))
         : Effect.succeed(found);

@@ -35,6 +35,7 @@ export const PARTS = {
     after: ["typecheck", "test"],
   },
 };
+
 const CODE_ORDER = ["typecheck", "test", "site", "deploy"];
 const group = (n) => (PARTS[n].setup ? "dep" : PARTS[n].kind === "build" ? "build" : "action");
 const RANK = { pr: { dep: 0, build: 1, action: 2 }, push: { build: 0, action: 1, dep: 2 } };
@@ -58,19 +59,25 @@ const joins = (a, b, refused) => a && b && PARTS[a].tenon && PARTS[b].needs === 
 export function layout({ arrangement, refused = null }, W, H, fill = 0) {
   const { lipW, pad, land, t } = DIM.rail;
   const seq = [];
+
   for (const rule of ["pr", "push"]) {
     const names = order(rule, arrangement[rule]);
+
     if (!names.length) seq.push({ rule, empty: true });
+
     for (const name of names) seq.push({ rule, name });
   }
+
   const rails = { pr: { seats: [] }, push: { seats: [] } };
   rails.pr.x0 = 0;
   let x = lipW + pad;
   seq.forEach((it, i) => {
     const a = seq[i - 1];
     const tenonOut = (p) => (p?.name && PARTS[p.name].tenon ? DIM.tenon.depth : 0);
+
     if (a) {
       const joined = joins(a.name, it.name, refused);
+
       if (a.rule !== it.rule) {
         const bx = joined ? a.right + DIM.c / 2 : a.right + tenonOut(a) + pad;
         rails[a.rule].x1 = bx;
@@ -81,6 +88,7 @@ export function layout({ arrangement, refused = null }, W, H, fill = 0) {
         x = a.right + tenonOut(a) + 2 * DIM.c;
       } else x = joined ? a.right + DIM.c : a.right + tenonOut(a) + land;
     }
+
     it.x = x;
     it.w = it.empty ? DIM.emptySeat : W;
     it.right = x + it.w;
@@ -89,14 +97,17 @@ export function layout({ arrangement, refused = null }, W, H, fill = 0) {
   const last = seq[seq.length - 1];
   rails[last.rule].x1 =
     last.right + (last.name && PARTS[last.name].tenon ? DIM.tenon.depth : 0) + pad + lipW;
+
   // The last rail runs to the drawing's edge; free seats on it show its sockets and floor.
   if (fill > rails[last.rule].x1) {
     // A free seat is only sockets and a slot; it needs 12 px of rail after its slot.
     let fx = last.right + (last.name && PARTS[last.name].tenon ? DIM.tenon.depth : 0) + 12;
+
     while (fx + W + 5 <= fill - lipW) {
       rails[last.rule].seats.push({ x: fx, W, free: true });
       fx += W + land;
     }
+
     rails[last.rule].x1 = fill;
   }
 
@@ -104,13 +115,16 @@ export function layout({ arrangement, refused = null }, W, H, fill = 0) {
   // other is a phantom reference to it.
   const plates = [];
   let run = null;
+
   for (const it of seq) {
     if (it.name && PARTS[it.name].setup) {
       if (run && run.rule === it.rule) run.names.push(it.name);
       else plates.push((run = { rule: it.rule, names: [it.name] }));
     } else run = null;
   }
+
   const pos = {};
+
   for (const it of seq) {
     if (!it.name) continue;
     const onPlate = !!PARTS[it.name].setup;
@@ -127,12 +141,14 @@ export function layout({ arrangement, refused = null }, W, H, fill = 0) {
       contacts: f.contacts,
     };
   }
+
   plates.forEach((p, i) => {
     const xs = p.names.map((n) => pos[n]);
     p.x0 = Math.min(...xs.map((q) => q.x)) - DIM.plate.overhang;
     p.x1 = Math.max(...xs.map((q) => q.x + W)) + DIM.plate.overhang;
     p.phantom = i > 0;
   });
+
   const joint =
     pos.site &&
     pos.deploy &&
@@ -144,6 +160,7 @@ export function layout({ arrangement, refused = null }, W, H, fill = 0) {
           top: Math.min(pos.site.yTop, pos.deploy.yTop),
         }
       : null;
+
   return {
     seq,
     pos,
@@ -168,15 +185,18 @@ function groupsOf(L) {
   L.seq.forEach((it, i) => {
     const a = L.seq[i - 1];
     const plated = (n) => n && PARTS[n].setup;
+
     const together =
       a &&
       it.name &&
       a.name &&
       (joins(a.name, it.name, L.refused) ||
         (plated(a.name) && plated(it.name) && a.rule === it.rule));
+
     if (together) g.items.push(it);
     else groups.push((g = { items: [it] }));
   });
+
   for (const gr of groups) {
     const last = gr.items[gr.items.length - 1];
     gr.left = gr.items[0].x;
@@ -184,21 +204,25 @@ function groupsOf(L) {
     gr.plateLeft = !!(gr.items[0].name && PARTS[gr.items[0].name].setup);
     gr.plateRight = !!(last.name && PARTS[last.name].setup);
   }
+
   return groups;
 }
 
 /** The widest group any arrangement of the example makes: a row must hold it at any width. */
 export const widestGroup = (() => {
   let cache = null;
+
   return (W, H) => {
     if (cache) return cache;
     let max = 0;
+
     for (let m = 0; m < 16; m++) {
       const where = ["typecheck", "test", "site"].map((n, i) => [n, m & (1 << i) ? "push" : "pr"]);
       const refused = m & 8;
       const pr = where.filter(([, r]) => r === "pr").map(([n]) => n);
       const push = where.filter(([, r]) => r === "push").map(([n]) => n);
       (refused ? pr : push).push("deploy");
+
       const L = layout(
         {
           arrangement: { pr: order("pr", pr), push: order("push", push) },
@@ -207,8 +231,10 @@ export const widestGroup = (() => {
         W,
         H,
       );
+
       for (const g of groupsOf(L)) max = Math.max(max, g.right - g.left);
     }
+
     return (cache = max + 2 * (DIM.rail.lipW + DIM.rail.pad) + LANE);
   };
 })();
@@ -225,62 +251,81 @@ export function wrapRows(
 ) {
   const { lipW, pad, t } = DIM.rail;
   const rows = [];
+
   for (const g of groupsOf(L)) {
     const row = rows[rows.length - 1];
+
     if (row && g.right - row.left + 2 * (lipW + pad) + LANE <= budget) {
       row.groups.push(g);
       row.right = g.right;
     } else rows.push({ groups: [g], left: g.left, right: g.right });
   }
+
   const cuts = [];
+
   for (let r = 0; r < rows.length - 1; r++) {
     const a = rows[r];
     const b = rows[r + 1];
     let c = (a.right + b.left) / 2;
+
     if (a.groups[a.groups.length - 1].plateRight) c = Math.max(c, a.right + DIM.plate.overhang + 1);
+
     if (b.groups[0].plateLeft) c = Math.min(c, b.left - DIM.plate.overhang - 1);
     cuts.push(c);
   }
+
   const rowOf = (x) => {
     let r = 0;
+
     while (r < cuts.length && x >= cuts[r]) r++;
+
     return r;
   };
+
   // Levels each row needs above its parts for the after links that run there.
   const levels = rows.map(() => 0);
   // The word "after" goes over the links when they stay in a row, and beside the lane when not.
   let labelled = true;
   const tgt = L.pos.deploy;
+
   if (after && tgt) {
     const tr = rowOf(tgt.x);
     let across = false;
+
     for (const n of PARTS.deploy.after) {
       const p = L.pos[n];
+
       if (!p) continue;
       const sr = rowOf(p.x);
       levels[sr]++;
       across ||= sr !== tr;
     }
+
     // Links from other rows share one lane and come in at one level.
     if (across) levels[tr]++;
     labelled = !across;
   }
+
   let y = 0;
   rows.forEach((row, r) => {
     const names = row.groups
       .flatMap((g) => g.items)
       .filter((it) => it.name)
       .map((it) => it.name);
+
     // A row with only an empty seat needs no room for parts above its rail.
     const partsTop = names.length
       ? Math.min(-L.H, ...names.map((n) => L.pos[n].yTop))
       : -DIM.rail.lipH - 8;
+
     const band = levels[r] ? rise + DIM.after.step * (levels[r] - 1) + (labelled ? 20 : 6) : 12;
+
     if (r > 0) y += t + labelBand + (extra[r - 1] ?? 0) + band - partsTop;
     row.sx = lipW + pad - row.left;
     row.y = y;
     row.partsTop = y + partsTop;
     row.top = row.partsTop - band;
+
     for (const n of names) {
       const p = L.pos[n];
       p.x += row.sx;
@@ -288,17 +333,21 @@ export function wrapRows(
       p.row = r;
     }
   });
+
   for (const p of L.plates) {
     const row = rows[L.pos[p.names[0]].row];
     p.x0 += row.sx;
     p.x1 += row.sx;
     p.y = row.y;
   }
+
   if (L.joint) {
     const row = rows[L.pos.site.row];
     L.joint = { x: L.joint.x + row.sx, y: L.joint.y + row.y, top: L.joint.top + row.y };
   }
+
   const segments = [];
+
   for (const rule of ["pr", "push"]) {
     const rail = L.rails[rule];
     rows.forEach((row, r) => {
@@ -306,6 +355,7 @@ export function wrapRows(
       const hi = r === rows.length - 1 ? Infinity : cuts[r];
       const a = Math.max(rail.x0, lo);
       const b = Math.min(rail.x1, hi);
+
       if (b - a < 0.5) return;
       segments.push({
         rule,
@@ -323,11 +373,13 @@ export function wrapRows(
       });
     });
   }
+
   L.rows = rows;
   L.segments = segments;
   L.width = Math.max(...segments.map((sg) => sg.x1));
   L.bottom = rows[rows.length - 1].y + t;
   L.top = rows[0].top;
+
   return L;
 }
 
@@ -338,20 +390,25 @@ export function wrapRows(
  */
 export function afterRoutes(L, rise) {
   const tgt = L.pos.deploy;
+
   if (!tgt) return [];
   const half = L.W / 2;
   const cx = tgt.x + half;
   const ey = tgt.yTop - DIM.eyelet.r;
   const sources = PARTS.deploy.after.map((n) => L.pos[n]).filter(Boolean);
   const used = {};
+
   const level = (row) => {
     used[row] = (used[row] ?? -1) + 1;
+
     return L.rows[row].partsTop - rise - DIM.after.step * used[row];
   };
+
   const same = sources.filter((p) => p.row === tgt.row);
   const left = same.filter((p) => p.x + half < cx).sort((a, b) => b.x - a.x);
   const right = same.filter((p) => p.x + half > cx).sort((a, b) => a.x - b.x);
   const routes = [];
+
   for (const p of [...left, ...right]) {
     const y = level(p.row);
     routes.push({
@@ -364,9 +421,11 @@ export function afterRoutes(L, rise) {
       ],
     });
   }
+
   const across = sources.filter((q) => q.row !== tgt.row);
   const yt = across.length ? level(tgt.row) : 0;
   const lx = L.width + 12;
+
   for (const p of across) {
     const ys = level(p.row);
     routes.push({
@@ -381,6 +440,7 @@ export function afterRoutes(L, rise) {
       ],
     });
   }
+
   return routes;
 }
 
@@ -390,7 +450,9 @@ const roundPath = (pts, R) => {
     Math.round(x) + 0.5,
     i === 0 || i === pts.length - 1 ? y : Math.round(y) + 0.5,
   ]);
+
   let d = `M${q[0][0]} ${q[0][1]}`;
+
   for (let i = 1; i < q.length - 1; i++) {
     const [ax, ay] = q[i - 1];
     const [x, y] = q[i];
@@ -400,16 +462,21 @@ const roundPath = (pts, R) => {
     const r = Math.min(R, l1 / 2, l2 / 2);
     d += `L${x - ((x - ax) / l1) * r} ${y - ((y - ay) / l1) * r}Q${x} ${y} ${x + ((bx - x) / l2) * r} ${y + ((by - y) / l2) * r}`;
   }
+
   const [lx, ly] = q[q.length - 1];
+
   return `${d}L${lx} ${ly}`;
 };
 
 /** A rail section as drawn: hatched material with a thick outline. */
 export function drawRail(parent, sec, fillId, cls = "rail") {
   const g = s("g", { class: cls }, parent);
+
   for (const p of sec.polys)
     s("path", { d: toPath(p), class: "rail-fill", fill: `url(#${fillId})` }, g);
+
   for (const p of sec.polys) s("path", { d: toPath(p), class: "rail-edge" }, g);
+
   return g;
 }
 
@@ -423,6 +490,7 @@ export function drawPartShape(g, spec, { W, H, contacts = [], owner = null }) {
   s("path", { d: toPath(outline), class: "body" }, g);
   // A chamfered top edge leaves a line in elevation: the part reads as machined, not as a box.
   s("path", { d: `M${DIM.corner} ${DIM.chamfer}H${W - DIM.corner}`, class: "face" }, g);
+
   if (spec.tenon)
     s(
       "path",
@@ -434,6 +502,7 @@ export function drawPartShape(g, spec, { W, H, contacts = [], owner = null }) {
       },
       g,
     );
+
   for (const sv of spec.pins ?? [])
     s(
       "path",
@@ -445,6 +514,7 @@ export function drawPartShape(g, spec, { W, H, contacts = [], owner = null }) {
       },
       g,
     );
+
   if (spec.bit)
     s(
       "path",
@@ -452,12 +522,14 @@ export function drawPartShape(g, spec, { W, H, contacts = [], owner = null }) {
       g,
     );
   s("path", { d: toPath(outline), class: "outline" }, g);
+
   if (spec.after) {
     const e = eyelet(W);
     const eg = s("g", { class: "eyelet", "data-link": "f:after", "data-owner": owner }, g);
     s("circle", { cx: e.x, cy: e.y, r: e.r, class: "eyelet-body" }, eg);
     s("circle", { cx: e.x, cy: e.y, r: e.hole, class: "eyelet-hole" }, eg);
   }
+
   if (spec.socket)
     s(
       "path",
@@ -469,6 +541,7 @@ export function drawPartShape(g, spec, { W, H, contacts = [], owner = null }) {
       },
       g,
     );
+
   if (spec.tenon)
     s(
       "path",
@@ -480,8 +553,10 @@ export function drawPartShape(g, spec, { W, H, contacts = [], owner = null }) {
       },
       g,
     );
+
   for (const m of contactMarks({ ...spec, W }, H, contacts))
     s("path", { d: `M${m.x0} ${m.y + 1}H${m.x1}`, class: "contact" }, g);
+
   return g;
 }
 
@@ -490,8 +565,10 @@ const KIND_CLASS = { setup: "setup", task: "task", build: "build", action: "acti
 /** "1, 2 and 3": the socket numbers a rule's rail is drilled with. */
 export const socketList = (rule) => {
   const n = RULES[rule].supplies.map((sv) => SERVICES.indexOf(sv) + 1).sort((a, b) => a - b);
+
   return `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
 };
+
 const railNote = (rule) =>
   `Sockets ${socketList(rule)}. ${RULES[rule].floor === "closed" ? "Closed floor, no grants." : "Open floor, any grant."}`;
 
@@ -539,6 +616,7 @@ export class AssemblyView {
   /** The root's width inside its padding: what the drawing may fill. */
   contentWidth() {
     const cs = getComputedStyle(this.root);
+
     return Math.floor(
       this.root.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
     );
@@ -556,12 +634,15 @@ export class AssemblyView {
     const H = this.options.H ?? (rows ? DIM.Hrows : DIM.H);
     let W = this.options.W ?? DIM.minW;
     let k = 1;
+
     if (rows) k = Math.min(1, (width - 2) / widestGroup(W, H));
     else if (!this.options.W && this.options.partWidth) {
       W = this.options.partWidth(width);
       const need = this.options.partWidth.need?.(W) ?? 0;
+
       if (need > width) k = Math.max(0.6, width / need);
     }
+
     return { width, rows, H, W, k };
   }
 
@@ -571,8 +652,10 @@ export class AssemblyView {
    */
   render() {
     const extra = [];
+
     for (let pass = 0; pass < 3; pass++) {
       const over = this.renderOnce(extra);
+
       if (!over?.some((d) => d > 0)) return;
       over.forEach((d, r) => (extra[r] = (extra[r] ?? 0) + Math.max(0, d) / this.k));
     }
@@ -580,6 +663,7 @@ export class AssemblyView {
 
   renderOnce(extra) {
     const { width, rows, H, W, k } = this.measure();
+
     if (!width) return null;
     this.lastWidth = width;
     const rise = rows ? 16 : DIM.after.rise;
@@ -600,12 +684,14 @@ export class AssemblyView {
     svg.replaceChildren();
     svg.classList.toggle("is-scaled", k !== 1);
     const defs = s("defs", {}, svg);
+
     // Hatching keeps a 5 px pitch and a 1 px line at any drawing scale.
     const hatchK = (id, angle, gap, cls) =>
       hatch(defs, id, angle, gap / k, cls).firstChild.setAttribute(
         "style",
         `stroke-width:${1 / k}px`,
       );
+
     hatchK(this.ids.prLive, 45, 5, "hatch-line");
     hatchK(this.ids.pushLive, -45, 5, "hatch-line");
     hatchK(this.ids.prOff, 45, 5, "hatch-line is-off");
@@ -619,11 +705,13 @@ export class AssemblyView {
     const pad = this.options.pad ?? { l: 1, t: 1 };
     const map = (x, y) => ({ X: x * k + pad.l, Y: (y - top) * k + pad.t });
     this.map = map;
+
     const geo = s(
       "g",
       { class: "geo", transform: `translate(${pad.l} ${pad.t - top * k}) scale(${k})` },
       svg,
     );
+
     const text = s("g", { class: "txt" }, svg);
     this.geo = geo;
     this.text = text;
@@ -633,8 +721,10 @@ export class AssemblyView {
     this.railEls = {};
     this.sockets = [];
     const { t, socket: sd } = DIM.rail;
+
     for (const rule of ["pr", "push"]) {
       const on = !this.state.plan || live === rule;
+
       const fillId = on
         ? rule === "pr"
           ? this.ids.prLive
@@ -642,13 +732,16 @@ export class AssemblyView {
         : rule === "pr"
           ? this.ids.prOff
           : this.ids.pushOff;
+
       const g = s(
         "g",
         { class: `rail rail-${rule}${on ? " is-live" : " is-quiet"}`, "data-link": `rail:${rule}` },
         geo,
       );
+
       for (const seg of L.segments.filter((sg) => sg.rule === rule)) {
         const seats = seg.seats.filter((q) => !q.empty);
+
         const sec = railSection({
           rule,
           x0: seg.x0,
@@ -659,10 +752,13 @@ export class AssemblyView {
           cutStart: seg.cutStart,
           cutEnd: seg.cutEnd,
         });
+
         const sg = s("g", { transform: `translate(0 ${seg.y})` }, g);
         drawRail(sg, sec, fillId, "rail-seg");
+
         for (const seat of seats) {
           const holes = sec.holes.filter((h) => h.x0 >= seat.x && h.x1 <= seat.x + seat.W);
+
           if (!holes.length) continue;
           s(
             "rect",
@@ -675,6 +771,7 @@ export class AssemblyView {
             },
             sg,
           );
+
           for (const h of holes) {
             const n = SERVICES.indexOf(h.service) + 1;
             s(
@@ -689,6 +786,7 @@ export class AssemblyView {
               y: seg.y + sd + 1.5 + (t - sd - 3.5) / 2,
             });
           }
+
           // Where this rule supplies nothing, the rail is solid: drawn only while that socket is lit.
           for (const sv of SERVICES.slice(0, 6)) {
             if (RULES[rule].supplies.includes(sv)) continue;
@@ -703,6 +801,7 @@ export class AssemblyView {
               sg,
             );
           }
+
           for (const h of holes)
             s(
               "rect",
@@ -718,6 +817,7 @@ export class AssemblyView {
             );
         }
       }
+
       this.railEls[rule] = g;
     }
 
@@ -732,6 +832,7 @@ export class AssemblyView {
         },
         geo,
       );
+
       s(
         "path",
         {
@@ -747,6 +848,7 @@ export class AssemblyView {
 
     // After links.
     this.afterEls = [];
+
     for (const r of routes) {
       const g = s("g", { class: "after", "data-link": "f:after", "data-from": r.from }, geo);
       const pts = r.pts.map((p) => p.slice());
@@ -767,8 +869,10 @@ export class AssemblyView {
     // Parts.
     this.partEls = {};
     const planned = this.state.plan?.planned;
+
     for (const p of Object.values(L.pos)) {
       const spec = PARTS[p.name];
+
       const g = s(
         "g",
         {
@@ -778,19 +882,25 @@ export class AssemblyView {
         },
         geo,
       );
+
       // Positioned by CSS, so drags and slides can move it without losing its place.
       g.style.transform = `translate(${p.x}px, ${p.yTop}px)`;
       drawPartShape(g, spec, { W, H, contacts: p.contacts, owner: `part:${p.name}` });
+
       if (planned) g.classList.toggle("is-off", !planned.has(p.name));
       this.partEls[p.name] = g;
     }
+
     if (L.pos.install === undefined && planned)
       for (const p of L.plates) p.el.classList.toggle("is-off", !planned.has("install"));
 
     // Labels in screen space.
     this.textEls = {};
+
     for (const p of Object.values(L.pos)) this.textEls[p.name] = this.partText(p, text);
+
     for (const p of L.plates) this.plateText(p, text);
+
     if (L.joint && !this.options.small) {
       const j = map(L.joint.x, L.joint.top);
       s(
@@ -799,7 +909,9 @@ export class AssemblyView {
         text,
       ).textContent = "StorePath";
     }
+
     const lanes = routes.filter((r) => r.pts.length > 4);
+
     if (!lanes.length && routes.length) {
       // On the highest run.
       const runs = routes.map((r) => [r.pts[1], r.pts[2]]);
@@ -811,31 +923,39 @@ export class AssemblyView {
         text,
       ).textContent = "after";
     }
+
     this.captionBoxes = null;
     this.captionBottoms = null;
+
     if (labels) this.railLabels(L, text);
+
     if (lanes.length) this.laneLabel(L, lanes[0], text);
     this.socketNumbers(text);
 
     // Size.
     const tb = text.getBBox();
     const lane = routes.some((r) => r.pts.length > 4) ? LANE : 0;
+
     const w = Math.min(
       width,
       Math.ceil(Math.max((L.width + lane) * k + pad.l, tb.x + tb.width) + 2),
     );
+
     const hgt = Math.ceil(
       Math.max((L.bottom - top) * k + pad.t + labelBelow, tb.y + tb.height + 4),
     );
+
     svg.setAttribute("width", w);
     svg.setAttribute("height", hgt);
     svg.setAttribute("viewBox", `0 0 ${w} ${hgt}`);
     this.size = { w, h: hgt };
     this.options.onRender?.(this);
+
     // How far each row's captions reach into the row below (the joint's label sits above its band).
     return L.rows.slice(0, -1).map((_, r) => {
       const next = L.rows[r + 1];
       const jointHere = L.joint && L.pos.site.row === r + 1;
+
       return (this.captionBottoms?.[r] ?? 0) + 6 - (map(0, next.top).Y - (jointHere ? 8 : 0));
     });
   }
@@ -843,6 +963,7 @@ export class AssemblyView {
   faceBox(p) {
     const a = this.map(p.x, p.yTop);
     const b = this.map(p.x + p.W, p.yTop + p.H);
+
     return { left: a.X, right: b.X, top: a.Y, bottom: b.Y };
   }
 
@@ -862,6 +983,7 @@ export class AssemblyView {
       g,
     ).textContent = p.name;
     const files = this.options.files?.(p.name);
+
     if (files) {
       // A task with a key per file: each file is a cartridge in it, drawn at full weight when it runs
       // and in thin lines when its result is reused. Narrow faces use the files' short names.
@@ -891,11 +1013,13 @@ export class AssemblyView {
       const kind = s("text", { x, y: y + (small ? 29 : 31), class: "t-kind" }, g);
       kind.textContent = spec.kind;
       const note = this.options.note?.(p.name);
+
       if (note) {
         const tspan = s("tspan", { class: "t-note" }, kind);
         tspan.textContent = `, ${note}`;
       }
     }
+
     if (!small && !files) {
       const r = DIM.item.r;
       const cx = box.right - DIM.item.inset - r - 0.5;
@@ -904,6 +1028,7 @@ export class AssemblyView {
       s("text", { x: cx, y: cy + 4, class: "t-item", "text-anchor": "middle" }, g).textContent =
         String(spec.line);
     }
+
     return g;
   }
 
@@ -919,7 +1044,9 @@ export class AssemblyView {
     s("rect", { x: tx - 4, y: ty - 13, width: w + 8, height: 17, class: "clear" }, g);
     const t = s("text", { x: tx, y: ty, class: "t-plate" }, g);
     t.textContent = "install";
+
     if (note) s("tspan", { class: "t-note" }, t).textContent = `, ${note}`;
+
     if (!p.phantom && !this.options.small) {
       const r = 9;
       const cx = b.X - 8 - r - 0.5;
@@ -928,7 +1055,9 @@ export class AssemblyView {
       s("text", { x: cx, y: cy + 4, class: "t-item", "text-anchor": "middle" }, g).textContent =
         "7";
     }
+
     p.textEl = g;
+
     return g;
   }
 
@@ -941,6 +1070,7 @@ export class AssemblyView {
       pr: s("g", { class: "socknums" }, parent),
       push: s("g", { class: "socknums" }, parent),
     };
+
     for (const q of this.sockets) {
       const m = this.map(q.x, q.y);
       const on = !this.state.plan || this.state.plan.live === q.rule;
@@ -969,6 +1099,7 @@ export class AssemblyView {
     const { lipW, t } = DIM.rail;
     const limit = this.lastWidth - 4;
     this.railLabelEls = {};
+
     for (const rule of ["pr", "push"]) {
       const on = !this.state.plan || live === rule;
       this.railLabelEls[rule] = s(
@@ -977,6 +1108,7 @@ export class AssemblyView {
         parent,
       );
     }
+
     const firstOf = (rule) => L.segments.find((q) => q.rule === rule);
     this.captionBottoms = L.rows.map(() => 0);
     this.captionBoxes = L.rows.map(() => []);
@@ -984,6 +1116,7 @@ export class AssemblyView {
       const named = L.segments
         .filter((sg) => sg.row === r && (sg === firstOf(sg.rule) || sg.cutStart))
         .sort((p, q) => p.x0 - q.x0);
+
       const startX = (seg) => this.map(seg.x0 + (seg.lipStart ? lipW : 6), seg.y + t).X;
       let cursor = -Infinity;
       named.forEach((seg, i) => {
@@ -1000,6 +1133,7 @@ export class AssemblyView {
         const g = this.railLabelEls[seg.rule];
         const y = this.map(0, seg.y + t).Y + 22;
         const box = (x0, x1, yb) => this.captionBoxes[r].push({ x0, x1, y0: yb - 12, y1: yb + 4 });
+
         if (form !== "name") {
           s("circle", { cx: x + 10, cy: y - 4.5, r: 10, class: "item" }, g);
           s(
@@ -1008,11 +1142,14 @@ export class AssemblyView {
             g,
           ).textContent = String(spec.line);
         }
+
         const lx = form === "full" ? x + 28 : x;
+
         if (form !== "number") s("text", { x: lx, y, class: "t-rule" }, g).textContent = spec.label;
         let right = form === "number" ? x + 20 : lx + labelW;
         box(x, right, y);
         let ly = y;
+
         for (const [j, line] of (note
           ? wrap(note, FONT.note, Math.max(60, avail))
           : []
@@ -1023,6 +1160,7 @@ export class AssemblyView {
           right = Math.max(right, x + lw);
           box(x, x + lw, ly);
         }
+
         cursor = right + 16;
         this.captionBottoms[r] = Math.max(this.captionBottoms[r], ly + 5);
       });
@@ -1039,6 +1177,7 @@ export class AssemblyView {
     const w = measure("after", FONT.label);
     let y = this.map(0, L.rows[r0].y + DIM.rail.t).Y + 22;
     const boxes = this.captionBoxes?.[r0] ?? [];
+
     while (boxes.some((b) => b.x1 > X - w - 6 && b.x0 < X && b.y1 > y - 12 && b.y0 < y + 4))
       y += 17;
     s(
@@ -1046,6 +1185,7 @@ export class AssemblyView {
       { x: X, y, class: "t-after", "text-anchor": "end", "data-link": "f:after" },
       parent,
     ).textContent = "after";
+
     if (this.captionBottoms) this.captionBottoms[r0] = Math.max(this.captionBottoms[r0], y + 5);
   }
 }

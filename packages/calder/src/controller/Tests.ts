@@ -19,8 +19,10 @@ export const failing = (t: Pick<TestRecord, "status">) =>
 export const outcomes = <T extends TestRecord>(records: ReadonlyArray<T>) => {
   const last = new Map(records.map((t, i) => [id(t), i]));
   const failedOnce = new Set(records.filter(failing).map(id));
+
   return records.map((t, i) => {
     const superseded = last.get(id(t)) !== i;
+
     return {
       ...t,
       superseded,
@@ -31,6 +33,7 @@ export const outcomes = <T extends TestRecord>(records: ReadonlyArray<T>) => {
 
 export const count = (records: ReadonlyArray<TestRecord>) => {
   const latest = outcomes(records).filter((t) => !t.superseded);
+
   return {
     passed: latest.filter((t) => t.status === "passed").length,
     failed: latest.filter(failing).length,

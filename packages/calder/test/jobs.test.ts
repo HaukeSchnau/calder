@@ -9,11 +9,13 @@ const timedOut = {
   stderr:
     'Job for calder-job-pr@0a1b.service failed because a timeout was exceeded.\nSee "systemctl status calder-job-pr@0a1b.service" for details.\n',
 };
+
 const failed = {
   exitCode: 1,
   stderr:
     "Job for calder-job-pr@0a1b.service failed because the control process exited with error code.\n",
 };
+
 const started = { exitCode: 0, stderr: "" };
 
 interface Answer {
@@ -29,13 +31,17 @@ const starting = (answers: Array<Answer>) => {
   const logs: Array<string> = [];
   let starts = 0;
   let result = "";
+
   const start = Effect.gen(function* () {
     starts += 1;
     const { answer, unit, takes } = answers.shift()!;
+
     if (takes !== undefined) yield* Effect.sleep(takes);
     result = unit;
+
     return answer;
   });
+
   return {
     logs,
     starts: () => starts,
@@ -58,6 +64,7 @@ describe("starting a worker's unit", () => {
         timeout,
         { answer: started, unit: "success" },
       ]);
+
       const fiber = yield* Effect.forkChild(run);
       yield* TestClock.adjust("14 seconds");
       expect(starts()).toBe(1);
@@ -90,6 +97,7 @@ describe("starting a worker's unit", () => {
         { answer: failed, unit: "exit-code" },
         { answer: started, unit: "success" },
       ]);
+
       expect(yield* run).toBe(
         "the control process exited with error code (result exit-code, calder-job-pr@0a1b.service)",
       );
@@ -107,15 +115,18 @@ describe("starting a worker's unit", () => {
           stderr:
             "Failed to start calder-job-fork@0a1b.service: Interactive authentication required.\n",
         };
+
         const { starts, run } = starting([{ answer: denied, unit: "" }]);
         expect(yield* run).toBe(
           "the host has no calder-job-fork@ unit the controller may start: Interactive authentication required",
         );
         expect(starts()).toBe(1);
+
         const refused = {
           exitCode: 1,
           stderr: "Failed to start calder-job-fork-large@0a1b.service: Access denied\n",
         };
+
         expect(yield* starting([{ answer: refused, unit: "" }]).run).toBe(
           "the host has no calder-job-fork-large@ unit the controller may start: Access denied",
         );
@@ -138,13 +149,16 @@ describe("starting a worker's unit", () => {
   it.effect("stops after a retry's start when the job was cancelled while the unit started", () =>
     Effect.gen(function* () {
       let ran = false;
+
       const { starts, run } = starting([
         timeout,
         { answer: started, unit: "success", takes: "5 seconds" },
       ]);
+
       const fiber = yield* Effect.forkChild(
         Effect.uninterruptible(run.pipe(Effect.andThen(Effect.sync(() => void (ran = true))))),
       );
+
       yield* TestClock.adjust("16 seconds");
       expect(starts()).toBe(2);
       const cancel = yield* Effect.forkChild(Fiber.interrupt(fiber));

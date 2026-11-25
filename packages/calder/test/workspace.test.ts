@@ -10,6 +10,7 @@ import * as Workspace from "../src/worker/Workspace.ts";
 const noProcesses = ChildProcessSpawner.make(() =>
   Effect.die(new Error("no processes in this test")),
 );
+
 const open = (root: string, deps: string) =>
   Workspace.open(root, deps).pipe(
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses),

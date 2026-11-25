@@ -11,6 +11,7 @@ const harness = (slots: Slots.Slots) =>
   Effect.gen(function* () {
     const order: Array<string> = [];
     const hold = yield* Deferred.make<void>();
+
     const job = (name: string, claim: Slots.Claim) =>
       Effect.forkChild(
         slots.with(
@@ -18,6 +19,7 @@ const harness = (slots: Slots.Slots) =>
           Effect.sync(() => order.push(name)).pipe(Effect.andThen(Deferred.await(hold))),
         ),
       );
+
     return { order, hold, job };
   });
 
@@ -45,6 +47,7 @@ describe("Slots", () => {
     Effect.gen(function* () {
       const slots = Slots.make({ capacity: 3, perProject: 2 });
       const { order, hold, job } = yield* harness(slots);
+
       for (const i of [1, 2, 3])
         yield* job(`t3code-${i}`, { project: "t3code", expected: minutes(10), run: 0 });
       yield* job("t3code-4", { project: "t3code", expected: minutes(1), run: 0 });
@@ -66,6 +69,7 @@ describe("Slots", () => {
       Effect.gen(function* () {
         const slots = Slots.make({ capacity: 4, maxPerProject: 1 });
         const { order, hold, job } = yield* harness(slots);
+
         for (const pr of [2, 3, 4])
           yield* job(`infra-pr-${pr}`, {
             project: "infra",
@@ -206,6 +210,7 @@ describe("Slots", () => {
     Effect.gen(function* () {
       const slots = Slots.make({ capacity: 3 });
       const { order, hold, job } = yield* harness(slots);
+
       for (const n of [1, 2, 3])
         yield* job(`check-${n}`, { project: "t3code", expected: 0, run: 0, background: true });
       yield* Effect.yieldNow;
@@ -367,6 +372,7 @@ describe("Slots", () => {
       const lint = yield* Deferred.make<void>();
       const rest = yield* Deferred.make<void>();
       const reasons: Array<string> = [];
+
       const step = (
         label: string,
         until: Deferred.Deferred<void>,
@@ -379,6 +385,7 @@ describe("Slots", () => {
             onWaiting,
           ),
         );
+
       yield* step("t3code-1 lint", lint);
       yield* Effect.yieldNow;
       yield* step("t3code-1 test", rest);
@@ -403,6 +410,7 @@ describe("Slots", () => {
       // Production sizes: three task slots, two per project, one more for deploys.
       const slots = Slots.make({ capacity: 3, perProject: 2, lane: 1 });
       const { order, hold, job } = yield* harness(slots);
+
       const deploy = (host: string) => ({
         project: "infra",
         expected: minutes(1),
@@ -410,6 +418,7 @@ describe("Slots", () => {
         critical: true,
         label: `infra deploy-${host}`,
       });
+
       yield* job("infra-1", deploy("srv-1"));
       yield* job("infra-2", deploy("srv-2"));
       yield* job("t3code-1", { project: "t3code", expected: minutes(20), run: 0 });
@@ -433,10 +442,12 @@ describe("Slots", () => {
         const slots = Slots.make({ capacity: 3, perProject: 2, lane: 1 });
         const order: Array<string> = [];
         const holds = new Map<string, Deferred.Deferred<void>>();
+
         const job = (name: string, claim: Slots.Claim) =>
           Effect.gen(function* () {
             const hold = yield* Deferred.make<void>();
             holds.set(name, hold);
+
             return yield* Effect.forkChild(
               slots.with(
                 claim,
@@ -444,12 +455,14 @@ describe("Slots", () => {
               ),
             );
           });
+
         const deploy = (host: string) => ({
           project: "infra",
           expected: minutes(1),
           run: 0,
           critical: true,
         });
+
         yield* job("infra-1", deploy("srv-1"));
         yield* job("infra-2", deploy("srv-2"));
         yield* job("t3code-1", { project: "t3code", expected: minutes(20), run: 0 });
@@ -462,6 +475,7 @@ describe("Slots", () => {
         yield* Deferred.succeed(holds.get("infra-1")!, undefined);
         yield* Effect.yieldNow;
         expect(order.slice(4)).toEqual(["t3code-2"]);
+
         for (const hold of holds.values()) yield* Deferred.succeed(hold, undefined);
       }),
   );
@@ -499,11 +513,13 @@ describe("a build's expected time", () => {
       Effect.gen(function* () {
         const slots = Slots.make({ capacity: 1 });
         const { order, hold, job } = yield* harness(slots);
+
         const spill = (to: ReadonlyArray<string>) => ({
           to,
           pool: "trusted" as const,
           signal: Deferred.makeUnsafe<void>(),
         });
+
         const running = yield* job("running", { project: "a", expected: 0, run: 0 });
         const darwin = spill(["aarch64-darwin"]);
         const long = spill(["x86_64-linux", "aarch64-linux"]);
@@ -537,11 +553,13 @@ describe("a build's expected time", () => {
       Effect.gen(function* () {
         const slots = Slots.make({ capacity: 1 });
         const { hold, job } = yield* harness(slots);
+
         const spill = (pool: "pr" | "trusted") => ({
           to: ["aarch64-linux", "x86_64-linux"],
           pool,
           signal: Deferred.makeUnsafe<void>(),
         });
+
         const running = yield* job("running", { project: "a", expected: 0, run: 0 });
         const pr = spill("pr");
         const push = spill("trusted");

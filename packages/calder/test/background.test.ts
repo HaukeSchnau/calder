@@ -56,6 +56,7 @@ const background: Domain.Event = {
 const pullRequest = (steps: ReadonlyArray<PlannedStep>) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const event: Domain.Event = {
       _tag: "PullRequest",
       number: 7,
@@ -63,21 +64,26 @@ const pullRequest = (steps: ReadonlyArray<PlannedStep>) =>
       head: "feature",
       fork: false,
     };
+
     const plan = { version: 1, app: null, trust: "pr", reuse: "all", schedules: [], steps };
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, fork)
       values ('app-3', 'app', 3, ${JSON.stringify(event)}, 'sha', 'feature', 7, 'title', 'hauke', 3, 'pr', 'running', 3, 3, 't', 's', 0)`;
     yield* sql`insert into run_plans (run_id, plan) values ('app-3', ${JSON.stringify(plan)})`;
+
     for (const [position, s] of steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-3', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`;
     }
+
     const core = yield* RunsCore;
+
     for (const s of steps) yield* core.step("app-3", s.name).pipe(Effect.forkChild);
   }).pipe(Effect.orDie);
 
 const until = <A>(effect: Effect.Effect<A, never, SqlClient.SqlClient>, done: (a: A) => boolean) =>
   effect.pipe(Effect.repeat({ until: done, schedule: Schedule.spaced("10 millis") }));
+
 const stepOf = (run: string, name: string) =>
   Effect.map(Rows.loadStep(run, name), (row) => row ?? null).pipe(Effect.orDie);
 
@@ -94,6 +100,7 @@ const beside = (
   Effect.gen(function* () {
     let pull: ReadonlyArray<Rows.StepRow | null> = [];
     let waited: string | null = null;
+
     const driven = yield* drive({
       steps: checked,
       event: background,
@@ -103,6 +110,7 @@ const beside = (
           stepOf("app-2", first),
           (r) => r?.waiting?.startsWith("a task slot") === true,
         );
+
         waited = row?.waiting ?? null;
         yield* pullRequest(pulled);
         const ended = Effect.forEach(pulled, (s) => stepOf("app-3", s.name));
@@ -113,6 +121,7 @@ const beside = (
         yield* (yield* RunsCore).cancel("app-2", "cancelled from the UI");
       }),
     });
+
     return {
       ...driven,
       pull: new Map(pull.flatMap((r) => (r === null ? [] : [[r.name, r] as const]))),
@@ -131,6 +140,7 @@ describe("work a background check shares", () => {
           "install",
           [install, task("test", { setup: true })],
         );
+
         // The pull request waited for the check's install, which then ran as the pull request's work.
         expect([pull.get("install")?.status, pull.get("test")?.status]).toEqual([
           "reused",

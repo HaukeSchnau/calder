@@ -129,6 +129,7 @@ node -e 'console.log(JSON.stringify(process.argv[1]))' "$version" >"$value"`;
  */
 export const runtimeVersion = (platform: "ios" | "android", options: InstalledOptions) => {
   const dir = options.dir ?? ".";
+
   return Task.make(options.name ?? `runtime-${platform}`, {
     ...hostOf(options),
     setup: options.setup,
@@ -163,6 +164,7 @@ find "$2" -name '*.map' -delete`;
  */
 export const exportUpdate = (options: InstalledOptions) => {
   const dir = options.dir ?? ".";
+
   return Task.make(options.name ?? "ota-export", {
     platform: "x86_64-linux",
     ...hostOf(options),
@@ -183,6 +185,7 @@ export const Update = Schema.Struct({
   platform: Schema.String,
   runtimeVersion: Schema.String,
 });
+
 export type Update = typeof Update.Type;
 
 export interface PublishOptions extends InstalledOptions {
@@ -261,6 +264,7 @@ mv "$published" "$value"`;
  */
 export const publishUpdate = (options: PublishOptions) => {
   const dir = options.dir ?? ".";
+
   return Task.make(options.name ?? `ota-${options.channel}`, {
     ...hostOf(options),
     setup: options.setup,

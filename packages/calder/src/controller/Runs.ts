@@ -52,8 +52,10 @@ export const InfrastructureRetries = Context.Reference<ReadonlyArray<Duration.In
     defaultValue: () => ["30 seconds", "2 minutes"],
   },
 );
+
 /** How often a superseded run's running build asks again whether it should stop. */
 const neededEvery = "30 seconds";
+
 /**
  * How a build's expected time follows what it would build: the step's usual time, scaled by how many
  * derivations it builds against how many it usually builds, never above the usual time. Every run's
@@ -74,7 +76,9 @@ export const sized = (estimate: number, building: number | null, typical: number
 export const toBuild = (stderr: string) => {
   if (/^this derivation will be built:/m.test(stderr)) return 1;
   const many = /^these (\d+) derivations will be built:/m.exec(stderr);
+
   if (many !== null) return Number(many[1]);
+
   return /will be fetched|^don't know how to build/m.test(stderr) ? 0 : null;
 };
 
@@ -90,6 +94,7 @@ export const buildersOf = (machines: string) =>
     .filter((line) => line !== "" && !line.startsWith("#") && !line.startsWith("@"))
     .map((line) => {
       const [uri = "", systems = ""] = line.split(/\s+/);
+
       return { uri, systems: systems.split(",") };
     });
 
@@ -148,24 +153,30 @@ export const retryable = (
   }>,
 ) => {
   const below = new Map<string, Array<string>>();
+
   for (const s of steps)
     for (const d of upstream(s.spec)) below.set(d, [...(below.get(d) ?? []), s.name]);
   const status = new Map(steps.map((s) => [s.name, s.status]));
+
   const seeds = steps
     .filter((s) => s.status === "failed" || s.status === "died")
     .map((s) => s.name);
+
   const picked = new Set(seeds);
   const seen = new Set(seeds);
   const queue = [...seeds];
+
   while (queue.length > 0) {
     for (const next of below.get(queue.shift()!) ?? []) {
       if (seen.has(next)) continue;
       seen.add(next);
       queue.push(next);
       const s = status.get(next);
+
       if (s !== undefined && Rows.terminal(s) && !Rows.succeeded(s)) picked.add(next);
     }
   }
+
   return steps.map((s) => s.name).filter((n) => picked.has(n));
 };
 
@@ -176,10 +187,12 @@ const plain = (text: string) =>
 /** Why a publish failed, in one line: Nix's last `error:` line, or the error itself. */
 const publishFailure = (error: Exec.ExecError): string => {
   if (error._tag !== "CommandFailed") return error.message;
+
   const lines = plain(error.stderr)
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "");
+
   return (
     lines.findLast((line) => line.startsWith("error:")) ??
     lines.at(-1) ??
@@ -219,11 +232,14 @@ export const layerCore = Layer.effect(RunsCore)(
     const estimates = yield* Estimates.Estimates;
     const infrastructureRetries = yield* InfrastructureRetries;
     const spillEvery = yield* SpillEvery;
+
     const rouseFrom =
       Date.now() + Duration.toMillis(Duration.fromInputUnsafe(yield* RouseAfterStart));
+
     // Steps a deploy or a preview waits for take one slot of each pool beyond its capacity, so they never
     // queue behind long checks: in studienbuch-20 a deploy waited 264 s for a task slot.
     const lane = 1;
+
     const slots = {
       // One plan per project at a time: two of infra's plans side by side, a pull request's and a push's,
       // held 8.7 GB of the 8 GiB jobs slice and both ran past 30 minutes. A long plan also leaves the other
@@ -247,6 +263,7 @@ export const layerCore = Layer.effect(RunsCore)(
       // Agents limit themselves; this only orders their jobs.
       agents: Slots.make({ capacity: 64 }),
     };
+
     /** Every pool, the remote builds' of each system included. */
     const pools = () => [
       slots.plans,
@@ -257,30 +274,39 @@ export const layerCore = Layer.effect(RunsCore)(
       slots.actions,
       slots.agents,
     ];
+
     const cancels = new Map<string, Deferred.Deferred<string>>();
+
     const signal = (map: Map<string, Deferred.Deferred<string>>) => (runId: string) => {
       let d = map.get(runId);
+
       if (d === undefined) {
         d = Deferred.makeUnsafe<string>();
         map.set(runId, d);
       }
+
       return d;
     };
+
     const cancelSignal = signal(cancels);
     const supersedes = new Map<string, Deferred.Deferred<string>>();
     const supersedeSignal = signal(supersedes);
+
     /** One latch per run and step, dropped when the run finishes. */
     const latches = () => {
       const runs = new Map<string, Map<string, Deferred.Deferred<void>>>();
+
       return {
         get: (runId: string, name: string) => {
           const steps = runs.get(runId) ?? new Map<string, Deferred.Deferred<void>>();
           runs.set(runId, steps);
           let latch = steps.get(name);
+
           if (latch === undefined) {
             latch = Deferred.makeUnsafe<void>();
             steps.set(name, latch);
           }
+
           return latch;
         },
         drop: (runId: string) => runs.delete(runId),
@@ -290,6 +316,7 @@ export const layerCore = Layer.effect(RunsCore)(
         reset: (runId: string, name: string) => void runs.get(runId)?.delete(name),
       };
     };
+
     /** Opens when `step` of the step returned. */
     const stepped = latches();
     /** The latch of each step whose `step` runs right now, by run and step. */
@@ -301,13 +328,17 @@ export const layerCore = Layer.effect(RunsCore)(
     const builders = buildersOf(
       existsSync("/etc/nix/machines") ? readFileSync("/etc/nix/machines", "utf8") : "",
     );
+
     const buildSlots = (system: string | null) => {
       if (system === null || system === config.system) return slots.builds;
       const hosts = Math.max(1, builders.filter((b) => b.systems.includes(system)).length);
+
       const pool =
         slots.remoteBuilds.get(system) ??
         Slots.make({ capacity: config.jobs.slots.builds * hosts, lane });
+
       slots.remoteBuilds.set(system, pool);
+
       return pool;
     };
 
@@ -315,30 +346,38 @@ export const layerCore = Layer.effect(RunsCore)(
     /** Derivations a build job builds right now, in any run: a build of the same one waits for it without a slot. */
     const builds = InFlight.make();
     const workspaces = new Map<string, Set<number>>();
+
     // Workers adopted after a restart keep their slot and workspace until they finish, so no new job
     // lands in a workspace that is still in use.
     for (const adopted of jobs.adopted()) {
       const { spec, pool } = adopted;
+
       const index =
         spec.workspace === null
           ? null
           : Number(/slot-(\d+)$/.exec(spec.workspace)?.[1] ?? Number.NaN);
+
       const key = `local/${pool}/${spec.run.project}`;
+
       if (index !== null && !Number.isNaN(index)) {
         workspaces.set(key, (workspaces.get(key) ?? new Set<number>()).add(index));
       }
+
       // Taken before any run is driven again, or the run would claim the same slots for new jobs. A build's
       // job holds a build slot, also before its derivation is known, and evaluating builds an evaluation slot.
       const row = yield* Rows.loadStep(spec.run.id, spec.step).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
+
       const build = row === undefined ? null : Rows.spec(row).build;
+
       const held =
         spec.evaluate !== undefined
           ? slots.evaluations
           : build === null
             ? slots.tasks
             : buildSlots(build.system);
+
       const release = held.reserve(spec.run.project);
       yield* jobs
         .settled(adopted.id)
@@ -348,17 +387,21 @@ export const layerCore = Layer.effect(RunsCore)(
           Effect.forkScoped,
         );
     }
+
     /** An agent's worker gets the path relative to its agent's workspace directory. */
     const workspace = (pool: Pool, project: string, remote: boolean) => {
       const key = `${remote ? "agent" : "local"}/${pool}/${project}`;
+
       return Effect.acquireRelease(
         Effect.sync(() => {
           const used = workspaces.get(key) ?? new Set<number>();
           workspaces.set(key, used);
           let i = 0;
+
           while (used.has(i)) i++;
           used.add(i);
           const relative = join(pool, project, `slot-${i}`);
+
           return {
             index: i,
             path: remote ? relative : join(config.stateDir, "workspaces", relative),
@@ -375,6 +418,7 @@ export const layerCore = Layer.effect(RunsCore)(
     const active = yield* db(
       sql<{ id: string }>`select id from runs where ${sql.in("status", activeStatuses)}`,
     );
+
     yield* Outputs.sweepDerivations(config.stateDir, new Set(active.map((r) => r.id))).pipe(
       Effect.catch((e) =>
         Effect.logWarning("could not drop the derivation roots of ended runs", e),
@@ -389,32 +433,41 @@ export const layerCore = Layer.effect(RunsCore)(
 
     const repoOf = (project: string) => projects.get(project)!.repo;
     const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`;
+
     const poolOf = (run: Rows.RunRow): Pool =>
       run.trust === "trusted" ? "trusted" : run.fork === 1 ? "fork" : "pr";
+
     /** A background check's run: its jobs take only slots nothing else wants (Slots `background`). */
     const backgroundOf = (run: Rows.RunRow) => {
       const event = JSON.parse(run.event) as Domain.Event;
+
       return event._tag === "Check" && event.background === true;
     };
+
     const largeEvaluations = (run: Rows.RunRow) =>
       projects.get(run.project)?.largeEvaluations === true;
 
     const publishRun = (runId: string) =>
       Effect.gen(function* () {
         const row = yield* db(Rows.loadRun(runId));
+
         if (row === undefined) return;
         const [run] = yield* db(Rows.runsWithCounts([row]));
         yield* live.publish({ _tag: "RunChanged", run: run! });
       });
+
     const publishStep = (runId: string, name: string) =>
       Effect.gen(function* () {
         const row = yield* db(Rows.loadStep(runId, name));
         const run = yield* db(Rows.loadRun(runId));
+
         if (row === undefined || run === undefined) return;
         yield* estimates.stepSettled(run.project, row);
         const estimate = (yield* estimates.steps(run.project)).get(name) ?? null;
+
         const failingTests =
           row.status === "failed" ? yield* db(Rows.failingTests(runId, name)) : [];
+
         yield* live.publish({ _tag: "StepChanged", step: Rows.step(row, estimate), failingTests });
         yield* comments.touch(runId);
       });
@@ -447,12 +500,14 @@ export const layerCore = Layer.effect(RunsCore)(
         Effect.gen(function* () {
           if (event._tag !== "Log") return;
           const text = plain(event.text);
+
           const level: Domain.LogLine["level"] =
             event.stream === "calder"
               ? "info"
               : event.stream === "stderr" && /\berror\b/i.test(text)
                 ? "error"
                 : "info";
+
           live.append(run.id, {
             step,
             shard,
@@ -484,6 +539,7 @@ export const layerCore = Layer.effect(RunsCore)(
      * worker's four hours.
      */
     const planTimeout = Duration.minutes(30);
+
     const timedOut: JobResult = {
       _tag: "Died",
       message: `planning took longer than ${Duration.toMinutes(planTimeout)} minutes, so it was stopped`,
@@ -495,6 +551,7 @@ export const layerCore = Layer.effect(RunsCore)(
         const ended =
           yield* db(sql`update runs set status = 'errored', error = ${message}, finished_at = ${Date.now()}
         where id = ${run.id} and status in ('queued', 'planning') returning id`);
+
         if (ended.length === 0) return null;
         yield* status(run, "calder", "error", message.split("\n")[0]!);
         yield* telemetry.exportSpan({
@@ -512,6 +569,7 @@ export const layerCore = Layer.effect(RunsCore)(
           },
         });
         yield* publishRun(run.id);
+
         return null;
       });
 
@@ -528,6 +586,7 @@ export const layerCore = Layer.effect(RunsCore)(
         yield* publishRun(run.id);
         yield* db(sql`delete from runs where id = ${run.id}`);
         yield* Effect.logInfo(`${run.id} matches no rule, dropped`);
+
         return null;
       });
 
@@ -544,7 +603,9 @@ export const layerCore = Layer.effect(RunsCore)(
     const plan = (runId: string) =>
       Effect.gen(function* () {
         const run = yield* db(Rows.loadRun(runId));
+
         if (run === undefined || run.status === "cancelled") return null;
+
         if (run.plan !== null) return JSON.parse(run.plan) as PlanSpec;
         const now = Date.now();
         yield* db(
@@ -562,6 +623,7 @@ export const layerCore = Layer.effect(RunsCore)(
             }),
           ),
         );
+
         if (pipelineDir.dir === null)
           return yield* unplanned(run, pipelineDir.error ?? "could not read the revision");
 
@@ -572,6 +634,7 @@ export const layerCore = Layer.effect(RunsCore)(
         // same pipeline, or else from a job that only reads ci.ts and needs no plan slot, so such a push
         // never waits behind another run's evaluation of the flake.
         const tree = yield* mirror.pipelineTree(run.project, run.sha);
+
         if (
           event._tag === "Push" &&
           event.branch !== projects.get(run.project)?.defaultBranch &&
@@ -582,10 +645,12 @@ export const layerCore = Layer.effect(RunsCore)(
               branches: string;
             }>`select branches from pipeline_pushes where project = ${run.project} and tree = ${tree}`,
           );
+
           const stopped = Effect.raceFirst(
             Deferred.await(cancelSignal(runId)),
             Deferred.await(supersedeSignal(runId)),
           ).pipe(Effect.as("stopped" as const));
+
           const pushes =
             known[0] === undefined
               ? yield* Effect.raceFirst(
@@ -613,15 +678,19 @@ export const layerCore = Layer.effect(RunsCore)(
                   stopped,
                 )
               : (JSON.parse(known[0].branches) as ReadonlyArray<string>);
+
           if (pushes === "stopped") {
             live.finish(runId, "plan");
+
             return null;
           }
+
           if (
             pushes !== undefined &&
             !pushes.some((pattern) => On.matchesBranch(pattern, event.branch))
           ) {
             live.finish(runId, "plan");
+
             return yield* matchesNoRule(run, event);
           }
         }
@@ -630,7 +699,9 @@ export const layerCore = Layer.effect(RunsCore)(
           run.trust === "trusted" && run.branch !== null
             ? yield* gitea.requiredChecks(repoOf(run.project), run.branch)
             : [];
+
         const earlier = yield* db(Rows.earlierPlan(run, projects.get(run.project)?.defaultBranch));
+
         const job: Job = {
           _tag: "Plan",
           run: runInfo(run, pipelineDir.dir),
@@ -644,6 +715,7 @@ export const layerCore = Layer.effect(RunsCore)(
                   ...(earlier.app === undefined ? {} : { app: earlier.app }),
                 },
         };
+
         const claim: Slots.Claim = {
           project: run.project,
           expected: 0,
@@ -655,7 +727,9 @@ export const layerCore = Layer.effect(RunsCore)(
           label: `${run.id}'s plan`,
           owner: run.id,
         };
+
         const waits = slots.plans.waitsFor(claim);
+
         if (waits !== null)
           yield* log({
             _tag: "Log",
@@ -663,6 +737,7 @@ export const layerCore = Layer.effect(RunsCore)(
             text: `waiting for a plan slot (${waits})`,
             timestamp: Date.now(),
           });
+
         const planned = yield* Effect.raceFirst(
           // Records are read once the plan has its slot, so it sees what the plan ahead of it recorded.
           slots.plans
@@ -687,9 +762,12 @@ export const layerCore = Layer.effect(RunsCore)(
             Deferred.await(supersedeSignal(runId)),
           ).pipe(Effect.as(Option.none())),
         );
+
         live.finish(runId, "plan");
+
         if (Option.isNone(planned)) return null;
         const { result } = planned.value;
+
         if (result._tag !== "Planned") {
           return yield* unplanned(
             run,
@@ -707,21 +785,28 @@ export const layerCore = Layer.effect(RunsCore)(
           ...Object.keys(result.plan.derivations ?? {}),
           ...(result.plan.deferred ?? []),
         ];
+
         const refused = [...new Set(paths.filter((path) => Flake.components(path) === null))];
+
         if (refused.length > 0)
           return yield* unplanned(
             run,
             `${refused.join(", ")}: not an attribute path Calder evaluates`,
           );
+
         const derived = Object.entries(result.plan.derivations ?? {}).find(
           ([, d]) => d !== null && malformed(d) !== null,
         );
+
         if (derived !== undefined)
           return yield* unplanned(run, `${derived[0]}: ${malformed(derived[1]!)}`);
+
         // A build's derivation, output and system each, as far as the plan knows them.
         const built = result.plan.steps.flatMap((s) => {
           const b = s.build;
+
           if (b === null) return [];
+
           const why =
             b.drv !== null && !storeDrv.test(b.drv)
               ? `its derivation ${JSON.stringify(b.drv)} isn't one in the store`
@@ -730,21 +815,27 @@ export const layerCore = Layer.effect(RunsCore)(
                 : b.system !== null && !/^[A-Za-z0-9_-]+$/.test(b.system)
                   ? `its system ${JSON.stringify(b.system)} isn't a system`
                   : null;
+
           return why === null ? [] : [`${b.attr}: ${why}`];
         });
+
         if (built.length > 0) return yield* unplanned(run, built[0]!);
 
         // Footprints go to their own tables, not into the stored plan, and only the controller says what a trusted run may take.
         const { recorded, mismatches: _, trusted: _claimed, ...planned_ } = result.plan;
+
         if (recorded !== undefined)
           yield* db(Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded));
+
         for (const [attr, evaluation] of Object.entries(result.plan.fromRecords ?? {})) {
           yield* db(
             sql`insert into run_records (run_id, attr, evaluation) values (${run.id}, ${attr}, ${evaluation}) on conflict do nothing`,
           );
         }
+
         // What the reused plan took from records, this run took too, so the audit lists it with that plan's run.
         const reused = result.plan.reused;
+
         if (
           reused !== undefined &&
           earlier !== null &&
@@ -754,30 +845,37 @@ export const layerCore = Layer.effect(RunsCore)(
           yield* db(sql`insert into run_records (run_id, attr, evaluation) select ${run.id}, attr, evaluation from run_records
           where run_id = ${earlier.run} and ${sql.in("attr", reused.attrs)} on conflict do nothing`);
         }
+
         const trusted =
           run.trust === "pr" && run.fork === 0 && event._tag === "PullRequest"
             ? yield* db(Rows.trustedAttrs(run.project, result.plan, earlier))
             : undefined;
+
         const spec = {
           ...planned_,
           steps: Rows.criticalPath(result.plan.steps, run.fork === 1),
           ...(trusted === undefined ? {} : { trusted }),
         };
+
         if (tree !== null && spec.pushes !== undefined)
           yield* rememberPushes(run, tree, spec.pushes);
+
         // The default branch's plan says which schedules exist, even when its push runs nothing.
         if (event._tag === "Push" && event.branch === projects.get(run.project)?.defaultBranch) {
           yield* db(
             sql.withTransaction(
               Effect.gen(function* () {
                 yield* sql`delete from schedules where project = ${run.project}`;
+
                 for (const cron of spec.schedules)
                   yield* sql`insert into schedules (project, cron) values (${run.project}, ${cron})`;
               }),
             ),
           );
         }
+
         if (spec.steps.length === 0) return yield* matchesNoRule(run, event);
+
         // A cancel that came in while the plan job ran wins.
         const stored = yield* db(
           sql.withTransaction(
@@ -785,18 +883,22 @@ export const layerCore = Layer.effect(RunsCore)(
               const updated =
                 yield* sql`update runs set status = 'running', planned_at = ${Date.now()}
           where id = ${runId} and status = 'planning' returning id`;
+
               if (updated.length === 0) return false;
               yield* sql`insert into run_plans (run_id, plan) values (${runId}, ${JSON.stringify(spec)})
           on conflict do update set plan = excluded.plan`;
+
               for (const [position, step] of spec.steps.entries()) {
                 yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
             values (${runId}, ${step.name}, ${step.kind}, 'pending', ${JSON.stringify(step)}, ${position}, ${Telemetry.spanId()})
             on conflict do nothing`;
               }
+
               return true;
             }),
           ),
         );
+
         if (!stored) return null;
         yield* rootDerivations(run, [
           ...spec.steps.flatMap((s) => (s.build?.drv == null ? [] : [s.build.drv])),
@@ -817,6 +919,7 @@ export const layerCore = Layer.effect(RunsCore)(
           },
         );
         yield* publishRun(runId);
+
         return spec;
       }).pipe(
         // Gitea failing past its retries, for example: the run still ends, and the merge queue stops waiting for it.
@@ -824,7 +927,9 @@ export const layerCore = Layer.effect(RunsCore)(
           Effect.gen(function* () {
             yield* Effect.logError(`planning ${runId} failed`, defect);
             const run = yield* db(Rows.loadRun(runId));
+
             if (run === undefined) return null;
+
             return yield* unplanned(
               run,
               `Calder could not plan the run: ${defect instanceof Error ? defect.message : String(defect)}`,
@@ -874,6 +979,7 @@ export const layerCore = Layer.effect(RunsCore)(
 
     const describe = (s: Settled, row: Rows.StepRow): [StatusState, string] => {
       const took = row.started_at === null ? "" : ` in ${duration(Date.now() - row.started_at)}`;
+
       switch (s.status) {
         case "passed":
           return ["success", `passed${took}`];
@@ -926,29 +1032,38 @@ export const layerCore = Layer.effect(RunsCore)(
       Effect.gen(function* () {
         const spec = Rows.spec(row);
         const event = JSON.parse(run.event) as Domain.Event;
+
         if (!Rows.deploys(spec) || run.trust !== "trusted" || event._tag === "PullRequestClosed")
           return;
+
         if (Rows.succeeded(status))
           return yield* Outputs.releaseDeploy(config.stateDir, run.project, row.name, run.number);
+
         const lease = leaseOf(
           { project: run.project, branch: run.branch, event },
           Rows.leased(spec.task) ? spec.task!.lease : undefined,
         ).key;
+
         const [newest] = yield* db(
           sql<{
             run: number;
           }>`select run from lease_steps where project = ${lease} and step = ${row.name}`,
         );
+
         if (newest !== undefined && newest.run > run.number) return;
         const steps = new Map((yield* db(Rows.loadSteps(run.id))).map((s) => [s.name, s]));
+
         const built = spec.needs.flatMap((name) => {
           const dep = steps.get(name);
+
           const out: unknown =
             dep?.kind === "build" && Rows.succeeded(dep.status)
               ? JSON.parse(dep.value ?? "null")
               : null;
+
           return typeof out === "string" ? [out] : [];
         });
+
         if (built.length > 0)
           yield* Outputs.holdDeploy(config.stateDir, run.project, row.name, run.number, built).pipe(
             Effect.provideService(Exec.SpawnerTag, spawner),
@@ -968,6 +1083,7 @@ export const layerCore = Layer.effect(RunsCore)(
         const row = (yield* db(Rows.loadStep(run.id, stale.name))) ?? stale;
         const now = Date.now();
         const failed = s.status === "failed" || s.status === "died";
+
         // A timeout or a worker that died leaves no trace in the output itself.
         if (failed && s.error)
           yield* logTo(
@@ -979,16 +1095,19 @@ export const layerCore = Layer.effect(RunsCore)(
         const excerpt = failed ? live.excerpt(run.id, row.name) : null;
         const tests = Tests.outcomes(s.tests ?? []);
         const counts = tests.length > 0 ? Tests.count(tests) : null;
+
         const outcome =
           row.kind === "task" && (s.status === "passed" || s.status === "failed") && s.key
             ? { key: s.key, status: s.status }
             : null;
+
         // A task that never reuses depends on more than its key, so another outcome for its key says nothing.
         const [contradicts] =
           outcome === null || Rows.spec(row).neverReuse
             ? []
             : yield* db(sql<{ run_id: string }>`select run_id from results
         where key = ${outcome.key} and status != ${outcome.status} and run_id != ${run.id} order by created_at desc limit 1`);
+
         yield* db(sql`update steps set
         status = ${s.status},
         finished_at = ${now},
@@ -1012,6 +1131,7 @@ export const layerCore = Layer.effect(RunsCore)(
         files_flaky = ${s.files?.flaky ?? null},
         contradicts = ${contradicts?.run_id ?? null}
         where run_id = ${run.id} and name = ${row.name}`);
+
         if (counts !== null) {
           yield* db(
             Rows.inChunks(tests, (chunk) =>
@@ -1028,12 +1148,15 @@ export const layerCore = Layer.effect(RunsCore)(
             ),
           );
         }
+
         if (outcome !== null) {
           yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
           values (${outcome.key}, ${run.id}, ${row.name}, ${run.trust}, ${JSON.stringify(s.value ?? null)}, ${JSON.stringify(s.outputs ?? {})}, ${now},
             ${outcome.status})`);
         }
+
         yield* keep(s.outputs);
+
         if (row.kind === "build" && typeof s.value === "string") {
           yield* Outputs.rootBuilt(config.stateDir, run.id, s.value).pipe(
             Effect.provideService(Exec.SpawnerTag, spawner),
@@ -1042,20 +1165,25 @@ export const layerCore = Layer.effect(RunsCore)(
             ),
           );
         }
+
         yield* keepForDeploy(run, row, s.status);
         live.finish(run.id, row.name);
         yield* publishStep(run.id, row.name);
+
         if (row.kind !== "output") {
           const [state, description] = describe(s, row);
           yield* status(run, `calder/${row.name}`, state, description);
         }
+
         // Gitea's combined state fails with the first failed step; the run's own status says it goes on.
         if (failed) {
           const steps = (yield* db(Rows.loadSteps(run.id))).filter((x) => x.kind !== "output");
           const left = steps.filter((x) => !Rows.terminal(x.status)).length;
+
           const failing = steps
             .filter((x) => x.status === "failed" || x.status === "died")
             .map((x) => x.name);
+
           if (left > 0)
             yield* status(
               run,
@@ -1064,6 +1192,7 @@ export const layerCore = Layer.effect(RunsCore)(
               `${left} steps left; failed: ${failing.join(", ")}`,
             );
         }
+
         if (row.started_at !== null || s.status === "reused") {
           yield* telemetry.exportSpan({
             traceId: run.trace_id,
@@ -1083,6 +1212,7 @@ export const layerCore = Layer.effect(RunsCore)(
             },
           });
         }
+
         return s.status;
       });
 
@@ -1175,6 +1305,7 @@ export const layerCore = Layer.effect(RunsCore)(
       const spills = !foreign && !here;
       const pool = poolOf(run);
       const to = [config.system, ...systems];
+
       const offload =
         spills &&
         helpers().some(
@@ -1183,8 +1314,10 @@ export const layerCore = Layer.effect(RunsCore)(
             (a.portableOnly ? systems : to).includes(a.platform) &&
             a.free > 0,
         );
+
       const remote = foreign || offload;
       const system = platform ?? config.system;
+
       const where = remote
         ? {
             ...info,
@@ -1195,6 +1328,7 @@ export const layerCore = Layer.effect(RunsCore)(
             system,
           }
         : info;
+
       return {
         remote,
         offload,
@@ -1204,6 +1338,7 @@ export const layerCore = Layer.effect(RunsCore)(
         spill: spills && !offload ? { to, pool, signal: Deferred.makeUnsafe<void>() } : undefined,
       };
     };
+
     type Placement = ReturnType<typeof place>;
 
     /**
@@ -1231,12 +1366,15 @@ export const layerCore = Layer.effect(RunsCore)(
       Effect.gen(function* () {
         let placement = place(run, info, platform, options.here, options.systems);
         let first = yield* attempt(placement);
+
         // An agent took it from the queue here: it runs there now.
         while ("spilled" in first) {
           placement = place(run, info, platform, options.here, options.systems);
           first = yield* attempt(placement);
         }
+
         const { result } = first;
+
         const why = stopped(first)
           ? null
           : result._tag === "Lost"
@@ -1245,7 +1383,9 @@ export const layerCore = Layer.effect(RunsCore)(
                 (options.setup === true && placement.offload && result._tag === "Failed")
               ? `on the agent: ${result.message.split("\n")[0]}`
               : null;
+
         if (why === null) return first;
+
         // An offloaded job no agent took never started; it simply runs here.
         if (first.startedAt !== null) {
           yield* logTo(
@@ -1260,8 +1400,10 @@ export const layerCore = Layer.effect(RunsCore)(
             timestamp: Date.now(),
           });
         }
+
         return yield* attempt(place(run, info, platform, true));
       });
+
     const agentsRefuse = (platform: string | null): Settled => ({
       status: "died",
       error: {
@@ -1272,8 +1414,10 @@ export const layerCore = Layer.effect(RunsCore)(
     });
 
     type Executed = Effect.Success<ReturnType<typeof execute>>;
+
     /** A job that never ran to a result: its run was cancelled, or replaced before the job started. */
     const stopped = (r: object) => "cancelled" in r || "withdrawn" in r;
+
     /** Each setup that runs for several runs (`once`): its outcome, its claim's raise (Slots `raised`) and its run. */
     const preparing = new Map<
       string,
@@ -1283,6 +1427,7 @@ export const layerCore = Layer.effect(RunsCore)(
         readonly run: string;
       }
     >();
+
     /**
      * Runs a setup once for concurrent runs that need the same prepared workspace: the others wait and
      * reuse it, or try themselves if it didn't pass. One that isn't background work raises the job it
@@ -1296,8 +1441,10 @@ export const layerCore = Layer.effect(RunsCore)(
     ): Effect.Effect<{ readonly executed: Executed; readonly reused: boolean }, E, R> =>
       Effect.suspend(() => {
         const running = preparing.get(key);
+
         if (running !== undefined) {
           if (!backgroundOf(run)) Deferred.doneUnsafe(running.raised, Effect.void);
+
           return waiting(run.id, name, `${running.run}'s setup of the same dependencies`).pipe(
             Effect.andThen(Deferred.await(running.done)),
             Effect.tap(() => waiting(run.id, name, null)),
@@ -1309,18 +1456,23 @@ export const layerCore = Layer.effect(RunsCore)(
             ),
           );
         }
+
         const entry = {
           done: Deferred.makeUnsafe<Option.Option<Executed>>(),
           raised: Deferred.makeUnsafe<void>(),
           run: run.id,
         };
+
         preparing.set(key, entry);
+
         return setup(entry.raised).pipe(
           Effect.onExit((exit) =>
             Effect.suspend(() => {
               preparing.delete(key);
+
               const passed =
                 Exit.isSuccess(exit) && !stopped(exit.value) && exit.value.result._tag === "Passed";
+
               return Deferred.succeed(entry.done, passed ? Option.some(exit.value) : Option.none());
             }),
           ),
@@ -1383,9 +1535,12 @@ export const layerCore = Layer.effect(RunsCore)(
         const onEvent = (event: JobEvent) =>
           Effect.gen(function* () {
             yield* logTo(run, row.name, row.span_id, options.shard)(event);
+
             if (event._tag === "Tests") collect.tests.push(...event.results);
+
             if (event._tag === "Attempt")
               collect.attempts = Math.max(collect.attempts, event.attempt);
+
             if (event._tag === "Activity" && event.activity.end !== null) {
               yield* telemetry.exportSpan({
                 traceId: run.trace_id,
@@ -1402,7 +1557,9 @@ export const layerCore = Layer.effect(RunsCore)(
               });
             }
           });
+
         let landed: Effect.Effect<void> = Effect.void;
+
         const started = Effect.gen(function* () {
           if (options.flies !== undefined) landed = yield* builds.mark([options.flies]);
           yield* db(sql`update steps set status = 'running', started_at = coalesce(started_at, ${Date.now()}), attempts = max(attempts, 1),
@@ -1410,7 +1567,9 @@ export const layerCore = Layer.effect(RunsCore)(
           yield* publishStep(run.id, row.name);
           yield* status(run, `calder/${row.name}`, "pending", "running");
         });
+
         let startedAt: number | null = null;
+
         // A worker that ran on while the controller restarted already holds its slot and workspace.
         const adopted = options.action
           ? undefined
@@ -1422,6 +1581,7 @@ export const layerCore = Layer.effect(RunsCore)(
                   a.spec.step === row.name &&
                   (a.spec.shard?.index ?? null) === options.shard,
               );
+
         const reattached =
           adopted === undefined
             ? undefined
@@ -1429,9 +1589,12 @@ export const layerCore = Layer.effect(RunsCore)(
                 startedAt = adopted.startedAt;
                 yield* started;
                 const done = yield* jobs.reattach(adopted.id, onEvent);
+
                 return { ...done, startedAt: adopted.startedAt };
               });
+
         const pool = options.pool ?? poolOf(run);
+
         const running = Effect.scoped(
           Effect.gen(function* () {
             // A slot that went to the job just as its run was superseded or cancelled: it never starts, and the
@@ -1443,15 +1606,18 @@ export const layerCore = Layer.effect(RunsCore)(
             ) {
               return yield* Effect.never;
             }
+
             const ws = options.workspace
               ? (yield* workspace(pool, run.project, options.remote === true)).path
               : null;
+
             const done = yield* jobs.run(job(ws), {
               pool,
               onEvent,
               // A job that waits for an agent, or that none takes, stays queued.
               onStart: Effect.suspend(() => {
                 startedAt = Date.now();
+
                 return started;
               }),
               uninterruptible: options.action,
@@ -1464,9 +1630,11 @@ export const layerCore = Layer.effect(RunsCore)(
               adoptable: !options.action,
               onWaiting: (reason) => waiting(run.id, row.name, reason),
             });
+
             return { ...done, startedAt };
           }),
         );
+
         const claim = {
           project: run.project,
           expected: options.expected,
@@ -1479,18 +1647,22 @@ export const layerCore = Layer.effect(RunsCore)(
           ...(options.spill === undefined ? {} : { spill: options.spill }),
           ...(options.raised === undefined ? {} : { raised: options.raised }),
         };
+
         const work = (
           reattached ??
           options.slots.with(claim, running, (busy) =>
             waiting(run.id, row.name, `${options.what}: ${busy}`),
           )
         ).pipe(Effect.ensuring(Effect.suspend(() => landed)));
+
         if (options.action) return yield* work;
+
         const none = {
           usage: { cpuSeconds: null, memoryPeakBytes: null },
           id: "",
           startedAt: null,
         };
+
         const cancelled = Deferred.await(cancelSignal(run.id)).pipe(
           Effect.map((reason) => ({
             ...none,
@@ -1498,24 +1670,30 @@ export const layerCore = Layer.effect(RunsCore)(
             cancelled: true as const,
           })),
         );
+
         const withdrawn = {
           ...none,
           result: { _tag: "Died", message: "withdrawn" } satisfies JobResult,
           withdrawn: true as const,
         };
+
         // A superseded run's job stops, also once it started, so its slot goes to the runs that go on:
         // infra-891's builds, superseded, held both of the Macs' slots for 25 minutes while the rerun of
         // another pull request waited for one. A deploy finishes, like an action: stopping one mid-switch
         // would leave its host half switched.
         const deploys = Rows.deploys(Rows.spec(row));
+
         const superseded = Deferred.await(supersedeSignal(run.id)).pipe(
           Effect.flatMap((reason) =>
             Effect.gen(function* () {
               if (startedAt === null) return withdrawn;
+
               if (deploys) return yield* Effect.never;
+
               if (options.stops !== undefined) {
                 while (!(yield* options.stops)) yield* Effect.sleep(neededEvery);
               }
+
               yield* logTo(
                 run,
                 row.name,
@@ -1527,10 +1705,12 @@ export const layerCore = Layer.effect(RunsCore)(
                 text: `stopped: ${reason}`,
                 timestamp: Date.now(),
               });
+
               return withdrawn;
             }),
           ),
         );
+
         // Withdrawn shards that started finish, so a rerun repeats only what failed.
         const unwanted =
           options.withdraw === undefined
@@ -1542,6 +1722,7 @@ export const layerCore = Layer.effect(RunsCore)(
                   ),
                 ),
               );
+
         // The queue gave it to an agent (Slots `spill`); it only ever does while the job waits.
         const spilled =
           options.spill === undefined
@@ -1553,6 +1734,7 @@ export const layerCore = Layer.effect(RunsCore)(
                   spilled: true as const,
                 }),
               );
+
         return yield* Effect.raceFirst(
           work,
           Effect.raceFirst(
@@ -1570,18 +1752,23 @@ export const layerCore = Layer.effect(RunsCore)(
     const asked = (run: Rows.PlannedRunRow, setup: string, steps: ReadonlyArray<Rows.StepRow>) => {
       const reuse = (JSON.parse(run.plan ?? "{}") as PlanSpec).reuse;
       const kinds = new Map(steps.map((s) => [s.name, s.kind]));
+
       const dependents = steps
         .map(Rows.spec)
         .filter((s) => [...s.needs, ...s.exits, ...s.after].includes(setup));
+
       const starters = dependents.filter((s) =>
         Rows.setupsOf(s, (name) => kinds.get(name)).includes(setup),
       );
+
       const eager =
         starters.length < dependents.length ||
         starters.some(
           (s) => !Rows.reusable(s, reuse) || (s.task?.each?.some((e) => e.always) ?? false),
         );
+
       if (eager) return Effect.succeed(true);
+
       return Effect.raceFirst(
         Deferred.await(wanted.get(run.id, setup)).pipe(Effect.as(true)),
         Effect.forEach(starters, (s) => Deferred.await(stepped.get(run.id, s.name)), {
@@ -1600,34 +1787,42 @@ export const layerCore = Layer.effect(RunsCore)(
         yield* Effect.forEach(setups, (s) => Deferred.succeed(wanted.get(run.id, s), undefined), {
           discard: true,
         });
+
         // A task whose setup still runs isn't waiting for a slot yet, so its queue time starts after.
         const waits = (yield* db(Rows.loadSteps(run.id))).some(
           (s) => setups.includes(s.name) && !Rows.terminal(s.status),
         );
+
         if (waits) {
           yield* db(
             sql`update steps set status = 'pending', waiting = ${`setup ${setups.join(", ")}`} where run_id = ${run.id} and name = ${row.name}`,
           );
           yield* publishStep(run.id, row.name);
         }
+
         yield* Effect.forEach(setups, (s) => Deferred.await(stepped.get(run.id, s)), {
           discard: true,
         });
+
         if (waits) {
           yield* db(
             sql`update steps set status = 'queued', queued_at = ${Date.now()}, waiting = null where run_id = ${run.id} and name = ${row.name}`,
           );
           yield* publishStep(run.id, row.name);
         }
+
         const cancelled = (yield* db(Rows.loadRun(run.id)))?.status === "cancelled";
+
         const failed = (yield* db(Rows.loadSteps(run.id))).some(
           (s) => setups.includes(s.name) && !Rows.succeeded(s.status),
         );
+
         const instead: Settled | null = cancelled
           ? { status: "cancelled" }
           : failed
             ? { status: "blocked" }
             : null;
+
         return instead;
       });
 
@@ -1689,8 +1884,10 @@ export const layerCore = Layer.effect(RunsCore)(
     );
 
     type Evaluated = Extract<JobResult, { _tag: "Evaluated" }>;
+
     /** What an evaluation recorded, and whom its records count for. */
     type Kept = ReadonlyArray<{ readonly recorded: Records; readonly trust: Domain.Trust }>;
+
     const recordsOf = (result: JobResult, trust: Domain.Trust): Kept =>
       result._tag === "Evaluated" && result.recorded !== undefined
         ? [{ recorded: result.recorded, trust }]
@@ -1700,6 +1897,7 @@ export const layerCore = Layer.effect(RunsCore)(
     const evaluateLocally = (run: Rows.RunRow, row: Rows.StepRow, job: Job, critical: boolean) =>
       Effect.map(evaluateHere(run, row, job, critical), (r) => {
         const result = sanitized(r.result);
+
         return { ...r, result, records: recordsOf(result, run.trust) };
       });
 
@@ -1709,10 +1907,13 @@ export const layerCore = Layer.effect(RunsCore)(
      */
     const sanitized = (result: JobResult): JobResult => {
       if (result._tag !== "Evaluated") return result;
+
       const bad = Object.entries(result.derivations).flatMap(([name, d]) => {
         const why = d === null ? null : malformed(d);
+
         return why === null ? [] : [[name, why] as const];
       });
+
       const recorded =
         result.recorded === undefined
           ? undefined
@@ -1722,8 +1923,10 @@ export const layerCore = Layer.effect(RunsCore)(
                 (e) => e.derivation === null || malformed(e.derivation) === null,
               ),
             };
+
       if (bad.length === 0 && recorded?.evaluations.length === result.recorded?.evaluations.length)
         return result;
+
       return {
         ...result,
         derivations: {
@@ -1738,9 +1941,11 @@ export const layerCore = Layer.effect(RunsCore)(
     /** The builds an agent's evaluation got, with the ones the controller evaluated after it. */
     const merged = (agent: Evaluated, local: Evaluated): Evaluated => {
       const uses: Record<string, Array<string>> = {};
+
       for (const [name, used] of [...Object.entries(agent.uses), ...Object.entries(local.uses)]) {
         uses[name] = [...new Set([...(uses[name] ?? []), ...used])];
       }
+
       return {
         _tag: "Evaluated",
         derivations: { ...agent.derivations, ...local.derivations },
@@ -1768,6 +1973,7 @@ export const layerCore = Layer.effect(RunsCore)(
             row.span_id,
             null,
           )({ _tag: "Log", stream: "calder", text, timestamp: Date.now() });
+
         // A local worker that evaluated across a restart goes on, and `execute` reattaches to it: it ran in
         // this host's sandbox, so its records count for the run's trust, whatever agent connected since.
         const adopted = jobs
@@ -1776,15 +1982,18 @@ export const layerCore = Layer.effect(RunsCore)(
             (a) =>
               a.spec.run.id === run.id && a.spec.step === row.name && a.spec.evaluate !== undefined,
           );
+
         // The plan's derivations go to the agent's commands as arguments: anything but a store path stays here.
         const odd =
           job._tag === "Step"
             ? job.evaluate?.planned.find((p) => !storeDrv.test(p.drv))
             : undefined;
+
         if (odd !== undefined)
           yield* say(
             `${odd.name}'s derivation ${JSON.stringify(odd.drv)} isn't a store path, so the builds are evaluated here`,
           );
+
         if (
           job._tag === "Step" &&
           job.evaluate !== undefined &&
@@ -1794,6 +2003,7 @@ export const layerCore = Layer.effect(RunsCore)(
         ) {
           const controller = yield* nixHere;
           const base = config.url.replace(/\/$/, "");
+
           const remote: Job = {
             ...job,
             run: {
@@ -1811,6 +2021,7 @@ export const layerCore = Layer.effect(RunsCore)(
             },
             evaluate: { ...job.evaluate, ...(controller === null ? {} : { controller }) },
           };
+
           const r = yield* execute(
             run,
             row,
@@ -1828,41 +2039,54 @@ export const layerCore = Layer.effect(RunsCore)(
             },
             { tests: [], attempts: 0 },
           );
+
           if (stopped(r)) return { ...r, records: [] as Kept };
+
           const odder =
             r.result._tag === "Evaluated"
               ? Object.entries(r.result.derivations).find(
                   ([, d]) => d !== null && malformed(d) !== null,
                 )
               : undefined;
+
           if (odder !== undefined) {
             yield* say(
               `the evaluator agent reported ${odder[0]}'s derivation as ${JSON.stringify(odder[1])}, which isn't one, so the builds are evaluated here`,
             );
           } else if (r.result._tag === "Evaluated") {
             const agent = r.result;
+
             const drvs = Object.values(agent.derivations).flatMap((d) =>
               d === null ? [] : [d.drv],
             );
+
             const missing = drvs.length === 0 ? [] : yield* invalid(drvs);
+
             if (missing.length === 0) {
               const kept = recordsOf(agent, "trusted");
               const { recorded: _, ...result } = agent;
+
               // What Nix couldn't evaluate there (an error tryEval can't catch, such as an import from another
               // system's build) or that outgrew the agent's memory; an attribute that threw throws here too.
               const failed = job.evaluate.builds.filter(
                 (b) => b.name in agent.tooLarge || agent.errors?.[b.name] !== undefined,
               );
+
               if (failed.length === 0) return { ...r, result: result as JobResult, records: kept };
+
               const reason =
                 agent.tooLarge[failed[0]!.name] ?? agent.errors?.[failed[0]!.name] ?? "it threw";
+
               yield* say(
                 `the evaluator agent didn't evaluate ${failed.map((b) => b.name).join(", ")} (${reason.split("\n")[0]}), so they are evaluated here`,
               );
+
               const got = job.evaluate.builds.flatMap((b) => {
                 const d = agent.derivations[b.name] ?? null;
+
                 return d === null ? [] : [{ name: b.name, drv: d.drv }];
               });
+
               const local = yield* evaluateLocally(
                 run,
                 row,
@@ -1872,17 +2096,22 @@ export const layerCore = Layer.effect(RunsCore)(
                 },
                 critical,
               );
+
               if (stopped(local)) return local;
+
               if (local.result._tag !== "Evaluated") {
                 yield* say(`evaluating them here failed too: ${why(local.result)}`);
+
                 return { ...r, result: result as JobResult, records: kept };
               }
+
               return {
                 ...local,
                 result: merged(result as Evaluated, local.result),
                 records: [...kept, ...local.records],
               };
             }
+
             yield* say(
               `this host's store lacks ${missing.length} of the derivations the evaluator agent pushed, such as ${missing[0]}, so the builds are evaluated here`,
             );
@@ -1892,6 +2121,7 @@ export const layerCore = Layer.effect(RunsCore)(
             );
           }
         }
+
         return yield* evaluateLocally(run, row, job, critical);
       });
 
@@ -1910,36 +2140,47 @@ export const layerCore = Layer.effect(RunsCore)(
           run,
           Object.values(derivations).flatMap((d) => (d === null ? [] : [d.drv])),
         );
+
         for (const { recorded, trust } of records)
           yield* db(
             Rows.keepRecords(run, projects.get(run.project)?.defaultBranch, recorded, trust),
           );
+
         const changed = yield* db(
           sql.withTransaction(
             Effect.gen(function* () {
               const stored = (yield* Rows.loadRun(run.id))?.plan;
+
               if (stored === null || stored === undefined) return [];
               const plan = JSON.parse(stored) as PlanSpec;
+
               const deps = new Map(
                 plan.steps.map((s) => [s.name, new Set([...s.needs, ...s.after, ...s.exits])]),
               );
+
               // Whether `from` waits for `to`, directly or through other steps.
               const waitsFor = (from: string, to: string, seen = new Set<string>()): boolean => {
                 if (from === to) return true;
+
                 if (seen.has(from)) return false;
                 seen.add(from);
+
                 return [...(deps.get(from) ?? [])].some((d) => waitsFor(d, to, seen));
               };
+
               const steps = Rows.criticalPath(
                 plan.steps.map((s): PlannedStep => {
                   const derivation =
                     s.build === null ? undefined : (derivations[s.name] ?? undefined);
+
                   // A use that would close a cycle with the plan's own order (a worker's mistake, or a rule that
                   // put a build after one that uses it) is left out: the run would wait forever.
                   const more = (uses[s.name] ?? []).filter(
                     (n) => !s.needs.includes(n) && deps.has(n) && !waitsFor(n, s.name),
                   );
+
                   for (const n of more) deps.get(s.name)!.add(n);
+
                   return {
                     ...s,
                     needs: [...s.needs, ...more],
@@ -1956,6 +2197,7 @@ export const layerCore = Layer.effect(RunsCore)(
                 }),
                 run.fork === 1,
               );
+
               const attrs = Object.fromEntries(
                 plan.steps.flatMap((s) =>
                   s.build === null || !(s.name in derivations)
@@ -1963,22 +2205,28 @@ export const layerCore = Layer.effect(RunsCore)(
                     : [[s.build.attr, derivations[s.name] ?? null]],
                 ),
               );
+
               // Evaluated at this revision, like the plan's own evaluations, so a trusted run may take them too.
               const trusted =
                 plan.trusted === undefined
                   ? {}
                   : { trusted: [...new Set([...plan.trusted, ...Object.keys(attrs)])].sort() };
+
               yield* sql`update run_plans set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
           where run_id = ${run.id}`;
+
               const updated = steps.filter(
                 (s, i) => JSON.stringify(s) !== JSON.stringify(plan.steps[i]),
               );
+
               for (const s of updated)
                 yield* sql`update steps set spec = ${JSON.stringify(s)} where run_id = ${run.id} and name = ${s.name}`;
+
               return updated.map((s) => s.name);
             }),
           ),
         );
+
         yield* Effect.forEach(changed, (n) => publishStep(run.id, n), { discard: true });
       });
 
@@ -2000,24 +2248,32 @@ export const layerCore = Layer.effect(RunsCore)(
     ) =>
       Effect.gen(function* () {
         const pending = evaluations.get(run.id);
+
         if (pending !== undefined) {
           yield* waiting(run.id, name, "the run's builds to be evaluated");
+
           return yield* Deferred.await(pending).pipe(Effect.ensuring(waiting(run.id, name, null)));
         }
+
         const done = Deferred.makeUnsafe<ReadonlyMap<string, string>>();
         evaluations.set(run.id, done);
+
         const evaluate = Effect.gen(function* () {
           const steps = (yield* db(Rows.loadSteps(run.id))).map(Rows.spec);
+
           const builds = steps.flatMap((s) =>
             s.build === null
               ? []
               : [{ name: s.name, build: s.build, critical: s.critical === true }],
           );
+
           const order =
             (JSON.parse((yield* db(Rows.loadRun(run.id)))?.plan ?? "{}") as PlanSpec).deferred ??
             [];
+
           const rank = (attr: string) =>
             order.includes(attr) ? order.indexOf(attr) : order.length;
+
           const what = {
             builds: builds
               .flatMap((b) => (b.build.drv === null ? [{ name: b.name, attr: b.build.attr }] : []))
@@ -2026,12 +2282,15 @@ export const layerCore = Layer.effect(RunsCore)(
               b.build.drv === null ? [] : [{ name: b.name, drv: b.build.drv }],
             ),
           };
+
           // A worker that was evaluating when the controller restarted goes on, as its step's job.
           const by =
             jobs.adopted().find((a) => a.spec.run.id === run.id && a.spec.evaluate !== undefined)
               ?.spec.step ?? name;
+
           const row = (yield* db(Rows.loadStep(run.id, by)))!;
           const critical = builds.some((b) => b.build.drv === null && b.critical);
+
           const say = (text: string) =>
             logTo(
               run,
@@ -2039,7 +2298,9 @@ export const layerCore = Layer.effect(RunsCore)(
               row.span_id,
               null,
             )({ _tag: "Log", stream: "calder", text, timestamp: Date.now() });
+
           let r = yield* evaluateBuilds(run, row, job(by, what), critical);
+
           // It fails mostly when the host is short of memory, as when a worker's unit times out starting.
           if (r.result._tag !== "Evaluated" && !stopped(r)) {
             yield* say(
@@ -2047,16 +2308,21 @@ export const layerCore = Layer.effect(RunsCore)(
             );
             r = yield* evaluateBuilds(run, row, job(by, what), critical);
           }
+
           if (r.result._tag !== "Evaluated") {
             if (!stopped(r))
               yield* say(
                 `evaluating the builds together failed again, so each evaluates its own attribute: ${why(r.result)}`,
               );
+
             return new Map<string, string>();
           }
+
           yield* applyEvaluated(run, r.result, r.records);
+
           return new Map(Object.entries(r.result.tooLarge));
         });
+
         return yield* evaluate.pipe(
           Effect.catchCause((cause) =>
             Effect.logError(`evaluating ${run.id}'s builds failed`, cause).pipe(
@@ -2091,18 +2357,24 @@ export const layerCore = Layer.effect(RunsCore)(
         // would be an unkeyed hash, which gives a short secret away, so a step with secrets records none and
         // runs again on every rerun.
         const secrets = Object.keys(granted.secrets).length > 0;
+
         const digest =
           secrets && config.placementKey !== null
             ? secretsDigest(config.placementKey, granted.secrets)
             : null;
+
         yield* db(
           sql`update steps set secrets_digest = ${digest} where run_id = ${run.id} and name = ${name}`,
         );
         const of = run.rerun_of;
+
         if (of == null) return undefined;
         const earlier = yield* db(Rows.loadStep(of, name));
+
         if (earlier === undefined || !Rows.succeeded(earlier.status)) return undefined;
+
         if ("key" in same && earlier.key !== same.key) return undefined;
+
         if (
           secrets
             ? digest === null || earlier.secrets_digest !== digest
@@ -2111,27 +2383,37 @@ export const layerCore = Layer.effect(RunsCore)(
           return undefined;
         // A newer run deployed the same step since, so what this one deployed no longer runs there.
         const origin = earlier.reused_from ?? of;
+
         if (granted.lease !== undefined) {
           const [newest] = yield* db(
             sql<{
               run: number;
             }>`select run from lease_steps where project = ${granted.lease} and step = ${name}`,
           );
+
           const deployed = yield* db(Rows.loadRun(origin));
+
           if (newest === undefined || deployed === undefined || newest.run !== deployed.number)
             return undefined;
         }
+
         if ("inputs" in same) {
           const steps = new Map((yield* db(Rows.loadSteps(of))).map((s) => [s.name, s]));
+
           const changed = Object.entries(same.inputs).some(([n, outcome]) => {
             const was = steps.get(n);
+
             return was === undefined || JSON.stringify(outcomeOf(was)) !== JSON.stringify(outcome);
           });
+
           if (changed) return undefined;
         }
+
         const outputs = JSON.parse(earlier.outputs ?? "{}") as Record<string, string>;
+
         // An output that left the store can't stand in for running the step.
         if (!Object.values(outputs).every((path) => existsSync(path))) return undefined;
+
         return {
           status: "reused",
           value: earlier.value === null ? null : JSON.parse(earlier.value),
@@ -2146,15 +2428,20 @@ export const layerCore = Layer.effect(RunsCore)(
       // (`retry`) waits for this attempt to return before it puts the step back and opens a new latch.
       const latch = stepped.get(runId, name);
       const attempt = `${runId}\0${name}`;
+
       return Effect.gen(function* () {
         attempts.set(attempt, latch);
         const run = yield* db(Rows.loadRun(runId));
         const row = yield* db(Rows.loadStep(runId, name));
+
         if (run === undefined || row === undefined) return "died" as const;
+
         if (Rows.terminal(row.status)) return row.status;
+
         if (run.status === "cancelled") return yield* settle(run, row, { status: "cancelled" });
 
         const spec = Rows.spec(row);
+
         if (
           spec.build !== null &&
           spec.build.drv !== null &&
@@ -2162,21 +2449,25 @@ export const layerCore = Layer.effect(RunsCore)(
           (yield* available(spec.build.out))
         ) {
           yield* share(run, name, spec.build.out);
+
           return yield* settle(run, row, {
             status: "reused",
             value: spec.build.out,
             key: spec.build.drv,
           });
         }
+
         let all = yield* db(Rows.loadSteps(runId));
         let byName = new Map(all.map((s) => [s.name, s]));
         const setups = Rows.setupsOf(spec, (n) => byName.get(n)?.kind);
+
         // Builds the run's evaluation found this step uses (see `evaluation`) came after the plan, which the
         // run waited for.
         // A dependency that runs again (`retry`) after this step's driver saw it end is late the same way.
         const late = upstream(spec).filter(
           (n) => !setups.includes(n) && byName.has(n) && !Rows.terminal(byName.get(n)!.status),
         );
+
         if (late.length > 0) {
           yield* Effect.forEach(late, (n) => Deferred.await(stepped.get(runId, n)), {
             discard: true,
@@ -2184,22 +2475,28 @@ export const layerCore = Layer.effect(RunsCore)(
           all = yield* db(Rows.loadSteps(runId));
           byName = new Map(all.map((s) => [s.name, s]));
         }
+
         const deps = [...spec.needs, ...spec.after]
           .filter((n) => !setups.includes(n))
           .map((n) => byName.get(n)?.status ?? "blocked");
+
         if (deps.some((status) => !Rows.succeeded(status) && status !== "skipped"))
           return yield* settle(run, row, { status: "blocked" });
+
         const skippedDep = [...spec.needs, ...spec.after].find(
           (n) => byName.get(n)?.status === "skipped",
         );
+
         if (skippedDep !== undefined) {
           return yield* settle(run, row, {
             status: "skipped",
             error: { tag: "Skipped", message: `${skippedDep} was skipped`, json: null },
           });
         }
+
         if (spec.setup !== null && !(yield* asked(run, name, all))) {
           const cancelled = (yield* db(Rows.loadRun(runId)))?.status === "cancelled";
+
           return yield* settle(
             run,
             row,
@@ -2208,6 +2505,7 @@ export const layerCore = Layer.effect(RunsCore)(
               : { status: "reused", key: spec.setup.deps, unneeded: true },
           );
         }
+
         yield* db(
           sql`update steps set status = 'queued', queued_at = ${Date.now()} where run_id = ${runId} and name = ${name}`,
         );
@@ -2218,9 +2516,11 @@ export const layerCore = Layer.effect(RunsCore)(
           ...spec.needs.filter((n) => !setups.includes(n)),
           ...(spec.action === null ? [] : spec.exits),
         ];
+
         const inputs = Object.fromEntries(read.map((n) => [n, outcomeOf(byName.get(n)!)]));
         const expected = Estimates.of(yield* estimates.steps(run.project), name);
         const plan = JSON.parse(run.plan ?? "{}") as PlanSpec;
+
         // The dev shells the plan evaluated, which a task or setup enters without evaluating the flake again.
         const shells =
           spec.task === null && spec.setup === null
@@ -2232,12 +2532,15 @@ export const layerCore = Layer.effect(RunsCore)(
                   ),
                 ),
               };
+
         const pipelineDir = yield* mirror.pipelineDir(run.project, run.sha).pipe(Effect.orDie);
         const info = runInfo(run, pipelineDir);
+
         const collect = {
           tests: [] as Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>,
           attempts: 0,
         };
+
         const stepJob = (extra: Partial<Extract<Job, { _tag: "Step" }>> = {}): Job => ({
           _tag: "Step",
           run: info,
@@ -2258,6 +2561,7 @@ export const layerCore = Layer.effect(RunsCore)(
           const task = byName.get(spec.output.task)!;
           const outputs = JSON.parse(task.outputs ?? "{}") as Record<string, string>;
           const path = outputs[spec.output.output];
+
           return yield* settle(
             run,
             row,
@@ -2276,14 +2580,18 @@ export const layerCore = Layer.effect(RunsCore)(
 
         if (spec.build !== null) {
           let build = spec.build;
+
           if (build.drv === null) {
             const tooLarge = yield* evaluation(run, name, (step, evaluate) =>
               stepJob({ step, inputs: {}, evaluate }),
             );
+
             const now = (yield* db(Rows.loadStep(runId, name))) ?? row;
+
             if ((yield* db(Rows.loadRun(runId)))?.status === "cancelled")
               return yield* settle(run, now, { status: "cancelled" });
             const large = tooLarge.get(name);
+
             if (large !== undefined)
               return yield* settle(run, now, {
                 status: "failed",
@@ -2291,6 +2599,7 @@ export const layerCore = Layer.effect(RunsCore)(
               });
             let evaluated = Rows.spec(now);
             build = evaluated.build ?? build;
+
             if (build.drv === null) {
               // The run's evaluation failed: this build evaluates its attribute alone, still as plan work.
               // On this host: what failed together, here or on the evaluator agent, may fail alone there too.
@@ -2303,11 +2612,14 @@ export const layerCore = Layer.effect(RunsCore)(
                 }),
                 spec.critical === true,
               );
+
               if (stopped(alone)) return yield* settle(run, now, { status: "cancelled" });
+
               if (alone.result._tag === "Evaluated")
                 yield* applyEvaluated(run, alone.result, alone.records);
               evaluated = Rows.spec((yield* db(Rows.loadStep(runId, name))) ?? now);
               build = evaluated.build ?? build;
+
               if (build.drv === null) {
                 const [tag, message] =
                   alone.result._tag !== "Evaluated"
@@ -2318,24 +2630,30 @@ export const layerCore = Layer.effect(RunsCore)(
                           "EvaluationFailed",
                           `${build.attr} did not evaluate: ${alone.result.errors?.[name] ?? "it threw"}`,
                         ];
+
                 return yield* settle(run, now, {
                   status: "failed",
                   error: { tag, message, json: null },
                 });
               }
             }
+
             // The builds it turned out to use, as a plan that evaluated it would have had it wait for.
             const uses = evaluated.needs.filter((n) => !spec.needs.includes(n));
             yield* Effect.forEach(uses, (n) => Deferred.await(stepped.get(runId, n)), {
               discard: true,
             });
+
             const after = new Map(
               (yield* db(Rows.loadSteps(runId))).map((s) => [s.name, s.status]),
             );
+
             if (uses.some((n) => !Rows.succeeded(after.get(n) ?? "blocked")))
               return yield* settle(run, now, { status: "blocked" });
+
             if (build.drv !== null && build.out !== null && (yield* available(build.out))) {
               yield* share(run, name, build.out);
+
               return yield* settle(run, now, {
                 status: "reused",
                 value: build.out,
@@ -2343,11 +2661,14 @@ export const layerCore = Layer.effect(RunsCore)(
               });
             }
           }
+
           const { drv, system } = build;
+
           // Another run builds the same derivation right now, such as the run this one replaced: this build
           // waits for it without a slot and takes its output, or builds itself if it stopped or failed.
           while (drv !== null && builds.has(drv)) {
             yield* waiting(runId, name, "another run's build of the same derivation");
+
             const ended = yield* Effect.raceFirst(
               builds.landing([drv]).pipe(Effect.as(false)),
               Effect.raceFirst(
@@ -2355,15 +2676,21 @@ export const layerCore = Layer.effect(RunsCore)(
                 Deferred.await(supersedeSignal(runId)),
               ).pipe(Effect.as(true)),
             );
+
             yield* waiting(runId, name, null);
+
             if (ended) return yield* settle(run, row, { status: "cancelled" });
+
             if (build.out !== null && (yield* available(build.out))) {
               yield* share(run, name, build.out);
+
               return yield* settle(run, row, { status: "reused", value: build.out, key: drv });
             }
           }
+
           // A rerun of a run that ended has no roots left; one the plan made holds already.
           if (drv !== null) yield* rootDerivations(run, [drv]);
+
           const once = () =>
             Effect.gen(function* () {
               return yield* execute(
@@ -2397,9 +2724,11 @@ export const layerCore = Layer.effect(RunsCore)(
                 collect,
               );
             });
+
           // A build the controller restarted in the middle of goes on from the attempt it was at.
           let attempt = Math.max(1, row.attempts);
           let r = yield* once();
+
           // An infrastructure failure, such as a builder that couldn't be reached, gets more attempts, each
           // after a wait without a slot. The step fails only once the last attempt failed the same way.
           for (const wait of infrastructureRetries.slice(attempt - 1)) {
@@ -2409,9 +2738,11 @@ export const layerCore = Layer.effect(RunsCore)(
             // The worker's Calder.Infrastructure, as Values encodes it.
             const failure = Values.decode(r.result.error) as { readonly cause?: unknown } | null;
             const cause = typeof failure?.cause === "string" ? failure.cause : r.result.message;
+
             const text =
               `${cause}; an infrastructure failure, so it runs again in ${Duration.format(Duration.fromInputUnsafe(wait))} ` +
               `(attempt ${attempt} of ${infrastructureRetries.length + 1})`;
+
             yield* logTo(
               run,
               name,
@@ -2421,6 +2752,7 @@ export const layerCore = Layer.effect(RunsCore)(
             yield* db(sql`update steps set status = 'queued', waiting = ${`another attempt after an infrastructure failure: ${cause}`},
             attempts = max(attempts, ${attempt}) where run_id = ${runId} and name = ${name}`);
             yield* publishStep(runId, name);
+
             const ended = yield* Effect.raceFirst(
               Effect.sleep(wait).pipe(Effect.as(false)),
               Effect.raceFirst(
@@ -2428,12 +2760,16 @@ export const layerCore = Layer.effect(RunsCore)(
                 Deferred.await(supersedeSignal(runId)),
               ).pipe(Effect.as(true)),
             );
+
             if (ended) return yield* settle(run, row, { status: "cancelled" });
             r = yield* once();
           }
+
           if (stopped(r)) return yield* settle(run, row, { status: "cancelled" });
+
           if (r.result._tag === "Passed" && typeof r.result.value === "string")
             yield* share(run, name, r.result.value);
+
           return yield* settle(
             run,
             row,
@@ -2443,7 +2779,9 @@ export const layerCore = Layer.effect(RunsCore)(
 
         if (spec.setup !== null) {
           const { deps, platform } = spec.setup;
+
           if (refuses(run, platform)) return yield* settle(run, row, agentsRefuse(platform));
+
           const executed = yield* placed(
             run,
             row,
@@ -2478,14 +2816,19 @@ export const layerCore = Layer.effect(RunsCore)(
               ).pipe(Effect.map(({ executed, reused }) => ({ ...executed, reused }))),
             { setup: true },
           );
+
           const { reused } = executed;
+
           if (stopped(executed)) return yield* settle(run, row, { status: "cancelled" });
+
           const settled = fromResult(executed.result, executed.usage, {
             attempts: collect.attempts,
           });
+
           const fresh =
             executed.result._tag === "Passed" &&
             (executed.result.value as { readonly fresh?: boolean } | null)?.fresh === true;
+
           // Nothing ran when a prepared copy existed or another run prepared it.
           return yield* settle(
             run,
@@ -2498,20 +2841,24 @@ export const layerCore = Layer.effect(RunsCore)(
 
         if (spec.action !== null) {
           const granted = grant(run, name, spec.action.secrets, run.trust === "trusted");
+
           if ("refused" in granted) return yield* settle(run, row, granted.refused);
           const { secrets } = granted;
           const lease = spec.action.deploy ? leaseOf(info, undefined).key : undefined;
           const again = yield* fromRerun(run, name, { inputs }, { secrets, lease });
+
           if (again !== undefined) return yield* settle(run, row, again);
           // A same-repo pull request's preview action, such as one that waits for the preview's readiness,
           // runs as a trusted job for the network, but keeps the pull request's trust and services.
           const event = JSON.parse(run.event) as Domain.Event;
+
           const preview =
             spec.action.preview === true &&
             run.trust === "pr" &&
             run.fork === 0 &&
             event._tag === "PullRequest" &&
             event.fork === false;
+
           const r = yield* execute(
             run,
             row,
@@ -2527,6 +2874,7 @@ export const layerCore = Layer.effect(RunsCore)(
             },
             collect,
           );
+
           return yield* settle(
             run,
             row,
@@ -2535,10 +2883,13 @@ export const layerCore = Layer.effect(RunsCore)(
         }
 
         const task = spec.task!;
+
         const values = Object.fromEntries(
           task.interpolates.map((n) => [n, JSON.parse(byName.get(n)?.value ?? "null")]),
         );
+
         const prepared = ready(run, row, setups);
+
         if (task.each !== null)
           return yield* eachTask(run, row, task, task.each, values, {
             plan,
@@ -2548,39 +2899,47 @@ export const layerCore = Layer.effect(RunsCore)(
             prepared,
           });
         const count = task.shards ?? 1;
+
         const shardKeys =
           count === 1
             ? [taskKey(task.keyBase, values, null)]
             : Array.from({ length: count }, (_, i) =>
                 taskKey(task.keyBase, values, { index: i + 1, count }),
               );
+
         const key = count === 1 ? shardKeys[0]! : sha256(shardKeys);
         yield* db(sql`update steps set key = ${key} where run_id = ${runId} and name = ${name}`);
         // A same-repo pull request grants a preview task its secrets. It then runs as a trusted job: in
         // the trusted pool, whose network and home it needs. It stays on this host, which already holds
         // the secrets: an agent takes a pull request's jobs in its pull-request sandbox.
         const event = JSON.parse(run.event) as Domain.Event;
+
         const preview =
           task.preview === true &&
           run.trust === "pr" &&
           run.fork === 0 &&
           event._tag === "PullRequest" &&
           event.fork === false;
+
         const granted = grant(run, name, task.secrets, run.trust === "trusted" || preview);
+
         if ("refused" in granted) return yield* settle(run, row, granted.refused);
         const { secrets } = granted;
+
         const again = yield* fromRerun(
           run,
           name,
           { key },
           { secrets, lease: Rows.leased(task) ? leaseOf(info, task.lease).key : undefined },
         );
+
         if (again !== undefined) return yield* settle(run, row, again);
 
         const reusable = Rows.reusable(spec, plan.reuse);
         // Pull-request runs take any result. Trusted runs take trusted ones, and with reuse "all" also
         // those of same-repo pull requests, which the same people push.
         const prResults = run.trust === "pr" || plan.reuse === "all";
+
         const lookup = (k: string) =>
           db(sql<{
             run_id: string;
@@ -2600,6 +2959,7 @@ export const layerCore = Layer.effect(RunsCore)(
               ),
             ),
           );
+
         const reused = (hit: {
           run_id: string;
           value: string | null;
@@ -2611,9 +2971,11 @@ export const layerCore = Layer.effect(RunsCore)(
           key,
           reusedFrom: hit.run_id,
         });
+
         if (reusable) {
           yield* landing(count === 1 ? [key] : shardKeys, { raise: !backgroundOf(run) });
           const hit = yield* lookup(key);
+
           if (hit !== undefined) return yield* settle(run, row, reused(hit));
         }
 
@@ -2628,32 +2990,40 @@ export const layerCore = Layer.effect(RunsCore)(
             },
           });
         }
+
         if (refuses(run, task.platform))
           return yield* settle(run, row, agentsRefuse(task.platform));
         const sharded = count > 1;
+
         // Shards that passed with the same key before don't run again.
         const shardHits =
           reusable && sharded
             ? yield* Effect.forEach(shardKeys, lookup)
             : shardKeys.map(() => undefined);
+
         for (const [i, hit] of shardHits.entries()) {
           if (hit === undefined) continue;
           yield* db(sql`insert or replace into shards (run_id, step, shard, key, status, reused_from)
           values (${runId}, ${name}, ${i + 1}, ${shardKeys[i]!}, 'reused', ${hit.run_id})`);
         }
+
         const perShard = sharded
           ? ((yield* estimates.shards(run.project)).get(name) ?? expected)
           : expected;
+
         const withdraw = Deferred.makeUnsafe<void>();
         let failed = false;
         const pending = shardHits.flatMap((hit, i) => (hit === undefined ? [i + 1] : []));
         const instead = pending.length === 0 ? null : yield* prepared;
+
         if (instead !== null) return yield* settle(run, row, instead);
+
         const shards = yield* Effect.forEach(
           pending,
           (index) =>
             Effect.gen(function* () {
               const raised = Deferred.makeUnsafe<void>();
+
               const r = yield* flying(
                 [count === 1 ? key : shardKeys[index - 1]!],
                 placed(
@@ -2696,12 +3066,14 @@ export const layerCore = Layer.effect(RunsCore)(
                 ),
                 raised,
               );
+
               if (!sharded || stopped(r)) return r;
               const passed = r.result._tag === "Passed";
               const now = Date.now();
               yield* db(sql`insert or replace into shards (run_id, step, shard, key, status, started_at, finished_at, cpu_seconds, memory_peak)
             values (${runId}, ${name}, ${index}, ${shardKeys[index - 1]!}, ${passed ? "passed" : "failed"}, ${r.startedAt}, ${now},
               ${r.usage.cpuSeconds}, ${r.usage.memoryPeakBytes})`);
+
               if (r.startedAt !== null)
                 yield* estimates.shardSettled(run.project, {
                   run: runId,
@@ -2710,6 +3082,7 @@ export const layerCore = Layer.effect(RunsCore)(
                   startedAt: r.startedAt,
                   finishedAt: now,
                 });
+
               if (r.result._tag === "Passed") {
                 yield* db(sql`insert into results (key, run_id, step, trust, value, outputs, created_at)
               values (${shardKeys[index - 1]!}, ${runId}, ${name}, ${run.trust}, ${JSON.stringify(r.result.value ?? null)},
@@ -2726,10 +3099,12 @@ export const layerCore = Layer.effect(RunsCore)(
                   `shard ${index} of ${count} failed; the running shards finish first`,
                 );
               }
+
               return r;
             }),
           { concurrency: "unbounded" },
         );
+
         // Withdrawn shards without a failure mean the run was replaced.
         if (
           shards.some((r) => "cancelled" in r) ||
@@ -2737,12 +3112,16 @@ export const layerCore = Layer.effect(RunsCore)(
         ) {
           return yield* settle(run, row, { status: "cancelled" });
         }
+
         const ran = shards.filter((r) => !("withdrawn" in r));
+
         const usage: Usage = {
           cpuSeconds: ran.reduce((sum, r) => sum + (r.usage.cpuSeconds ?? 0), 0),
           memoryPeakBytes: Math.max(0, ...ran.map((r) => r.usage.memoryPeakBytes ?? 0)),
         };
+
         const failure = ran.find((r) => r.result._tag !== "Passed");
+
         if (failure !== undefined)
           return yield* settle(run, row, {
             ...fromResult(failure.result, usage, {
@@ -2752,10 +3131,13 @@ export const layerCore = Layer.effect(RunsCore)(
             key,
           });
         const first = shardHits[0];
+
         if (ran.length === 0 && first !== undefined) return yield* settle(run, row, reused(first));
+
         // A sharded step's value is its first shard's.
         const { value, outputs } =
           first === undefined ? fromResult(ran[0]!.result, usage) : reused(first);
+
         return yield* settle(run, row, {
           status: "passed",
           value,
@@ -2771,7 +3153,9 @@ export const layerCore = Layer.effect(RunsCore)(
             yield* Effect.logError(`step ${name} of ${runId} crashed`, cause);
             const run = yield* db(Rows.loadRun(runId));
             const row = yield* db(Rows.loadStep(runId, name));
+
             if (run === undefined || row === undefined) return "died" as const;
+
             return yield* settle(run, row, {
               status: "died",
               error: {
@@ -2785,6 +3169,7 @@ export const layerCore = Layer.effect(RunsCore)(
         Effect.ensuring(
           Effect.suspend(() => {
             if (attempts.get(attempt) === latch) attempts.delete(attempt);
+
             return Deferred.succeed(latch, undefined);
           }),
         ),
@@ -2792,6 +3177,7 @@ export const layerCore = Layer.effect(RunsCore)(
     };
 
     type TaskSpec = NonNullable<PlannedStep["task"]>;
+
     type TestRow = Extract<JobEvent, { _tag: "Tests" }>["results"][number];
 
     /**
@@ -2822,20 +3208,24 @@ export const layerCore = Layer.effect(RunsCore)(
             task.interpolates.length === 0 ? e.key : taskKey(e.key, values, null),
           ]),
         );
+
         const key = sha256([...keys.values()]);
         yield* db(
           sql`update steps set key = ${key} where run_id = ${run.id} and name = ${row.name}`,
         );
         const granted = grant(run, row.name, task.secrets, run.trust === "trusted");
+
         if ("refused" in granted) return yield* settle(run, row, granted.refused);
         const { secrets } = granted;
         const lease = Rows.leased(task) ? leaseOf(context.info, task.lease).key : undefined;
         const again = yield* fromRerun(run, row.name, { key }, { secrets, lease });
+
         if (again !== undefined) return yield* settle(run, row, again);
         const reusable = Rows.reusable(Rows.spec(row), context.plan.reuse);
         const prResults = run.trust === "pr" || context.plan.reuse === "all";
 
         const passed = new Map<string, string>();
+
         const look = (wanted: ReadonlyArray<string>) =>
           Effect.gen(function* () {
             for (let i = 0; i < wanted.length; i += 400) {
@@ -2846,25 +3236,32 @@ export const layerCore = Layer.effect(RunsCore)(
               from file_results join runs on runs.id = file_results.run_id
               where ${sql.in("file_results.key", wanted.slice(i, i + 400))} and file_results.status in ('passed', 'flaky')
                 and (file_results.trust = 'trusted' or (${prResults ? 1 : 0} = 1 and runs.fork = 0))`);
+
               for (const hit of hits) passed.set(hit.key, hit.run_id);
             }
           });
+
         if (reusable) {
           yield* look([...keys.values()]);
+
           // Files another run is checking right now: wait for them rather than check them twice.
           const inAir = each
             .filter((e) => !passed.has(keys.get(e.file)!) && inFlight(keys.get(e.file)!))
             .map((e) => keys.get(e.file)!);
+
           if (inAir.length > 0) {
             yield* landing(inAir, { raise: !backgroundOf(run) });
             yield* look(inAir);
           }
         }
+
         const misses = each
           .filter((e) => e.always || !passed.has(keys.get(e.file)!))
           .map((e) => e.file);
+
         if (misses.length === 0) {
           const from = passed.values().next().value ?? null;
+
           return yield* settle(run, row, {
             status: "reused",
             value: null,
@@ -2877,6 +3274,7 @@ export const layerCore = Layer.effect(RunsCore)(
         if (refuses(run, task.platform))
           return yield* settle(run, row, agentsRefuse(task.platform));
         const instead = yield* context.prepared;
+
         if (instead !== null) return yield* settle(run, row, instead);
 
         const history = yield* db(sql<{
@@ -2886,9 +3284,11 @@ export const layerCore = Layer.effect(RunsCore)(
           select file, duration_ms, row_number() over (partition by file order by created_at desc) as n
           from file_results where project = ${run.project} and step = ${row.name} and status != 'failed'
         ) where n <= 5`);
+
         const duration = Each.durations(
           history.map((h) => ({ file: h.file, durationMs: h.duration_ms })),
         );
+
         const bins = Each.split(misses, duration, task.shards ?? 1);
         const count = bins.length;
 
@@ -2896,6 +3296,7 @@ export const layerCore = Layer.effect(RunsCore)(
           Effect.gen(function* () {
             const mine = { tests: [] as Array<TestRow>, attempts: 0 };
             const raised = Deferred.makeUnsafe<void>();
+
             const r = yield* flying(
               files.map((f) => keys.get(f)!),
               placed(
@@ -2937,10 +3338,13 @@ export const layerCore = Layer.effect(RunsCore)(
               ),
               raised,
             );
+
             context.collect.tests.push(...mine.tests);
             context.collect.attempts = Math.max(context.collect.attempts, mine.attempts);
+
             return { r, tests: mine.tests, files };
           });
+
         const outcomes = (done: {
           readonly r: { readonly result: JobResult };
           readonly tests: ReadonlyArray<TestRow>;
@@ -2952,14 +3356,18 @@ export const layerCore = Layer.effect(RunsCore)(
           ([b, i]) => job(b.files, i + 1, count, b.ms),
           { concurrency: "unbounded" },
         );
+
         const jobOf = new Map(first.flatMap((d, i) => d.files.map((f) => [f, i + 1] as const)));
+
         // Jobs that finished keep their results even when the run was cancelled or replaced meanwhile.
         const results = new Map(
           first.filter((d) => !stopped(d.r)).flatMap((d) => [...outcomes(d)]),
         );
+
         const failing = [...results].filter(([, o]) => o.status === "failed").map(([file]) => file);
         let retry: (typeof first)[number] | undefined;
         const interrupted = first.some((d) => stopped(d.r));
+
         if (!interrupted && failing.length > 0 && failing.length <= 10) {
           retry = yield* job(
             failing,
@@ -2967,11 +3375,13 @@ export const layerCore = Layer.effect(RunsCore)(
             count,
             failing.reduce((sum, f) => sum + duration(f), 0),
           );
+
           for (const [file, o] of stopped(retry.r) ? [] : outcomes(retry)) {
             if (o.status === "passed" || o.status === "flaky")
               results.set(file, { ...o, status: "flaky" });
           }
         }
+
         const flaky = [...results].filter(([, o]) => o.status === "flaky").map(([file]) => file);
 
         const now = Date.now();
@@ -2990,34 +3400,43 @@ export const layerCore = Layer.effect(RunsCore)(
             ),
           ),
         );
+
         if (interrupted || (retry !== undefined && stopped(retry.r)))
           return yield* settle(run, row, { status: "cancelled" });
 
         const jobs = retry === undefined ? first : [...first, retry];
+
         const usage: Usage = {
           cpuSeconds: jobs.reduce((sum, d) => sum + (d.r.usage.cpuSeconds ?? 0), 0),
           memoryPeakBytes: Math.max(0, ...jobs.map((d) => d.r.usage.memoryPeakBytes ?? 0)),
         };
+
         const extra = {
           attempts: context.collect.attempts,
           tests: context.collect.tests,
           files: { total: each.length, ran: misses.length, flaky: flaky.length },
         };
+
         const bad = [...results]
           .filter(([, o]) => o.status === "failed" || o.status === "unknown")
           .map(([file]) => file);
+
         if (bad.length > 0) {
           const failed = jobs.find(
             (d) => d.r.result._tag !== "Passed" && d.files.some((f) => bad.includes(f)),
           );
+
           const result: JobResult = failed?.r.result ?? {
             _tag: "Died",
             message: `no result for ${bad.join(", ")}`,
           };
+
           return yield* settle(run, row, { ...fromResult(result, usage, extra), key });
         }
+
         if (flaky.length > 0)
           yield* Effect.logInfo(`${run.id} ${row.name}: ${flaky.join(", ")} passed on retry`);
+
         return yield* settle(run, row, { status: "passed", value: null, key, usage, ...extra });
       });
 
@@ -3043,22 +3462,28 @@ export const layerCore = Layer.effect(RunsCore)(
     const buildExpected = (run: Rows.RunRow, name: string, drv: string, estimate: number) =>
       Effect.gen(function* () {
         if (!storeDrv.test(drv)) return estimate;
+
         const dry = yield* Exec.exec(["nix-store", "--realise", "--dry-run", ...only([drv])]).pipe(
           Effect.provideService(Exec.SpawnerTag, spawner),
           Effect.timeout("30 seconds"),
           Effect.orElseSucceed(() => null),
         );
+
         const count = dry === null || dry.exitCode !== 0 ? null : toBuild(dry.stderr);
+
         if (count === null) return estimate;
+
         const before = yield* db(sql<{
           to_build: number;
         }>`select steps.to_build from steps join runs on runs.id = steps.run_id
         where runs.project = ${run.project} and steps.name = ${name} and steps.to_build > 0 and steps.run_id != ${run.id}
         order by runs.created_at desc limit 10`);
+
         yield* db(
           sql`update steps set to_build = ${count} where run_id = ${run.id} and name = ${name}`,
         );
         const counts = before.map((r) => r.to_build).sort((a, b) => a - b);
+
         return sized(estimate, count, counts[Math.floor(counts.length / 2)]);
       });
 
@@ -3076,9 +3501,11 @@ export const layerCore = Layer.effect(RunsCore)(
       Effect.gen(function* () {
         // nix-store asked about no path at all says yes.
         if (hashOf(out) === undefined) return false;
+
         const local = yield* Exec.exec(["nix-store", "--check-validity", ...only([out])]).pipe(
           Effect.provideService(Exec.SpawnerTag, spawner),
         );
+
         return local.exitCode === 0 || (yield* cache.has(out));
       }).pipe(
         Effect.timeout("20 seconds"),
@@ -3124,28 +3551,38 @@ export const layerCore = Layer.effect(RunsCore)(
     ): { readonly secrets: Record<string, string> } | { readonly refused: Settled } => {
       const project = projects.get(run.project);
       const event = JSON.parse(run.event) as Domain.Event;
+
       const own = (map: { readonly [name: string]: string } | undefined, name: string) =>
         map !== undefined && Object.hasOwn(map, name) ? map[name] : undefined;
+
       const only = names.filter((name) => own(project?.defaultBranchSecrets, name) !== undefined);
+
       if (
         project !== undefined &&
         only.length > 0 &&
         !Rows.ofDefaultBranch(event, project.defaultBranch)
       ) {
         const list = only.map((name) => `"${name}"`).join(", ");
+
         const message =
           `${step} needs the secret${only.length === 1 ? "" : "s"} ${list}, which only runs of ${project.defaultBranch} ` +
           `get (its pushes, schedules and manual runs), not this ${Event.describe(event)}`;
+
         return { refused: { status: "died", error: { tag: "Died", message, json: null } } };
       }
+
       if (!granted) return { secrets: {} };
+
       return {
         secrets: Object.fromEntries(
           names.flatMap((name) => {
             const file = own(project?.defaultBranchSecrets, name) ?? own(project?.secrets, name);
+
             if (file !== undefined) return [[name, readFileSync(file, "utf8")]];
+
             if (name === "placement-token" && config.placementKey !== null)
               return [[name, placementToken(config.placementKey, run.project)]];
+
             return [];
           }),
         ),
@@ -3157,12 +3594,16 @@ export const layerCore = Layer.effect(RunsCore)(
     const finish = (runId: string) =>
       Effect.gen(function* () {
         const run = yield* db(Rows.loadRun(runId));
+
         if (run === undefined) return;
         const steps = yield* db(Rows.loadSteps(runId));
+
         const failed = steps.some(
           (s) => s.status === "failed" || s.status === "died" || s.status === "blocked",
         );
+
         const cancelled = run.status === "cancelled" || steps.some((s) => s.status === "cancelled");
+
         const final: Domain.RunStatus =
           run.status === "errored"
             ? "errored"
@@ -3171,29 +3612,35 @@ export const layerCore = Layer.effect(RunsCore)(
               : cancelled
                 ? "cancelled"
                 : "passed";
+
         const now = Date.now();
         yield* db(
           sql`update runs set status = ${final}, finished_at = coalesce(finished_at, ${now}) where id = ${runId}`,
         );
+
         // A run cancelled across a restart or while planning can leave steps that never settled.
         const left = yield* db(sql<{
           name: string;
           kind: string;
         }>`update steps set status = 'cancelled', finished_at = ${now}
         where run_id = ${runId} and status in ('pending', 'queued', 'running') returning name, kind`);
+
         yield* Effect.forEach(
           left,
           (s) =>
             Effect.gen(function* () {
               live.finish(runId, s.name);
               yield* publishStep(runId, s.name);
+
               if (s.kind !== "output") yield* status(run, `calder/${s.name}`, "error", "cancelled");
             }),
           { concurrency: 4, discard: true },
         );
+
         const failing = steps
           .filter((s) => s.status === "failed" || s.status === "died")
           .map((s) => s.name);
+
         yield* status(
           run,
           "calder",
@@ -3237,6 +3684,7 @@ export const layerCore = Layer.effect(RunsCore)(
           id: string;
         }>`update runs set status = 'cancelled', error = ${reason}
         where id = ${runId} and ${sql.in("status", activeStatuses)} returning id`);
+
         if (rows.length === 0) return;
         yield* Deferred.succeed(cancelSignal(runId), reason);
         yield* publishRun(runId);
@@ -3248,7 +3696,9 @@ export const layerCore = Layer.effect(RunsCore)(
           id: string;
         }>`update runs set status = 'cancelled', error = ${reason}
         where id = ${runId} and ${sql.in("status", activeStatuses)} returning id`);
+
         if (rows.length === 0) return;
+
         // Before the signal: the run's queued claims leave the queues at once, so no slot goes to them and
         // none counts as a claim waiting for a superseded build's slot (`stopsBuild`).
         for (const pool of pools()) pool.withdraw(runId);
@@ -3263,11 +3713,14 @@ export const layerCore = Layer.effect(RunsCore)(
     ) =>
       Effect.gen(function* () {
         const run = yield* db(Rows.loadRun(runId));
+
         if (run === undefined || run.plan === null || run.status === "cancelled") return [];
         const ended = (yield* db(Rows.loadSteps(runId))).filter((r) => Rows.terminal(r.status));
+
         const again =
           options.only ??
           retryable(ended.map((r) => ({ name: r.name, status: r.status, spec: Rows.spec(r) })));
+
         // A build that keeps its result has to hold up for the steps that run again and read it. Its output stays rooted
         // for the reopened run while this store holds it; otherwise the build runs again, which takes what the binary
         // cache still has as a new run does, or builds. studienbuch-987's bundle had left both by its reruns, and each
@@ -3279,7 +3732,9 @@ export const layerCore = Layer.effect(RunsCore)(
             .map(Rows.spec)
             .flatMap((s) => [...s.needs, ...(s.action === null ? [] : s.exits)]),
         );
+
         const gone = new Map<string, string>();
+
         for (const r of ended) {
           const out =
             r.kind === "build" &&
@@ -3288,7 +3743,9 @@ export const layerCore = Layer.effect(RunsCore)(
             Rows.succeeded(r.status)
               ? JSON.parse(r.value ?? "null")
               : null;
+
           if (typeof out !== "string" || hashOf(out) === undefined) continue;
+
           // Rooting fails, without substituting, for a path the nightly collection deleted after it looked.
           const rooted = yield* Outputs.rootBuilt(config.stateDir, runId, out).pipe(
             Effect.provideService(Exec.SpawnerTag, spawner),
@@ -3298,29 +3755,36 @@ export const layerCore = Layer.effect(RunsCore)(
               ),
             ),
           );
+
           if (!rooted) gone.set(r.name, `${out} left this store`);
         }
+
         const names = [...again, ...gone.keys()];
         // An attempt whose row ended still reports it; its status would land after the retry's.
         yield* Effect.forEach(
           names,
           (n) => {
             const tail = attempts.get(`${runId}\0${n}`);
+
             return tail === undefined ? Effect.void : Deferred.await(tail);
           },
           { discard: true },
         );
+
         const reset = yield* db(
           sql.withTransaction(
             Effect.gen(function* () {
               const rows = (yield* Rows.loadSteps(runId)).filter(
                 (r) => names.includes(r.name) && Rows.terminal(r.status),
               );
+
               if (rows.length === 0) return [];
+
               const reopened =
                 yield* sql`update runs set status = 'running', finished_at = null, error = null,
             retries = retries + ${options.quiet === true ? 0 : 1}
           where id = ${runId} and status != 'cancelled' returning id`;
+
               if (reopened.length === 0) return [];
               const picked = rows.map((r) => r.name);
               // A build counts its infrastructure attempts on from `attempts` (`step`), so one that runs again gets them all again.
@@ -3332,17 +3796,22 @@ export const layerCore = Layer.effect(RunsCore)(
           where run_id = ${runId} and ${sql.in("name", picked)}`;
               yield* sql`delete from tests where run_id = ${runId} and ${sql.in("step", picked)}`;
               yield* sql`delete from shards where run_id = ${runId} and ${sql.in("step", picked)} and status != 'passed'`;
+
               return rows;
             }),
           ),
         );
+
         if (reset.length === 0) return [];
         // A batch evaluation that ended gave what it could; a build that still lacks its derivation evaluates again.
         const evaluated = evaluations.get(runId);
+
         if (evaluated !== undefined && Deferred.isDoneUnsafe(evaluated)) evaluations.delete(runId);
+
         for (const r of reset) {
           stepped.reset(runId, r.name);
           yield* publishStep(runId, r.name);
+
           if (options.quiet === true) continue;
           yield* logTo(
             run,
@@ -3355,12 +3824,16 @@ export const layerCore = Layer.effect(RunsCore)(
             text: `runs again: ${gone.get(r.name) ?? reason}`,
             timestamp: Date.now(),
           });
+
           if (r.kind !== "output") yield* status(run, `calder/${r.name}`, "pending", "runs again");
         }
+
         const picked = reset.map((r) => r.name);
+
         if (options.quiet !== true)
           yield* status(run, "calder", "pending", `running again: ${picked.join(", ")}`);
         yield* publishRun(runId);
+
         return picked;
       });
 
@@ -3368,10 +3841,12 @@ export const layerCore = Layer.effect(RunsCore)(
       Effect.gen(function* () {
         const rows = yield* db(Rows.loadSteps(runId));
         const status = new Map(rows.map((r) => [r.name, r.status]));
+
         // What blocks a step, as `step` decides it: a dependency that ended without passing or being skipped.
         return rows
           .filter((r) => {
             const spec = Rows.spec(r);
+
             return (
               r.status === "blocked" &&
               ![...spec.needs, ...spec.after].some((d) =>
@@ -3386,6 +3861,7 @@ export const layerCore = Layer.effect(RunsCore)(
       Effect.gen(function* () {
         const row = yield* db(Rows.loadStep(runId, name));
         const build = row === undefined ? null : Rows.spec(row).build;
+
         return build !== null && build.out !== null && (yield* available(build.out));
       });
 
@@ -3398,11 +3874,13 @@ export const layerCore = Layer.effect(RunsCore)(
     const audit = (project: string) =>
       Effect.gen(function* () {
         const p = projects.get(project);
+
         if (p === undefined) return [];
         const branch = p.defaultBranch;
         const sha = yield* gitea.head(p.repo, branch);
         yield* mirror.fetch(project);
         const dir = yield* mirror.pipelineDir(project, sha);
+
         const info: RunInfo = {
           id: `${project}-audit`,
           project,
@@ -3417,7 +3895,9 @@ export const layerCore = Layer.effect(RunsCore)(
           pipelineDir: dir,
           system: config.system,
         };
+
         const records = yield* db(Rows.records({ project, trust: "trusted", fork: 0 }));
+
         const job: Job = {
           _tag: "Plan",
           run: info,
@@ -3426,23 +3906,29 @@ export const layerCore = Layer.effect(RunsCore)(
           ...(records === undefined ? {} : { records }),
           audit: true,
         };
+
         const claim: Slots.Claim = {
           project,
           expected: 0,
           run: Date.now(),
           label: `${project}'s audit`,
         };
+
         const { result } = yield* slots.plans.with(
           claim,
           jobs.run(job, { pool: "trusted", onEvent: () => Effect.void }),
         );
+
         if (result._tag !== "Planned") {
           yield* Effect.logWarning(
             `the audit of ${project} could not plan: ${"message" in result ? result.message : result._tag}`,
           );
+
           return [];
         }
+
         const mismatches = result.plan.mismatches ?? [];
+
         for (const m of mismatches) {
           // The runs whose plans took this record, such as deploys that may have shipped the wrong derivation.
           const used =
@@ -3450,11 +3936,13 @@ export const layerCore = Layer.effect(RunsCore)(
               ? []
               : yield* db(sql<{ run_id: string }>`select run_id from run_records
           where evaluation = ${m.record} order by run_id`);
+
           // Until its footprint changes, the attribute isn't recorded again: it would be wrong again.
           if (m.record !== undefined) {
             yield* db(sql`insert into record_blocks (project, attr, digest) select project, attr, digest from evaluations
             where id = ${m.record} on conflict do nothing`);
           }
+
           yield* db(sql`delete from evaluations where project = ${project} and attr = ${m.attr}`);
           yield* db(sql`insert into audit_mismatches (project, attr, revision, detail, at)
           values (${project}, ${m.attr}, ${sha}, ${JSON.stringify({ ...m, runs: used.map((u) => u.run_id) })}, ${Date.now()})`);
@@ -3465,9 +3953,11 @@ export const layerCore = Layer.effect(RunsCore)(
               `the fresh evaluation also read ${m.missed.join(", ") || "nothing the record didn't"}`,
           );
         }
+
         yield* Effect.logInfo(
           `audited ${project}@${sha.slice(0, 12)}: ${mismatches.length} records contradicted`,
         );
+
         return mismatches;
       }).pipe(
         Effect.catchCause((cause) =>
@@ -3479,9 +3969,12 @@ export const layerCore = Layer.effect(RunsCore)(
     const nextNight = () => {
       const at = new Date();
       at.setHours(3, 30, 0, 0);
+
       if (at.getTime() <= Date.now()) at.setDate(at.getDate() + 1);
+
       return at.getTime() - Date.now();
     };
+
     yield* Effect.suspend(() => Effect.sleep(nextNight())).pipe(
       Effect.andThen(Effect.forEach(projects.all(), (p) => audit(p.name), { discard: true })),
       Effect.forever,
@@ -3500,15 +3993,19 @@ export const layerCore = Layer.effect(RunsCore)(
           free--
         );
       }
+
       const known = agents.usage().filter((a) => !a.evaluator);
+
       const wanted = new Set(
         slots.tasks.spilling().flatMap(({ to, pool }) =>
           to.filter((platform) => {
             const of = known.filter((a) => a.platform === platform);
+
             return of.length === 0 || of.some((a) => a.pools.includes(pool));
           }),
         ),
       );
+
       if (Date.now() >= rouseFrom) for (const platform of wanted) yield* agents.rouse(platform);
     }).pipe(Effect.andThen(Effect.sleep(spillEvery)), Effect.forever, Effect.forkScoped);
 

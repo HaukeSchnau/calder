@@ -24,6 +24,7 @@ describe("a pull request's preview", () => {
           steps: [action("preview-url", true), action("summary", false)],
           event: { _tag: "PullRequest", number: 5, base: "main", head: "feature", fork: false },
         });
+
         expect(status).toBe("passed");
         expect(pools.get("preview-url")).toBe("trusted");
         expect(pools.get("summary")).toBe("pr");
@@ -36,6 +37,7 @@ describe("a pull request's preview", () => {
         steps: [action("preview-url", true), action("summary", false)],
         event: { _tag: "PullRequest", number: 5, base: "main", head: "feature", fork: true },
       });
+
       // A same-repo pull request's jobs never read what a fork's job wrote, so the default branch may take their plans.
       expect(pools.get("preview-url")).toBe("fork");
       expect(pools.get("summary")).toBe("fork");

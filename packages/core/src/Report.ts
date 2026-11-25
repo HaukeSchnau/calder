@@ -53,8 +53,10 @@ interface VitestJson {
 
 export const parseVitest = (text: string): ReadonlyArray<TestResult> => {
   const json = JSON.parse(text) as VitestJson;
+
   return (json.testResults ?? []).flatMap((file) => {
     const assertions = file.assertionResults ?? [];
+
     // A file that fails to load has no assertions, only a message.
     if (assertions.length === 0 && file.status === "failed") {
       return [
@@ -68,9 +70,11 @@ export const parseVitest = (text: string): ReadonlyArray<TestResult> => {
         },
       ];
     }
+
     return assertions.map((a): TestResult => {
       const message = a.failureMessages?.join("\n") || undefined;
       const failed = a.status === "failed";
+
       return {
         suite: (a.ancestorTitles ?? []).join(" > "),
         name: a.title ?? "",
@@ -103,6 +107,7 @@ const decodeEntities = (s: string) =>
       case "apos":
         return "'";
     }
+
     return String.fromCodePoint(
       e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10),
     );
@@ -110,8 +115,10 @@ const decodeEntities = (s: string) =>
 
 const attrs = (tag: string): Record<string, string> => {
   const out: Record<string, string> = {};
+
   for (const m of tag.matchAll(/([\w:-]+)\s*=\s*("([^"]*)"|'([^']*)')/g))
     out[m[1]!] = decodeEntities(m[3] ?? m[4] ?? "");
+
   return out;
 };
 
@@ -132,24 +139,30 @@ export const parseJUnit = (xml: string): ReadonlyArray<TestResult> => {
   const suites: Array<string> = [];
   const tokens = xml.matchAll(/<(\/?)(testsuite|testcase)\b([^>]*?)(\/?)>|<\/testcase>/g);
   let open: { attrs: Record<string, string>; start: number } | undefined;
+
   for (const m of tokens) {
     const [whole, closing, name, rest, selfClosing] = m;
+
     if (name === "testsuite") {
       if (closing) suites.pop();
       else if (!selfClosing) suites.push(attrs(rest ?? "").name ?? "");
       continue;
     }
+
     if (name === "testcase" && !closing) {
       const a = attrs(rest ?? "");
+
       if (selfClosing) results.push(testcase(a, "", suites));
       else open = { attrs: a, start: m.index! + whole.length };
       continue;
     }
+
     if (open !== undefined) {
       results.push(testcase(open.attrs, xml.slice(open.start, m.index), suites));
       open = undefined;
     }
   }
+
   return results;
 };
 
@@ -160,9 +173,11 @@ const testcase = (
 ): TestResult => {
   const failure = /<(failure|error)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/.exec(body);
   const skipped = /<skipped\b/.test(body);
+
   const message = failure
     ? [attrs(failure[2] ?? "").message, text(failure[3] ?? "")].filter(Boolean).join("\n")
     : undefined;
+
   return {
     suite: a.classname ?? suites.at(-1) ?? "",
     name: a.name ?? "",
@@ -185,23 +200,28 @@ const testcase = (
 /** Markdown for a pull-request comment listing failing tests and failed steps. */
 export const summarize = (failed: ReadonlyArray<Failed<unknown>>): string => {
   const lines: Array<string> = [];
+
   for (const f of failed) {
     const error = f.error as Partial<TaskFailed> | undefined;
     const tests = error?.failures ?? [];
     lines.push(
       `**${f.step}** ${tests.length > 0 ? `has ${tests.length} failing test${tests.length === 1 ? "" : "s"}` : "failed"}`,
     );
+
     for (const t of tests.slice(0, 20)) {
       const first =
         t.message
           .split("\n")
           .find((l) => l.trim() !== "")
           ?.trim() ?? "";
+
       lines.push(
         `- \`${[t.suite, t.name].filter(Boolean).join(" > ")}\`${t._tag === "TestTimeout" ? " (timed out)" : ""}${first ? `: ${first.slice(0, 200)}` : ""}`,
       );
     }
+
     if (tests.length > 20) lines.push(`- and ${tests.length - 20} more`);
   }
+
   return lines.join("\n");
 };

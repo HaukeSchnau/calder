@@ -18,9 +18,12 @@ export const end = (): End => ({ peer: null, pending: [], early: [], closed: fal
 export const send = (to: Socket<End>, chunk: Uint8Array) => {
   if (to.data.pending.length > 0) {
     to.data.pending.push(chunk);
+
     return;
   }
+
   const written = to.write(chunk);
+
   if (written < chunk.length) to.data.pending.push(chunk.subarray(Math.max(0, written)));
 };
 
@@ -28,20 +31,25 @@ export const send = (to: Socket<End>, chunk: Uint8Array) => {
 export const handlers = {
   data(socket: Socket<End>, chunk: Uint8Array) {
     const peer = socket.data.peer;
+
     if (peer === null) socket.data.early.push(chunk);
     else send(peer, chunk);
   },
   drain(socket: Socket<End>) {
     const pending = socket.data.pending;
     socket.data.pending = [];
+
     for (const chunk of pending) send(socket, chunk);
+
     if (socket.data.pending.length === 0 && socket.data.closed) socket.end();
   },
   close(socket: Socket<End>) {
     socket.data.gone = true;
     const peer = socket.data.peer;
+
     if (peer === null || peer.data.closed) return;
     peer.data.closed = true;
+
     if (peer.data.pending.length === 0) peer.end();
   },
   error(socket: Socket<End>) {
@@ -56,12 +64,17 @@ export const handlers = {
 export const link = (a: Socket<End>, b: Socket<End>) => {
   if (a.data.gone || b.data.gone) {
     if (!a.data.gone) a.end();
+
     if (!b.data.gone) b.end();
+
     return;
   }
+
   a.data.peer = b;
   b.data.peer = a;
+
   for (const chunk of a.data.early.splice(0)) send(b, chunk);
+
   for (const chunk of b.data.early.splice(0)) send(a, chunk);
 };
 

@@ -4,8 +4,10 @@
  */
 export const askedAttrs = (expr: string): Array<string> => {
   const literal = /paths = builtins\.fromJSON ("(?:[^"\\]|\\.)*");/.exec(expr)?.[1];
+
   if (literal === undefined) return [];
   const json = literal.slice(1, -1).replace(/\\(.)/g, "$1");
+
   return (JSON.parse(json) as Array<Array<string>>).map((parts) => parts.join("."));
 };
 

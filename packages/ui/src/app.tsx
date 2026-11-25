@@ -25,6 +25,7 @@ export function App() {
         e.preventDefault();
         setPalette((open) => !open);
       }
+
       if (
         e.key === "Escape" &&
         e.target instanceof HTMLInputElement &&
@@ -32,7 +33,9 @@ export function App() {
       )
         e.target.blur();
     };
+
     window.addEventListener("keydown", onKey);
+
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   useKeys((e) => {
@@ -92,8 +95,10 @@ function TitleBar({ route, onPalette }: { readonly route: Route; readonly onPale
 
 function RunCrumbs({ id, rollout }: { readonly id: string; readonly rollout: boolean }) {
   const result = useAtomValue(runAtom(id));
+
   if (!AsyncResult.isSuccess(result)) return null;
   const run = result.value.run;
+
   return (
     <>
       <span className="sep">/</span>
@@ -127,10 +132,13 @@ function StatusBar() {
   const message = useToast();
   const data = AsyncResult.isSuccess(ov) ? ov.value : null;
   const red = data ? redRuns(data) : [];
+
   const deploying = data
     ? data.projects.flatMap((p) => p.deployments.filter((d) => d.deployingRun !== null))
     : [];
+
   const running = data ? data.active : [];
+
   return (
     <footer className="statusbar">
       <span className="sbl">
@@ -210,10 +218,12 @@ function Tip() {
   const tip = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let lastKey: string | null = null;
+
     const onOver = (e: PointerEvent) => {
       const el = tip.current;
       const target = e.target instanceof Element ? e.target : null;
       const host = target?.closest<HTMLElement | SVGElement>("[data-tip]");
+
       if (el) {
         if (host) {
           el.textContent = host.getAttribute("data-tip");
@@ -226,17 +236,23 @@ function Tip() {
           el.hidden = true;
         }
       }
+
       const key = target?.closest("[data-key]")?.getAttribute("data-key") ?? null;
+
       if (key === lastKey) return;
       lastKey = key;
       document.querySelectorAll(".same").forEach((x) => x.classList.remove("same"));
+
       if (key)
         document
           .querySelectorAll(`[data-key="${CSS.escape(key)}"]`)
           .forEach((x) => x.classList.add("same"));
     };
+
     document.addEventListener("pointerover", onOver);
+
     return () => document.removeEventListener("pointerover", onOver);
   }, []);
+
   return <div className="tip" ref={tip} role="tooltip" hidden />;
 }

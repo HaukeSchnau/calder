@@ -17,12 +17,14 @@ export const Status = Schema.Struct({
   since: Schema.NullOr(Schema.Number),
   healthy: Schema.NullOr(Schema.Boolean),
 });
+
 export type Status = typeof Status.Type;
 
 export const Health = Schema.Struct({
   apps: Schema.Array(Schema.String),
   system: Schema.optional(Schema.String),
 });
+
 export type Health = typeof Health.Type;
 
 /** A promotion endpoint, and the command that wakes its host when it sleeps while idle. */
@@ -88,15 +90,19 @@ export class Fleet extends Context.Service<
  */
 export const remembered = <E>(health: (endpoint: string) => Effect.Effect<Health, E>) => {
   const answers = new Map<string, { readonly at: number; readonly health: Health }>();
+
   const ask = (endpoint: string) =>
     Effect.suspend(() => health(endpoint)).pipe(
       Effect.tap((health) => Effect.sync(() => answers.set(endpoint, { at: Date.now(), health }))),
     );
+
   return {
     cached: (endpoint: string): Effect.Effect<Health | null> =>
       Effect.suspend(() => {
         const hit = answers.get(endpoint);
+
         if (hit !== undefined && Date.now() - hit.at < 60_000) return Effect.succeed(hit.health);
+
         return ask(endpoint).pipe(Effect.orElseSucceed(() => hit?.health ?? null));
       }),
     fresh: (endpoint: string): Effect.Effect<Health | null> =>
@@ -113,15 +119,19 @@ export const patiently = (
   wake: (command: ReadonlyArray<string>) => Effect.Effect<unknown, { readonly message: string }>,
 ) => {
   const woken = new Map<string, number>();
+
   const rouse = (endpoint: Endpoint, command: ReadonlyArray<string>) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const last = woken.get(endpoint.url);
+
       if (last !== undefined && now - last < Duration.toMillis(wakeEvery)) return;
       woken.set(endpoint.url, now);
       const host = hostOf(endpoint.url);
+
       const failed = (why: string) =>
         Effect.logWarning(`waking ${host} failed: ${why.split("\n")[0]}`);
+
       yield* Effect.logInfo(`waking ${host}`);
       yield* Effect.forkDetach(
         wake(command).pipe(
@@ -131,6 +141,7 @@ export const patiently = (
         ),
       );
     });
+
   return (endpoint: Endpoint) =>
     lookup(endpoint.url).pipe(
       Effect.tap((health) =>
@@ -154,11 +165,13 @@ export const layer = Layer.effect(Fleet)(
   Effect.gen(function* () {
     const config = yield* Config;
     const telemetry = yield* Telemetry.Telemetry;
+
     const client = (yield* HttpClient.HttpClient).pipe(
       HttpClient.mapRequest(
         HttpClientRequest.setHeader("Authorization", `Bearer ${config.promotionToken}`),
       ),
     );
+
     const post = (url: string, body: unknown) =>
       client.execute(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyJsonUnsafe(body))).pipe(
         Effect.flatMap((response) =>
@@ -166,7 +179,9 @@ export const layer = Layer.effect(Fleet)(
         ),
         Effect.timeout("2 minutes"),
       );
+
     const spawner = yield* Exec.SpawnerTag;
+
     const healthOf = remembered((endpoint) =>
       client
         .get(`${endpoint}/health`)
@@ -175,10 +190,13 @@ export const layer = Layer.effect(Fleet)(
           Effect.timeout("5 seconds"),
         ),
     );
+
     const asking = patiently(healthOf.fresh, (command) =>
       Exec.run(command).pipe(Effect.provideService(Exec.SpawnerTag, spawner)),
     );
+
     const endpoints = config.fleet.map(endpoint);
+
     const ask = (
       lookup: (endpoint: Endpoint) => Effect.Effect<Health | null>,
       among: ReadonlyArray<Endpoint>,
@@ -193,6 +211,7 @@ export const layer = Layer.effect(Fleet)(
           error?: string;
           compatibility?: { reasons?: ReadonlyArray<string> };
         };
+
         return json.compatibility?.reasons?.join("; ") ?? json.error ?? text;
       } catch {
         return text;
@@ -234,7 +253,9 @@ export const layer = Layer.effect(Fleet)(
             Effect.catch((e) => Effect.succeed({ status: 0, text: String(e) })),
             Effect.flatMap((r): Effect.Effect<void, FleetBusy | FleetRejected> => {
               if (r.status === 202) return Effect.void;
+
               if (r.status === 503) return Effect.fail(new FleetBusy({ target: hostOf(target) }));
+
               return Effect.fail(
                 new FleetRejected({
                   target: hostOf(target),
@@ -261,6 +282,7 @@ export const layer = Layer.effect(Fleet)(
               (e) => healthOf.cached(e.url),
               project.targets.map((url) => ({ url, wake: undefined, optional: false })),
             );
+
             return {
               targets: found.map((f) => ({
                 url: f.url,
@@ -269,14 +291,17 @@ export const layer = Layer.effect(Fleet)(
               unreachable: [],
             };
           }
+
           const found = yield* ask(asking, endpoints);
           const optional = new Set(endpoints.filter((e) => e.optional).map((e) => e.url));
           const silent = found.filter((f) => f.health === null);
+
           for (const f of silent.filter((f) => optional.has(f.url))) {
             yield* Effect.logWarning(
               `${hostOf(f.url)} doesn't answer; its optional endpoint misses this release`,
             );
           }
+
           return {
             targets: found.flatMap((f) =>
               f.health?.apps.includes(app) === true

@@ -19,22 +19,26 @@ import * as WorkerServer from "./WorkerServer.ts";
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* Config;
+
     const rpc = RpcServer.layer(UiRpcs).pipe(
       Layer.provide(Ui.handlers),
       Layer.provide(RpcServer.layerProtocolWebsocket({ path: "/rpc" })),
       Layer.provide(RpcSerialization.layerJson),
     );
+
     const agents = RpcServer.layer(AgentRpcs).pipe(
       Layer.provide(Remote.agentHandlers),
       Layer.provide(RpcServer.layerProtocolWebsocket({ path: "/agent" })),
       Layer.provide(RpcSerialization.layerJson),
     );
+
     const workers = RpcServer.layer(WorkerServer.TrackedRpcs).pipe(
       Layer.provide(WorkerServer.handlers),
       Layer.provide(WorkerServer.tracking),
       Layer.provide(RpcServer.layerProtocolWebsocket({ path: "/worker" })),
       Layer.provide(RpcSerialization.layerJson),
     );
+
     const routes = Layer.mergeAll(
       HttpRouter.add("POST", "/hooks/gitea", Webhook.handle),
       HttpRouter.add("GET", "/health", HttpServerResponse.text("ok")),
@@ -49,6 +53,7 @@ export const layer = Layer.unwrap(
       workers,
       config.ui === null ? Layer.empty : HttpStaticServer.layer({ root: config.ui, spa: true }),
     );
+
     return HttpRouter.serve(routes, { disableLogger: true }).pipe(
       // Agents upload task outputs such as packaged desktop apps, far past Bun's 128 MiB default. Bun also
       // closes a response that stalls for 10 s, which cut git fetches and downloads to agents on slow links

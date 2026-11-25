@@ -115,6 +115,7 @@ const run = (
   } = {},
 ): Ran => {
   const def = step.def;
+
   if (def._tag !== "Task" || typeof def.run === "function")
     throw new Error("not a task with one command");
   const repo = mkdtempSync(join(tmpdir(), "expo-"));
@@ -123,6 +124,7 @@ const run = (
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(repo, options.dir ?? "."), { recursive: true });
   const world = options.world ?? {};
+
   for (const [tool, body] of Object.entries(fakes)) {
     if (tool === "eas" && world.eas === false) continue;
     // Each records the Expo token it was given, which only eas should get.
@@ -132,6 +134,7 @@ const run = (
       { mode: 0o755 },
     );
   }
+
   writeFileSync(join(fake, "gradlew"), gradlew, { mode: 0o755 });
   writeFileSync(join(fake, "config.json"), JSON.stringify(config));
   writeFileSync(
@@ -148,16 +151,19 @@ const run = (
     join(fake, "versions.json"),
     JSON.stringify({ data: (world.versions ?? []).map((attributes) => ({ attributes })) }),
   );
+
   for (const platform of ["ios", "android"] as const) {
     const groups = (world.published?.[platform] ?? []).map((runtimeVersion) => ({
       runtimeVersion,
       group: "g",
     }));
+
     writeFileSync(
       join(fake, `published-${platform}.json`),
       JSON.stringify({ name: "beta", currentPage: groups }),
     );
   }
+
   const secrets = Object.fromEntries(
     Step.taskSecrets(def).map((name) => {
       const path = join(fake, `secret-${name}`);
@@ -165,10 +171,13 @@ const run = (
         path,
         name === "keystore" ? Buffer.from("keystore bytes").toString("base64") : `secret:${name}`,
       );
+
       return [name, path];
     }),
   );
+
   const [command, ...args] = Cmd.render(def.run, options.values ?? {}, { secrets });
+
   const result = spawnSync(command!, args, {
     cwd: repo,
     env: {
@@ -185,8 +194,10 @@ const run = (
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
   });
+
   const read = (path: string) =>
     existsSync(join(repo, path)) ? readFileSync(join(repo, path), "utf8").trim() : undefined;
+
   return {
     status: result.status,
     stdout: result.stdout,
@@ -199,6 +210,7 @@ const run = (
 
 const task = (step: Step.Any) => {
   if (step.def._tag !== "Task") throw new Error("not a task");
+
   return step.def;
 };
 
@@ -241,10 +253,12 @@ describe("Expo.exportUpdate", scripts, () => {
     expect(task(step).outputs).toEqual({ update: "apps/app/.calder-expo-update" });
     expect(task(step).platform).toBe("x86_64-linux");
     expect(task(step).lease).toBeUndefined();
+
     const mac = Expo.exportUpdate({
       platform: "aarch64-darwin",
       setup: Pnpm.install({ platform: "aarch64-darwin", name: "install-mac" }),
     });
+
     expect(task(mac).platform).toBe("aarch64-darwin");
   });
 });
@@ -253,6 +267,7 @@ describe("Expo.publishUpdate", scripts, () => {
   const update = Expo.exportUpdate({ ...tower, setup: towerInstall }).pipe(
     Step.timeout("30 minutes"),
   );
+
   const publish = Expo.publishUpdate({
     shell,
     setup: install,
@@ -261,6 +276,7 @@ describe("Expo.publishUpdate", scripts, () => {
     token: "expo-token",
     runtimes: { ios, android },
   });
+
   const exported = { ...values, "ota-export.update": "/nix/store/abc-ota-export-update" };
 
   it("publishes the export with the app's eas, and its value is each platform's update", () => {
@@ -303,16 +319,19 @@ describe("Expo.publishUpdate", scripts, () => {
       values: exported,
       world: { published: { ios: ["rv-new", "rv-ios"], android: ["rv-android"] } },
     });
+
     expect(reverted.status).toBe(0);
     expect(reverted.stderr).toContain(
       "warning: this ios update goes to runtime version rv-ios, which beta had updates for before, but its newest update went to rv-new. " +
         "A native change was reverted, and builds of rv-new keep their JavaScript until store builds of rv-ios replace them.",
     );
     expect(reverted.stderr).not.toContain("this android update");
+
     const ahead = run(publish, {
       values: exported,
       world: { published: { ios: ["rv-old"], android: ["rv-old"] } },
     });
+
     expect(ahead.stderr).not.toContain("warning");
   });
 
@@ -329,10 +348,12 @@ describe("Expo.publishUpdate", scripts, () => {
         expect(publish.name).toBe("ota-beta");
         expect(task(publish).reuse).toBe("never");
         expect(task(publish).lease).toBe("ota");
+
         const plan = yield* Calder.plan(
           Calder.project({ rules: [On.push("main", [publish])] }),
           Event.push("main"),
         );
+
         expect(plan.get("ota-beta")?.needs).toEqual(
           expect.arrayContaining([
             "install",
@@ -379,12 +400,14 @@ describe("Expo.testflight", scripts, () => {
       expect(ran.stderr).toContain("1.2.0 already passed App Store review");
       expect(ran.calls.some((call) => call.startsWith("xcodebuild"))).toBe(false);
     }
+
     const waiting = run(step, {
       values,
       world: {
         versions: [{ appVersionState: "WAITING_FOR_REVIEW", appStoreState: "WAITING_FOR_REVIEW" }],
       },
     });
+
     expect(waiting.status).toBe(0);
   }, 60_000);
 
@@ -457,6 +480,7 @@ describe("Expo.playInternal", scripts, () => {
   it("runs on the tower unless told otherwise, keyed by the runtime version alone", () => {
     const def = task(step);
     expect(def.platform).toBe("x86_64-linux");
+
     const mac = Expo.playInternal({
       platform: "aarch64-darwin",
       runtime: android,
@@ -464,6 +488,7 @@ describe("Expo.playInternal", scripts, () => {
       password: "p",
       serviceAccount: "s",
     });
+
     expect(task(mac).platform).toBe("aarch64-darwin");
     expect(def.inputs).toEqual(Files.of());
     expect(def.lease).toBe("play");
@@ -479,15 +504,19 @@ describe("an Expo release pipeline", () => {
   it.effect("exports on the tower from the tower's install, and refuses the controller's", () =>
     Effect.gen(function* () {
       const update = Expo.exportUpdate({ ...tower, setup: towerInstall });
+
       const plan = yield* Calder.plan(
         Calder.project({ rules: [On.push("main", [ios, android, update])] }),
         Event.push("main"),
       );
+
       expect(plan.get("ota-export")?.needs).toEqual(["install-tower"]);
       const wrong = Expo.exportUpdate({ shell, setup: install });
+
       const error = yield* Effect.flip(
         Calder.plan(Calder.project({ rules: [On.push("main", [wrong])] }), Event.push("main")),
       );
+
       expect(String(error.message ?? error)).toContain(
         `"ota-export" runs on x86_64-linux but its setup "install" on the controller's platform`,
       );

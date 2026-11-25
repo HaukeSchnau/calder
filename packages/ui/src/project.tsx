@@ -25,6 +25,7 @@ import { graphOrder } from "./run.tsx";
 import { Loaded, RunGlyph, Swatch, useNow } from "./ui.tsx";
 
 type StatusFilter = "all" | "failed" | "running" | "passed";
+
 const STATUS_FILTERS: ReadonlyArray<StatusFilter> = ["all", "failed", "running", "passed"];
 
 const matchesStatus = (run: Domain.Run, f: StatusFilter) =>
@@ -37,10 +38,13 @@ const matchesStatus = (run: Domain.Run, f: StatusFilter) =>
 
 export function ProjectPage({ name }: { readonly name: string }) {
   const ov = useAtomValue(overviewAtom);
+
   const project = AsyncResult.isSuccess(ov)
     ? ov.value.projects.find((p) => p.name === name)
     : undefined;
+
   const { trigger } = useRunCommands();
+
   return (
     <main className="page project">
       <header className="doc-h">
@@ -98,6 +102,7 @@ function BehindWarning({
 }) {
   const now = useNow();
   const behind = delivery.behind;
+
   return (
     <p className="audit-warn">
       {delivery.revision ? (
@@ -141,11 +146,14 @@ function Deployments({
   readonly controller: string;
 }) {
   const now = useNow();
+
   return (
     <span className="pdeps">
       {hostsOf([project], controller).map((h) => {
         const d = project.deployments.find((x) => x.host === h);
+
         if (!d) return null;
+
         return (
           <span key={h} className="pdep">
             <span className="dim">{h}</span>
@@ -179,14 +187,17 @@ function Runs({ project }: { readonly project: string }) {
   const pullRequest = ref.startsWith("PR #") ? Number(ref.slice(4)) : null;
   const all = useAtomValue(projectRunsAtom({ project, pullRequest: null }));
   const result = useAtomValue(projectRunsAtom({ project, pullRequest }));
+
   const [older, setOlder] = useState<{
     readonly key: string;
     readonly runs: ReadonlyArray<Domain.Run>;
     readonly done: boolean;
   }>({ key: "", runs: [], done: false });
+
   const fetchRuns = useAtomSet(Calder.mutation("runs"), { mode: "promiseExit" });
   const key = `${project}|${pullRequest ?? ""}`;
   const extra = older.key === key ? older.runs : [];
+
   const refs = AsyncResult.isSuccess(all)
     ? [...new Set(all.value.map(refOf))].sort((a, b) =>
         a === "main" ? -1 : b === "main" ? 1 : b.localeCompare(a, "en", { numeric: true }),
@@ -227,15 +238,19 @@ function Runs({ project }: { readonly project: string }) {
             ...loaded,
             ...extra.filter((r) => !loaded.some((x) => x.id === r.id)),
           ].filter((r) => (ref === "all" || refOf(r) === ref) && matchesStatus(r, status));
+
           const oldest = [...loaded, ...extra].at(-1);
+
           const more = async () => {
             if (!oldest) return;
+
             const exit = await fetchRuns({
               payload:
                 pullRequest === null
                   ? { project, before: oldest.createdAt, limit: 60 }
                   : { project, pullRequest, before: oldest.createdAt, limit: 60 },
             });
+
             if (exit._tag === "Success")
               setOlder({
                 key,
@@ -243,6 +258,7 @@ function Runs({ project }: { readonly project: string }) {
                 done: exit.value.runs.length === 0,
               });
           };
+
           return (
             <>
               <div className="rtable">
@@ -283,6 +299,7 @@ function RunRow({ run }: { readonly run: Domain.Run }) {
   const reused = count(run.counts, "reused");
   const failed = count(run.counts, "failed", "died");
   const d = runDuration(run, now);
+
   return (
     <a className="rt-row" href={href({ page: "run", id: run.id, step: null })}>
       <span>
@@ -318,6 +335,7 @@ function RunRow({ run }: { readonly run: Domain.Run }) {
 
 function StepHistory({ project, mainId }: { readonly project: string; readonly mainId: string }) {
   const result = useAtomValue(runAtom(mainId));
+
   return (
     <Loaded result={result} what="the steps">
       {(detail) => (
@@ -344,12 +362,14 @@ function StepRow({ project, step }: { readonly project: string; readonly step: s
   const max = Math.max(1, ...durations);
   const w = 150;
   const slot = w / 30;
+
   return (
     <div className="srow2">
       <span className="sname">{step}</span>
       <svg className="rspark" width={w} height={20} viewBox={`0 0 ${w} 20`} aria-hidden="true">
         {samples.map((s, i) => {
           const h = s.durationMs === null ? 2 : Math.max(2, (s.durationMs / max) * 18);
+
           return (
             <a
               key={`${s.runId}-${i}`}

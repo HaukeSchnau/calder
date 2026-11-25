@@ -40,10 +40,12 @@ function drawLegend() {
   const H = DIM.H;
   const W = 160;
   const k = 0.6;
+
   // Glyphs are crops of real parts at 0.6, so the key can't drift from what it explains. Phones
   // show the short label, so the key fits in one wrapping row above the code.
   const item = (label, draw, [x, y, w, hgt], short) => {
     const li = h("li", {}, ul);
+
     const svg = s(
       "svg",
       {
@@ -55,11 +57,13 @@ function drawLegend() {
       },
       li,
     );
+
     const g = s("g", { class: "geo" }, svg);
     draw(s("g", { class: "part" }, g));
     h("span", { class: "lg-long", html: label }, li);
     h("span", { class: "lg-short", "aria-hidden": "true", html: short }, li);
   };
+
   item(
     "a value, here <code>StorePath</code> (A)",
     (g) => {

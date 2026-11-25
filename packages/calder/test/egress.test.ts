@@ -28,6 +28,7 @@ describe("Egress", () => {
     ]) {
       expect(isPrivate(address), address).toBe(true);
     }
+
     for (const address of [
       "104.16.0.35",
       "140.82.121.4",
@@ -98,13 +99,16 @@ describe("a sandboxed job's proxy environment", () => {
     // Drops what reaches it, so a request that goes through it fails at once.
     const proxy = createServer((socket) => socket.destroy());
     await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+
     try {
       const url = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
       const { stdout } = await promisify(execFile)(
         process.execPath,
         ["--input-type=module", "--eval", client],
         { env: environment(url) },
       );
+
       const direct = { fetch: "direct", http: "direct" };
       expect(JSON.parse(stdout)).toEqual({ "[::]": direct, "0.0.0.0": direct, "[::1]": direct });
     } finally {

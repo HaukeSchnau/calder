@@ -29,8 +29,10 @@ const v4Ranges: ReadonlyArray<readonly [string, number]> = [
  */
 const carried = (canonical: string) => {
   const groups = /^(?:::ffff:|64:ff9b::|::)(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})$/.exec(canonical);
+
   if (groups === null) return undefined;
   const n = parseInt(groups[1] ?? "0", 16) * 65536 + parseInt(groups[2]!, 16);
+
   return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
 };
 
@@ -41,17 +43,22 @@ const carried = (canonical: string) => {
  */
 export const isPrivate = (address: string): boolean => {
   const bare = address.split("%")[0]!;
+
   if (isIP(bare) === 4) {
     const n = v4(bare);
+
     return v4Ranges.some(
       ([base, bits]) =>
         Math.floor(n / 2 ** (32 - bits)) === Math.floor(v4(base) / 2 ** (32 - bits)),
     );
   }
+
   if (isIP(bare) !== 6) return true;
   const canonical = new URL(`http://[${bare}]`).hostname.slice(1, -1);
   const inner = carried(canonical);
+
   if (inner !== undefined) return isPrivate(inner);
+
   return (
     canonical === "::" ||
     /^f[cd]/.test(canonical) ||
@@ -77,12 +84,17 @@ export const admit = (
   egress: EgressPolicy,
 ): { readonly status: string; readonly reason: string } | null => {
   const anywhere = egress.allowPrivate.includes(`${host}:${port}`);
+
   if (!anywhere && !allowed(host, egress.allow))
     return { status: "403 Not On The Allowlist", reason: "not on the allowlist" };
+
   if (addresses === undefined) return null;
+
   if (addresses.length === 0) return { status: "502 Unknown Host", reason: "unknown host" };
+
   if (!anywhere && addresses.some(isPrivate))
     return { status: "403 Private Address", reason: "private address" };
+
   return null;
 };
 
@@ -111,8 +123,10 @@ const connectAny = async (addresses: ReadonlyArray<string>, port: number) => {
       data: Tunnel.end(),
       socket: Tunnel.handlers,
     }).catch(() => null);
+
     if (upstream !== null) return upstream;
   }
+
   return null;
 };
 
@@ -130,27 +144,37 @@ export const serve = (path: string, egress: EgressPolicy, log: (message: string)
   Effect.acquireRelease(
     Effect.sync(() => {
       if (existsSync(path)) rmSync(path);
+
       const open = async (socket: Socket<Client>, host: string, port: number) => {
         const unlisted = admit(host, port, undefined, egress);
+
         if (unlisted !== null) {
           log(`egress refused ${host}:${port}: ${unlisted.reason}`);
+
           return refuse(socket, unlisted.status);
         }
+
         const addresses =
           isIP(host) !== 0
             ? [host]
             : (await Bun.dns.lookup(host, {}).catch(() => [])).map((a) => a.address);
+
         const refused = admit(host, port, addresses, egress);
+
         if (refused !== null) {
           if (refused.status !== "502 Unknown Host")
             log(`egress refused ${host}:${port}: ${refused.reason}`);
+
           return refuse(socket, refused.status);
         }
+
         const upstream = await connectAny(addresses, port);
+
         if (upstream === null) return refuse(socket, "502 Connect Failed");
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         Tunnel.link(socket, upstream);
       };
+
       return Bun.listen<Client>({
         unix: path,
         socket: {
@@ -165,23 +189,32 @@ export const serve = (path: string, egress: EgressPolicy, log: (message: string)
                 (socket.data.earlyBytes += chunk.length) > earlyLimit
               )
                 return void socket.end();
+
               return Tunnel.handlers.data(socket, chunk);
             }
+
             socket.data.head.push(chunk);
             const buffered = Buffer.concat(socket.data.head);
             const split = buffered.indexOf("\r\n\r\n");
+
             if (split === -1) {
               if (buffered.length > 16384) refuse(socket, "431 Request Header Fields Too Large");
+
               return;
             }
+
             socket.data.decided = true;
+
             if (buffered.length > split + 4) socket.data.early.push(buffered.subarray(split + 4));
+
             const [method, target] = buffered
               .subarray(0, split)
               .toString("latin1")
               .split("\r\n")[0]!
               .split(" ");
+
             const match = /^\[?([^\]]+?)\]?:(\d+)$/.exec(target ?? "");
+
             if (method !== "CONNECT" || match === null) return refuse(socket, "405 Only CONNECT");
             void open(socket, match[1]!.toLowerCase(), Number(match[2]));
           },
@@ -195,6 +228,7 @@ export const serve = (path: string, egress: EgressPolicy, log: (message: string)
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const config = yield* Config;
+
     if (config.egress === null) return;
     const services = yield* Effect.context<never>();
     const path = join(config.runtimeDir, "egress.sock");
@@ -205,6 +239,7 @@ export const layer = Layer.effectDiscard(
     );
     chmodSync(path, 0o660);
     const group = workersGroup(config.jobs.mode);
+
     if (group !== undefined) chownSync(path, process.getuid!(), group);
   }),
 );

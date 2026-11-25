@@ -11,14 +11,18 @@ import { type ActiveJob, Jobs } from "./Jobs.ts";
 export const busy = (jobs: ReadonlyArray<ActiveJob>): ReadonlyArray<string> =>
   jobs.flatMap((job) => {
     const what = `${job.spec.run.id} ${job.spec._tag === "Plan" ? "plan" : job.spec.step}`;
+
     if (job.lease !== undefined) return [`${what} holds the deploy lease ${job.lease.project}`];
+
     if (job.persisted || !job.running) return [];
+
     return [`${what}${job.remote ? " on an agent" : ""} starts over`];
   });
 
 /** `GET /idle`: 200 while a restart cuts nothing off, else 503 with what it would. */
 export const handle = Effect.gen(function* () {
   const lines = busy((yield* Jobs).active());
+
   return lines.length === 0
     ? HttpServerResponse.text("idle\n")
     : HttpServerResponse.text(`${lines.join("\n")}\n`, { status: 503 });

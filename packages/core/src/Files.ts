@@ -80,6 +80,7 @@ const normalize = (path: string) => path.replace(/^\.\//, "").replace(/\/+$/, ""
 export const matcher = (patterns: ReadonlyArray<string>): ((path: string) => boolean) => {
   const include = patterns.filter((p) => !p.startsWith("!")).map(globToRegExp);
   const exclude = patterns.filter((p) => p.startsWith("!")).map((p) => globToRegExp(p.slice(1)));
+
   return (path) => include.some((re) => re.test(path)) && !exclude.some((re) => re.test(path));
 };
 
@@ -99,13 +100,16 @@ export const unmatched = (
 ): ReadonlyArray<Unmatched> => {
   const included = matcher(patterns.filter((p) => !p.startsWith("!")));
   const removed = matcher(patterns.filter((p) => p.startsWith("!")).map((p) => p.slice(1)));
+
   return patterns.flatMap((pattern) => {
     const re = globToRegExp(pattern.replace(/^!/, ""));
+
     if (pattern.startsWith("!"))
       return paths.some((path) => re.test(path) && included(path))
         ? []
         : [{ pattern, negated: false }];
     const matching = paths.filter((path) => re.test(path));
+
     return matching.some((path) => !removed(path))
       ? []
       : [{ pattern, negated: matching.length > 0 }];
@@ -131,6 +135,7 @@ const globCache = new Map<string, RegExp>();
 
 export const globToRegExp = (pattern: string): RegExp => {
   let re = globCache.get(pattern);
+
   if (re === undefined) {
     const source = pattern
       .replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -141,8 +146,10 @@ export const globToRegExp = (pattern: string): RegExp => {
       .replace(/\?/g, "[^/]")
       .replace(/\u0000/g, "(?:.*/)?")
       .replace(/\u0001/g, ".*");
+
     re = new RegExp(`^${source}$`);
     globCache.set(pattern, re);
   }
+
   return re;
 };

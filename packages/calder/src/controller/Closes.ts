@@ -39,11 +39,14 @@ export const layer = Layer.effect(Closes)(
         const settled =
           yield* sql`select 1 from pull_closes where project = ${project.name} and pr = ${closing.number}
         and settled >= ${closing.closedAt}`;
+
         if (settled.length > 0) return true;
+
         // A closed run started for it counts too, so a stop between its start and `settle` doesn't start another.
         const started =
           yield* sql`select 1 from runs where project = ${project.name} and pr = ${closing.number}
         and json_extract(event, '$._tag') = 'PullRequestClosed' and created_at >= ${closing.closedAt} limit 1`;
+
         return started.length > 0;
       }).pipe(Effect.orDie);
 
@@ -57,17 +60,20 @@ export const layer = Layer.effect(Closes)(
           id: string;
         }>`select id from runs where project = ${project.name} and pr = ${closing.number}
         and status in ('queued', 'planning', 'running')`.pipe(Effect.orDie);
+
         yield* Effect.forEach(active, (r) => runs.cancel(r.id, "pull request closed"), {
           discard: true,
         });
         // `On.pullRequestClosed` rules run the base branch's head, which the repository's owners pushed.
         const sha = yield* gitea.head(project.repo, closing.base);
         yield* mirror.fetch(project.name);
+
         if (!(yield* mirror.hasPipeline(project.name, sha))) {
           return yield* Effect.logInfo(
             `closing #${closing.number} of ${project.name}: ${sha.slice(0, 12)} has no .calder/ci.ts, ignored`,
           );
         }
+
         yield* Effect.logInfo(
           `closing #${closing.number} of ${project.name} at ${sha.slice(0, 12)}`,
         );

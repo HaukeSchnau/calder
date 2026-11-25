@@ -43,11 +43,13 @@ export const size: Promise<number> = Bun.file("x").text().then((text) => text.le
 export default Project.standard({ flake, checks: [qa] })
 `,
     );
+
     const tsrs = spawnSync(
       resolve(import.meta.dirname, "../../../node_modules/.bin/tsrs"),
       ["-p", calder],
       { encoding: "utf8" },
     );
+
     expect(tsrs.stdout + tsrs.stderr).toBe("");
     expect(tsrs.status).toBe(0);
   });
@@ -65,6 +67,7 @@ describe("the generated ci.ts", () => {
     checks: ReadonlyArray<string> = ["build"],
   ) => {
     const dir = mkdtempSync(join(tmpdir(), "calder-gen-"));
+
     for (const [file, content] of Object.entries(files)) writeFileSync(join(dir, file), content);
     const calder = join(dir, ".calder");
     mkdirSync(calder);
@@ -74,18 +77,23 @@ describe("the generated ci.ts", () => {
     );
     link(join(calder, "node_modules"), sdkPath);
     writeFileSync(join(calder, "ci.ts"), pipeline(dir, { checks, devShells: ["ci"] }));
+
     return Effect.runPromise(
       Effect.gen(function* () {
         const { default: project } = (yield* Effect.promise(
           () => import(join(calder, "ci.ts")),
         )) as { readonly default: Calder.Project };
+
         return yield* Calder.plan(project, Event.pullRequest({ number: 1 }));
       }),
     );
   };
+
   const names = (plan: Calder.Plan) => plan.steps.map((step) => step.name).sort();
+
   const installer = (plan: Calder.Plan) => {
     const def = plan.get("install")?.step.def;
+
     return def?._tag === "Setup" ? Cmd.render(def.run, {})[0] : undefined;
   };
 
@@ -96,6 +104,7 @@ describe("the generated ci.ts", () => {
       "package.json": vitePlus,
       "pnpm-lock.yaml": "",
     });
+
     expect(names(pnpm)).toEqual(["build", "check", "install", "test"]);
     expect(installer(pnpm)).toBe("pnpm");
     expect(

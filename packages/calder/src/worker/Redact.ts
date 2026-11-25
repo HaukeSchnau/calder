@@ -29,9 +29,12 @@ const json = (text: string): unknown => {
 /** A `KEY=value` line's value without its quotes; a double-quoted one with its `\n` escapes as newlines. */
 const assigned = (line: string) => {
   const raw = assignment.exec(line)?.[1]?.trim();
+
   if (raw === undefined) return undefined;
   const quoted = /^(["'])(.*)\1$/.exec(raw);
+
   if (quoted === null) return raw;
+
   return quoted[1] === '"' ? quoted[2]!.replaceAll("\\n", "\n") : quoted[2]!;
 };
 
@@ -42,6 +45,7 @@ const assigned = (line: string) => {
 const parts = (secret: string) => [
   ...lines(secret).flatMap((line) => {
     const value = assigned(line);
+
     return value === undefined ? [line] : [value, ...lines(value)];
   }),
   ...strings(json(secret)).flatMap((s) => [s, ...lines(s)]),
@@ -55,6 +59,7 @@ const base64 = (secret: string) =>
   [0, 1, 2].map((offset) => {
     const bytes = Buffer.concat([Buffer.alloc(offset), Buffer.from(secret)]);
     const whole = Math.floor(bytes.length / 3) * 4;
+
     return bytes.toString("base64").slice([0, 2, 3][offset], whole);
   });
 
@@ -84,9 +89,12 @@ const encodings = (piece: string) => [
  */
 export const make = (secrets: Iterable<string>): ((text: string) => string) => {
   const values = new Set<string>();
+
   for (const secret of secrets) {
     const whole = secret.trim();
+
     if (whole.length < 4) continue;
+
     for (const piece of [
       whole,
       ...parts(whole)
@@ -95,6 +103,7 @@ export const make = (secrets: Iterable<string>): ((text: string) => string) => {
     ]) {
       for (const shown of encodings(piece)) values.add(shown);
     }
+
     // A whole secret and each of a dotenv file's values, as tools pass credentials on in base64.
     const encoded = [
       whole,
@@ -102,9 +111,12 @@ export const make = (secrets: Iterable<string>): ((text: string) => string) => {
         .flatMap((line) => assigned(line) ?? [])
         .filter((v) => v.length >= 8),
     ];
+
     for (const shown of encoded.flatMap(base64)) if (shown.length >= 8) values.add(shown);
   }
+
   if (values.size === 0) return (text) => text;
+
   const pattern = new RegExp(
     [...values]
       .sort((a, b) => b.length - a.length)
@@ -112,6 +124,7 @@ export const make = (secrets: Iterable<string>): ((text: string) => string) => {
       .join("|"),
     "g",
   );
+
   return (text) => text.replace(pattern, mask);
 };
 
@@ -159,12 +172,14 @@ export const result = (redact: (text: string) => string, result: JobResult): Job
     case "Evaluated": {
       const each = (reasons: Record<string, string>) =>
         Object.fromEntries(Object.entries(reasons).map(([name, why]) => [name, redact(why)]));
+
       return {
         ...result,
         tooLarge: each(result.tooLarge),
         ...(result.errors === undefined ? {} : { errors: each(result.errors) }),
       };
     }
+
     case "Passed":
     case "Planned":
       return result;

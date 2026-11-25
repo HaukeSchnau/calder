@@ -86,12 +86,14 @@ export interface Sandbox {
 
 export const sandbox = (command: string, calder: ReadonlyArray<string>): Sandbox => {
   const locks = new Map<Pool, Semaphore.Semaphore>();
+
   return {
     command,
     calder,
     lock: (pool) => {
       const lock = locks.get(pool) ?? Semaphore.makeUnsafe(1);
       locks.set(pool, lock);
+
       return lock;
     },
     stop: (pool, job) =>
@@ -124,11 +126,13 @@ export const sandbox = (command: string, calder: ReadonlyArray<string>): Sandbox
 export const startSandbox = (command: string, calder: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const host = sandbox(command, calder);
+
     for (const pool of unitPools.filter(sandboxed)) {
       const lock = host.lock(pool);
       yield* lock.take(1);
       yield* Effect.forkDetach(host.stop(pool).pipe(Effect.ensuring(lock.release(1))));
     }
+
     return host;
   });
 
@@ -142,7 +146,9 @@ export const poolsOf = (
       ? ["trusted"]
       : "pull requests' pools need --units, where their jobs get their directories";
   }
+
   const pools = options.pools ?? unitPools.filter(hasGroup);
+
   return pools.length > 0
     ? pools
     : "--units needs the host's calder-pr, calder-fork or calder-trusted group, or --pools";
@@ -160,6 +166,7 @@ const systemctl = (args: ReadonlyArray<string>) => Exec.exec(["systemctl", ...ar
 const signalGroup = (group: number, signal: NodeJS.Signals | 0) => {
   try {
     process.kill(-group, signal);
+
     return true;
   } catch {
     return false;
@@ -190,20 +197,25 @@ const commandLine = (pid: number) =>
 export const stopLeftovers = (dir: string) =>
   Effect.gen(function* () {
     mkdirSync(dir, { recursive: true });
+
     for (const job of readdirSync(dir)) {
       const pid = Number(readFileSync(join(dir, job), "utf8"));
+
       // A process that got the pid since is left alone.
       if ((yield* commandLine(pid)).includes(`worker ${job}`)) {
         yield* Effect.logInfo(`stopping worker ${job}, which an earlier run of this agent started`);
+
         for (const [signal, ms] of [
           ["SIGTERM", 20_000],
           ["SIGKILL", 5_000],
         ] as const) {
           signalGroup(pid, signal);
+
           for (let waited = 0; waited < ms && signalGroup(pid, 0); waited += 250)
             yield* Effect.sleep("250 millis");
         }
       }
+
       rmSync(join(dir, job), { force: true });
     }
   });
@@ -233,8 +245,10 @@ export const runInUnit = (
 ) => {
   const pool = order.pool ?? "trusted";
   const sandbox = options.sandbox ?? null;
+
   const job = Effect.gen(function* () {
     const group = (options.group ?? ((pool: Pool) => groupId(`calder-${pool}`)))(pool);
+
     if (group === undefined)
       return yield* Effect.die(
         new Error(`the host has no group calder-${pool} for the job's unit`),
@@ -242,10 +256,12 @@ export const runInUnit = (
     mkdirSync(options.units, { recursive: true });
     // A sandbox profile matches canonical paths only, such as macOS's /private/var/run for /var/run.
     const dir = join(realpathSync(options.units), order.job);
+
     const share = (path: string, mode: number) => {
       chownSync(path, process.getuid!(), group);
       chmodSync(path, mode);
     };
+
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         mkdirSync(dir, { recursive: true });
@@ -257,6 +273,7 @@ export const runInUnit = (
     share(join(dir, "token"), 0o640);
     yield* ControllerProxy.serve(join(dir, "controller.sock"), options.url);
     share(join(dir, "controller.sock"), 0o660);
+
     if (sandboxed(pool)) {
       // A controller from before pools sends no allowlist, and nothing gets out.
       yield* Egress.serve(
@@ -266,10 +283,12 @@ export const runInUnit = (
       );
       share(join(dir, "egress.sock"), 0o660);
     }
+
     if (sandbox !== null) {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       // However the job ends, nothing of it outlives its directory or runs beside the pool's next job.
       const stop = sandbox.stop(pool, order.job);
+
       return yield* Effect.gen(function* () {
         const handle = yield* spawner.spawn(
           ChildProcess.make(sandbox.command, ["run", pool, order.job, dir, ...sandbox.calder], {
@@ -278,19 +297,25 @@ export const runInUnit = (
             stderr: "inherit",
           }),
         );
+
         return yield* handle.exitCode;
       }).pipe(Effect.ensuring(stop));
     }
+
     const unit = unitOf(pool, order.job);
+
     // However the wait ends, the unit doesn't outlive the job's directory: systemctl may lose systemd
     // while the unit runs on.
     const started = yield* systemctl(["start", "--wait", unit]).pipe(
       Effect.ensuring(systemctl(["stop", unit]).pipe(Effect.ignore)),
     );
+
     if (started.exitCode !== 0)
       yield* Effect.logWarning(`worker ${order.job}: ${started.stderr.trim() || `${unit} failed`}`);
+
     return started.exitCode;
   });
+
   return sandbox === null ? job : sandbox.lock(pool).withPermit(Effect.scoped(job));
 };
 
@@ -313,13 +338,16 @@ export const run = (options: Options) =>
 
     const offered = () => {
       if (options.slotsFile === null) return options.slots;
+
       try {
         const slots = Number.parseInt(readFileSync(options.slotsFile, "utf8"), 10);
+
         return Number.isInteger(slots) && slots > 0 ? slots : 0;
       } catch {
         return 0;
       }
     };
+
     let offering = offered();
 
     /** Holds an admission slot for the scope. */
@@ -327,17 +355,20 @@ export const run = (options: Options) =>
       Effect.gen(function* () {
         const release = yield* Deferred.make<void>();
         yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+
         const lease = yield* spawner.spawn(
           ChildProcess.make(command, ["lease"], {
             stdin: Stream.fromEffect(Deferred.await(release)).pipe(Stream.drain),
             stderr: "inherit",
           }),
         );
+
         const ready = yield* lease.stdout.pipe(
           Stream.decodeText,
           Stream.splitLines,
           Stream.runHead,
         );
+
         if (ready._tag === "None" || ready.value !== "ready")
           return yield* Effect.die(new Error("the host refused admission"));
       });
@@ -351,6 +382,7 @@ export const run = (options: Options) =>
     // directory, and new jobs would get their workspaces.
     const host =
       options.sandbox === null ? null : yield* startSandbox(options.sandbox, options.calder);
+
     if (options.units !== null && host === null) {
       const listed = yield* systemctl([
         "list-units",
@@ -359,10 +391,12 @@ export const run = (options: Options) =>
         "--state=active,activating,deactivating",
         ...unitPools.map((pool) => unitOf(pool, "*")),
       ]);
+
       const left = listed.stdout
         .split("\n")
         .map((line) => line.trim().split(/\s+/)[0] ?? "")
         .filter((unit) => unit.startsWith("calder-job-"));
+
       if (left.length > 0) {
         yield* Effect.logInfo(
           `stopping ${left.join(" ")}, which an earlier run of this agent started`,
@@ -370,10 +404,14 @@ export const run = (options: Options) =>
         yield* systemctl(["stop", ...left]);
       }
     }
+
     const pools = poolsOf(options);
+
     if (typeof pools === "string") return yield* Effect.die(new Error(pools));
+
     if (options.units !== null) {
       mkdirSync(options.units, { recursive: true });
+
       // Only job directories, whatever else the directory holds.
       for (const dir of readdirSync(options.units))
         if (/^[0-9a-f]+$/.test(dir))
@@ -387,18 +425,22 @@ export const run = (options: Options) =>
       Effect.scoped(
         Effect.gen(function* () {
           const job = order.job;
+
           if (options.admission !== null) yield* admitted(options.admission);
+
           if (options.units !== null && (host === null || sandboxed(order.pool ?? "trusted"))) {
             return yield* runInUnit(
               { units: options.units, url: options.url, sandbox: host },
               order,
             );
           }
+
           const [command, ...args] = options.calder;
           // Added before the worker, so it runs after the worker's group is gone.
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => rmSync(join(pids, job), { force: true })),
           );
+
           const handle = yield* spawner.spawn(
             ChildProcess.make(command!, [...args, "worker", job], {
               env: {
@@ -417,7 +459,9 @@ export const run = (options: Options) =>
               forceKillAfter: "10 seconds",
             }),
           );
+
           recordPid(pids, job, handle.pid);
+
           return yield* handle.exitCode;
         }),
       ).pipe(
@@ -443,6 +487,7 @@ export const run = (options: Options) =>
           yield* Effect.forkDetach(worker(order, stop));
         } else {
           const stop = running.get(order.job);
+
           // The controller holds a slot until it hears the worker is gone, which it may have missed.
           if (stop === undefined) yield* Effect.forkDetach(exited(order.job, -1));
           else yield* Deferred.succeed(stop, undefined);
@@ -452,6 +497,7 @@ export const run = (options: Options) =>
     if (options.slotsFile !== null) {
       yield* Effect.gen(function* () {
         const slots = offered();
+
         if (slots === offering) return;
         yield* client.offer({ ...auth, slots });
         offering = slots;
@@ -465,6 +511,7 @@ export const run = (options: Options) =>
     );
     yield* Effect.suspend(() => {
       offering = offered();
+
       return client
         .work({
           ...auth,

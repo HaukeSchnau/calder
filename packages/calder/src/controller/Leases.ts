@@ -22,9 +22,11 @@ export interface Holder {
    */
   readonly stale?: Effect.Effect<string | undefined>;
 }
+
 interface Waiter extends Holder {
   readonly granted: Deferred.Deferred<Grant>;
 }
+
 interface State {
   holder: Holder | undefined;
   /** In the order they asked. */
@@ -84,14 +86,18 @@ export const make = (
   const fences = new Map<string, number>();
   const newest = new Map(saved.newest.map((n) => [`${n.project}/${n.step}`, n.run]));
   const newestOf = (project: string, step: string) => newest.get(`${project}/${step}`) ?? 0;
+
   const state = (project: string) => {
     let s = states.get(project);
+
     if (s === undefined) {
       s = { holder: undefined, waiters: [] };
       states.set(project, s);
     }
+
     return s;
   };
+
   for (const { project, fence, ...holder } of saved.holders) {
     state(project).holder = holder;
     fences.set(`${project}/${holder.job}`, fence);
@@ -104,18 +110,22 @@ export const make = (
       const fence = yield* store.nextFence(project);
       fences.set(`${project}/${holder.job}`, fence);
       yield* store.held(project, holder, fence);
+
       return { _tag: "Held", fence } satisfies Grant;
     });
 
   // Who gets a lease is decided one call at a time per lease, since a staleness check waits for Gitea in
   // between; other leases go on meanwhile.
   const decisions = new Map<string, Semaphore.Semaphore>();
+
   const decide = (project: string) => {
     let one = decisions.get(project);
+
     if (one === undefined) {
       one = Semaphore.makeUnsafe(1);
       decisions.set(project, one);
     }
+
     return one.withPermits(1);
   };
 
@@ -136,22 +146,29 @@ export const make = (
     Effect.gen(function* () {
       const s = state(project);
       const first = s.waiters[0];
+
       if (s.holder !== undefined || first === undefined) return;
+
       const same = s.waiters
         .filter((waiter) => waiter.step === first.step)
         .sort((a, b) => b.run - a.run);
+
       const floor = newestOf(project, first.step);
       const stale: Array<{ readonly waiter: Waiter; readonly reason: string }> = [];
       let chosen: Waiter | undefined;
+
       for (const waiter of same) {
         if (waiter.run < floor) break;
         const reason = yield* staleness(waiter);
+
         if (reason === undefined) {
           chosen = waiter;
           break;
         }
+
         stale.push({ waiter, reason });
       }
+
       yield* Effect.uninterruptible(
         Effect.gen(function* () {
           // A waiter that gave up while its staleness was checked is gone.
@@ -159,6 +176,7 @@ export const make = (
           const winner = chosen !== undefined && waiting(chosen) ? chosen : undefined;
           const by = Math.max(winner?.run ?? 0, floor);
           const losers = stale.filter((x) => waiting(x.waiter));
+
           const replaced = same.filter(
             (waiter) =>
               waiter !== winner &&
@@ -166,12 +184,14 @@ export const make = (
               waiting(waiter) &&
               !losers.some((x) => x.waiter === waiter),
           );
+
           s.waiters = s.waiters.filter(
             (waiter) =>
               waiter !== winner &&
               !replaced.includes(waiter) &&
               !losers.some((x) => x.waiter === waiter),
           );
+
           if (winner !== undefined)
             yield* Deferred.succeed(winner.granted, yield* grant(project, winner));
           yield* Effect.forEach(
@@ -193,6 +213,7 @@ export const make = (
     Effect.gen(function* () {
       const s = state(project);
       s.waiters = s.waiters.filter((waiter) => waiter.job !== job);
+
       if (s.holder?.job !== job) return;
       fences.delete(`${project}/${job}`);
       s.holder = undefined;
@@ -209,11 +230,14 @@ export const make = (
         const s = state(project);
         // A worker that lost its connection asks again for the lease it already holds.
         const held = fences.get(`${project}/${holder.job}`);
+
         if (s.holder?.job === holder.job && held !== undefined)
           return { _tag: "Held", fence: held } satisfies Grant;
         const by = newestOf(project, holder.step);
+
         if (holder.run < by) return { _tag: "Replaced", by } satisfies Grant;
         const granted = yield* Deferred.make<Grant>();
+
         // Queued and given up together: a worker that disconnects, or a run cancelled while it waits, leaves
         // no waiter behind that the lease could later go to with nobody to release it.
         return yield* Effect.uninterruptibleMask((restore) =>
@@ -237,8 +261,10 @@ export const layer = Layer.effect(Leases)(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const jobs = yield* Jobs;
+
     const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
       effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
+
     const store: Store = {
       nextFence: (project) => db(Counters.nextAtLeast(`fence:${project}`, Date.now())),
       held: (project, holder, fence) =>
@@ -269,7 +295,9 @@ export const layer = Layer.effect(Leases)(
         Saved["holders"][number] & { lease: string | null }
       >`select project, job, run, step, fence, lease from lease_holders`,
     );
+
     const adopted = holders.filter((h) => jobs.get(h.job) !== undefined);
+
     for (const h of adopted)
       if (h.lease !== null) jobs.get(h.job)!.lease = JSON.parse(h.lease) as Lease;
     yield* Effect.forEach(
@@ -277,15 +305,18 @@ export const layer = Layer.effect(Leases)(
       (h) => store.released(h.project, h.job),
       { discard: true },
     );
+
     const newest = yield* db(
       sql<Saved["newest"][number]>`select project, step, run from lease_steps`,
     );
+
     const leases = make(store, { newest, holders: adopted.map(({ lease: _, ...h }) => h) });
     yield* Effect.forEach(
       adopted,
       (h) => Scope.addFinalizer(jobs.get(h.job)!.scope, leases.release(h.project, h.job)),
       { discard: true },
     );
+
     return leases;
   }),
 );

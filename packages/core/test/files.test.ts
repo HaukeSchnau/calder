@@ -36,6 +36,7 @@ describe("matcher", () => {
       "packages/ui/c.test.ts",
       "packages/ui/c.ts",
     ];
+
     expect(paths.filter(matcher(["!apps/server/**", "**/*.test.ts"]))).toEqual([
       "apps/app/a.test.ts",
       "packages/ui/c.test.ts",

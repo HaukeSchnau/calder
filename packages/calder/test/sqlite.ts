@@ -11,6 +11,7 @@ import { migrations } from "../src/controller/Db.ts";
 export const client = Effect.gen(function* () {
   const db = new DatabaseSync(":memory:");
   yield* Effect.addFinalizer(() => Effect.sync(() => db.close()));
+
   const all = (sql: string, params: ReadonlyArray<unknown>) =>
     Effect.try({
       try: () => db.prepare(sql).all(...(params as ReadonlyArray<SQLInputValue>)),
@@ -19,13 +20,16 @@ export const client = Effect.gen(function* () {
           reason: SqlError.classifySqliteError(cause, { message: sql, operation: "execute" }),
         }),
     });
+
   const values = (sql: string, params: ReadonlyArray<unknown>) =>
     Effect.map(all(sql, params), (rows) => rows.map(Object.values));
+
   const execute = (
     sql: string,
     params: ReadonlyArray<unknown>,
     transform?: <A extends object>(rows: ReadonlyArray<A>) => ReadonlyArray<A>,
   ) => (transform === undefined ? all(sql, params) : Effect.map(all(sql, params), transform));
+
   const connection = {
     execute,
     executeRaw: all,
@@ -34,11 +38,13 @@ export const client = Effect.gen(function* () {
     executeValuesUnprepared: values,
     executeStream: () => Stream.die("not supported"),
   };
+
   const { acquirer, transactionAcquirer, onCommitFailure } = SqlClient.makeSqliteAcquirers({
     connection: Effect.succeed(connection),
     semaphore: yield* Semaphore.make(1),
     isTransaction: () => db.isTransaction,
   });
+
   return yield* SqlClient.make({
     acquirer,
     transactionAcquirer,
@@ -57,6 +63,7 @@ export const layer = Layer.effect(SqlClient.SqlClient)(
       loader: Migrator.fromRecord(migrations),
       table: "calder_migrations",
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
+
     return sql;
   }),
 ).pipe(Layer.provide(Reactivity.layer));

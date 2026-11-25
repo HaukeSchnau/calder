@@ -54,9 +54,11 @@ export type TestOptions = SuiteOptions | FilesOptions;
  */
 export const test = (options: TestOptions) => {
   const args = ["--passWithNoTests", ...(options.args ?? [])];
+
   if (options.tests === undefined)
     return Vitest.suite({ ...options, args, vitest: ["vp", "test"] });
   const dir = options.dir ?? ".";
+
   return Vitest.files({
     ...options,
     inputs: Files.union(
@@ -82,5 +84,6 @@ export const tasks = (options: TasksOptions) => {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     setup: options.setup,
   };
+
   return [check(toolchain), test({ ...options.test, ...toolchain })] as const;
 };

@@ -68,6 +68,7 @@ describe("following a run", () => {
         status: "errored" as const,
         error: "no rule runs pushes to feature",
       };
+
       const client = {
         changes: () => Stream.never,
         run: () =>
@@ -80,6 +81,7 @@ describe("following a run", () => {
             siblings: [],
           }),
       };
+
       const ended = yield* Cli.follow(client, queued);
       expect(ended.status).toBe("errored");
       expect(yield* TestConsole.logLines).toContain("errored: no rule runs pushes to feature");
@@ -112,6 +114,7 @@ describe("calder rerun", () => {
       encoding: "utf8",
       timeout: 60_000,
     });
+
     expect(`${ran.stdout}${ran.stderr}`).not.toContain("Missing required flag");
   });
 });
@@ -141,6 +144,7 @@ describe("calder agent", () => {
           timeout: 60_000,
         },
       );
+
       expect(`${ran.stdout}${ran.stderr}`).not.toContain("Missing required flag");
       expect(`${ran.stdout}${ran.stderr}`).toContain("/nonexistent");
     },

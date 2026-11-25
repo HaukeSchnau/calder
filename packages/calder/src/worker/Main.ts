@@ -17,9 +17,11 @@ import * as Tunnel from "../Tunnel.ts";
 const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
   Effect.gen(function* () {
     const project = yield* Load.project(spec.run.pipelineDir);
+
     const planned = yield* Calder.plan(project, spec.run.event, {
       requiredChecks: spec.requiredChecks,
     });
+
     // Nothing to run (a push to a branch no rule names), or only the rules asked for: skip evaluating the flake.
     if (planned.steps.length === 0 || spec.rules === true) {
       const empty: PlanSpec = {
@@ -31,13 +33,17 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
         pushes: planned.pushes,
         steps: [],
       };
+
       return { _tag: "Planned", plan: empty } satisfies JobResult;
     }
+
     const repo = yield* Repo.make(spec.run.mirror, spec.run.revision);
+
     const plan = yield* resolve(planned, project, spec.run, repo, spec.earlier ?? undefined, {
       records: spec.records,
       audit: spec.audit,
     });
+
     return { _tag: "Planned", plan } satisfies JobResult;
   }).pipe(
     Effect.catchTags({
@@ -52,13 +58,17 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
 const pipelineDir = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
   Effect.gen(function* () {
     const job = yield* Client.Job;
+
     if (job.remote === null) return spec.run.pipelineDir;
     const root = join(job.remote.workspaces, ".revs", spec.run.project, spec.run.revision);
+
     if (existsSync(join(root, ".calder", "ci.ts"))) return join(root, ".calder");
     const scratch = `${root}.${job.id}`;
     mkdirSync(scratch, { recursive: true });
+
     const git = (args: ReadonlyArray<string>) =>
       Exec.run(["git", "--git-dir", join(scratch, "git"), ...args], { env: Client.gitEnv(job) });
+
     yield* git(["init", "-q", "--bare"]);
     yield* Client.fetching(
       git(["fetch", "-q", "--no-tags", "--depth=1", spec.run.mirror, spec.run.revision]),
@@ -72,8 +82,10 @@ const pipelineDir = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
     yield* Exec.run(["tar", "-x", "-C", scratch, "-f", join(scratch, "pipeline.tar")]);
     rmSync(join(scratch, "git"), { recursive: true, force: true });
     link(join(scratch, ".calder", "node_modules"), sdkPath);
+
     if (existsSync(root)) rmSync(scratch, { recursive: true, force: true });
     else renameSync(scratch, root);
+
     return join(root, ".calder");
   });
 
@@ -85,25 +97,31 @@ const pipelineDir = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
 export const evaluatedRun = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
   Effect.gen(function* () {
     const job = yield* Client.Job;
+
     if (job.remote === null) return spec.run;
     const dir = join(job.remote.workspaces, ".mirrors");
     mkdirSync(dir, { recursive: true });
     const mirror = join(dir, `${spec.run.project}.git`);
+
     const git = (args: ReadonlyArray<string>) =>
       Exec.run(["git", "--git-dir", mirror, ...args], { env: Client.gitEnv(job) });
+
     // Jobs of one project share the mirror; a fetch holds it.
     yield* Effect.acquireRelease(lockFile(`${mirror}.lock`), (path) =>
       Effect.sync(() => rmSync(path, { force: true })),
     );
+
     if (!existsSync(join(mirror, "HEAD"))) {
       yield* git(["init", "-q", "--bare"]);
       // Objects of every revision fetched stay, though no ref points at them.
       yield* git(["config", "gc.auto", "0"]);
     }
+
     const has = yield* git(["cat-file", "-e", `${spec.run.revision}^{commit}`]).pipe(
       Effect.as(true),
       Effect.orElseSucceed(() => false),
     );
+
     // One ref, moved to the latest revision fetched, so the next fetch sends only what is new: Nix
     // evaluates a commit by its id, and the mirror never collects garbage.
     if (!has)
@@ -117,6 +135,7 @@ export const evaluatedRun = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) 
           `+${spec.run.revision}:refs/calder/last`,
         ]),
       );
+
     return { ...spec.run, mirror, flake: `git+file://${mirror}?rev=${spec.run.revision}` };
   }).pipe(Effect.scoped);
 
@@ -129,17 +148,21 @@ export const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
       const run = yield* evaluatedRun(spec);
       // Nix fetches the flake's forge inputs from the controller's mirrors, like a local evaluation.
       const fetching = job.remote === null ? {} : Client.evaluationEnv(spec.run.mirrors, job);
+
       return yield* Steps.evaluate({ ...spec, run }, spec.evaluate).pipe(
         Effect.provideService(FetchEnv, fetching),
         withOwnNix,
       );
     }
+
     const project = yield* Load.project(yield* pipelineDir(spec).pipe(Effect.orDie));
     const step = yield* Load.step(project, spec.step);
     const def = step.def;
+
     if ((yield* Client.Job).remote !== null && def._tag !== "Task" && def._tag !== "Setup") {
       return { _tag: "Died", message: "agents only run tasks and setups" } satisfies JobResult;
     }
+
     switch (def._tag) {
       case "Build":
         return yield* Steps.build(spec, step, Flake.attrPath(def.ref, spec.run.system));
@@ -178,7 +201,9 @@ export const run = (
     // An agent hands its worker the job's token in CALDER_TOKEN, and the job's commands inherit the
     // worker's environment.
     delete process.env.CALDER_TOKEN;
+
     if (process.env.CALDER_EGRESS !== undefined) yield* Egress.bridge(process.env.CALDER_EGRESS);
+
     const remote: Client.Remote | null =
       "remote" in options
         ? options.remote
@@ -188,8 +213,10 @@ export const run = (
               workspaces: options.workspaces,
             }
           : null;
+
     const token =
       "token" in options ? options.token : readFileSync(options.tokenFile, "utf8").trim();
+
     return yield* job(id, token, remote, "controller" in options).pipe(
       Effect.provide(
         remote === null
@@ -204,6 +231,7 @@ const job = (id: string, token: string, remote: Client.Remote | null, bridged: b
   Effect.gen(function* () {
     const connected = yield* Client.make(id, token, remote);
     const fetched = yield* Client.reconnecting(connected.client.job({ job: id, token }));
+
     const spec =
       bridged && remote !== null
         ? {
@@ -211,12 +239,15 @@ const job = (id: string, token: string, remote: Client.Remote | null, bridged: b
             run: { ...fetched.run, mirror: `${remote.url}/git/${fetched.run.project}.git` },
           }
         : fetched;
+
     Object.assign(process.env, Repo.insteadOf(spec.run.mirrors));
+
     // Nothing the job prints, says or fails with leaves the worker with its secrets or its token in it.
     const redact = Redact.make([
       ...(spec._tag === "Step" ? Object.values(spec.secrets) : []),
       token,
     ]);
+
     const job: Client.Job["Service"] = {
       ...connected,
       client: {
@@ -235,6 +266,7 @@ const job = (id: string, token: string, remote: Client.Remote | null, bridged: b
       log: (stream, text) => connected.log(stream, redact(text)),
       redact,
     };
+
     const result: JobResult = yield* (
       spec._tag === "Plan" ? withOwnNix(plan(spec)) : step(spec)
     ).pipe(
@@ -243,6 +275,7 @@ const job = (id: string, token: string, remote: Client.Remote | null, bridged: b
         Effect.succeed({ _tag: "Died", message: Cause.pretty(cause) } satisfies JobResult),
       ),
     );
+
     yield* job.flush;
     yield* Client.reconnecting(
       job.client.finish({ job: id, token, result: Redact.result(redact, result) }),

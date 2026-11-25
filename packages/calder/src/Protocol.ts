@@ -91,6 +91,7 @@ export const PlannedStep = Schema.Struct({
   ),
   output: Schema.NullOr(Schema.Struct({ task: Schema.String, output: Schema.String })),
 });
+
 export type PlannedStep = typeof PlannedStep.Type;
 
 const Derivation = Schema.Struct({ drv: Schema.String, out: Schema.String, system: Schema.String });
@@ -124,6 +125,7 @@ export const Records = Schema.Struct({
     }),
   ),
 });
+
 export type Records = typeof Records.Type;
 
 /** An attribute whose record held at the audited revision but whose fresh evaluation differs. */
@@ -136,6 +138,7 @@ export const Mismatch = Schema.Struct({
   /** The record's id in the journal. */
   record: Schema.optional(Schema.Number),
 });
+
 export type Mismatch = typeof Mismatch.Type;
 
 /** The attribute a plan reads the app's name from, which records and reused plans name like a derivation's. */
@@ -177,6 +180,7 @@ export const PlanSpec = Schema.Struct({
    */
   trusted: Schema.optional(Schema.Array(Schema.String)),
 });
+
 export type PlanSpec = typeof PlanSpec.Type;
 
 export const RunInfo = Schema.Struct({
@@ -201,6 +205,7 @@ export const RunInfo = Schema.Struct({
   pipelineDir: Schema.String,
   system: Schema.String,
 });
+
 export type RunInfo = typeof RunInfo.Type;
 
 /** An earlier step's outcome as JSON. Values of `Calder.Result` classes carry their class id in `$calder`. */
@@ -210,6 +215,7 @@ export const Outcome = Schema.Union([
   Schema.TaggedStruct("Died", { message: Schema.String }),
   Schema.TaggedStruct("Blocked", {}),
 ]);
+
 export type Outcome = typeof Outcome.Type;
 
 export const PlanJob = Schema.TaggedStruct("Plan", {
@@ -283,6 +289,7 @@ export const StepJob = Schema.TaggedStruct("Step", {
 });
 
 export const Job = Schema.Union([PlanJob, StepJob]);
+
 export type Job = typeof Job.Type;
 
 export const NixActivity = Schema.Struct({
@@ -296,6 +303,7 @@ export const NixActivity = Schema.Struct({
   end: Schema.NullOr(Schema.Number),
   failed: Schema.Boolean,
 });
+
 export type NixActivity = typeof NixActivity.Type;
 
 export const TestResult = Schema.Struct({
@@ -319,6 +327,7 @@ export const JobEvent = Schema.Union([
   Schema.TaggedStruct("Key", { key: Schema.String }),
   Schema.TaggedStruct("Attempt", { attempt: Schema.Number, reason: Schema.String }),
 ]);
+
 export type JobEvent = typeof JobEvent.Type;
 
 export const JobResult = Schema.Union([
@@ -359,6 +368,7 @@ export const JobResult = Schema.Union([
   /** The controller's own: an agent lost the job or none took it, so it may run again elsewhere. */
   Schema.TaggedStruct("Lost", { message: Schema.String }),
 ]);
+
 export type JobResult = typeof JobResult.Type;
 
 export class Unauthorized extends Schema.TaggedError<Unauthorized>("calder/Unauthorized")(
@@ -461,6 +471,7 @@ export const compatibility = 7;
  * home or workspaces reaches a same-repo pull request's job, whose plan the default branch may take.
  */
 export const Pool = Schema.Literals(["pr", "fork", "trusted"]);
+
 export type Pool = typeof Pool.Type;
 
 /** Pools whose workers reach the network only through an egress proxy with this allowlist (`Egress.admit`). */
@@ -470,6 +481,7 @@ export const EgressPolicy = Schema.Struct({
   allow: Schema.Array(Schema.String),
   allowPrivate: Schema.Array(Schema.String),
 });
+
 export type EgressPolicy = typeof EgressPolicy.Type;
 
 /**
@@ -486,6 +498,7 @@ export const AgentOrder = Schema.Union([
   }),
   Schema.TaggedStruct("Stop", { job: Schema.String }),
 ]);
+
 export type AgentOrder = typeof AgentOrder.Type;
 
 const agentAuth = { token: Schema.String, name: Schema.String };

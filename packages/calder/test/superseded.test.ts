@@ -42,6 +42,7 @@ const insert = (
     const number = Number(id.slice(id.lastIndexOf("-") + 1));
     const event = options.event ?? { _tag: "Push", branch: "main" };
     const builds = options.builds ?? [];
+
     const plan = {
       version: 1,
       app: null,
@@ -50,12 +51,15 @@ const insert = (
       schedules: [],
       steps: builds.map(([s]) => s),
     };
+
     yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
         trace_id, span_id)
       values (${id}, ${project}, ${number}, ${JSON.stringify(event)}, ${options.sha ?? id}, 'main', 'title', 'hauke', 1, 'trusted',
         ${options.status}, ${options.at ?? number}, 't', 's')`;
+
     if (options.status !== "queued" && options.status !== "planning")
       yield* sql`insert into run_plans (run_id, plan) values (${id}, ${JSON.stringify(plan)})`;
+
     for (const [position, [s, status]] of builds.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values (${id}, ${s.name}, ${s.kind}, ${status ?? "pending"}, ${JSON.stringify(s)}, ${position}, 's')`;
@@ -88,6 +92,7 @@ const task = (name: string): PlannedStep => ({
 
 const until = <A>(effect: Effect.Effect<A, never, SqlClient.SqlClient>, done: (a: A) => boolean) =>
   effect.pipe(Effect.repeat({ until: done, schedule: Schedule.spaced("10 millis") }));
+
 const statusOf = (run: string, name: string) =>
   Effect.map(Rows.loadStep(run, name), (row) => row?.status ?? "pending");
 
@@ -125,7 +130,9 @@ describe("a superseded run's running build", () => {
 
 describe("a superseded run's running job", () => {
   type Last = Effect.Effect<void, never, SqlClient.SqlClient>;
+
   type Hook = Effect.Effect<Last | void, never, RunsCore | SqlClient.SqlClient>;
+
   /**
    * Drives run 2, whose `first` step's job runs for 2 s, and supersedes it once that runs: `before` runs
    * first, `after` right after, and what either returns once run 2's step ended. Returns how long that
@@ -144,6 +151,7 @@ describe("a superseded run's running job", () => {
   ) =>
     Effect.gen(function* () {
       let stoppedAfter = Number.POSITIVE_INFINITY;
+
       const driven = yield* drive({
         steps: [first, ...(options.extra ?? [])],
         ...(options.cache === undefined ? {} : { cache: options.cache }),
@@ -153,25 +161,31 @@ describe("a superseded run's running job", () => {
             : Effect.void,
         meanwhile: Effect.gen(function* () {
           yield* until(statusOf("app-2", first.name), (s) => s === "running");
+
           for (const e of options.extra ?? []) {
             yield* until(
               Effect.map(Rows.loadStep("app-2", e.name), (row) => row?.waiting ?? null),
               (w) => w !== null,
             );
           }
+
           const last1 = yield* options.before ?? Effect.void;
           const at = Date.now();
           yield* (yield* RunsCore).supersede("app-2", "superseded by #3");
           const last2 = yield* options.after ?? Effect.void;
           yield* until(statusOf("app-2", first.name), Rows.terminal);
           stoppedAfter = Date.now() - at;
+
           for (const last of [last1, last2]) if (last !== undefined) yield* last;
         }),
       });
+
       return { ...driven, stoppedAfter };
     });
+
   const later = (run: string, name: string) =>
     until(statusOf(run, name), Rows.terminal).pipe(Effect.asVoid);
+
   /** Starts `run`'s step `name` beside the run, and waits until it waits for `reason`. */
   const waits = (run: string, name: string, reason: (waiting: string | null) => boolean) =>
     Effect.gen(function* () {
@@ -180,6 +194,7 @@ describe("a superseded run's running job", () => {
         Effect.map(Rows.loadStep(run, name), (row) => row?.waiting ?? null),
         reason,
       );
+
       return later(run, name);
     });
 
@@ -193,6 +208,7 @@ describe("a superseded run's running job", () => {
           builds: [[build(next)]],
         }),
       });
+
       expect(status).toBe("cancelled");
       expect(steps.get("srv-1")?.status).toBe("cancelled");
       expect(stoppedAfter).toBeLessThan(1000);
@@ -211,15 +227,19 @@ describe("a superseded run's running job", () => {
               at: 4,
               builds: [[build(next, "other")]],
             });
+
             const last = yield* waits(
               "app-4",
               "other",
               (w) => w?.startsWith("a build slot") === true,
             );
+
             yield* insert("app-3", { status: "planning", sha: "newer", at: 3 });
+
             return last;
           }),
         });
+
         expect(steps.get("srv-1")?.status).toBe("cancelled");
         expect(stoppedAfter).toBeLessThan(1000);
         expect(jobs).toEqual(["srv-1", "other"]);
@@ -232,6 +252,7 @@ describe("a superseded run's running job", () => {
       Effect.gen(function* () {
         let built = false;
         const cache = { has: () => Effect.sync(() => built), publish: () => Effect.void };
+
         const { steps, jobs } = yield* superseded(build(old), {
           // Workflow.create supersedes older runs as soon as it created the run, before that one planned.
           before: insert("app-3", { status: "planning", sha: "newer", at: 3 }),
@@ -244,11 +265,13 @@ describe("a superseded run's running job", () => {
               at: 3,
               builds: [[build(old, "srv-1-again")]],
             });
+
             const last = yield* waits(
               "app-3",
               "srv-1-again",
               (w) => w === "another run's build of the same derivation",
             );
+
             return Effect.gen(function* () {
               yield* last;
               expect(yield* statusOf("app-3", "srv-1-again")).toBe("reused");
@@ -257,6 +280,7 @@ describe("a superseded run's running job", () => {
           cache,
           onDone: () => void (built = true),
         });
+
         expect(steps.get("srv-1")?.status).toBe("passed");
         expect(jobs).toEqual(["srv-1"]);
       }),
@@ -296,6 +320,7 @@ describe("a superseded run's running job", () => {
             yield* later("app-3", "srv-1");
           }),
         });
+
         expect(steps.get("busy")?.status).toBe("passed");
         expect(jobs.slice(0, 2)).toEqual(["busy", "srv-1"]);
       }),
@@ -310,6 +335,7 @@ describe("a superseded run's running job", () => {
           before: insert("app-3", { status: "planning", sha: "newer", at: 3 }),
           extra: [build(next, "srv-2")],
         });
+
         expect(steps.get("srv-1")?.status).toBe("passed");
         expect(steps.get("srv-2")?.status).toBe("cancelled");
         expect(jobs).toEqual(["srv-1"]);
@@ -328,6 +354,7 @@ describe("a superseded run's running job", () => {
   it.live("stops a task at once and gives its slot to the run that replaced it", () =>
     Effect.gen(function* () {
       let tookOver = Number.POSITIVE_INFINITY;
+
       const { steps, jobs, stoppedAfter } = yield* superseded(task("lint"), {
         before: Effect.gen(function* () {
           yield* insert("app-3", {
@@ -339,9 +366,11 @@ describe("a superseded run's running job", () => {
           // Run 3's task waits for the only task slot, which run 2's lint holds.
           const at = Date.now();
           const last = yield* waits("app-3", "check", (w) => w?.startsWith("a task slot") === true);
+
           return last.pipe(Effect.tap(() => Effect.sync(() => void (tookOver = Date.now() - at))));
         }),
       });
+
       expect(steps.get("lint")?.status).toBe("cancelled");
       expect(stoppedAfter).toBeLessThan(1000);
       expect(jobs).toEqual(["lint", "check"]);
@@ -357,6 +386,7 @@ describe("a superseded run's running job", () => {
           before: insert("app-3", { status: "running", sha: "newer", at: 3 }),
         },
       );
+
       expect(steps.get("deploy-srv-1")?.status).toBe("passed");
     }),
   );
@@ -366,6 +396,7 @@ describe("a cancelled run's running job", () => {
   it.live("stops at once", () =>
     Effect.gen(function* () {
       let stoppedAfter = Number.POSITIVE_INFINITY;
+
       const { status, steps } = yield* drive({
         steps: [task("lint")],
         work: () => Effect.sleep("2 seconds"),
@@ -377,6 +408,7 @@ describe("a cancelled run's running job", () => {
           stoppedAfter = Date.now() - at;
         }),
       });
+
       expect(status).toBe("cancelled");
       expect(steps.get("lint")?.status).toBe("cancelled");
       expect(stoppedAfter).toBeLessThan(1000);
@@ -398,6 +430,7 @@ describe("a cancelled run's running job", () => {
           yield* until(statusOf("app-2", "check"), Rows.terminal);
         }),
       });
+
       expect(steps.get("check")?.status).toBe("cancelled");
       expect(jobs).toEqual(["lint"]);
     }),

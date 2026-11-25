@@ -68,6 +68,7 @@ describe("a task that may run on another Linux system", () => {
         steps: [task("test", ["aarch64-linux"]), task("lint")],
         agents: () => [agent("m1-linux", "aarch64-linux", 2)],
       });
+
       expect(status).toBe("passed");
       expect(placements.get("test")).toEqual({
         remote: true,
@@ -84,19 +85,23 @@ describe("a task that may run on another Linux system", () => {
       // for that slot, and waits for the other, which would never run if it kept waiting for the slot.
       let free = false;
       const ran = new Set<string>();
+
       const { status, placements } = yield* drive({
         steps: [task("a", ["aarch64-linux"]), task("b", ["aarch64-linux"])],
         agents: () => (free ? [agent("tower", "aarch64-linux", 1)] : []),
         work: (name) =>
           Effect.gen(function* () {
             ran.add(name);
+
             if (ran.size === 1) {
               yield* Effect.sleep("200 millis");
               free = true;
             }
+
             yield* until(() => ran.size === 2);
           }),
       });
+
       expect(status).toBe("passed");
       expect([...placements.values()].map((p) => p.remote).sort()).toEqual([false, true]);
     }),
@@ -113,6 +118,7 @@ describe("a task that may run on another Linux system", () => {
             agent("m1-linux", "aarch64-linux", 2, true),
           ],
         });
+
         expect(status).toBe("passed");
         expect(placements.get("test")).toEqual({
           remote: true,
@@ -132,6 +138,7 @@ describe("a task that may run on another Linux system", () => {
           agents: () => [agent("m1-linux", "aarch64-linux", 2)],
           event: pullRequest,
         });
+
         expect(plain.status).toBe("passed");
         expect(plain.placements.get("test")).toEqual({
           remote: false,
@@ -147,6 +154,7 @@ describe("a task that may run on another Linux system", () => {
           ],
           event: pullRequest,
         });
+
         expect(sandboxing.status).toBe("passed");
         expect(sandboxing.placements.get("test")).toEqual({
           remote: true,
@@ -165,6 +173,7 @@ const pullRequest = {
   head: "feature",
   fork: false,
 } as const;
+
 /** The pools of an agent that starts each job in its host's unit of the job's pool (`calder agent --units`). */
 const units: AgentUsage["pools"] = ["pr", "fork", "trusted"];
 
@@ -175,6 +184,7 @@ describe("a pull request's task", () => {
       Effect.gen(function* () {
         let free = false;
         const ran = new Set<string>();
+
         const { status, placements, roused } = yield* drive({
           steps: [task("a", ["aarch64-linux"]), task("b", ["aarch64-linux"])],
           agents: () => (free ? [agent("tower", "aarch64-linux", 1, false, units)] : []),
@@ -182,13 +192,16 @@ describe("a pull request's task", () => {
           work: (name) =>
             Effect.gen(function* () {
               ran.add(name);
+
               if (ran.size === 1) {
                 yield* Effect.sleep("200 millis");
                 free = true;
               }
+
               yield* until(() => ran.size === 2);
             }),
         });
+
         expect(status).toBe("passed");
         expect([...placements.values()].map((p) => p.remote).sort()).toEqual([false, true]);
         // Before the agent came, the waiting task asked for a host of either system it may run on.
@@ -199,6 +212,7 @@ describe("a pull request's task", () => {
   it.live("doesn't wake an agent's host right after the controller started", () =>
     Effect.gen(function* () {
       const ran = new Set<string>();
+
       const { status, roused } = yield* drive({
         steps: [task("a", ["aarch64-linux"]), task("b", ["aarch64-linux"])],
         rouseAfterStart: "1 minute",
@@ -206,9 +220,11 @@ describe("a pull request's task", () => {
         work: (name) =>
           Effect.gen(function* () {
             ran.add(name);
+
             if (ran.size === 1) yield* Effect.sleep("100 millis");
           }),
       });
+
       expect(status).toBe("passed");
       expect(roused).toEqual([]);
     }),
@@ -217,6 +233,7 @@ describe("a pull request's task", () => {
   it.live("doesn't wake an agent's host that said it runs no pull requests' jobs", () =>
     Effect.gen(function* () {
       const ran = new Set<string>();
+
       const { status, roused } = yield* drive({
         steps: [task("a", ["aarch64-linux"]), task("b", ["aarch64-linux"])],
         // Away, as a sleeping host's agent is: it has no free slot, but the controller saw what it runs.
@@ -225,9 +242,11 @@ describe("a pull request's task", () => {
         work: (name) =>
           Effect.gen(function* () {
             ran.add(name);
+
             if (ran.size === 1) yield* Effect.sleep("100 millis");
           }),
       });
+
       expect(status).toBe("passed");
       expect(roused).not.toContain("aarch64-linux");
     }),
@@ -236,6 +255,7 @@ describe("a pull request's task", () => {
   it.live("that gets its preview's secrets stays here", () =>
     Effect.gen(function* () {
       const preview = task("preview", ["aarch64-linux"]);
+
       const { status, placements, pools } = yield* drive({
         steps: [{ ...preview, task: { ...preview.task!, preview: true } }],
         agents: () => [
@@ -244,6 +264,7 @@ describe("a pull request's task", () => {
         ],
         event: pullRequest,
       });
+
       expect(status).toBe("passed");
       expect(placements.get("preview")).toEqual({ remote: false, offload: false, systems: [] });
       expect(pools.get("preview")).toBe("trusted");
@@ -255,6 +276,7 @@ describe("a pull request's task", () => {
     () =>
       Effect.gen(function* () {
         const pinned = task("android");
+
         const { steps } = yield* drive({
           steps: [{ ...pinned, task: { ...pinned.task!, platform: "aarch64-linux" } }],
           agents: () => [
@@ -262,6 +284,7 @@ describe("a pull request's task", () => {
           ],
           event: pullRequest,
         });
+
         expect(steps.get("android")).toMatchObject({ status: "died" });
       }),
   );
@@ -271,11 +294,13 @@ describe("a pull request's task", () => {
     () =>
       Effect.gen(function* () {
         const pinned = task("android");
+
         const { steps } = yield* drive({
           steps: [{ ...pinned, task: { ...pinned.task!, platform: "aarch64-linux" } }],
           agents: () => [agent("dev-hauke-tasks", "aarch64-linux", 2, true, units)],
           event: pullRequest,
         });
+
         expect(steps.get("android")).toMatchObject({
           status: "died",
           error: {
@@ -291,6 +316,7 @@ describe("a pull request's task", () => {
     () =>
       Effect.gen(function* () {
         const preview = task("preview");
+
         const { steps } = yield* drive({
           steps: [
             { ...preview, task: { ...preview.task!, preview: true, platform: "aarch64-linux" } },
@@ -298,6 +324,7 @@ describe("a pull request's task", () => {
           agents: () => [agent("tower", "aarch64-linux", 2, false, units)],
           event: pullRequest,
         });
+
         expect(steps.get("preview")).toMatchObject({
           status: "died",
           error: {

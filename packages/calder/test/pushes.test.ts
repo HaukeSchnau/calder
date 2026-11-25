@@ -22,6 +22,7 @@ describe("a push to a branch other than the default", () => {
         unplanned: true,
         seed: pushes(["main", "release/*"]),
       });
+
       expect(status).toBe("missing");
       expect(jobs).toEqual([]);
     }),
@@ -39,6 +40,7 @@ describe("a push to a branch other than the default", () => {
           unplanned: true,
           planSlots: 0,
         });
+
         expect(status).toBe("missing");
         expect(jobs).toEqual(["rules"]);
       }),
@@ -52,9 +54,11 @@ describe("a push to a branch other than the default", () => {
         unplanned: true,
         seed: pushes(["main", "release/*"]),
       });
+
       expect(named.jobs).toEqual(["plan"]);
 
       let recorded: unknown = undefined;
+
       const unknown = yield* drive({
         steps: [],
         event: { _tag: "Push", branch: "release/1" },
@@ -62,6 +66,7 @@ describe("a push to a branch other than the default", () => {
         unplanned: true,
         meanwhile: Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+
           const rows = yield* sql<{
             branches: string;
           }>`select branches from pipeline_pushes where project = 'app' and tree = 'tree'`.pipe(
@@ -72,9 +77,11 @@ describe("a push to a branch other than the default", () => {
             Effect.timeout("5 seconds"),
             Effect.orDie,
           );
+
           recorded = JSON.parse(rows[0]!.branches);
         }),
       });
+
       expect(unknown.jobs).toEqual(["rules", "plan"]);
       expect(recorded).toEqual(["release/*"]);
     }),

@@ -23,6 +23,7 @@ const closure: PlannedStep = {
   detail: "checks.tower",
   build: { attr: "checks.tower", drv: `${held}.drv`, out: held, system: null },
 };
+
 /** infra's deploy of a host: a task that holds a lease of its own and interpolates the host's closure. */
 const deployTower: PlannedStep = {
   ...step,
@@ -45,12 +46,14 @@ const deployTower: PlannedStep = {
     lease: "deploy-tower",
   },
 };
+
 const release: PlannedStep = {
   ...closure,
   name: "release",
   detail: "packages.projectRelease",
   build: { ...closure.build!, attr: "packages.projectRelease" },
 };
+
 /** `Release.promote`: an action with the deploy grant that reads the release. */
 const promote: PlannedStep = {
   ...step,
@@ -65,6 +68,7 @@ const asleep: JobResult = {
   _tag: "Skipped",
   reason: "tower is asleep; the first run while it is awake deploys it",
 };
+
 const unreachable: JobResult = {
   _tag: "Failed",
   tag: "FleetRejected",
@@ -76,6 +80,7 @@ const unreachable: JobResult = {
 /** The runs, by number, whose builds `step` keeps after they ended. */
 const kept = (stateDir: string, step: string) => {
   const dir = join(stateDir, "deploys", "app", step);
+
   return existsSync(dir) ? readdirSync(dir).toSorted() : [];
 };
 
@@ -150,14 +155,17 @@ describe("what a deploy reads stays in the store until the step deploys", () => 
   it.live("keeps nothing for an older run once the same step of a newer run held the lease", () =>
     Effect.gen(function* () {
       const stateDir = mkdtempSync(join(tmpdir(), "calder-deploy-roots-"));
+
       const replaced: JobResult = {
         _tag: "Skipped",
         reason: "#7 took deploy-tower's deploy lease, so this older run doesn't deploy",
       };
+
       const newer = Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`insert into lease_steps (project, step, run) values ('app#deploy-tower', 'deploy-tower', 7)`;
       });
+
       yield* deployRun(stateDir, 2, [closure, deployTower], "deploy-tower", replaced, newer);
       expect(kept(stateDir, "deploy-tower")).toEqual([]);
     }),
@@ -166,11 +174,13 @@ describe("what a deploy reads stays in the store until the step deploys", () => 
   it.live("keeps nothing for a pull request's run", () =>
     Effect.gen(function* () {
       const stateDir = mkdtempSync(join(tmpdir(), "calder-deploy-roots-"));
+
       const preview: PlannedStep = {
         ...deployTower,
         name: "preview",
         task: { ...deployTower.task!, lease: true, preview: true },
       };
+
       yield* drive({
         steps: [closure, preview],
         stateDir,

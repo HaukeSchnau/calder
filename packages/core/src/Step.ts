@@ -9,6 +9,7 @@ import type { SecretRef } from "./Secret.ts";
 export const TypeId = "~@calder-ci/core/Step" as const;
 
 export type Kind = "build" | "setup" | "task" | "action" | "output";
+
 export type Platform = "aarch64-linux" | "x86_64-linux" | "aarch64-darwin";
 
 /**
@@ -32,21 +33,27 @@ export interface Step<out A, out E = never, out R = never, out O = {}, out G = n
 
 export declare namespace Step {
   type Any = Step<any, any, any, any, any>;
+
   type Success<S> = S extends Step<infer A, any, any, any, any> ? A : never;
+
   type Error<S> = S extends Step<any, infer E, any, any, any> ? E : never;
+
   type Services<S> = S extends Step<any, any, infer R, any, any> ? R : never;
+
   type Grants<S> = S extends Step<any, any, any, any, infer G> ? G : never;
 
   interface Exit<A, E, R> {
     readonly _tag: "Exit";
     readonly step: Step<A, E, R, any, any>;
   }
+
   interface Exits<T extends ReadonlyArray<Any>> {
     readonly _tag: "Exits";
     readonly steps: T;
   }
 
   type Need = Any | Exit<any, any, any> | Exits<ReadonlyArray<Any>>;
+
   type Needs = { readonly [key: string]: Need };
 
   type InputOf<N> =
@@ -55,6 +62,7 @@ export declare namespace Step {
       : N extends Exits<infer T>
         ? { readonly [K in keyof T]: Outcome<Success<T[K]>, Error<T[K]>> }
         : Success<N>;
+
   type Inputs<N extends Needs> = { readonly [K in keyof N]: InputOf<N[K]> };
 
   type NeedServices<N extends Needs> = {
@@ -71,22 +79,26 @@ export interface Passed<A> {
   readonly step: string;
   readonly value: A;
 }
+
 export interface Failed<E> {
   readonly _tag: "Failed";
   readonly step: string;
   readonly error: E;
 }
+
 /** The step threw something that isn't a `Calder.Failure`, or its process died. */
 export interface Died {
   readonly _tag: "Died";
   readonly step: string;
   readonly message: string;
 }
+
 /** A step this one depends on did not pass, so it never ran. */
 export interface Blocked {
   readonly _tag: "Blocked";
   readonly step: string;
 }
+
 export type Outcome<A, E> = Passed<A> | Failed<E> | Died | Blocked;
 
 export type Grants = {
@@ -245,6 +257,7 @@ export interface Dependency {
 
 export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
   const def = step.def;
+
   switch (def._tag) {
     case "Build":
     case "Setup":
@@ -253,6 +266,7 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
       return [{ step: def.task, via: "needs" }];
     case "Task": {
       const run = taskCommand(def);
+
       return [
         ...(def.setup === undefined
           ? []
@@ -263,6 +277,7 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
         ...def.afterEnded.map((s): Dependency => ({ step: s, via: "exit" })),
       ];
     }
+
     case "Action":
       return [
         ...Object.values(def.needs).flatMap((need): ReadonlyArray<Dependency> =>
@@ -291,8 +306,13 @@ export const taskSecrets = (def: TaskDef): ReadonlyArray<string> => [
 ];
 
 export type Any = Step.Any;
+
 export type Success<S> = Step.Success<S>;
+
 export type Error<S> = Step.Error<S>;
+
 export type Services<S> = Step.Services<S>;
+
 export type Needs = Step.Needs;
+
 export type Inputs<N extends Step.Needs> = Step.Inputs<N>;

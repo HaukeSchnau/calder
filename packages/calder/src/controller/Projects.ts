@@ -54,6 +54,7 @@ export const layer = Layer.effect(Projects)(
       repo: string;
       default_branch: string;
     }>`select * from projects`.pipe(Effect.orDie);
+
     for (const row of stored)
       add({
         name: row.name,
@@ -63,6 +64,7 @@ export const layer = Layer.effect(Projects)(
         secrets: {},
       });
     const branchFromRepo = new Set<string>();
+
     for (const [name, p] of Object.entries(config.projects)) {
       if (p.defaultBranch === undefined) branchFromRepo.add(name);
       add({
@@ -85,10 +87,13 @@ export const layer = Layer.effect(Projects)(
     const byRepo: Projects["Service"]["byRepo"] = (repo, at = {}) =>
       Effect.gen(function* () {
         const known = find(repo);
+
         if (known !== undefined) return known;
         const [owner, name] = repo.split("/");
+
         if (owner === undefined || name === undefined || !config.owners.includes(owner))
           return undefined;
+
         const project: Project = {
           name: name.toLowerCase(),
           repo,
@@ -96,10 +101,13 @@ export const layer = Layer.effect(Projects)(
           targets: null,
           secrets: {},
         };
+
         const carries =
           (at.sha !== undefined && (yield* hasPipeline(repo, at.sha))) ||
           (yield* hasPipeline(repo, project.defaultBranch));
+
         if (!carries) return undefined;
+
         // Another event of the repository may have enrolled it meanwhile, or another repository has the name.
         if (projects.has(project.name)) return find(repo);
         yield* sql`insert into projects (name, repo, default_branch, created_at)
@@ -108,6 +116,7 @@ export const layer = Layer.effect(Projects)(
         );
         add(project);
         yield* Effect.logInfo(`enrolled ${repo} as ${project.name}`);
+
         return project;
       });
 
@@ -116,6 +125,7 @@ export const layer = Layer.effect(Projects)(
       Effect.gen(function* () {
         if (yield* hasPipeline(project.repo, project.defaultBranch)) return;
         const ran = yield* sql`select 1 from runs where project = ${project.name} limit 1`;
+
         if (ran.length > 0) return;
         yield* sql`delete from projects where name = ${project.name}`;
         projects.delete(project.name);
@@ -133,8 +143,11 @@ export const layer = Layer.effect(Projects)(
             Effect.forEach(
               ({ repo, defaultBranch }) => {
                 const known = find(repo);
+
                 if (known === undefined) return byRepo(repo, { defaultBranch });
+
                 if (branchFromRepo.has(known.name)) add({ ...known, defaultBranch });
+
                 return Effect.void;
               },
               { concurrency: 4, discard: true },
@@ -143,9 +156,11 @@ export const layer = Layer.effect(Projects)(
         ),
       { discard: true },
     );
+
     const enrolled = stored.flatMap((row) =>
       config.projects[row.name] === undefined ? [projects.get(row.name)!] : [],
     );
+
     yield* Effect.forEach(enrolled, forget, { concurrency: 4, discard: true }).pipe(
       Effect.andThen(scan),
       Effect.catchCause((cause) => Effect.logWarning("scanning for projects failed", cause)),

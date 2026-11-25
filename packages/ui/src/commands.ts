@@ -17,6 +17,7 @@ export function useRunCommands() {
   const cancelRpc = useAtomSet(Calder.mutation("cancel"), { mode: "promiseExit" });
   const rerunRpc = useAtomSet(Calder.mutation("rerun"), { mode: "promiseExit" });
   const triggerRpc = useAtomSet(Calder.mutation("trigger"), { mode: "promiseExit" });
+
   const started = (exit: Exit.Exit<Domain.Run, unknown>) => {
     if (exit._tag === "Success") {
       toast(`Started ${exit.value.project} #${exit.value.number}`);
@@ -25,15 +26,18 @@ export function useRunCommands() {
       toast(errorText(failureOf(exit)), "bad");
     }
   };
+
   return {
     cancel: async (run: Domain.Run) => {
       const exit = await cancelRpc({ payload: { runId: run.id } });
+
       if (exit._tag === "Success") toast(`Cancelled ${run.project} #${run.number}`);
       else toast(errorText(failureOf(exit)), "bad");
     },
     /** Runs what failed in the run again, in the same run; or, with `force`, every step in a new run. */
     rerun: async (run: Domain.Run, force = false) => {
       const exit = await rerunRpc({ payload: { runId: run.id, ...(force ? { force } : {}) } });
+
       if (exit._tag === "Success" && exit.value.id === run.id)
         toast(`Running the failed steps of ${run.project} #${run.number} again`);
       else started(exit);

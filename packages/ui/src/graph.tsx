@@ -16,8 +16,11 @@ const done = (s: Domain.StepStatus | undefined) => s === "passed" || s === "reus
 
 function groupStatus(steps: ReadonlyArray<Domain.StepRun>): Domain.StepStatus {
   if (steps.some((s) => s.status === "failed" || s.status === "died")) return "failed";
+
   if (steps.some((s) => s.status === "running")) return "running";
+
   if (steps.every((s) => done(s.status))) return "passed";
+
   return "pending";
 }
 
@@ -38,10 +41,13 @@ export function Meta({
   readonly short?: boolean;
 }) {
   const now = useNow();
+
   const wait = useAtomValue(agentWaitsAtom).find(
     (w) => w.run.id === step.runId && w.step.name === step.name,
   );
+
   const d = stepDuration(step, now);
+
   switch (step.status) {
     case "running":
       return (
@@ -63,16 +69,20 @@ export function Meta({
             {dur(now - (step.queuedAt ?? now))}
           </span>
         );
+
       return (
         <span className="dim">queued{short ? "" : ` ${dur(now - (step.queuedAt ?? now))}`}</span>
       );
     case "pending": {
       if (short) return <span className="dim">pending</span>;
+
       const wait = [...step.needs, ...step.after, ...step.exits].find(
         (n) => !done(steps.find((s) => s.name === n)?.status),
       );
+
       return <span className="dim">{wait ? `waits for ${wait}` : "pending"}</span>;
     }
+
     case "passed":
       return <span>{dur(d ?? 0)}</span>;
     case "reused":
@@ -82,10 +92,13 @@ export function Meta({
             {short ? "not needed" : "not needed: no task that starts from it ran"}
           </span>
         );
+
       if (step.kind === "setup")
         return <span className="dim">{short ? "ready" : "already set up"}</span>;
+
       if (step.reusedFrom === null)
         return <span className="dim">{short ? "built" : "already built"}</span>;
+
       return (
         <span className="dim">{short ? "reused" : `reused from #${step.reusedFrom.number}`}</span>
       );
@@ -100,12 +113,16 @@ export function Meta({
       return <span className="bad">died{short ? "" : ` after ${dur(d ?? 0)}`}</span>;
     case "blocked": {
       if (short) return <span className="dim">blocked</span>;
+
       const by = [...step.needs, ...step.after].find((n) => {
         const s = steps.find((x) => x.name === n);
+
         return s && !done(s.status);
       });
+
       return <span className="dim">{by ? `blocked by ${by}` : "blocked"}</span>;
     }
+
     case "cancelled":
       return <span className="dim">cancelled</span>;
     case "skipped":
@@ -120,22 +137,27 @@ export function Graph({ steps, selected, onSelect }: Props) {
   // Positions depend only on the graph's shape, not on statuses.
   const shape: Layout = useMemo(() => layout(steps), [key]);
   const byName = new Map(steps.map((s) => [s.name, s]));
+
   const members =
     shape.group?.members
       .map((m) => byName.get(m))
       .filter((s): s is Domain.StepRun => s !== undefined) ?? [];
+
   const statusOf = (node: string) =>
     node === GROUP ? groupStatus(members) : byName.get(node)?.status;
+
   const selectedPort = selected && shape.group?.members.includes(selected) ? GROUP : selected;
 
   const frame = useRef<HTMLDivElement>(null);
   const [avail, setAvail] = useState(0);
   useLayoutEffect(() => {
     const el = frame.current;
+
     if (!el) return;
     const observer = new ResizeObserver(() => setAvail(el.clientWidth));
     observer.observe(el);
     setAvail(el.clientWidth);
+
     return () => observer.disconnect();
   }, []);
   const pad = 2;
@@ -144,6 +166,7 @@ export function Graph({ steps, selected, onSelect }: Props) {
   const scale = avail > 0 ? Math.max(0.72, Math.min(1, avail / W)) : 1;
 
   const now = useNow();
+
   const longest = Math.max(
     30_000,
     ...members.map((s) =>
@@ -185,6 +208,7 @@ export function Graph({ steps, selected, onSelect }: Props) {
               .map((e) => {
                 const from = statusOf(e.from);
                 const to = statusOf(e.to);
+
                 const state =
                   to === "blocked" || to === "cancelled" || to === "skipped"
                     ? "off"
@@ -193,8 +217,10 @@ export function Graph({ steps, selected, onSelect }: Props) {
                       : !done(from) && from !== "running"
                         ? "pending"
                         : "";
+
                 const hot =
                   selectedPort !== null && (e.from === selectedPort || e.to === selectedPort);
+
                 return (
                   <path
                     key={`${e.from}>${e.to}:${e.kind}`}
@@ -245,7 +271,9 @@ export function Graph({ steps, selected, onSelect }: Props) {
             .filter((s) => !shape.group?.members.includes(s.name))
             .map((s) => {
               const box = shape.boxes.get(s.name);
+
               if (!box) return null;
+
               return (
                 <button
                   key={s.name}
@@ -301,7 +329,9 @@ const NotCached = ({ step }: { readonly step: Domain.StepRun }) =>
 
 function GroupSummary({ steps }: { readonly steps: ReadonlyArray<Domain.StepRun> }) {
   const failed = steps.filter((s) => s.status === "failed" || s.status === "died").length;
+
   if (failed) return <span className="mt bad">{failed} failed</span>;
+
   return (
     <span className="mt">
       {steps.filter((s) => done(s.status)).length} of {steps.length}
@@ -311,6 +341,7 @@ function GroupSummary({ steps }: { readonly steps: ReadonlyArray<Domain.StepRun>
 
 function Progress({ step, now }: { readonly step: Domain.StepRun; readonly now: number }) {
   const p = progressOf(step, now);
+
   return p === null ? null : (
     <span className="prog" aria-hidden="true">
       <i style={{ width: `${(p * 100).toFixed(1)}%` }} />
@@ -329,13 +360,16 @@ function Track({
   readonly now: number;
 }) {
   const d = stepDuration(step, now);
+
   const cls =
     step.status === "running"
       ? "run"
       : step.status === "failed" || step.status === "died"
         ? "failed"
         : "";
+
   const pct = (ms: number) => `${Math.min(100, (ms / max) * 100).toFixed(1)}%`;
+
   return (
     <span className="trk" aria-hidden="true">
       {d !== null && step.status !== "reused" ? (
@@ -351,18 +385,22 @@ function Track({
 /** Narrow screens: the same steps as a list in graph order, the required checks kept together. */
 export function GraphList({ steps, selected, onSelect }: Props) {
   const shape = useMemo(() => layout(steps), [shapeKey(steps)]);
+
   const ordered = [...steps].sort((a, b) => {
     const pa = shape.group?.members.includes(a.name) ? shape.group.box : shape.boxes.get(a.name);
     const pb = shape.group?.members.includes(b.name) ? shape.group.box : shape.boxes.get(b.name);
+
     return (
       (pa?.x ?? 0) - (pb?.x ?? 0) ||
       (pa?.y ?? 0) - (pb?.y ?? 0) ||
       (shape.boxes.get(a.name)?.y ?? 0) - (shape.boxes.get(b.name)?.y ?? 0)
     );
   });
+
   const members = new Set(shape.group?.members ?? []);
   const rows: Array<React.ReactNode> = [];
   let groupDone = false;
+
   for (const s of ordered) {
     if (members.has(s.name)) {
       if (groupDone) continue;
@@ -381,10 +419,12 @@ export function GraphList({ steps, selected, onSelect }: Props) {
       );
       continue;
     }
+
     rows.push(
       <ListRow key={s.name} step={s} steps={steps} selected={selected} onSelect={onSelect} />,
     );
   }
+
   return <div className="graph-list">{rows}</div>;
 }
 

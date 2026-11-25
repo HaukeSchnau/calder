@@ -108,6 +108,7 @@ export const terminal = (status: Domain.StepStatus) =>
 export const succeeded = (status: Domain.StepStatus) => status === "passed" || status === "reused";
 
 type Task = NonNullable<PlannedStep["task"]>;
+
 type Build = NonNullable<PlannedStep["build"]>;
 
 /** Steps planned before setups or per-file tasks existed lack those fields. */
@@ -117,6 +118,7 @@ export const spec = (row: StepRow): PlannedStep => {
     readonly task: (Omit<Task, "each"> & { readonly each?: Task["each"] }) | null;
     readonly build: (Omit<Build, "system"> & { readonly system?: Build["system"] }) | null;
   };
+
   return {
     ...planned,
     setup: planned.setup ?? null,
@@ -176,12 +178,16 @@ export const run = (row: RunRow, counts: Record<string, number> = {}): Domain.Ru
 const value = (json: string | null): Domain.Value | null => {
   if (json === null) return null;
   const parsed = JSON.parse(json) as unknown;
+
   if (parsed === null) return null;
+
   const id =
     typeof parsed === "object" && parsed !== null && "$calder" in parsed
       ? String((parsed as { $calder: unknown }).$calder)
       : null;
+
   const render = id === null ? undefined : Calder.registry.get(id)?.render;
+
   return {
     type: id,
     render: render?.render ?? null,
@@ -196,6 +202,7 @@ export const runNumber = (id: string) => Number(id.slice(id.lastIndexOf("-") + 1
 
 export const step = (row: StepRow, expectedMs: number | null = null): Domain.StepRun => {
   const s = spec(row);
+
   return {
     runId: row.run_id,
     name: row.name,
@@ -258,19 +265,24 @@ export const withReasons = (
   steps: ReadonlyArray<Domain.StepRun>,
 ): ReadonlyArray<Domain.StepRun> => {
   const byName = new Map(steps.map((s) => [s.name, s]));
+
   const open = (names: ReadonlyArray<string>) =>
     names.filter((name) => {
       const dep = byName.get(name);
+
       return dep !== undefined && !terminal(dep.status) && dep.kind !== "setup";
     });
+
   return steps.map((step) => {
     if (step.status !== "pending" || (step.waiting ?? null) !== null) return step;
     const pass = open([...step.needs, ...step.after]);
     const end = open(step.exits).filter((name) => !pass.includes(name));
+
     const reasons = [
       ...(pass.length === 0 ? [] : [`${pass.join(", ")} to pass`]),
       ...(end.length === 0 ? [] : [`${end.join(", ")} to end`]),
     ];
+
     return reasons.length === 0 ? step : { ...step, waiting: reasons.join("; ") };
   });
 };
@@ -297,13 +309,18 @@ export const criticalPath = (
 ): ReadonlyArray<PlannedStep> => {
   const byName = new Map(steps.map((s) => [s.name, s]));
   const critical = new Set<string>();
+
   const visit = (name: string) => {
     const step = byName.get(name);
+
     if (step === undefined || critical.has(name)) return;
     critical.add(name);
+
     for (const dep of [...step.needs, ...(step.gates ?? [])]) visit(dep);
   };
+
   if (!fork) for (const step of steps) if (deploys(step)) visit(step.name);
+
   return steps.map((step) => ({ ...step, critical: critical.has(step.name) }));
 };
 
@@ -333,6 +350,7 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
   Effect.gen(function* () {
     if (run.tree == null) return null;
     const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<{
       id: string;
       sha: string;
@@ -346,28 +364,36 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
         and not exists (select 1 from run_records r join audit_mismatches m on m.project = runs.project
           and json_extract(m.detail, '$.record') = r.evaluation where r.run_id = runs.id)
       order by created_at desc limit 20`;
+
     const candidates = rows
       .filter((r) => writesRecords(r, defaultBranch))
       .flatMap((row) => {
         const spec = JSON.parse(row.plan) as PlanSpec;
+
         if (spec.derivations === undefined) return [];
         const all = [...Object.keys(spec.derivations), appAttr];
+
         const trusted =
           row.trust === "trusted"
             ? all
             : (JSON.parse(row.event) as Domain.Event)._tag === "PullRequest"
               ? (spec.trusted ?? [])
               : [];
+
         const whole = all.every((attr) => trusted.includes(attr));
         const plan = { run: row.id, revision: row.sha, trusted, whole };
+
         if (!trustedOnly(run)) return [{ ...plan, derivations: spec.derivations, app: spec.app }];
+
         const derivations = Object.fromEntries(
           Object.entries(spec.derivations).filter(([attr]) => trusted.includes(attr)),
         );
+
         return Object.keys(derivations).length === 0
           ? []
           : [{ ...plan, derivations, ...(trusted.includes(appAttr) ? { app: spec.app } : {}) }];
       });
+
     return candidates.find((c) => c.whole) ?? candidates[0] ?? null;
   }).pipe(Effect.orDie);
 
@@ -394,14 +420,17 @@ export const trustedAttrs = (
     const taken = plan.fromRecords ?? {};
     const ids = [...new Set(Object.values(taken))];
     const sql = yield* SqlClient.SqlClient;
+
     const trustedIds = new Set(
       ids.length === 0
         ? []
         : (yield* sql<{ id: number }>`select id from evaluations where project = ${project}
       and trust = 'trusted' and ${sql.in("id", ids)}`).map((row) => row.id),
     );
+
     const { reused } = plan;
     const derivations = plan.derivations ?? {};
+
     const earlierHas = (attr: string) =>
       earlier !== null &&
       (attr === appAttr
@@ -409,12 +438,14 @@ export const trustedAttrs = (
         : earlier.derivations !== undefined &&
           attr in earlier.derivations &&
           sameDerivation(derivations[attr] ?? null, earlier.derivations[attr] ?? null));
+
     const fromEarlier = (attr: string) =>
       reused?.attrs.includes(attr) === true
         ? earlier !== null && reused.revision === earlier.revision && earlier.trusted.includes(attr)
         : earlierHas(attr)
           ? earlier!.trusted.includes(attr)
           : undefined;
+
     return [...new Set([...Object.keys(derivations), appAttr])]
       .filter((attr) =>
         attr in taken ? trustedIds.has(taken[attr]!) : (fromEarlier(attr) ?? true),
@@ -423,6 +454,7 @@ export const trustedAttrs = (
   }).pipe(Effect.orDie);
 
 type Derivation = NonNullable<NonNullable<PlanSpec["derivations"]>[string]>;
+
 const sameDerivation = (a: Derivation | null, b: Derivation | null) =>
   a === null || b === null ? a === b : a.drv === b.drv && a.out === b.out && a.system === b.system;
 
@@ -430,6 +462,7 @@ const sameDerivation = (a: Derivation | null, b: Derivation | null) =>
 export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<{
       id: number;
       attr: string;
@@ -442,14 +475,17 @@ export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
       select id, attr, footprint, count, digest, derivation, app from evaluations
       where project = ${run.project} and (${trustedOnly(run) ? 1 : 0} = 0 or trust = 'trusted')
       order by created_at desc, id desc`;
+
     if (rows.length === 0) return undefined;
     const ids = [...new Set(rows.map((r) => r.footprint))];
+
     const footprints = yield* sql<{
       id: number;
       revision: string;
       entries: string;
     }>`select id, revision, entries from footprints
       where ${sql.in("id", ids)}`;
+
     return {
       footprints: footprints.map((f) => ({
         id: String(f.id),
@@ -488,7 +524,9 @@ export const writesRecords = (
   defaultBranch: string | undefined,
 ) => {
   if (run.fork === 1) return false;
+
   if (run.trust === "pr") return true;
+
   return ofDefaultBranch(JSON.parse(run.event) as Domain.Event, defaultBranch);
 };
 
@@ -509,29 +547,36 @@ export const keepRecords = (
   Effect.gen(function* () {
     if (!writesRecords(run, defaultBranch) || recorded.evaluations.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
+
     const blocked = new Set(
       (yield* sql<{ attr: string; digest: string }>`select attr, digest from record_blocks
       where project = ${run.project}`).map((b) => `${b.attr}\0${b.digest}`),
     );
+
     const now = Date.now();
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const ids = new Map<string, number>();
+
         for (const footprint of recorded.footprints) {
           const [row] = yield* sql<{
             id: number;
           }>`insert into footprints (project, revision, entries, created_at)
           values (${run.project}, ${footprint.revision}, ${JSON.stringify(footprint.entries)}, ${now}) returning id`;
+
           ids.set(footprint.id, row!.id);
         }
+
         for (const e of recorded.evaluations) {
           const footprint = ids.get(e.footprint);
+
           if (footprint === undefined || blocked.has(`${e.attr}\0${e.digest}`)) continue;
           yield* sql`insert into evaluations (project, attr, footprint, count, digest, derivation, app, trust, run_id, created_at)
           values (${run.project}, ${e.attr}, ${footprint}, ${e.count}, ${e.digest},
             ${e.derivation === null ? null : JSON.stringify(e.derivation)}, ${e.app === undefined ? null : JSON.stringify(e.app)},
             ${trust}, ${run.id}, ${now})`;
         }
+
         yield* sql`delete from evaluations where project = ${run.project} and id not in (select id from (
         select id, row_number() over (partition by attr order by created_at desc, id desc) as n from evaluations
         where project = ${run.project}) where n <= 3)`;
@@ -544,23 +589,28 @@ export const keepRecords = (
 export const loadRun = (id: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const rows =
       yield* sql<PlannedRunRow>`select runs.*, run_plans.plan from runs left join run_plans on run_plans.run_id = runs.id
       where runs.id = ${id}`;
+
     return rows[0];
   }).pipe(Effect.orDie);
 
 export const loadSteps = (runId: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     return yield* sql<StepRow>`select * from steps where run_id = ${runId} order by position`;
   }).pipe(Effect.orDie);
 
 export const loadStep = (runId: string, name: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const rows =
       yield* sql<StepRow>`select * from steps where run_id = ${runId} and name = ${name}`;
+
     return rows[0];
   }).pipe(Effect.orDie);
 
@@ -572,6 +622,7 @@ export const loadStep = (runId: string, name: string) =>
 export const liveBuilds = (project: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<{
       readonly project: string;
       readonly status: string;
@@ -581,6 +632,7 @@ export const liveBuilds = (project: string) =>
       select r.project, r.status, s.kind, json_extract(s.spec, '$.build.drv') as drv from runs r
       left join steps s on s.run_id = r.id and s.kind = 'build' and s.status in ('pending', 'queued', 'running')
       where r.status in ('queued', 'planning', 'running')`;
+
     return {
       unknown: rows.some(
         (r) =>
@@ -609,6 +661,7 @@ export const replaced = (run: {
     const sql = yield* SqlClient.SqlClient;
     const { project, event, branch, pr, sha } = run;
     const tag = (name: string) => sql`event like ${`{"_tag":"${name}"%`}`;
+
     const same =
       pr !== null
         ? sql`pr = ${pr}`
@@ -617,11 +670,14 @@ export const replaced = (run: {
           : event._tag === "Check"
             ? sql`branch = ${branch} and pr is null and ${tag("Check")}`
             : null;
+
     if (same === null) return [];
+
     const older = yield* sql<{ readonly id: string }>`select id from runs
       where project = ${project} and ${same} and status in ('queued', 'planning', 'running') and sha in (
         select sha from runs where project = ${project} and ${same} and created_at < (
           select min(created_at) from runs where project = ${project} and ${same} and sha = ${sha}))`;
+
     return older.map((r) => r.id);
   }).pipe(Effect.orDie);
 
@@ -629,15 +685,19 @@ export const counts = (runIds: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     if (runIds.length === 0) return new Map<string, Record<string, number>>();
     const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<{ run_id: string; status: string; n: number }>`select run_id,
         case when status = 'reused' and files_total = 0 then 'no-files' else status end as status, count(*) as n from steps
       where ${sql.in("run_id", runIds)} and kind != 'output' group by 1, 2`;
+
     const out = new Map<string, Record<string, number>>();
+
     for (const r of rows) {
       const c = out.get(r.run_id) ?? {};
       c[r.status] = r.n;
       out.set(r.run_id, c);
     }
+
     return out;
   }).pipe(Effect.orDie);
 
@@ -671,8 +731,10 @@ export const testResult = (row: TestRow, flaky: boolean): Domain.TestResult => (
 export const failingTests = (runId: string, step: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<TestRow>`select * from tests where run_id = ${runId} and step = ${step}
       and status in ('failed', 'timeout') and superseded = 0 limit 200`;
+
     return rows.map((r) => testResult(r, false));
   }).pipe(Effect.orDie);
 

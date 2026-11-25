@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 export const Trust = Schema.Literals(["pr", "trusted"]);
+
 export type Trust = typeof Trust.Type;
 
 export const RunStatus = Schema.Literals([
@@ -12,6 +13,7 @@ export const RunStatus = Schema.Literals([
   "cancelled",
   "errored",
 ]);
+
 export type RunStatus = typeof RunStatus.Type;
 
 /** A run with one of these statuses has ended. */
@@ -38,9 +40,11 @@ export const StepStatus = Schema.Literals([
    */
   "skipped",
 ]);
+
 export type StepStatus = typeof StepStatus.Type;
 
 export const StepKind = Schema.Literals(["build", "setup", "task", "action", "output"]);
+
 export type StepKind = typeof StepKind.Type;
 
 export const Event = Schema.Union([
@@ -69,6 +73,7 @@ export const Event = Schema.Union([
     background: Schema.optional(Schema.Boolean),
   }),
 ]);
+
 export type Event = typeof Event.Type;
 
 export const Commit = Schema.Struct({
@@ -79,6 +84,7 @@ export const Commit = Schema.Struct({
   author: Schema.String,
   timestamp: Schema.Number,
 });
+
 export type Commit = typeof Commit.Type;
 
 /** A pull request Calder merges once it is green and up to date with its base. */
@@ -89,6 +95,7 @@ export const MergeRequest = Schema.Struct({
   message: Schema.NullOr(Schema.String),
   requestedAt: Schema.Number,
 });
+
 export type MergeRequest = typeof MergeRequest.Type;
 
 export const Run = Schema.Struct({
@@ -113,6 +120,7 @@ export const Run = Schema.Struct({
   /** Counts by status, for lists, where a task whose `each` matched no file counts as `no-files`. */
   counts: Schema.Record(Schema.String, Schema.Number),
 });
+
 export type Run = typeof Run.Type;
 
 /** A value a step produced, ready to show. */
@@ -125,6 +133,7 @@ export const Value = Schema.Struct({
   text: Schema.String,
   json: Schema.Unknown,
 });
+
 export type Value = typeof Value.Type;
 
 export const StepError = Schema.Struct({
@@ -133,6 +142,7 @@ export const StepError = Schema.Struct({
   /** The last lines of output before the failure. */
   excerpt: Schema.String,
 });
+
 export type StepError = typeof StepError.Type;
 
 export const StepRun = Schema.Struct({
@@ -202,6 +212,7 @@ export const StepRun = Schema.Struct({
   /** On a deploy's or a preview's critical path, so it takes the latency lane. */
   critical: Schema.optionalKey(Schema.Boolean),
 });
+
 export type StepRun = typeof StepRun.Type;
 
 /** A task whose `each` matched no file: it counts as reused, though nothing was there to reuse. */
@@ -234,6 +245,7 @@ export const TestResult = Schema.Struct({
   /** Passed and failed on the same key in recent runs. */
   flaky: Schema.Boolean,
 });
+
 export type TestResult = typeof TestResult.Type;
 
 /**
@@ -251,6 +263,7 @@ export const RetriedFile = Schema.Struct({
   /** The files that shared its job every time; null until it passed only on retry in another run too. */
   suspects: Schema.NullOr(Schema.Array(Schema.String)),
 });
+
 export type RetriedFile = typeof RetriedFile.Type;
 
 export const RunDetail = Schema.Struct({
@@ -264,6 +277,7 @@ export const RunDetail = Schema.Struct({
   /** Other runs of the same change or pull request, newest first. */
   siblings: Schema.Array(Run),
 });
+
 export type RunDetail = typeof RunDetail.Type;
 
 export const LogLine = Schema.Struct({
@@ -275,6 +289,7 @@ export const LogLine = Schema.Struct({
   timestamp: Schema.Number,
   text: Schema.String,
 });
+
 export type LogLine = typeof LogLine.Type;
 
 /** A line as the `logs` RPC serves it. */
@@ -283,6 +298,7 @@ export const LogEntry = Schema.Struct({
   /** Position in the log as the controller serves it; `before` pages back by it. */
   index: Schema.Number,
 });
+
 export type LogEntry = typeof LogEntry.Type;
 
 /**
@@ -300,6 +316,7 @@ export const Span = Schema.Struct({
   status: Schema.Literals(["ok", "error", "unset"]),
   attributes: Schema.Record(Schema.String, Schema.String),
 });
+
 export type Span = typeof Span.Type;
 
 export const Deployment = Schema.Struct({
@@ -316,6 +333,7 @@ export const Deployment = Schema.Struct({
   /** The run deploying here right now. */
   deployingRun: Schema.NullOr(Schema.String),
 });
+
 export type Deployment = typeof Deployment.Type;
 
 /** A footprint record an audit found wrong (see the controller's `audit`). */
@@ -329,6 +347,7 @@ export const AuditMismatch = Schema.Struct({
   /** What the fresh evaluation read that the record didn't. */
   missed: Schema.Array(Schema.String),
 });
+
 export type AuditMismatch = typeof AuditMismatch.Type;
 
 /** Where a deploying project's default branch stands: what is deployed, how far the head is ahead, and the next retry. */
@@ -346,6 +365,7 @@ export const Delivery = Schema.Struct({
     Schema.Struct({ runId: Schema.String, at: Schema.Number, attempt: Schema.Number }),
   ),
 });
+
 export type Delivery = typeof Delivery.Type;
 
 export const Project = Schema.Struct({
@@ -368,6 +388,7 @@ export const Project = Schema.Struct({
   /** For a project whose pushes deploy. Older controllers send none. */
   delivery: Schema.optional(Schema.NullOr(Delivery)),
 });
+
 export type Project = typeof Project.Type;
 
 export const Overview = Schema.Struct({
@@ -406,6 +427,7 @@ export const Overview = Schema.Struct({
     }),
   ),
 });
+
 export type Overview = typeof Overview.Type;
 
 export const StepStats = Schema.Struct({
@@ -423,6 +445,7 @@ export const StepStats = Schema.Struct({
     }),
   ),
 });
+
 export type StepStats = typeof StepStats.Type;
 
 export const Metrics = Schema.Struct({
@@ -435,6 +458,7 @@ export const Metrics = Schema.Struct({
     }),
   ),
 });
+
 export type Metrics = typeof Metrics.Type;
 
 /** A deploy Calder made: one promotion of one revision to one host. */
@@ -447,6 +471,7 @@ export const DeploymentRecord = Schema.Struct({
   runNumber: Schema.Number,
   at: Schema.Number,
 });
+
 export type DeploymentRecord = typeof DeploymentRecord.Type;
 
 /**
@@ -464,4 +489,5 @@ export const Change = Schema.Union([
   Schema.TaggedStruct("DeploymentChanged", { seq: Schema.Number, deployment: Deployment }),
   Schema.TaggedStruct("DeploymentRecorded", { seq: Schema.Number, record: DeploymentRecord }),
 ]);
+
 export type Change = typeof Change.Type;

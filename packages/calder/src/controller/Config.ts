@@ -31,6 +31,7 @@ export const ProjectConfig = Schema.Struct({
       "a project with defaultBranchSecrets names its defaultBranch",
   ),
 );
+
 export type ProjectConfig = typeof ProjectConfig.Type;
 
 export const ConfigSchema = Schema.Struct({
@@ -151,6 +152,7 @@ export const ConfigSchema = Schema.Struct({
     days: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(30))),
   }).pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 });
+
 export type ConfigShape = typeof ConfigSchema.Type;
 
 export class Config extends Context.Service<
@@ -171,6 +173,7 @@ export const fromFile = (path: string) =>
       const config = yield* Schema.decodeUnknownEffect(ConfigSchema)(
         JSON.parse(readFileSync(path, "utf8")),
       );
+
       return {
         ...config,
         giteaToken: readSecret(config.gitea.tokenFile),

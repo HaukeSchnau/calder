@@ -29,9 +29,11 @@ export function Palette({
 }) {
   const ov = useAtomValue(overviewAtom);
   const runId = route.page === "run" || route.page === "rollout" ? route.id : null;
+
   const current = useAtomValue<AsyncResult.AsyncResult<Domain.RunDetail, unknown>>(
     runId ? runAtom(runId) : noRun,
   );
+
   const { cancel, rerun, trigger } = useRunCommands();
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -39,12 +41,16 @@ export function Palette({
 
   const commands = useMemo(() => {
     const out: Array<Command> = [];
+
     const add = (group: string, label: string, hint: string, run: () => void) =>
       out.push({ group, label, hint, run });
+
     const detail = AsyncResult.isSuccess(current) ? current.value : null;
+
     if (detail) {
       const r = detail.run;
       const label = `#${r.number}`;
+
       if (isActive(r.status)) {
         if (hasFailed(r))
           add(
@@ -68,7 +74,9 @@ export function Palette({
           () => void rerun(r, true),
         );
       }
+
       const failed = detail.steps.find((s) => s.status === "failed" || s.status === "died");
+
       if (failed)
         add(
           "This run",
@@ -76,24 +84,30 @@ export function Palette({
           failed.error?.tag ?? "failed",
           () => go({ page: "run", id: r.id, step: failed.name }),
         );
+
       if (detail.steps.some((s) => s.deploys))
         add("This run", `Open the rollout of ${label}`, "deploy", () =>
           go({ page: "rollout", id: r.id }),
         );
+
       for (const s of detail.steps)
         add("Steps", s.name, `${s.kind} ${s.status}`, () =>
           go({ page: "run", id: r.id, step: s.name }),
         );
     }
+
     add("Go to", "Overview", "home", () => go({ page: "overview" }));
+
     if (AsyncResult.isSuccess(ov)) {
       for (const p of ov.value.projects)
         add("Projects", p.name, p.main ? `main ${p.main.status}` : "no runs", () =>
           go({ page: "project", name: p.name }),
         );
+
       const runs = [
         ...new Map([...ov.value.active, ...ov.value.recent].map((r) => [r.id, r])).values(),
       ];
+
       for (const r of runs)
         add(
           "Runs",
@@ -101,6 +115,7 @@ export function Palette({
           `${refOf(r)} ${r.status} ${r.commit.author}`,
           () => go({ page: "run", id: r.id, step: null }),
         );
+
       for (const p of ov.value.projects)
         add(
           "Start a run",
@@ -109,28 +124,36 @@ export function Palette({
           () => void trigger(p.name),
         );
     }
+
     return out;
   }, [ov, current]);
 
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
   // Matches in the label beat matches in the group or hint; groups keep their order among equals.
   const score = (c: Command) => {
     const label = c.label.toLowerCase();
+
     return words.length && label.startsWith(words.join(" "))
       ? 3
       : words.every((w) => label.includes(w))
         ? 2
         : 1;
   };
+
   const matched = commands.filter((c) =>
     words.every((w) => `${c.group} ${c.label} ${c.hint}`.toLowerCase().includes(w)),
   );
+
   const best = new Map<string, number>();
+
   for (const c of matched) best.set(c.group, Math.max(best.get(c.group) ?? 0, score(c)));
   const groups = [...best.keys()].sort((a, b) => (best.get(b) ?? 0) - (best.get(a) ?? 0));
+
   const shown = groups
     .flatMap((g) => matched.filter((c) => c.group === g).sort((a, b) => score(b) - score(a)))
     .slice(0, 60);
+
   const at = Math.min(index, Math.max(0, shown.length - 1));
 
   useEffect(() => {
@@ -144,6 +167,7 @@ export function Palette({
   };
 
   let group = "";
+
   return (
     <div
       className="palette-wrap"
@@ -170,14 +194,17 @@ export function Palette({
               e.preventDefault();
               onClose();
             }
+
             if (e.key === "ArrowDown") {
               e.preventDefault();
               setIndex(Math.min(at + 1, shown.length - 1));
             }
+
             if (e.key === "ArrowUp") {
               e.preventDefault();
               setIndex(Math.max(at - 1, 0));
             }
+
             if (e.key === "Enter") {
               e.preventDefault();
               runAt(at);
@@ -188,6 +215,7 @@ export function Palette({
           {shown.map((c, i) => {
             const head = c.group !== group;
             group = c.group;
+
             return (
               <Fragment key={`${c.group}:${c.label}`}>
                 {head ? (

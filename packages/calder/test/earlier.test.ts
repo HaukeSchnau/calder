@@ -28,6 +28,7 @@ const run = (
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const plan = {
       version: 1,
       app: "app",
@@ -38,11 +39,13 @@ const run = (
       derivations: options.derivations ?? derivations(sha),
       ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
     };
+
     yield* sql`insert into runs (id, project, number, event, sha, branch, commit_title, author, commit_time, trust, status, created_at,
         trace_id, span_id, fork, tree)
       values (${id}, 'app', ${Number(id.split("-")[1])}, ${JSON.stringify(options.event ?? { _tag: "Push", branch: "main" })}, ${sha}, 'main', 't', 'h', 0, ${options.trust ?? "trusted"}, 'passed',
         ${options.at}, 't', 's', ${options.fork === true ? 1 : 0}, ${tree})`;
     yield* sql`insert into run_plans (run_id, plan) values (${id}, ${JSON.stringify(plan)})`;
+
     return (yield* Rows.loadRun(id))!;
   });
 
@@ -53,6 +56,7 @@ const pullRequest = (fork: boolean) => ({
   head: "feature",
   fork,
 });
+
 const whole = (sha: string) => ({
   derivations: derivations(sha),
   app: "app",
@@ -78,8 +82,10 @@ describe("an earlier plan of the same tree", () => {
           event: { _tag: "Push", branch: "feature" },
         });
         const other = yield* run("app-4", "other", "tree-2", { at: 4 });
+
         const next = (trust: "pr" | "trusted", fork: 0 | 1, tree = "tree-1") =>
           Rows.earlierPlan({ ...other, sha: "next", tree, trust, fork }, "main");
+
         // A pull request's ci.ts runs in the worker that planned, so its plan reaches neither the merge nor a fork.
         expect(yield* next("trusted", 0)).toEqual({
           run: "app-1",
@@ -116,6 +122,7 @@ describe("an earlier plan of the same tree", () => {
           out: "/nix/store/shell",
           system: "x86_64-linux",
         };
+
         // The pull request's plan took its dev shell from a record its first push made in the pull requests' pool.
         yield* run("app-2", "pr-head", "tree-1", {
           trust: "pr",
@@ -216,13 +223,17 @@ describe("the attributes of a same-repo pull request's plan a trusted run takes"
   const record = (trust: "pr" | "trusted") =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+
       const [row] = yield* sql<{
         id: number;
       }>`insert into evaluations (project, attr, footprint, count, digest, trust, run_id, created_at)
         values ('app', 'a', 1, 1, 'd', ${trust}, 'app-1', 1) returning id`;
+
       return row!.id;
     });
+
   const drv = { drv: "/nix/store/x.drv", out: "/nix/store/x", system: "x86_64-linux" };
+
   const plan = (
     fromRecords?: Record<string, number>,
     reused?: { revision: string; attrs: Array<string> },
@@ -239,10 +250,12 @@ describe("the attributes of a same-repo pull request's plan a trusted run takes"
       Effect.gen(function* () {
         const trusted = yield* record("trusted");
         const pr = yield* record("pr");
+
         const attrs = (
           p: ReturnType<typeof plan>,
           earlier: { revision: string; trusted: Array<string> } | null = null,
         ) => Rows.trustedAttrs("app", p, earlier);
+
         expect(yield* attrs(plan())).toEqual(["a", "b", "c", appAttr]);
         expect(yield* attrs(plan({ a: trusted, b: pr }))).toEqual(["a", "c", appAttr]);
         expect(yield* attrs(plan({ [appAttr]: pr }))).toEqual(["a", "b", "c"]);
@@ -284,6 +297,7 @@ describe("the attributes of a same-repo pull request's plan a trusted run takes"
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+
         const pullRequest = {
           project: "app",
           id: "app-2",
@@ -291,12 +305,14 @@ describe("the attributes of a same-repo pull request's plan a trusted run takes"
           fork: 0,
           event: JSON.stringify({ _tag: "PullRequest", number: 5, fork: false }),
         } as const;
+
         const recorded = {
           footprints: [{ id: "1", revision: "a", entries: [["flake.nix", "read"] as const] }],
           evaluations: [
             { id: 1, attr: "a", footprint: "1", count: 1, digest: "d", derivation: null },
           ],
         };
+
         // As Runs.ts `evaluateBuilds` keeps what an evaluator agent recorded.
         yield* Rows.keepRecords(pullRequest, "main", recorded, "trusted");
         const [row] = yield* sql<{ id: number }>`select id from evaluations where run_id = 'app-2'`;

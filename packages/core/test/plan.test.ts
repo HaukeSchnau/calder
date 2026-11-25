@@ -46,6 +46,7 @@ describe("Calder.plan", () => {
       const plan = yield* Calder.plan(project, Event.push("main"), {
         requiredChecks: ["calder/smoke"],
       });
+
       expect(plan.get(promote)?.required).toEqual(["smoke"]);
       expect(plan.runs(smoke)).toBe(true);
       expect(plan.runs(preview)).toBe(true);
@@ -57,6 +58,7 @@ describe("Calder.plan", () => {
       const exit = yield* Effect.exit(
         Calder.plan(project, Event.push("main"), { requiredChecks: ["CI / lint (pull_request)"] }),
       );
+
       expect(Exit.isFailure(exit)).toBe(true);
       expect(String(exit)).toContain("required checks must be calder/<step>");
     }),
@@ -89,6 +91,7 @@ describe("Calder.plan", () => {
       const ios = Task.make("ios", { run: cmd`ios` });
       const android = Task.make("android", { run: cmd`android` });
       const any = Task.make("any", { run: cmd`any` });
+
       const apps = Calder.project({
         rules: [
           On.manual({ inputs: { release: Schema.Literal("ios") } }, [ios]),
@@ -96,6 +99,7 @@ describe("Calder.plan", () => {
           On.manual([any]),
         ],
       });
+
       expect(names(yield* Calder.plan(apps, Event.manual({ release: "android" }))).sort()).toEqual([
         "android",
         "any",
@@ -118,6 +122,7 @@ describe("Calder.plan", () => {
         after: [qa],
         run: cmd`deploy pr-${Cmd.pullRequest} ${Secret.file("token")}`,
       });
+
       const withPreview = Calder.project({ rules: [On.pullRequest([qa]), On.preview([deploy])] });
       const same = yield* Calder.plan(withPreview, Event.pullRequest({ number: 3 }));
       expect(same.trust).toBe("pr");
@@ -140,17 +145,21 @@ describe("Calder.plan", () => {
       );
       // A preview's deploy holds the pull request's own lease; a plain pull-request rule's may not hold any.
       const leased = Task.make("deploy", { lease: true, run: cmd`deploy` });
+
       const preview = yield* Calder.plan(
         Calder.project({ rules: [On.preview([leased])] }),
         Event.pullRequest({ number: 4 }),
       );
+
       expect(preview.get("deploy")?.preview).toBe(true);
+
       const plain = yield* Effect.exit(
         Calder.plan(
           Calder.project({ rules: [On.pullRequest([leased])] }),
           Event.pullRequest({ number: 4 }),
         ),
       );
+
       expect(String(plain)).toContain("don't run steps with grants");
     }),
   );
@@ -160,9 +169,11 @@ describe("Calder.plan", () => {
       const destroy = Task.make("destroy-preview", {
         run: cmd`destroy pr-${Cmd.pullRequest} ${Secret.file("token")}`,
       });
+
       const closing = Calder.project({
         rules: [On.pullRequest([qa]), On.pullRequestClosed([destroy])],
       });
+
       const plan = yield* Calder.plan(closing, Event.pullRequestClosed({ number: 5 }));
       expect(plan.trust).toBe("trusted");
       expect(names(plan)).toEqual(["destroy-preview"]);
@@ -174,18 +185,22 @@ describe("Calder.plan", () => {
     Effect.gen(function* () {
       const a = Task.make("dup", { run: cmd`a` });
       const b = Task.make("dup", { run: cmd`b` });
+
       const dup = yield* Effect.exit(
         Calder.plan(Calder.project({ rules: [On.push("main", [a, b])] }), Event.push("main")),
       );
+
       expect(String(dup)).toContain(`two different steps are named "dup"`);
 
       const r1 = Nix.build(flake.packages.projectRelease);
       const r2 = Nix.build(flake.packages.projectRelease);
       const t = Task.make("t", { run: cmd`echo ${r2}` });
+
       const ok = yield* Calder.plan(
         Calder.project({ rules: [On.push("main", [r1, t])] }),
         Event.push("main"),
       );
+
       expect(names(ok)).toEqual(["projectRelease", "t"]);
     }),
   );
@@ -197,12 +212,14 @@ describe("Calder.plan", () => {
         { needs: { qa: Step.exit(qa) }, after: [qa] },
         function* () {},
       );
+
       const exit = yield* Effect.exit(
         Calder.plan(
           Calder.project({ rules: [On.push("main", [contradiction])] }),
           Event.push("main"),
         ),
       );
+
       expect(String(exit)).toContain("contradict each other");
     }),
   );
@@ -216,12 +233,15 @@ describe("Calder.plan", () => {
           afterEnded,
           lease: true,
         });
+
       const others = [deploy("mbp"), deploy("m1")];
       const last = deploy("srv-2", others);
+
       const plan = yield* Calder.plan(
         Calder.project({ rules: [On.push("main", [last])] }),
         Event.push("main"),
       );
+
       expect(plan.get(last)).toMatchObject({
         needs: [],
         after: ["qa"],
@@ -240,6 +260,7 @@ describe("Calder.plan", () => {
         outputs: { ipa: "build/app.ipa" },
         inputs: Files.of("ios"),
       });
+
       const upload = Action.make(
         "upload",
         { needs: { ipa: archive.outputs.ipa } },
@@ -247,10 +268,12 @@ describe("Calder.plan", () => {
           return ipa;
         },
       );
+
       const plan = yield* Calder.plan(
         Calder.project({ rules: [On.push("main", [upload])] }),
         Event.push("main"),
       );
+
       expect(names(plan)).toEqual(["archive", "archive.ipa", "upload"]);
     }),
   );
@@ -262,12 +285,15 @@ describe("Calder.plan", () => {
         run: cmd`pnpm install`,
         keep: ["node_modules"],
       });
+
       const lint = Task.make("lint", { setup: install, run: cmd`just lint` });
       const test = Task.make("test", { setup: install, run: cmd`just test` });
+
       const plan = yield* Calder.plan(
         Calder.project({ rules: [On.pullRequest([lint, test])] }),
         Event.pullRequest({ number: 1 }),
       );
+
       expect(names(plan)).toEqual(["install", "lint", "test"]);
       expect(plan.get(lint)?.needs).toEqual(["install"]);
       expect(plan.get(install)?.kind).toBe("setup");
@@ -280,14 +306,17 @@ describe("Calder.plan", () => {
         inputs: Files.of("pnpm-lock.yaml"),
         run: cmd`pnpm install`,
       });
+
       const apple = Task.make("apple", {
         setup: install,
         platform: "aarch64-darwin",
         run: cmd`just apple`,
       });
+
       const exit = yield* Effect.exit(
         Calder.plan(Calder.project({ rules: [On.push("main", [apple])] }), Event.push("main")),
       );
+
       expect(Exit.isFailure(exit)).toBe(true);
     }),
   );

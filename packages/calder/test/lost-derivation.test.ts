@@ -14,12 +14,15 @@ import * as Steps from "../src/worker/Steps.ts";
 const processes = BunChildProcessSpawner.layer.pipe(
   Layer.provide([BunFileSystem.layer, BunPath.layer]),
 );
+
 const self = {
   emit: () => Effect.void,
   log: () => Effect.void,
   redact: (text: string) => text,
 } as unknown as Job["Service"];
+
 const drv = "/nix/store/00000000000000000000000000000000-app.drv";
+
 const job = {
   run: {
     id: "app-1",
@@ -30,6 +33,7 @@ const job = {
   },
   derivation: drv,
 } as unknown as Extract<JobSpec, { _tag: "Step" }>;
+
 const app = Nix.build(Flake.attr("packages.x86_64-linux.app"), { name: "app" });
 
 describe("a build whose derivation the store lost", () => {
@@ -53,11 +57,13 @@ echo /nix/store/00000000000000000000000000000000-app
       );
       const path = process.env.PATH;
       process.env.PATH = `${bin}:${path}`;
+
       const result = yield* Steps.build(job, app, "packages.x86_64-linux.app").pipe(
         Effect.provideService(Job, self),
         Effect.provide(processes),
         Effect.ensuring(Effect.sync(() => void (process.env.PATH = path))),
       );
+
       expect(result._tag).toBe("Passed");
       expect(readFileSync(join(bin, "calls"), "utf8")).toBe("build\neval\nbuild\n");
     }),
@@ -80,11 +86,13 @@ exit 1
       );
       const path = process.env.PATH;
       process.env.PATH = `${bin}:${path}`;
+
       const result = yield* Steps.build(job, app, "packages.x86_64-linux.app").pipe(
         Effect.provideService(Job, self),
         Effect.provide(processes),
         Effect.ensuring(Effect.sync(() => void (process.env.PATH = path))),
       );
+
       expect(result._tag).toBe("Failed");
       expect(result._tag === "Failed" ? [result.tag, result.message] : null).toEqual([
         "Infrastructure",
@@ -100,12 +108,14 @@ const fakeNix = (script: string) =>
     writeFileSync(join(bin, "nix"), `#!/usr/bin/env bash\n${script}`, { mode: 0o755 });
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path}`;
+
     return yield* Steps.build(job, app, "packages.x86_64-linux.app").pipe(
       Effect.provideService(Job, self),
       Effect.provide(processes),
       Effect.ensuring(Effect.sync(() => void (process.env.PATH = path))),
     );
   });
+
 /** A line of Nix's internal JSON log on stderr. */
 const nixLine = (json: object) => `echo '@nix ${JSON.stringify(json)}' >&2`;
 
@@ -124,7 +134,9 @@ describe("a build that failed for real", () => {
           "exit 1",
         ].join("\n"),
       );
+
       expect(result._tag === "Failed" ? result.tag : result._tag).toBe("BuildFailed");
+
       const timedOut = yield* fakeNix(
         [
           nixLine({ action: "result", id: 1, type: 101, fields: ["vm: write: Broken pipe"] }),
@@ -132,6 +144,7 @@ describe("a build that failed for real", () => {
           "exit 1",
         ].join("\n"),
       );
+
       expect(timedOut._tag === "Failed" ? timedOut.tag : timedOut._tag).toBe("BuildFailed");
     }),
   );
@@ -151,6 +164,7 @@ describe("a build that failed for real", () => {
             "exit 1",
           ].join("\n"),
         );
+
         expect(result._tag === "Failed" ? result.tag : result._tag).toBe("BuildFailed");
       }),
   );

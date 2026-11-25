@@ -13,18 +13,24 @@ export function useKeys(
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || document.querySelector("[data-modal]")) return;
+
       if (e.target instanceof HTMLElement && e.target.closest("input, textarea, select")) return;
+
       if ((e.metaKey || e.ctrlKey || e.altKey) && !options.withModifiers) return;
       ref.current(e);
     };
+
     window.addEventListener("keydown", onKey);
+
     return () => window.removeEventListener("keydown", onKey);
   }, [options.withModifiers]);
 }
 
 const phoneQuery = window.matchMedia("(max-width: 760px)");
+
 const subscribePhone = (f: () => void) => {
   phoneQuery.addEventListener("change", f);
+
   return () => phoneQuery.removeEventListener("change", f);
 };
 

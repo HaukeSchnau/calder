@@ -8,6 +8,7 @@ import { drive, step } from "./drive.ts";
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
 const out = "/nix/store/0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c-app";
+
 const app: PlannedStep = {
   ...step,
   name: "app",
@@ -42,6 +43,7 @@ describe("publishing", () => {
         value: () => out,
         settled: (steps) => steps.get("app")?.publishError !== null,
       });
+
       expect(status).toBe("passed");
       expect(steps.get("app")).toMatchObject({
         status: "passed",
@@ -53,6 +55,7 @@ describe("publishing", () => {
   it.live("a build the cache takes has no publish error", () =>
     Effect.gen(function* () {
       const published: Array<string> = [];
+
       const { status, steps } = yield* drive({
         steps: [app],
         cache: {
@@ -62,6 +65,7 @@ describe("publishing", () => {
         value: () => out,
         settled: () => published.length > 0,
       });
+
       expect(status).toBe("passed");
       expect(published).toEqual([out]);
       expect(steps.get("app")?.publishError).toBeNull();

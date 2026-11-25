@@ -48,8 +48,10 @@ function sheet(parent, w, hgt, label, k = 1) {
     },
     parent,
   );
+
   const defs = s("defs", {}, svg);
   const ids = { pr: nextId("h"), push: nextId("h") };
+
   // Hatching keeps its 5 px pitch and 1 px line at any drawing scale.
   for (const [id, angle] of [
     [ids.pr, 45],
@@ -59,6 +61,7 @@ function sheet(parent, w, hgt, label, k = 1) {
       "style",
       `stroke-width:${1 / k}px`,
     );
+
   return { svg, ids };
 }
 
@@ -67,6 +70,7 @@ const onWidth = (el, draw) => {
   let last = -1;
   new ResizeObserver(() => {
     const w = el.clientWidth;
+
     if (w && w !== last) {
       last = w;
       el.replaceChildren();
@@ -74,6 +78,7 @@ const onWidth = (el, draw) => {
     }
   }).observe(el);
 };
+
 /** A vertical break line, where a partial view stops at its side. */
 const breakLineV = (parent, x, y0, y1) => {
   const m = (y0 + y1) / 2;
@@ -90,12 +95,15 @@ const breakLineV = (parent, x, y0, y1) => {
 const text = (parent, x, y, str, cls, anchor) => {
   const t = s("text", { x, y, class: cls, "text-anchor": anchor }, parent);
   t.textContent = str;
+
   return t;
 };
+
 const balloon = (parent, x, y, label) => {
   s("circle", { cx: x, cy: y, r: 11, class: "balloon" }, parent);
   text(parent, x, y + 4.5, label, "t-balloon", "middle");
 };
+
 /**
  * A callout naming the feature that decides a fit: words starting at x on baseline y, and a short
  * leader from (lx, ly) on their edge to a dot on the feature at (fx, fy).
@@ -106,6 +114,7 @@ const callout = (parent, { x, y, lx, ly, fx, fy, words, err = false }) => {
   s("path", { d: `M${lx} ${ly}L${fx} ${fy}`, class: "leader" }, g);
   s("circle", { cx: fx, cy: fy, r: 2, class: "leader-dot" }, g);
 };
+
 /**
  * Places a callout for a feature at (fx, fy) in a drawing `w` wide: beside it inside the band from
  * `band[0]` to `band[1]` when the words fit there, otherwise on the line `alt` (above or below the
@@ -118,12 +127,15 @@ const placeCallout = (
   const tw = measure(words, FONT.callout);
   const y = band[1] - 14;
   const tall = band[1] - band[0] >= 64;
+
   if (tall && fx + 44 + tw <= face[1] - 12)
     return callout(parent, { x: fx + 44, y, lx: fx + 40, ly: y - 5, fx, fy, words, err });
+
   if (tall && fx - 44 - tw >= face[0] + 12)
     return callout(parent, { x: fx - 44 - tw, y, lx: fx - 40, ly: y - 5, fx, fy, words, err });
   const x = Math.max(4, Math.min(w - 4 - tw, fx - tw * 0.3));
   let lx = Math.max(x + 8, Math.min(x + tw - 8, fx));
+
   // A leader never runs through the part's name: it leaves from the far end of the words instead.
   if (avoid && lx >= avoid[0] - 6 && lx <= avoid[1] + 6) lx = x + tw - 8;
   const above = alt < fy;
@@ -216,6 +228,7 @@ const EMIT = [
   { text: '  { readonly secrets: readonly ["deploy-token"] }', p: "G", feat: "bit" },
   { text: ">" },
 ];
+
 const P_CLASS = { A: "t-val", R: "t-svc", G: "t-grant" };
 
 /** A drawing scale as a ratio: 2:1, 1.5:1, 9:10. */
@@ -223,6 +236,7 @@ const ratio = (k) => {
   if (k >= 1) return `${k}:1`;
   const gcd = (a, b) => (b ? gcd(b, a % b) : a);
   const n = Math.round(k * 20);
+
   return `${n / gcd(n, 20)}:${20 / gcd(n, 20)}`;
 };
 
@@ -231,12 +245,16 @@ function litGroup(root, setLit) {
   let hover = null;
   let focus = null;
   const apply = () => setLit(hover ?? focus);
+
   const key = (e) => {
     const t = e.target.closest?.("[data-feat]");
+
     return t && root.contains(t) ? t.dataset.feat : null;
   };
+
   root.addEventListener("pointerover", (e) => {
     const k = key(e);
+
     if (k !== hover) {
       hover = k;
       apply();
@@ -278,8 +296,10 @@ function drawExploded(root, caption) {
     const left = DIM.c + G + seen + 8;
     // Whole quarters from 1:1 to 2:1; below 1:1 on the narrowest phones, in steps of 0.05.
     const raw = (avail - 48) / (left + W + 64);
+
     const k =
       raw >= 1 ? Math.min(2, Math.floor(raw * 4) / 4) : Math.max(0.8, Math.floor(raw * 20) / 20);
+
     const roomy = k >= 1.5;
     const ox = Math.round(left * k) + 2;
     const oy = 80;
@@ -291,6 +311,7 @@ function drawExploded(root, caption) {
     const noteBelow = !roomy;
     const w = Math.min(avail, Math.ceil(P(W + 64, 0).X + 44));
     const hgt = Math.ceil(dimO + (noteBelow ? 40 : 16));
+
     const { svg } = sheet(
       root,
       w,
@@ -298,8 +319,10 @@ function drawExploded(root, caption) {
       "deploy taken apart from site. Its socket, output edge, pin, grant bit, data plate and eyelet are numbered 1 to 6, as in the parts list.",
       k,
     );
+
     const defs = svg.querySelector("defs");
     const geo = s("g", { transform: `translate(${ox} ${oy}) scale(${k})` }, svg);
+
     const feat = (key, parent, cls = "") =>
       s("g", { class: `feat${cls ? ` ${cls}` : ""}`, "data-feat": key }, parent);
 
@@ -315,6 +338,7 @@ function drawExploded(root, caption) {
     const site = s("g", { class: "part is-phantom", transform: `translate(${sx} 0)` }, siteG);
     drawPartShape(site, PARTS.site, { W, H });
     const tenon = feat("socket", site);
+
     for (const e of site.querySelectorAll(".tenon-wash, .value-edge")) tenon.append(e);
 
     // deploy, whole, without the features that are pulled off it.
@@ -336,19 +360,23 @@ function drawExploded(root, caption) {
     const down = s("g", { class: "part", transform: `translate(0 ${D})` }, geo);
     s("path", { d: toPath(pinOutline(pin, H)), class: "pin" }, feat("pin", down));
     s("path", { d: toPath(bitOutline(W, H)), class: "bit" }, feat("bit", down));
+
     for (const e of svg.querySelectorAll("path, circle"))
       e.setAttribute("vector-effect", "non-scaling-stroke");
 
     const tx = s("g", {}, svg);
+
     // Centre lines: the joint's axis, the pin's and the bit's.
     const cl = (x0, y0, x1, y1) =>
       s("path", { d: `M${x0} ${y0}L${x1} ${y1}`, class: "centre" }, tx);
+
     const axis = Math.round(P(0, cy).Y) + 0.5;
     cl(P(sx + W - seen + 6, 0).X, axis, P(DIM.tenon.depth + DIM.c + 10, 0).X, axis);
     const pc = Math.round(P(px0 + DIM.pin.w / 2, 0).X) + 0.5;
     cl(pc, P(0, H - 6).Y, pc, P(0, H + D + DIM.pin.len + 8).Y);
     const bc = Math.round(P(bx0 + DIM.bit.w / 2, 0).X) + 0.5;
     cl(bc, P(0, H - 6).Y, bc, P(0, H + D + DIM.bit.depth + 6).Y);
+
     if (seen < W) breakLineV(tx, Math.round(P(sx + W - seen, 0).X) + 0.5, P(0, 0).Y, P(0, H).Y);
 
     // Lettering on the faces.
@@ -368,6 +396,7 @@ function drawExploded(root, caption) {
     // Never over the part's name and kind, which end 52 px below its top.
     const py = Math.round(Math.max(pr.Y - ph, P(0, 0).Y + 52)) + 0.5;
     s("rect", { x: px, y: py, width: pw, height: ph, class: "dplate-body" }, plate);
+
     for (const [cx, cyy] of [
       [px + 5, py + 5],
       [px + pw - 5, py + 5],
@@ -395,6 +424,7 @@ function drawExploded(root, caption) {
 
     // Dimensions, in px at 1:1, from the geometry module.
     const dims = s("g", {}, tx);
+
     const hdim = (x0, x1, y, label, from, labelAt = "above") => {
       const yy = Math.round(y) + 0.5;
       const X0 = Math.round(x0) + 0.5;
@@ -409,9 +439,11 @@ function drawExploded(root, caption) {
       );
       arrowHead(dims, X0, yy, -1, 0, 8, "leader-dot");
       arrowHead(dims, X1, yy, 1, 0, 8, "leader-dot");
+
       if (labelAt === "above") text(dims, (X0 + X1) / 2, yy - 6, label, "t-dim", "middle");
       else text(dims, X1 + 8, yy + 4.5, label, "t-dim");
     };
+
     const vdim = (y0, y1, x, label, from) => {
       const xx = Math.round(x) + 0.5;
       const Y0 = Math.round(y0) + 0.5;
@@ -428,6 +460,7 @@ function drawExploded(root, caption) {
       arrowHead(dims, xx, Y1, 0, 1, 8, "leader-dot");
       text(dims, xx + 7, (Y0 + Y1) / 2 + 4.5, label, "t-dim");
     };
+
     const sockD = DIM.tenon.depth + DIM.c;
     const top = P(0, 0).Y;
     hdim(P(0, 0).X, P(sockD, 0).X, top - 22, String(sockD), [
@@ -440,6 +473,7 @@ function drawExploded(root, caption) {
       bitBottom + 4,
     ]);
     hdim(P(0, 0).X, P(W, 0).X, dimO, String(W), [P(0, H).Y + 4, P(0, H).Y + 4]);
+
     if (noteBelow) text(dims, P(0, 0).X, dimO + 30, "dimensions in px at 1:1", "t-kind");
     else text(dims, P(W + 64, 0).X + 36, dimO + 4.5, "dimensions in px at 1:1", "t-kind", "end");
 
@@ -458,17 +492,20 @@ function drawExploded(root, caption) {
       s("circle", { cx: tx0, cy: ty0, r: 1.75, class: "leader-dot" }, g);
       balloon(g, bx, by, String(f.n));
     };
+
     const sock = P(2, cy + 16);
     call("socket", P(-22, H).X, P(0, H).Y + 24, sock.X, sock.Y);
     const edge = P(W, 34);
     call("edge", P(W + 30, 0).X, edge.Y - 10, edge.X + 1.5, edge.Y);
     // Beside the pin where there is room before the bit's balloon; under it where there isn't.
     const pinR = P(px0 + DIM.pin.w, H + D + DIM.pin.len / 2);
+
     if (roomy) call("pin", pinR.X + 24, pinR.Y + 16, pinR.X, pinR.Y);
     else {
       const pb = P(px0 + DIM.pin.w / 2, H + D + DIM.pin.len);
       call("pin", pb.X + 14, pb.Y + 20, pb.X + 1, pb.Y + 1);
     }
+
     const bitL = P(bx0 + 2, H + D + 10);
     call("bit", bitL.X - 26, bitL.Y + 18, bitL.X, bitL.Y);
     call("plate", P(W + 30, 0).X, py + ph / 2 + 4, px + pw, py + ph / 2 - 6);
@@ -483,15 +520,20 @@ function setupTypes() {
   const scope = $("#types");
   $("[data-emit]", scope).innerHTML = EMIT.map((l) => {
     const { n } = indentOf(l.text);
+
     let html = highlight(l.text.slice(n)).replace(
       /^(\w+)(<span class="t-pun">:<\/span>)/,
       '<span class="t-def">$1</span>$2',
     );
+
     if (l.val) html = html.replace(l.val, `<span class="t-val">${l.val}</span>`);
+
     if (l.p && P_CLASS[l.p]) html = `<span class="${P_CLASS[l.p]}">${html}</span>`;
+
     const tag = l.p
       ? `<span class="p-tag${P_CLASS[l.p] ? ` ${P_CLASS[l.p]}` : ""}">${l.p}</span>`
       : `<span class="p-tag"></span>`;
+
     return `<div class="ln"${l.feat ? ` data-feat="${l.feat}"` : ""}><span class="src"${n ? ` style="--ind:${n}ch"` : ""}>${html}</span>${tag}</div>`;
   }).join("");
   $("[data-parts] tbody", scope).innerHTML = FEATURES.map(
@@ -503,11 +545,14 @@ function setupTypes() {
     </tr>`,
   ).join("");
   let lit = null;
+
   const setLit = (key) => {
     lit = key;
+
     for (const el of scope.querySelectorAll("[data-feat]"))
       el.classList.toggle("is-lit", el.dataset.feat === key);
   };
+
   const holder = $("[data-exploded]", scope);
   holder.addEventListener("redrawn", () => setLit(lit));
   drawExploded(holder, $("#exploded figcaption", scope));
@@ -521,6 +566,7 @@ const diagHTML = (lines) =>
     .map((l, i) => {
       if (i > 0) return oline(l);
       const m = l.match(/^(\.calder\/ci\.ts\(\d+,\d+\))(.*)$/);
+
       return `<span class="oline"><span class="loc">${esc(m[1])}</span>${keepWords(m[2])}</span>`;
     })
     .join("");
@@ -548,6 +594,7 @@ function jointDetail(parent, wrong) {
   const words = wrong ? "nothing in the socket" : "StorePath, in deploy's socket";
   const inFace = dx + measure(words, FONT.callout) <= span * k - 8;
   const hgt = vh * k + top + (inFace ? 4 : 40);
+
   const { svg } = sheet(
     parent,
     w,
@@ -557,6 +604,7 @@ function jointDetail(parent, wrong) {
       : "site's StorePath profile seated in deploy's socket",
     k,
   );
+
   const clip = nextId("c");
   s(
     "rect",
@@ -568,7 +616,9 @@ function jointDetail(parent, wrong) {
   drawPartShape(s("g", { class: "part" }, c), wrong ? PARTS.typecheck : PARTS.site, { W, H });
   const dep = s("g", { class: "part k-action", transform: `translate(${W + DIM.c} 0)` }, c);
   drawPartShape(dep, { ...PARTS.deploy, pins: [], bit: false }, { W: 184, H });
+
   if (wrong) dep.querySelector(".value-edge").classList.add("is-empty");
+
   for (const p of svg.querySelectorAll("path"))
     p.setAttribute("vector-effect", "non-scaling-stroke");
   // The detail's frame: the parts go on beyond it.
@@ -578,12 +628,14 @@ function jointDetail(parent, wrong) {
   text(svg, dx, Y(y0) + 26, "deploy", "t-name");
   text(svg, dx, Y(y0) + 44, "action", "t-kind");
   const jx = X(jx0);
+
   if (wrong) {
     text(svg, jx - 8, top - 10, "void", "t-err", "end");
     text(svg, jx + 8, top - 10, "StorePath", "t-joint");
   } else text(svg, jx, top - 10, "StorePath", "t-joint", "middle");
   // In deploy's face, under its name, or under the frame: what decides this fit.
   const f = wrong ? { X: X(W + DIM.c + 14), Y: Y(H / 2 + 6) } : { X: X(W + 12), Y: Y(H / 2 + 15) };
+
   if (inFace)
     callout(svg, {
       x: dx,
@@ -605,6 +657,7 @@ function jointDetail(parent, wrong) {
       words,
       err: wrong,
     });
+
   return k;
 }
 
@@ -627,6 +680,7 @@ function railDetail(parent, { part, rule, label, name }) {
   const { svg, ids } = sheet(parent, w, hgt, label, k);
   const g = s("g", { transform: `translate(2 ${top}) scale(${k})` }, svg);
   const seatX = Math.round((span - W) / 2);
+
   const sec = railSection({
     rule,
     x0: 0,
@@ -635,6 +689,7 @@ function railDetail(parent, { part, rule, label, name }) {
     lipStart: true,
     lipEnd: true,
   });
+
   drawRail(
     s("g", { transform: `translate(0 ${railTop})` }, g),
     sec,
@@ -643,11 +698,13 @@ function railDetail(parent, { part, rule, label, name }) {
   );
   const H = DIM.H;
   const py = railTop - H - f.rest;
+
   const pg = s(
     "g",
     { class: `part${part.bit ? " k-action" : ""}`, transform: `translate(${seatX} ${py})` },
     g,
   );
+
   const clip = nextId("c");
   s(
     "rect",
@@ -656,6 +713,7 @@ function railDetail(parent, { part, rule, label, name }) {
   );
   pg.setAttribute("clip-path", `url(#${clip})`);
   drawPartShape(pg, part, { W, H, contacts: f.contacts });
+
   for (const p of svg.querySelectorAll("path"))
     p.setAttribute("vector-effect", "non-scaling-stroke");
   const by = top + (py + H - showH) * k;
@@ -670,6 +728,7 @@ function railDetail(parent, { part, rule, label, name }) {
     const cls = has ? "" : " is-none";
     const x = 2 + (seatX + pinX(sv) + DIM.pin.w / 2) * k;
     text(svg, x, ny, String(i + 1), "t-pinno" + cls, "middle");
+
     if (staggered) {
       const ly = ny + 20 + (i % 3) * 18;
       s("path", { d: `M${Math.round(x) + 0.5} ${ny + 5}V${ly - 12}`, class: "leader" }, svg);
@@ -682,6 +741,7 @@ function railDetail(parent, { part, rule, label, name }) {
           w - 4 - 18 - measure('Secret<"deploy-token">', '400 12px "Overpass Mono", monospace'),
         ),
       );
+
       const lx = 2 + (i < 4 ? 0 : col2);
       const ly = ny + 20 + (i % 4) * 16;
       text(svg, lx, ly, String(i + 1), "t-pinno" + cls);
@@ -690,6 +750,7 @@ function railDetail(parent, { part, rule, label, name }) {
   });
   text(svg, 2, ny + 20 + (staggered ? 3 * 18 + 6 : 4 * 16 + 6), RULES[rule].label, "t-rule");
   const P = (x, y) => ({ X: 2 + x * k, Y: top + y * k });
+
   // In the part's face, low, beside the feature, or above the drawing: what decides this fit.
   const at = (fx, fy, words, err) => {
     const f = P(fx, fy);
@@ -706,15 +767,18 @@ function railDetail(parent, { part, rule, label, name }) {
       face: [P(seatX, 0).X, P(seatX + W, 0).X],
     });
   };
+
   return { k, at, seatX, py, H, W };
 }
 
 /** Folds lines out of an excerpt behind one row that says so. */
 function skip(code, nos) {
   const rows = nos.map((n) => code.querySelector(`.ln[data-line="${n}"]`)).filter(Boolean);
+
   if (!rows.length) return;
   const row = lineEl("", `<span class="t-com">… ${rows.length} lines</span>`, { cls: "is-skip" });
   rows[0].before(row);
+
   for (const r of rows) r.classList.add("is-gap");
 }
 
@@ -738,6 +802,7 @@ function fitItem(root, { letter, title, note, how, toggle }) {
     left,
   );
   h("p", { class: "fit-note", html: note }, left);
+
   // The edit, as a switch; the word in the code it changes is a button too, and both stay in step.
   const sw = h(
     "button",
@@ -750,6 +815,7 @@ function fitItem(root, { letter, title, note, how, toggle }) {
     },
     left,
   );
+
   sw.addEventListener("click", toggle);
   const pane = h("div", { class: "pane" }, left);
   const head = h("div", { class: "pane-head" }, pane);
@@ -761,6 +827,7 @@ function fitItem(root, { letter, title, note, how, toggle }) {
   const dwg = h("div", { class: "fig-dwg" }, fig);
   const cap = h("figcaption", { class: "view-title" }, fig);
   const extra = h("div", { class: "fit-extra" }, right);
+
   return { art, code, status, dwg, cap, extra, sw };
 }
 
@@ -782,6 +849,7 @@ function setStatus(status, loc) {
   status.textContent = loc ? `${loc[3]} at ${loc[1]},${loc[2]}` : "no errors";
   status.classList.toggle("is-error", !!loc);
 }
+
 const locOf = (lines) => lines?.[0]?.match(/\((\d+),(\d+)\): error (TS\d+)/);
 
 function fitValue(root) {
@@ -795,11 +863,14 @@ function fitValue(root) {
       draw();
     },
   });
+
   let wrong = false;
+
   const draw = () => {
     const lines = CI_TS.slice();
     const custom = {};
     const after = {};
+
     const btn = wrong
       ? editButton(
           "",
@@ -811,12 +882,15 @@ function fitValue(root) {
           `<span class="t-val">site</span>`,
           "Change needs: { site } to needs: { site: typecheck }",
         );
+
     custom[25] = `${highlight("  needs: { ")}${btn}${highlight(" },")}`;
+
     if (wrong) {
       custom[29] = `${highlight("  yield* Deploy.publish(")}<span class="squiggle">site</span>${highlight(")")}`;
       const d = h("div", { class: "diag", html: diagHTML(TSC.needsTypecheck) });
       after[29] = d;
     }
+
     renderCode(it.code, lines, {
       from: 24,
       to: 30,
@@ -837,6 +911,7 @@ function fitValue(root) {
       ? `Detail A, ${k}:1. <code>typecheck</code> returns <code>void</code>: a flat end, nothing to seat in the socket.`
       : `Detail A, ${k}:1. <code>site</code>'s <code>StorePath</code> profile seated in <code>deploy</code>'s socket.`;
   };
+
   draw();
   redrawOnWidth(it.dwg, draw);
 }
@@ -852,7 +927,9 @@ function fitServices(root, pinout) {
       draw();
     },
   });
+
   let rule = "pr";
+
   const VAR = [
     ...CI_TS.slice(0, 31),
     'const comment = Action.make("comment", { after: [test] }, function*() {',
@@ -861,12 +938,15 @@ function fitServices(root, pinout) {
     "",
     ...CI_TS.slice(31),
   ];
+
   VAR[0] =
     'import { Action, Calder, Files, Nix, On, PullRequest, Step, Task, cmd } from "@calder-ci/core"';
+
   const draw = () => {
     const custom = {};
     const after = {};
     const btn = (aria) => editButton("", `<span class="t-def">comment</span>`, aria);
+
     if (rule === "pr") {
       custom[38] = `${highlight("    On.pullRequest([typecheck, test, site, ")}${btn("Move comment to the push rule")}${highlight("]),")}`;
       custom[39] = highlight('    On.push("main", [deploy]),');
@@ -882,6 +962,7 @@ function fitServices(root, pinout) {
           '<span class="oline diag-cut">tsrs goes on to compare PullRequest with Gitea; cut here.</span>',
       });
     }
+
     renderCode(it.code, VAR, {
       from: 32,
       to: 41,
@@ -898,6 +979,7 @@ function fitServices(root, pinout) {
     setStatus(it.status, rule === "push" ? locOf(TSC.commentInPush) : null);
     it.dwg.replaceChildren();
     const part = { pins: ["PullRequest"], bit: false };
+
     const d = railDetail(it.dwg, {
       part,
       rule,
@@ -907,8 +989,10 @@ function fitServices(root, pinout) {
           ? "comment's PullRequest pin in its socket on the pull-request rail"
           : "comment's PullRequest pin standing on the push rail, which has no socket for it",
     });
+
     const k = d.k;
     const pc = d.seatX + pinX("PullRequest") + DIM.pin.w / 2;
+
     if (rule === "pr")
       d.at(pc + DIM.pin.w / 2, d.py + d.H + DIM.pin.len - 6, "pin 3 in socket 3, PullRequest");
     else d.at(pc, d.py + d.H + DIM.pin.len, "no socket 3 on the push rail", true);
@@ -921,6 +1005,7 @@ function fitServices(root, pinout) {
         ? `<pre class="out">${[["calder plan --event pr:7", "cmd"], ["pull request #7: pr, reuse all", "head"], ["  setup  install (pulled in)"], ["  task   typecheck  ← needs install"], ["  task   test  ← needs install"], ["  build  site"], ["  action comment  ← after test", "hit"]].map(([l, cls]) => oline(l, { cls })).join("")}</pre>`
         : "";
   };
+
   draw();
   redrawOnWidth(it.dwg, draw);
   void pinout;
@@ -937,13 +1022,16 @@ function fitGrants(root) {
       draw();
     },
   });
+
   let inPr = false;
   const e = ARRANGEMENTS["pr,pr,pr"];
+
   const draw = () => {
     const entry = inPr ? e.refused : e.ok;
     const custom = {};
     const after = {};
     const btn = (aria) => editButton("", `<span class="t-def">deploy</span>`, aria);
+
     if (inPr) {
       custom[34] = `${highlight("    On.pullRequest([typecheck, test, site, ")}<span class="squiggle">${btn("Move deploy back to the push rule")}</span>${highlight("]),")}`;
       custom[35] = highlight(entry.line35);
@@ -952,6 +1040,7 @@ function fitGrants(root) {
       custom[34] = highlight(entry.line34);
       custom[35] = `${highlight('    On.push("main", [')}${btn("Put deploy in the pull-request rule")}${highlight("]),")}`;
     }
+
     renderCode(it.code, CI_TS, {
       from: 32,
       to: 37,
@@ -965,6 +1054,7 @@ function fitGrants(root) {
     });
     setStatus(it.status, inPr ? locOf(entry.tsc.out.split("\n")) : null);
     it.dwg.replaceChildren();
+
     const d = railDetail(it.dwg, {
       part: { pins: ["HttpClient"], bit: true },
       rule: inPr ? "pr" : "push",
@@ -973,8 +1063,10 @@ function fitGrants(root) {
         ? "deploy's grant bit standing on the closed floor of the pull-request rail"
         : "deploy seated on the push rail, its bit through the open floor",
     });
+
     const k = d.k;
     const bx = d.seatX + bitX(d.W);
+
     if (inPr) d.at(bx + 4, d.py + d.H + DIM.bit.depth - 6, "the bit, on the closed floor", true);
     else d.at(bx + 4, d.py + d.H + DIM.bit.depth - 6, "the bit, through the open floor");
     it.cap.innerHTML = inPr
@@ -982,6 +1074,7 @@ function fitGrants(root) {
       : `Detail C, ${k}:1. The bit drops through the open floor and the <code>HttpClient</code> pin into socket 2.`;
     it.extra.innerHTML = `<p class="fit-small">The planner refuses the same thing at run time, for pipelines nothing type-checked. It also keeps tasks that read secrets out of pull-request runs; those have no grants for the compiler to see.</p><pre class="out">${oline("calder plan --event pr:7", { cls: "cmd" })}${oline(e.refused.plans.pr.out, { cls: "err" })}</pre>`;
   };
+
   draw();
   redrawOnWidth(it.dwg, draw);
 }
@@ -997,13 +1090,16 @@ function fitSecret(root) {
       draw();
     },
   });
+
   let deleted = false;
+
   const draw = () => {
     const lines = deleted ? [...CI_TS.slice(0, 26), ...CI_TS.slice(27)] : CI_TS.slice();
     const custom = {};
     const after = {};
     const marks = {};
     const cls = {};
+
     if (deleted) {
       // Line 27 is gone; what was line 35 is line 34.
       custom[34] = `    <span class="squiggle">${highlight("On")}</span>${highlight('.push("main", [deploy]),')}`;
@@ -1014,9 +1110,11 @@ function fitSecret(root) {
       custom[27] = `  ${editButton("", `<span class="t-grant">${highlight('grants: { secrets: ["deploy-token"] },')}</span>`, 'Delete grants: { secrets: ["deploy-token"] }, line 27')}`;
       cls[27] = "is-grant";
     }
+
     if (deleted) {
       // Show the deleted line struck through, unnumbered, where it was.
       const rows = [];
+
       for (let n = 24; n <= 34; n++) rows.push(n);
       renderCode(it.code, lines, {
         from: 24,
@@ -1042,12 +1140,14 @@ function fitSecret(root) {
       });
       skip(it.code, [31, 32, 33]);
     }
+
     syncEdit(it, deleted, () => {
       deleted = !deleted;
       draw();
     });
     setStatus(it.status, deleted ? locOf(TSC.noGrant) : null);
     it.dwg.replaceChildren();
+
     const d = railDetail(it.dwg, {
       name: "deploy",
       part: deleted
@@ -1058,7 +1158,9 @@ function fitSecret(root) {
         ? "deploy without its bit: a Secret pin stands on the push rail, which has no socket for it"
         : "deploy seated on the push rail, its bit carrying the secret",
     });
+
     const k = d.k;
+
     if (deleted)
       d.at(
         d.seatX + pinX('Secret<"deploy-token">') + DIM.pin.w / 2,
@@ -1076,6 +1178,7 @@ function fitSecret(root) {
       ? `Detail D, ${k}:1. No bit, and a <code>Secret</code> pin (7) that no rail has a socket for.`
       : `Detail D, ${k}:1. The bit carries the secret: with it, reading the secret needs no socket.`;
   };
+
   draw();
   redrawOnWidth(it.dwg, draw);
 }
@@ -1091,17 +1194,22 @@ function fitMissing(root) {
       draw();
     },
   });
+
   let typo = false;
+
   const draw = () => {
     const custom = {};
     const after = {};
     const word = typo ? "sit" : "site";
+
     const btn = editButton(
       "",
       typo ? `<span class="squiggle">sit</span>` : "site",
       typo ? "Change sit back to site" : "Misspell site as sit",
     );
+
     custom[22] = `${highlight("const site = Nix.build(flake.packages.", { def: "site" })}${btn}${highlight(")")}`;
+
     if (typo) after[22] = h("div", { class: "diag", html: diagHTML(TSC.typo) });
     renderCode(it.code, CI_TS, {
       from: 22,
@@ -1128,6 +1236,7 @@ function fitMissing(root) {
     const px = dw + gap;
     const oy = narrow ? 52 : 34;
     const P = (x, y) => ({ X: 4 + x * k, Y: oy + y * k });
+
     const { svg } = sheet(
       it.dwg,
       Math.ceil(P(unitsW, 0).X),
@@ -1137,6 +1246,7 @@ function fitMissing(root) {
         : "flake.packages.site, built as the part site",
       k,
     );
+
     const g = s("g", { transform: `translate(4 ${oy}) scale(${k})` }, svg);
     // The flake's packages, as calder gen typed them: a drawer with one part in it.
     s("rect", { x: 0, y: 0, width: dw, height: H + 32, class: "drawer" }, g);
@@ -1144,17 +1254,20 @@ function fitMissing(root) {
       W: W - 28,
       H,
     });
+
     const part = s(
       "g",
       { class: `part k-build${typo ? " is-missing" : ""}`, transform: `translate(${px} 16)` },
       g,
     );
+
     drawPartShape(part, PARTS.site, { W, H });
     s(
       "path",
       { d: `M${12 + W - 28 + DIM.tenon.depth + 6} ${16 + H / 2}H${px - 6}`, class: "centre" },
       g,
     );
+
     for (const e of svg.querySelectorAll("path, rect"))
       e.setAttribute("vector-effect", "non-scaling-stroke");
     const tx = s("g", {}, svg);
@@ -1164,6 +1277,7 @@ function fitMissing(root) {
     text(tx, pa.X + 14, pa.Y + 47, "package", "t-kind");
     const pb = P(px, 16);
     const call = typo ? "Nix.build(flake.packages.sit)" : "Nix.build(flake.packages.site)";
+
     if (narrow) text(tx, P(unitsW, 0).X - 2, P(0, 0).Y - 30, call, "t-callmono", "end");
     else text(tx, pb.X, P(0, 0).Y - 12, call, "t-callmono");
     text(tx, pb.X + 14, pb.Y + 28, word, typo ? "t-name is-err" : "t-name");
@@ -1176,6 +1290,7 @@ function fitMissing(root) {
     );
     // Under the row: what decides this fit.
     const cy = P(0, H + 32).Y + 26;
+
     if (typo)
       callout(tx, {
         x: pb.X,
@@ -1201,6 +1316,7 @@ function fitMissing(root) {
       ? "Detail E. <code>flake.packages.sit</code> names nothing, so there is no part to draw."
       : "Detail E. <code>Nix.build(flake.packages.site)</code> makes the part <code>site</code> from the flake's package.";
   };
+
   draw();
   redrawOnWidth(it.dwg, draw);
 }
@@ -1223,6 +1339,7 @@ function silhouette(name, state) {
   const H = DIM.H;
   const vw = Math.ceil((W + DIM.tenon.depth) * k) + 4;
   const vh = Math.ceil((H + DIM.bit.depth) * k) + 6;
+
   const svg = s("svg", {
     class: "dwg sil is-scaled",
     width: vw,
@@ -1230,12 +1347,14 @@ function silhouette(name, state) {
     viewBox: `-2 -4 ${vw} ${vh}`,
     "aria-hidden": "true",
   });
+
   if (name === "install") {
     const pl = s(
       "g",
       { class: `plate${state === "off" ? " is-off" : ""}`, transform: `scale(${k})` },
       svg,
     );
+
     s(
       "path",
       { d: toPath(plateOutline(0, W).map((p) => ({ ...p, y: p.y + H }))), class: "plate-body" },
@@ -1250,10 +1369,13 @@ function silhouette(name, state) {
       },
       svg,
     );
+
     drawPartShape(g, PARTS[name], { W, H });
   }
+
   for (const p of svg.querySelectorAll("path"))
     p.setAttribute("vector-effect", "non-scaling-stroke");
+
   return svg;
 }
 
@@ -1261,6 +1383,7 @@ function setupPlans() {
   renderCode($("[data-test]"), TEST_TS, { marks: { 9: {} } });
   const root = $("[data-views]");
   const e = ARRANGEMENTS["pr,pr,pr"].ok;
+
   const rows = [
     {
       ev: "pr",
@@ -1284,15 +1407,18 @@ function setupPlans() {
       steps: null,
     },
   ];
+
   const names = ["install", "typecheck", "test", "site", "deploy"];
   const t = h("table", { class: "tab" }, root);
   t.innerHTML = `<caption>One drawing, tabulated. What <code>Calder.plan</code> returns for each event, from the real plans of the example</caption><thead><tr><th scope="col">event</th><th scope="col">live rail</th>${names.map((n) => `<th scope="col"><code>${n}</code></th>`).join("")}</tr></thead>`;
   const body = h("tbody", {}, t);
+
   for (const r of rows) {
     const p = parsePlan(e.plans[r.ev].out);
     const tr = h("tr", {}, body);
     h("th", { scope: "row", text: r.label }, tr);
     h("td", { html: `<code>${esc(r.rail)}</code>` }, tr);
+
     for (const n of names) {
       const td = h("td", { class: "sil-cell" }, tr);
       const on = p.planned.has(n);
@@ -1306,6 +1432,7 @@ function setupPlans() {
         td,
       );
     }
+
     const steps = h("tr", { class: "tab-steps" }, body);
     h(
       "td",
@@ -1384,14 +1511,17 @@ function setupReuse() {
   const scope = $("#reuse");
   const body = scope.querySelector("[data-edits] tbody");
   let pick = "price";
+
   for (const [key, e] of Object.entries(EDITS)) {
     const tr = h("tr", { "data-edit": key }, body);
     const td = h("td", { class: "file" }, tr);
     td.innerHTML = `<label><input type="radio" name="edit" value="${key}"${key === pick ? " checked" : ""}>${esc(e.file)}</label>`;
+
     for (const n of ["install", "typecheck", "test", "site"])
       h("td", { class: `st${e.states[n] === "runs" ? " runs" : ""}`, text: e.cells[n] }, tr);
     tr.addEventListener("click", (ev) => {
       const input = tr.querySelector("input");
+
       if (ev.target === input) return;
       input.checked = true;
       input.focus({ preventScroll: true });
@@ -1399,6 +1529,7 @@ function setupReuse() {
     });
     tr.querySelector("input").addEventListener("change", () => update(key));
   }
+
   const view = new AssemblyView(scope.querySelector("[data-reuse]"), {
     partWidth,
     rowsBelow: 560,
@@ -1408,24 +1539,30 @@ function setupReuse() {
     files: (name) => (name === "test" ? Object.entries(EDITS[pick].files) : null),
     onRender: (v) => {
       const e = EDITS[pick];
+
       for (const [n, g] of Object.entries(v.partEls)) {
         const st = n === "deploy" ? "none" : e.states[n];
         g.classList.toggle("is-reused", st === "reused");
         g.classList.toggle("is-off", st === "none");
         v.textEls[n].classList.toggle("is-off", st === "none");
       }
+
       for (const p of v.L.plates) {
         p.el.classList.toggle("is-off", e.states.install === "none");
         p.el.classList.toggle("is-reused", e.states.install === "reused");
       }
+
       for (const a of v.afterEls) a.classList.add("is-off");
     },
   });
+
   const why = scope.querySelector("[data-why]");
   const caption = scope.querySelector("[data-reuse-caption]");
+
   const update = (key) => {
     pick = key;
     const e = EDITS[key];
+
     for (const tr of body.querySelectorAll("tr"))
       tr.classList.toggle("is-picked", tr.dataset.edit === key);
     view.set({
@@ -1439,11 +1576,13 @@ function setupReuse() {
       .map((n) => {
         const state = e.cells[n];
         const quiet = state.startsWith("reused") || state === "not needed";
+
         return `<li><span class="who">${n}</span><span class="what${quiet ? " quiet" : ""}">${esc(state)}</span><span class="because">${esc(e.why[n])}</span></li>`;
       })
       .join("");
     caption.innerHTML = `Pull request #7 after an edit to <code>${esc(e.file)}</code>. Full weight runs, thin lines are reused, phantom lines are not needed or not in this plan. Each test file is a cartridge in <code>test</code> with a key of its own.`;
   };
+
   update(pick);
 }
 
@@ -1458,11 +1597,13 @@ function setupCheck() {
       .map((l, i) => oline(l, { cls: i === 0 ? "head" : "" }))
       .join("");
   const root = $("[data-handoff]");
+
   const stops = [
     ["calder check", "your working copy", "runs"],
     ["pull request #7", "after you push", "reused"],
     ["push to main", "after the merge", "reused"],
   ];
+
   onWidth(root, (avail) => {
     const W = 136;
     const H = 64;
@@ -1471,17 +1612,20 @@ function setupCheck() {
     const w = narrow ? Math.min(avail, 340) : 3 * W + 2 * gap + 8;
     const rowH = H + 40;
     const hgt = narrow ? 3 * rowH + 2 * 24 : H + 64;
+
     const { svg } = sheet(
       root,
       w,
       hgt,
       "One typecheck result: run by the check, reused by the pull request and by main",
     );
+
     stops.forEach(([head, sub, state], i) => {
       const x = narrow ? 4 : 4 + i * (W + gap);
       const y = narrow ? i * (rowH + 24) : 0;
       text(svg, x, y + 14, head, "t-callmono");
       text(svg, x, y + 32, sub, "t-kind");
+
       const g = s(
         "g",
         {
@@ -1490,11 +1634,14 @@ function setupCheck() {
         },
         svg,
       );
+
       drawPartShape(g, PARTS.typecheck, { W, H });
       text(svg, x + 12, y + 44 + 25, "typecheck", "t-name");
       text(svg, x + 12, y + 44 + 43, state, state === "runs" ? "t-kind is-strong" : "t-kind");
+
       if (!i) return;
       const a = s("g", {}, svg);
+
       if (narrow) {
         const ax = x + W + 32.5;
         s(
@@ -1518,11 +1665,13 @@ function setupCheck() {
 
 function catDrawing(parent, kind) {
   const H = DIM.H;
+
   if (kind === "setup") {
     // A setup is the plate tasks start from: shown with two tasks standing on it, in phantom.
     const W = 96;
     const { svg } = sheet(parent, 2 * W + 48, H + DIM.plate.t + 8);
     const g = s("g", { transform: `translate(2 ${H + 2})` }, svg);
+
     for (const x of [12, W + 28]) {
       const pg = s("g", { class: "part is-off", transform: `translate(${x} ${-H})` }, g);
       s(
@@ -1534,6 +1683,7 @@ function catDrawing(parent, kind) {
         pg,
       );
     }
+
     s(
       "path",
       {
@@ -1545,8 +1695,10 @@ function catDrawing(parent, kind) {
     text(svg, 14, H + 2 + 17, "install", "t-plate");
     text(svg, 26, 40, "a task", "t-kind");
     text(svg, W + 42, 40, "a task", "t-kind");
+
     return svg;
   }
+
   if (kind === "task") {
     const W = 196;
     const { svg } = sheet(parent, W + 8, H + 6);
@@ -1560,18 +1712,22 @@ function catDrawing(parent, kind) {
       text(svg, 22, y + 15, file, "t-file");
       text(svg, W - 22, y + 15, "a key", "t-filestate", "end");
     });
+
     return svg;
   }
+
   if (kind === "project") {
     const W = 56;
     const PH = 36;
     const { svg, ids } = sheet(parent, 300, PH + 54);
     const g = s("g", { transform: "translate(2 4)" }, svg);
+
     for (const [rule, x0, x1, n] of [
       ["pr", 0, 150, 2],
       ["push", 150, 296, 1],
     ]) {
       const seats = Array.from({ length: n }, (_, i) => ({ x: x0 + 16 + i * (W + 12), W }));
+
       const sec = railSection({
         rule,
         x0,
@@ -1580,17 +1736,20 @@ function catDrawing(parent, kind) {
         lipStart: rule === "pr",
         lipEnd: rule === "push",
       });
+
       drawRail(
         s("g", { transform: `translate(0 ${PH})` }, g),
         { ...sec, polys: sec.polys.map((p) => p.map((q) => ({ ...q, y: Math.min(q.y, 12) }))) },
         rule === "pr" ? ids.pr : ids.push,
         "rail is-live",
       );
+
       for (const st of seats) {
         const pg = s("g", { class: "part is-generic", transform: `translate(${st.x} 0)` }, g);
         s("path", { d: toPath(bodyOutline({ W, H: PH })), class: "body" }, pg);
         s("path", { d: toPath(bodyOutline({ W, H: PH })), class: "outline" }, pg);
       }
+
       text(
         svg,
         x0 + (rule === "pr" ? 8 : 18),
@@ -1599,8 +1758,10 @@ function catDrawing(parent, kind) {
         "t-rule",
       );
     }
+
     return svg;
   }
+
   if (kind === "policy") {
     // A policy is no part of its own: it goes on the step's data plate, as on deploy's.
     const W = 176;
@@ -1613,6 +1774,7 @@ function catDrawing(parent, kind) {
     const px = Math.round(2 + W - 12 - pw) + 0.5;
     const py = Math.round(2 + H - 12 - ph) + 0.5;
     s("rect", { x: px, y: py, width: pw, height: ph, class: "dplate-body" }, svg);
+
     for (const [cx, cy] of [
       [px + 5, py + 5],
       [px + pw - 5, py + 5],
@@ -1621,8 +1783,10 @@ function catDrawing(parent, kind) {
     ])
       s("circle", { cx, cy, r: 1.5, class: "rivet" }, svg);
     text(svg, px + 14, py + 22, "retry 2", "t-plateline");
+
     return svg;
   }
+
   if (kind === "effect") {
     // An Effect, not a step: it takes the StorePath and needs two services, and has no grant.
     const W = 176;
@@ -1630,11 +1794,13 @@ function catDrawing(parent, kind) {
     const { svg } = sheet(parent, W + 8, ny + 6);
     const g = s("g", { class: "part", transform: "translate(2 2)" }, svg);
     drawPartShape(g, { socket: true, pins: ["HttpClient", 'Secret<"deploy-token">'] }, { W, H });
+
     for (const p of svg.querySelectorAll("path"))
       p.setAttribute("vector-effect", "non-scaling-stroke");
     const x0 = 2 + DIM.tenon.depth + DIM.c + 12;
     text(svg, x0, 27, "publish", "t-name");
     text(svg, x0, 45, "an Effect", "t-kind");
+
     for (const sv of ["HttpClient", 'Secret<"deploy-token">'])
       text(
         svg,
@@ -1644,6 +1810,7 @@ function catDrawing(parent, kind) {
         "t-pinno",
         "middle",
       );
+
     return svg;
   }
 }
@@ -1661,6 +1828,7 @@ function fromLabel(svg, pkg) {
 function setupCatalogue() {
   const root = $("[data-catalogue]");
   const std = "@calder-ci/std";
+
   const items = [
     {
       sig: "<b>Pnpm.install</b>({ shell })",
@@ -1700,12 +1868,14 @@ function setupCatalogue() {
       code: true,
     },
   ];
+
   for (const it of items) {
     const c = h("div", { class: "cat" }, root);
     h("div", { class: "sig", html: it.sig }, c);
     h("div", { class: "ret", html: it.ret }, c);
     const svg = catDrawing(h("div", { class: "cat-dwg" }, c), it.draw);
     fromLabel(svg, it.from);
+
     if (it.code) {
       const pane = h("div", { class: "pane cat-pane" }, c);
       renderCode(h("div", {}, pane), DEPLOY_TS, {

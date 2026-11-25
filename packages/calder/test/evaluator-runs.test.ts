@@ -12,6 +12,7 @@ const derivation = (name: string) => ({
   out: `/nix/store/00000000000000000000000000000000-${name}`,
   system: "aarch64-linux",
 });
+
 const deferred = (name: string): PlannedStep => ({
   ...step,
   name,
@@ -20,6 +21,7 @@ const deferred = (name: string): PlannedStep => ({
   detail: `checks.aarch64-linux.${name}`,
   build: { attr: `checks.aarch64-linux.${name}`, drv: null, out: null, system: null },
 });
+
 /** What an evaluation of `srv-1` returns, with the footprint it recorded. */
 const evaluated: JobResult = {
   _tag: "Evaluated",
@@ -39,6 +41,7 @@ const evaluated: JobResult = {
     ],
   },
 } as unknown as JobResult;
+
 const pullRequest = {
   _tag: "PullRequest",
   number: 7,
@@ -51,6 +54,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
   it.live("goes to the agent for a trusted run, whose derivations then build here", () =>
     Effect.gen(function* () {
       let sent: Extract<Job, { _tag: "Step" }> | undefined;
+
       const { status, jobs, evaluations } = yield* drive({
         steps: [deferred("srv-1")],
         evaluator: true,
@@ -58,9 +62,11 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
         result: (_step, job) => {
           if (job.evaluate === undefined) return undefined;
           sent = job;
+
           return evaluated;
         },
       });
+
       expect(status).toBe("passed");
       expect(evaluations).toEqual(["srv-1 evaluates"]);
       expect(jobs).toEqual(["srv-1 evaluates", "srv-1"]);
@@ -83,6 +89,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           valid: () => true,
           result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
         });
+
         expect(evaluations).toEqual(["srv-1 evaluates"]);
         expect(records).toEqual([{ attr: "checks.aarch64-linux.srv-1", trust: "trusted" }]);
         // The push run after the merge, of the same tree, takes it instead of evaluating again.
@@ -101,6 +108,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           valid: () => true,
           result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
         });
+
         expect(evaluations).toEqual([]);
         expect(jobs[0]).toBe("srv-1 evaluates");
         expect(pools.get("srv-1")).toBe("fork");
@@ -114,6 +122,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
         event: pullRequest,
         result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
       });
+
       expect(records).toEqual([{ attr: "checks.aarch64-linux.srv-1", trust: "pr" }]);
     }),
   );
@@ -128,6 +137,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           plan: { trusted: [appAttr] },
           result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
         });
+
         expect(plan.trusted).toEqual(["checks.aarch64-linux.srv-1", appAttr]);
       }),
   );
@@ -140,6 +150,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
         valid: () => false,
         result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
       });
+
       expect(status).toBe("passed");
       expect(evaluations).toEqual(["srv-1 evaluates"]);
       expect(jobs).toEqual(["srv-1 evaluates", "srv-1 evaluates", "srv-1"]);
@@ -151,6 +162,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
   it.live("evaluates here when the agent's evaluation died", () =>
     Effect.gen(function* () {
       let tries = 0;
+
       const { status, jobs } = yield* drive({
         steps: [deferred("srv-1")],
         event: pullRequest,
@@ -159,11 +171,13 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
         result: (_step, job) => {
           if (job.evaluate === undefined) return undefined;
           tries++;
+
           return tries === 1
             ? { _tag: "Died", message: "pushing the derivations to the controller's store failed" }
             : evaluated;
         },
       });
+
       expect(status).toBe("passed");
       expect(jobs).toEqual(["srv-1 evaluates", "srv-1 evaluates", "srv-1"]);
     }),
@@ -180,12 +194,14 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           system: null,
         },
       };
+
       const { status, jobs } = yield* drive({
         steps: [injected],
         unplanned: true,
         event: pullRequest,
         evaluator: true,
       });
+
       expect(status).toBe("errored");
       expect(jobs).toEqual(["plan"]);
     }),
@@ -200,6 +216,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           readonly builds: ReadonlyArray<string>;
           readonly planned: ReadonlyArray<string>;
         }> = [];
+
         const { status, jobs, evaluations, records, steps } = yield* drive({
           steps: [deferred("srv-1"), deferred("mbp"), deferred("throws")],
           event: pullRequest,
@@ -213,12 +230,14 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
               builds: job.evaluate.builds.map((b) => b.name),
               planned: job.evaluate.planned.map((p) => p.name),
             });
+
             const recorded = (attr: string) => ({
               footprints: [
                 { id: "1", revision: "a".repeat(40), entries: [["flake.nix", "read"] as const] },
               ],
               evaluations: [{ attr, footprint: "1", count: 1, digest: "d", derivation: null }],
             });
+
             return where === "agent"
               ? {
                   _tag: "Evaluated",
@@ -237,6 +256,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
                 };
           },
         });
+
         // The build that threw, which tryEval caught on the agent, isn't evaluated again with the others.
         expect(status).toBe("failed");
         expect(steps.get("throws")?.status).toBe("failed");
@@ -264,6 +284,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
     () =>
       Effect.gen(function* () {
         let tries = 0;
+
         const { status, evaluations, jobs } = yield* drive({
           steps: [deferred("srv-1")],
           evaluator: true,
@@ -271,12 +292,14 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           result: (_step, job) => {
             if (job.evaluate === undefined) return undefined;
             tries++;
+
             // Together, on the agent and here, twice, it fails; alone it evaluates.
             return job.run.flake === "" || tries <= 4
               ? { _tag: "Died", message: "out of memory" }
               : evaluated;
           },
         });
+
         expect(status).toBe("passed");
         expect(evaluations).toEqual(["srv-1 evaluates", "srv-1 evaluates"]);
         expect(jobs).toEqual([
@@ -297,6 +320,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
         const started = yield* Deferred.make<void>();
         let stopped = false;
         let first = true;
+
         const { status, jobs, evaluations, steps } = yield* drive({
           steps: [deferred("srv-1")],
           evaluator: true,
@@ -304,6 +328,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           work: () => {
             if (!first) return Effect.void;
             first = false;
+
             return Deferred.succeed(started, undefined).pipe(
               Effect.andThen(Effect.never),
               Effect.onInterrupt(() => Effect.sync(() => void (stopped = true))),
@@ -314,6 +339,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
             yield* (yield* RunsCore).supersede("app-2", "superseded by #3");
           }),
         });
+
         expect(status).toBe("cancelled");
         expect(stopped).toBe(true);
         expect(evaluations).toEqual(["srv-1 evaluates"]);
@@ -334,6 +360,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           valid: () => true,
           result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
         });
+
         expect(status).toBe("passed");
         expect(evaluations).toEqual([]);
         expect(jobs).toEqual(["srv-1 evaluates (adopted)", "srv-1"]);
@@ -356,12 +383,14 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           system: "aarch64-linux",
         },
       };
+
       const { evaluations, jobs } = yield* drive({
         steps: [planned, deferred("srv-1")],
         evaluator: true,
         valid: () => true,
         result: (_step, job) => (job.evaluate === undefined ? undefined : evaluated),
       });
+
       expect(evaluations).toEqual([]);
       expect(jobs).toContain("srv-1 evaluates");
     }),
@@ -378,6 +407,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           valid: () => true,
           result: (_step, job) => {
             if (job.evaluate === undefined) return undefined;
+
             // The agent's: what a flake whose drvPath is an option made it report.
             if (job.run.flake === "") {
               return {
@@ -390,6 +420,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
                 uses: {},
               };
             }
+
             // This host's, sanitized too.
             return {
               _tag: "Evaluated",
@@ -402,6 +433,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
             };
           },
         });
+
         expect(evaluations).toEqual(["srv-1 evaluates"]);
         expect(jobs[1]).toBe("srv-1 evaluates");
         expect(steps.get("evil")?.status).toBe("failed");
@@ -424,10 +456,12 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
             system: "aarch64-linux",
           },
         };
+
         const { jobs, commands, steps } = yield* drive({
           steps: [odd],
           value: () => derivation("srv-1").out,
         });
+
         expect(commands.filter((c) => c[0] === "nix-store" && c.length === 2)).toEqual([]);
         expect(jobs).toEqual(["srv-1"]);
         expect(steps.get("srv-1")?.status).toBe("passed");

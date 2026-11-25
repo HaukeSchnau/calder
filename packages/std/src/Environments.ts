@@ -74,10 +74,12 @@ export const deploy = <A>(
     ...(environment.after === undefined ? {} : { after: environment.after }),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
   });
+
   const ready =
     options.readiness === undefined
       ? undefined
       : Alchemy.ready(deployed, { name: `ready-${stage}`, readiness: options.readiness });
+
   return { deployed, ready, last: (ready ?? deployed) as Step.Step<A, any, any, any, any> };
 };
 
@@ -100,6 +102,7 @@ export const preview = <A>(
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
   });
+
   return [
     On.preview([
       deployed,
@@ -126,6 +129,7 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
   const checks = options.checks ?? [];
   const artifacts = Object.values(options.artifacts ?? {});
   const branch = options.defaultBranch ?? "main";
+
   const previews =
     options.previews === undefined
       ? []
@@ -134,15 +138,18 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
           ...(options.previews.after === undefined ? {} : { gate: options.previews.after }),
           ...(options.previews.then === undefined ? {} : { then: options.previews.then }),
         });
+
   const environments = Object.entries(options.environments).map(([name, environment]) => {
     const stage = Alchemy.stageName(name);
     const { deployed, ready, last } = deploy(options, stage, environment);
+
     return ruleOf(environment.on, [
       deployed,
       ...(ready === undefined ? [] : [ready]),
       ...(environment.then?.(last) ?? []),
     ]);
   });
+
   const plans =
     options.planDeploys === false
       ? []
@@ -158,6 +165,7 @@ export const project = <A = void>(options: Options<A>): Calder.Project => {
               : [],
           )
           .filter((plan) => !namesTarget(options.rules, plan.name));
+
   return Calder.project({
     ...(options.shared === undefined ? {} : { shared: options.shared }),
     rules: [

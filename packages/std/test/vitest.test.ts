@@ -19,10 +19,12 @@ const repository = () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "calder-vitest-")));
   const bin = join(root, "pkg/node_modules/.bin");
   mkdirSync(bin, { recursive: true });
+
   const fake = (name: string, body: string) => {
     writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`);
     chmodSync(join(bin, name), 0o755);
   };
+
   fake("prepare", "pwd > prepared");
   fake(
     "vitest",
@@ -31,6 +33,7 @@ const repository = () => {
       'for arg; do case $arg in --outputFile.json=*) echo "{}" > "${arg#*=}";; esac; done',
     ].join("\n"),
   );
+
   return root;
 };
 
@@ -41,6 +44,7 @@ const run = (root: string, step: ReturnType<typeof Vitest.files>, files: Readonl
   const [command, ...args] = Cmd.render(step.def.run({ index: 1, count: 1, files }), {});
   const exit = spawnSync(command!, args, { cwd: root, encoding: "utf8" });
   expect(exit.stderr).toBe("");
+
   return {
     report: step.def.report?.path ?? "",
     ran: readFileSync(join(root, "pkg/ran"), "utf8").trim().split("\n"),
@@ -50,11 +54,13 @@ const run = (root: string, step: ReturnType<typeof Vitest.files>, files: Readonl
 describe("Vitest.files", () => {
   it("runs the package's vitest in its directory with its files and writes the report where Calder reads it", () => {
     const root = repository();
+
     const step = Vitest.files({
       dir: "pkg",
       tests: ["src/**/*.test.ts"],
       args: ["--maxWorkers", "2"],
     });
+
     const { report, ran } = run(root, step, ["pkg/src/a.test.ts", "pkg/src/b.test.ts"]);
     expect(ran).toEqual([
       join(root, "pkg"),
@@ -76,6 +82,7 @@ describe("Vitest.files", () => {
       tests: ["src/**/*.test.ts", "!src/legacy/**"],
       allowEmpty: true,
     });
+
     expect(step.def._tag === "Task" ? step.def.each : undefined).toEqual(
       Files.optional(Files.imports(["pkg/src/**/*.test.ts", "!pkg/src/legacy/**"])),
     );

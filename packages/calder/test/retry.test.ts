@@ -53,24 +53,29 @@ const failed: JobResult = {
 /** Fails `name`'s first job, as a builder that dropped its connection would. */
 const failingOnce = (name: string) => {
   let calls = 0;
+
   return (s: string) => (s === name && calls++ === 0 ? failed : undefined);
 };
 
 const statusOf = (name: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const [row] = yield* sql<{
       status: string;
     }>`select status from steps where run_id = 'app-2' and name = ${name}`;
+
     return row?.status;
   }).pipe(Effect.orDie);
 
 const runOf = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
   const [row] = yield* sql<{
     status: string;
     retries: number;
   }>`select status, retries from runs where id = 'app-2'`;
+
   return row!;
 }).pipe(Effect.orDie);
 
@@ -83,6 +88,7 @@ const until = <A>(effect: Effect.Effect<A, never, SqlClient.SqlClient>, done: (a
 
 const rerun = Effect.gen(function* () {
   const runs = yield* Workflow.Runs;
+
   return yield* runs.rerun("app-2").pipe(Effect.orDie);
 });
 
@@ -96,6 +102,7 @@ describe("a rerun in place", () => {
       { name: "e", status: "pending", spec: task("e", ["b", "a"]) },
       { name: "f", status: "skipped", spec: task("f", ["a"]) },
     ] as const;
+
     expect(retryable(steps)).toEqual(["b", "c", "d"]);
   });
 
@@ -105,6 +112,7 @@ describe("a rerun in place", () => {
       Effect.gen(function* () {
         let retried: { readonly id: string } | undefined;
         let after: { readonly status: string; readonly retries: number } | undefined;
+
         const { status, jobs, steps } = yield* drive({
           steps: [task("a"), task("b"), task("c", ["b"]), task("d", ["a"])],
           result: failingOnce("b"),
@@ -114,6 +122,7 @@ describe("a rerun in place", () => {
             after = yield* until(runOf, (r) => r.status === "passed");
           }),
         });
+
         expect(status).toBe("passed");
         expect(retried?.id).toBe("app-2");
         expect(after?.retries).toBe(1);
@@ -132,6 +141,7 @@ describe("a rerun in place", () => {
         let againBeforeSlowEnded: boolean | undefined;
         let bJobs = 0;
         let retries: number | undefined;
+
         const { status, jobs, steps } = yield* drive({
           steps: [action("slow"), task("b"), task("c", ["b", "slow"])],
           result: (s) => (s === "b" && bJobs === 1 ? failed : undefined),
@@ -143,8 +153,10 @@ describe("a rerun in place", () => {
               : s === "b"
                 ? Effect.suspend(() => {
                     bJobs++;
+
                     if (bJobs === 1) return Effect.void;
                     againBeforeSlowEnded = !slowEnded;
+
                     // b's second job outlasts slow, so c is ready to run while b still runs again.
                     return Effect.sleep("1200 millis");
                   })
@@ -155,6 +167,7 @@ describe("a rerun in place", () => {
             retries = (yield* until(runOf, (r) => r.status === "passed")).retries;
           }),
         });
+
         expect(status).toBe("passed");
         expect(againBeforeSlowEnded).toBe(true);
         expect(jobs.filter((j) => j === "c")).toHaveLength(1);
@@ -200,6 +213,7 @@ describe("a rerun in place", () => {
             yield* until(runOf, (r) => r.status === "passed");
           }),
         });
+
         expect(status).toBe("passed");
         const ofB = history.filter((h) => h.startsWith("calder/b: "));
         expect(ofB.indexOf("calder/b: pending: runs again")).toBeGreaterThan(
@@ -212,6 +226,7 @@ describe("a rerun in place", () => {
   it.live("that the driver makes itself neither counts as a retry nor tells Gitea", () =>
     Effect.gen(function* () {
       let retries: number | undefined;
+
       const { statuses } = yield* drive({
         steps: [task("b")],
         result: () => failed,
@@ -225,6 +240,7 @@ describe("a rerun in place", () => {
           yield* sql`update runs set status = 'failed' where id = 'app-2'`.pipe(Effect.orDie);
         }),
       });
+
       expect(retries).toBe(0);
       expect(statuses.get("calder/b")).toMatch(/^failure/);
     }),
@@ -248,6 +264,7 @@ describe("a rerun in place", () => {
             yield* until(runOf, (r) => r.status === "passed");
           }),
         });
+
         expect(status).toBe("passed");
         expect(jobs).toEqual(["b", "b"]);
       }),
@@ -258,6 +275,7 @@ describe("a rerun in place of a step that reads a build", () => {
   const lost = "/nix/store/0pnbk1rns4wk6azih0kcz7136aid5x6f-studienbuch-bundle";
   // The runtime running this test lives in the store, so this store holds it.
   const held = realpathSync(process.execPath).split("/").slice(0, 4).join("/");
+
   const bundle = (out: string): PlannedStep => ({
     ...step,
     name: "bundle",
@@ -266,6 +284,7 @@ describe("a rerun in place of a step that reads a build", () => {
     detail: "packages.bundle",
     build: { attr: "packages.bundle", drv: `${out}.drv`, out, system: null },
   });
+
   const preview = task("preview", ["bundle"]);
 
   /**
@@ -287,6 +306,7 @@ describe("a rerun in place of a step that reads a build", () => {
       let built = false;
       let previews = 0;
       let found: boolean | undefined;
+
       const driven = yield* drive({
         steps: [bundle(out), preview],
         stateDir,
@@ -300,6 +320,7 @@ describe("a rerun in place of a step that reads a build", () => {
         result: (s) => {
           if (s !== "preview") return undefined;
           previews++;
+
           if (previews === 1)
             return {
               _tag: "Failed",
@@ -309,6 +330,7 @@ describe("a rerun in place of a step that reads a build", () => {
               key: null,
             };
           found = built || cached || out === held;
+
           return found
             ? undefined
             : {
@@ -318,14 +340,17 @@ describe("a rerun in place of a step that reads a build", () => {
         },
         meanwhile: Effect.gen(function* () {
           yield* until(runOf, (r) => r.status === "failed");
+
           // srv-2's nightly collection, and maybe the cache's, dropped the bundle between the run and its rerun.
           if (forget.cache) cached = false;
           yield* rerun;
           yield* until(runOf, (r) => r.status !== "running" && r.retries === 1);
         }),
       });
+
       return { ...driven, found, stateDir };
     });
+
   const realises = (commands: ReadonlyArray<ReadonlyArray<string>>, out: string) =>
     commands.filter((c) => c[0] === "nix-store" && c.includes("--realise") && c.at(-1) === out);
 
@@ -348,6 +373,7 @@ describe("a rerun in place of a step that reads a build", () => {
         const { status, jobs, history, commands, steps } = yield* rerunAfter(lost, {
           cache: false,
         });
+
         expect(status).toBe("passed");
         expect(history).toContain("calder/bundle: pending: runs again");
         expect(steps.get("bundle")?.status).toBe("reused");
@@ -364,9 +390,11 @@ describe("a rerun in place of a step that reads a build", () => {
         const { status, jobs, history, commands, stateDir } = yield* rerunAfter(held, {
           cache: false,
         });
+
         expect(status).toBe("passed");
         expect(jobs).toEqual(["preview", "preview"]);
         expect(history).not.toContain("calder/bundle: pending: runs again");
+
         // Once as the run took the bundle, and again for the reopened run, since the first root went with the run.
         const root = [
           "nix-store",
@@ -378,6 +406,7 @@ describe("a rerun in place of a step that reads a build", () => {
           "--realise",
           held,
         ];
+
         expect(realises(commands, held)).toEqual([root, root]);
       }),
   );
@@ -390,6 +419,7 @@ describe("a rerun in place of a step that reads a build", () => {
           cache: false,
           rootable: false,
         });
+
         expect(status).toBe("passed");
         expect(history).toContain("calder/bundle: pending: runs again");
         // The cache still has it, so the bundle's step takes it from there instead of building.
@@ -405,6 +435,7 @@ describe("a rerun in place of a step that reads a build", () => {
         let deploys = 0;
         // `afterEnded: [bundle]`: the deploy goes after the bundle ended, whatever its outcome, and reads nothing of it.
         const deploy: PlannedStep = { ...task("deploy"), exits: ["bundle"] };
+
         const { status, jobs, history } = yield* drive({
           steps: [bundle(lost), deploy],
           cache: {
@@ -420,6 +451,7 @@ describe("a rerun in place of a step that reads a build", () => {
             yield* until(runOf, (r) => r.status !== "running" && r.retries === 1);
           }),
         });
+
         expect(status).toBe("passed");
         expect(jobs).toEqual(["deploy", "deploy"]);
         expect(history).not.toContain("calder/bundle: pending: runs again");

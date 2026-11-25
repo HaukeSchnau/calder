@@ -83,10 +83,13 @@ interface Wake {
 
 /** A sleeper's host is woken at most once in this time, however many jobs wait for it. */
 export const wakeEvery = "2 minutes";
+
 /** How long a wake may take, from the start of its command until the agent connects. */
 export const wakeTimeout = "3 minutes";
+
 /** How often a waiting job checks whether a sleeper's host is due for another wake. */
 const wakeCheck = "15 seconds";
+
 /**
  * How long a sleeper's agent must be away before its host is woken. Agents lose the controller for a few
  * seconds about 20 times an hour while their hosts are up, and a wake then only waited for an answer it
@@ -211,6 +214,7 @@ export const make = (
   const leftAt = new Map<string, number>();
   // Bumped on every connect, so a grace timer knows whether its agent came back.
   const generations = new Map<string, number>();
+
   // Every agent seen since start, so a missing one stays visible.
   const seen = new Map<
     string,
@@ -232,8 +236,10 @@ export const make = (
 
   const evaluatorConnected = () =>
     [...connections.values()].some((c) => c.evaluator && c.compatibility === version);
+
   /** When the last evaluator agent disconnected, while none has connected since. */
   let evaluatorLeft: number | null = null;
+
   /**
    * Whether a connected evaluator agent runs a job, so the evaluations waiting for it make progress: one
    * that the agent took less than `evaluationCap` ago and that isn't being stopped. A hung evaluation
@@ -242,6 +248,7 @@ export const make = (
   const evaluatorBusy = (now: number) =>
     [...connections.values()].some((c) => {
       const jobs = on(c.name);
+
       return (
         c.evaluator &&
         c.compatibility === version &&
@@ -257,11 +264,13 @@ export const make = (
     waiter: Pick<Waiter, "platform" | "also" | "evaluation" | "pool">,
   ) => {
     const jobs = on(c.name);
+
     const kind = waiter.evaluation
       ? c.evaluator
       : !c.evaluator &&
         c.pools.includes(waiter.pool) &&
         (c.portableOnly ? waiter.also : [waiter.platform, ...waiter.also]).includes(c.platform);
+
     return (
       kind && c.compatibility === version && jobs.length < c.slots && !jobs.some((p) => p.stopping)
     );
@@ -272,19 +281,23 @@ export const make = (
       // An agent that takes only other systems' tasks goes first, since other jobs can't use its slot, then
       // one of the job's own platform.
       const candidates = [...connections.values()].filter((c) => takes(c, waiter));
+
       const agent =
         candidates.find((c) => c.portableOnly) ??
         candidates.find((c) => c.platform === waiter.platform) ??
         candidates[0];
+
       if (agent === undefined) continue;
       waiters.splice(waiters.indexOf(waiter), 1);
       waiter.assigned({ name: agent.name, platform: agent.platform });
+
       const p: Placed = {
         agent: agent.name,
         exited: Deferred.makeUnsafe<number>(),
         at: yield* Clock.currentTimeMillis,
         stopping: false,
       };
+
       placed.set(waiter.job.id, p);
       Queue.offerUnsafe(agent.orders, {
         _tag: "Start",
@@ -300,6 +313,7 @@ export const make = (
   const finish = (job: string, code: number) =>
     Effect.gen(function* () {
       const p = placed.get(job);
+
       if (p === undefined) return;
       placed.delete(job);
       yield* Deferred.succeed(p.exited, code);
@@ -314,6 +328,7 @@ export const make = (
           `an agent of ${platform} to take it`,
           ...sleepers.flatMap((s) => {
             const wake = wakes.get(s.name);
+
             return s.platform !== platform || wake === undefined || wake.connected
               ? []
               : [wake.failure ?? `waking ${s.name}`];
@@ -340,6 +355,7 @@ export const make = (
    */
   const wake = (sleeper: Sleeper, at: number) => {
     const attempt: Wake = { at, failure: null, connected: false };
+
     const fail = (failure: string) =>
       Effect.gen(function* () {
         if (wakes.get(sleeper.name) !== attempt || attempt.connected) return;
@@ -347,7 +363,9 @@ export const make = (
         yield* Effect.logWarning(failure);
         yield* tell(sleeper.platform, failure);
       });
+
     const failed = (why: string) => fail(`waking ${sleeper.name} failed: ${why.split("\n")[0]}`);
+
     return Effect.sync(() => wakes.set(sleeper.name, attempt)).pipe(
       Effect.andThen(
         Effect.forkDetach(
@@ -379,15 +397,19 @@ export const make = (
   const rouse = (platform: string) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
+
       for (const sleeper of sleepers) {
         if (sleeper.platform !== platform || connections.has(sleeper.name)) continue;
         const away = leftAt.get(sleeper.name);
+
         if (away !== undefined && now - away < Duration.toMillis(awayBeforeWake)) continue;
         const last = wakes.get(sleeper.name);
+
         const due =
           last === undefined ||
           (now - last.at >= Duration.toMillis(wakeEvery) &&
             (last.connected || last.failure !== null));
+
         if (due) yield* wake(sleeper, now);
       }
     });
@@ -407,24 +429,31 @@ export const make = (
           onWaiting: options?.onWaiting ?? (() => Effect.void),
           onLog: options?.onLog ?? (() => Effect.void),
         };
+
         waiters.push(waiter);
         yield* assign;
         const waits = waiters.includes(waiter);
         // An evaluation no evaluator agent can take runs on the controller instead of waiting, unless the
         // last one left only moments ago: agents lose the controller for a few seconds about 20 times an hour.
         const now = yield* Clock.currentTimeMillis;
+
         const gone =
           !evaluatorConnected() &&
           (evaluatorLeft === null || now - evaluatorLeft >= Duration.toMillis(evaluatorGrace));
+
         if (waits && (options?.wait === false || (waiter.evaluation && gone))) {
           waiters.splice(waiters.indexOf(waiter), 1);
+
           return -2;
         }
+
         if (waits) yield* waiter.onWaiting(reason(platform, waiter.evaluation));
+
         // While the job waits, no connected agent of its platform has a free slot. Sleepers take no evaluations.
         const rousing = waiter.evaluation
           ? Effect.never
           : rouse(platform).pipe(Effect.andThen(Effect.sleep(wakeCheck)), Effect.forever);
+
         // An evaluation gives up only once the evaluators stalled for `within`: none runs a job, such as
         // one that offers no slots. Behind a busy one it waits, since its own turn there comes sooner than
         // the controller's evaluation: infra-1036 gave up after 2 minutes behind another run's 5-minute
@@ -432,17 +461,21 @@ export const make = (
         const stalled = (within: Duration.Input) =>
           Effect.gen(function* () {
             let since = yield* Clock.currentTimeMillis;
+
             while (true) {
               yield* Effect.sleep(wakeCheck);
               const now = yield* Clock.currentTimeMillis;
+
               if (evaluatorBusy(now)) since = now;
               else if (now - since >= Duration.toMillis(within)) return;
             }
           });
+
         const given = Deferred.await(waiter.abandoned).pipe(
           options?.within === undefined ? (e) => e : Effect.raceFirst(stalled(options.within)),
           Effect.as(undefined),
         );
+
         const p = yield* (
           waits
             ? Effect.raceFirst(Effect.raceFirst(Deferred.await(waiter.placed), rousing), given)
@@ -454,40 +487,52 @@ export const make = (
             ),
           ),
         );
+
         if (p === undefined) {
           // Placed in the same instant: it runs after all.
           if (!waiters.includes(waiter)) {
             const placedNow = yield* Deferred.await(waiter.placed);
+
             if (options?.onPlaced !== undefined) yield* options.onPlaced(placedNow.agent);
+
             return yield* Deferred.await(placedNow.exited);
           }
+
           waiters.splice(waiters.indexOf(waiter), 1);
+
           return -2;
         }
+
         if (options?.onPlaced !== undefined) yield* options.onPlaced(p.agent);
+
         return yield* Deferred.await(p.exited);
       }),
     stop: (job) =>
       Effect.sync(() => {
         const p = placed.get(job);
+
         if (p === undefined) return;
         p.stopping = true;
         const agent = connections.get(p.agent);
+
         if (agent !== undefined) Queue.offerUnsafe(agent.orders, { _tag: "Stop", job });
       }),
     connect: (auth, agent) =>
       Stream.unwrap(
         Effect.gen(function* () {
           yield* check(auth);
+
           return Stream.callback<AgentOrder>((orders) =>
             Effect.gen(function* () {
               const previous = connections.get(auth.name);
+
               if (previous !== undefined) Queue.endUnsafe(previous.orders);
               const generation = (generations.get(auth.name) ?? 0) + 1;
               generations.set(auth.name, generation);
               const evaluator = agent.evaluator === true;
               const portableOnly = agent.portableOnly === true;
               const pools = agent.pools ?? ["trusted"];
+
               const connection: Connection = {
                 name: auth.name,
                 platform: agent.platform,
@@ -498,7 +543,9 @@ export const make = (
                 pools,
                 orders,
               };
+
               connections.set(auth.name, connection);
+
               if (evaluatorConnected()) evaluatorLeft = null;
               seen.set(auth.name, {
                 platform: agent.platform,
@@ -510,6 +557,7 @@ export const make = (
                 pools,
               });
               const unknown = agent.running.filter((job) => !placed.has(job));
+
               for (const job of unknown)
                 placed.set(job, {
                   agent: auth.name,
@@ -517,45 +565,54 @@ export const make = (
                   at: 0,
                   stopping: true,
                 });
+
               for (const [job, p] of [...placed]) {
                 if (p.agent !== auth.name) continue;
+
                 // Workers that exited while the agent was away can't report it any more.
                 if (!agent.running.includes(job)) yield* finish(job, -1);
                 else if (p.stopping) Queue.offerUnsafe(orders, { _tag: "Stop", job });
               }
+
               yield* Effect.logInfo(
                 `agent ${auth.name} (${agent.platform}, ${agent.slots} slots${evaluator ? ", evaluations only" : portableOnly ? ", other systems' tasks only" : ""}${
                   pools.some(sandboxed) ? ", pull requests sandboxed" : ""
                 }) connected`,
               );
               const woken = wakes.get(auth.name);
+
               if (woken !== undefined && !woken.connected) {
                 woken.connected = true;
                 const connected = `${auth.name} connected after ${Math.round(((yield* Clock.currentTimeMillis) - woken.at) / 1000)} s`;
                 yield* Effect.logInfo(connected);
                 yield* tell(agent.platform, connected);
               }
+
               if (unknown.length > 0) {
                 yield* Effect.logWarning(
                   `agent ${auth.name} runs ${unknown.length} workers of jobs this controller doesn't know: it stops them before it gets new jobs`,
                 );
               }
+
               if (agent.compatibility !== version) {
                 const behind = agent.compatibility < version ? "it is" : "the controller is";
                 yield* Effect.logWarning(
                   `agent ${auth.name} (Calder build ${agent.build}) has compatibility version ${agent.compatibility}, not ${version}: it gets no jobs until ${behind} deployed`,
                 );
               }
+
               yield* assign;
               yield* Effect.addFinalizer(() =>
                 Effect.gen(function* () {
                   // Read first: between taking the connection away and recording when, nothing may run, or
                   // `rouse` would see the agent neither connected nor just gone, and wake its host.
                   const now = yield* Clock.currentTimeMillis;
+
                   if (connections.get(auth.name) !== connection) return;
                   connections.delete(auth.name);
                   leftAt.set(auth.name, now);
                   yield* Effect.logInfo(`agent ${auth.name} disconnected`);
+
                   // Evaluations give up on the agents once none came back within the grace, not at the first
                   // dropped connection: dev-hauke's reconnects within seconds, about 20 times an hour.
                   if (evaluator && connection.compatibility === version && !evaluatorConnected()) {
@@ -565,6 +622,7 @@ export const make = (
                         Effect.gen(function* () {
                           // An evaluator came back since, or left again and has a grace of its own.
                           if (evaluatorLeft !== now || evaluatorConnected()) return;
+
                           for (const w of waiters.filter((w) => w.evaluation))
                             yield* Deferred.succeed(w.abandoned, undefined);
                         }),
@@ -572,10 +630,12 @@ export const make = (
                       Effect.forkDetach,
                     );
                   }
+
                   yield* Effect.sleep(reconnectGrace).pipe(
                     Effect.andThen(
                       Effect.gen(function* () {
                         if (generations.get(auth.name) !== generation) return;
+
                         for (const [job, p] of placed)
                           if (p.agent === auth.name) yield* finish(job, -1);
                       }),
@@ -595,6 +655,7 @@ export const make = (
           Effect.gen(function* () {
             const connection = connections.get(auth.name);
             const known = seen.get(auth.name);
+
             if (connection === undefined || known === undefined || connection.slots === slots)
               return;
             connection.slots = slots;
@@ -607,8 +668,10 @@ export const make = (
     usage: () =>
       [...seen].map(([name, a]) => {
         const jobs = on(name);
+
         const taking =
           connections.has(name) && a.compatibility === version && !jobs.some((p) => p.stopping);
+
         return {
           name,
           ...a,
@@ -626,11 +689,14 @@ export const layer = Layer.effect(Agents)(
   Effect.gen(function* () {
     const config = yield* Config;
     const spawner = yield* Exec.SpawnerTag;
+
     if (config.agents === null) return make(null);
+
     const sleepers = config.agents.wake.map(({ command, ...sleeper }) => ({
       ...sleeper,
       wake: Exec.run(command).pipe(Effect.provideService(Exec.SpawnerTag, spawner)),
     }));
+
     return make(
       readFileSync(config.agents.tokenFile, "utf8").trim(),
       compatibility,

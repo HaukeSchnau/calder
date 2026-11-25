@@ -51,9 +51,11 @@ interface Manifest {
 const workspaceGlobs = (repo: RepoAt) =>
   Effect.gen(function* () {
     const yaml = yield* repo.show("pnpm-workspace.yaml");
+
     if (yaml !== undefined) {
       const globs: Array<string> = [];
       let inPackages = false;
+
       for (const line of yaml.split("\n")) {
         if (/^packages:\s*$/.test(line)) inPackages = true;
         else if (inPackages && /^\s+-\s+/.test(line))
@@ -65,14 +67,20 @@ const workspaceGlobs = (repo: RepoAt) =>
           );
         else if (inPackages && /^\S/.test(line)) inPackages = false;
       }
+
       return globs;
     }
+
     const pkg = yield* repo.show("package.json");
+
     if (pkg === undefined) return [];
+
     const json = JSON.parse(pkg) as {
       workspaces?: ReadonlyArray<string> | { packages?: ReadonlyArray<string> };
     };
+
     const ws = json.workspaces;
+
     return Array.isArray(ws)
       ? ws
       : ((ws as { packages?: ReadonlyArray<string> } | undefined)?.packages ?? []);
@@ -83,35 +91,45 @@ const manifests = (repo: RepoAt) =>
     const globs = (yield* workspaceGlobs(repo)).filter((g) => !g.startsWith("!"));
     const files = yield* repo.files;
     const matchers = globs.map((g) => Files.globToRegExp(`${g.replace(/\/+$/, "")}/package.json`));
+
     const paths = files.filter(
       (f) => f.endsWith("package.json") && matchers.some((m) => m.test(f)),
     );
+
     const out: Array<Manifest> = [];
+
     for (const path of paths) {
       const text = yield* repo.show(path);
+
       if (text === undefined) continue;
       const json = JSON.parse(text) as Record<string, unknown>;
+
       const deps = [
         "dependencies",
         "devDependencies",
         "peerDependencies",
         "optionalDependencies",
       ].flatMap((k) => Object.keys((json[k] ?? {}) as Record<string, string>));
+
       out.push({
         dir: path.slice(0, -"/package.json".length),
         name: String(json.name ?? path),
         deps,
       });
     }
+
     return out;
   });
 
 const graphs = new WeakMap<RepoAt, Imports.Graph>();
+
 /** One import graph per revision, however many tasks ask. */
 const graphOf = (repo: RepoAt) =>
   Effect.suspend(() => {
     const known = graphs.get(repo);
+
     if (known !== undefined) return Effect.succeed(known);
+
     return manifests(repo).pipe(
       Effect.flatMap((ws) =>
         Imports.make(
@@ -138,8 +156,10 @@ export const paths = (
         return (yield* repo.files).filter(Files.matcher(files.patterns));
       case "Imports": {
         const graph = yield* graphOf(repo);
+
         return [...(yield* graph.closure(graph.match(files.patterns), files))].sort();
       }
+
       case "Union":
         return (yield* Effect.forEach(files.members, (m) => paths(repo, m))).flat();
       case "Optional":
@@ -150,19 +170,25 @@ export const paths = (
         const byName = new Map(all.map((m) => [m.name, m]));
         const byDir = new Map(all.map((m) => [m.dir, m]));
         const seen = new Set<string>();
+
         const visit = (m: Manifest) => {
           if (seen.has(m.dir)) return;
           seen.add(m.dir);
+
           for (const dep of m.deps) {
             const target = byName.get(dep);
+
             if (target !== undefined) visit(target);
           }
         };
+
         for (const dir of files.dirs) {
           const m = byDir.get(dir);
+
           if (m !== undefined) visit(m);
           else seen.add(dir);
         }
+
         return [...(yield* rootFiles(repo)), ...[...seen].sort()];
       }
     }
@@ -181,12 +207,14 @@ const unmatched = (
       case "Of":
       case "Workspace": {
         const all = yield* repo.files;
+
         return (files._tag === "Of" ? files.paths : files.dirs)
           .filter(
             (path) => path !== "." && !all.some((f) => f === path || f.startsWith(`${path}/`)),
           )
           .map((pattern) => ({ pattern, negated: false }));
       }
+
       case "Glob":
       case "Imports":
         return Files.unmatched(files.patterns, yield* repo.files);
@@ -202,14 +230,18 @@ const unmatched = (
 export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
   Effect.gen(function* () {
     const universe = yield* Calder.universe(project);
+
     const written = [
       ...(project.shared === undefined
         ? []
         : [["the project's shared files", project.shared] as const]),
       ...[...universe.values()].flatMap((step) => {
         const def = step.def;
+
         if (def._tag === "Setup") return [[`${step.name}'s inputs`, def.inputs] as const];
+
         if (def._tag !== "Task") return [];
+
         return [
           [`${step.name}'s inputs`, def.inputs] as const,
           ...(def.each === undefined ? [] : [[`${step.name}'s each`, def.each] as const]),
@@ -219,14 +251,18 @@ export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
         ];
       }),
     ];
+
     const found = (yield* Effect.forEach(written, ([where, files]) =>
       Effect.map(unmatched(repo, files), (patterns) => patterns.map((u) => ({ ...u, where }))),
     )).flat();
+
     const listed = (negated: boolean) =>
       found
         .filter((u) => u.negated === negated)
         .map((u) => `${JSON.stringify(u.pattern)} (${u.where})`);
+
     const [missing, removed] = [listed(false), listed(true)];
+
     if (found.length > 0) {
       const what = [
         ...(missing.length === 0 ? [] : [`No file matches ${missing.join(", ")}.`]),
@@ -236,6 +272,7 @@ export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
               `${removed.join(", ")} ${removed.length === 1 ? "matches" : "match"} only files the negations leave out.`,
             ]),
       ];
+
       return yield* new Calder.PlanError({
         message: `${what.join(" ")} Fix the path or pattern, or wrap files that may be missing in Files.optional(...).`,
       });
@@ -277,28 +314,35 @@ const eachKeys = (repo: RepoAt, written: Files.Files, keyBase: string) =>
     // `optional` only lets the patterns match nothing.
     const each = written._tag === "Optional" ? written.files : written;
     const graph = yield* graphOf(repo);
+
     const entries =
       each._tag === "Imports" || each._tag === "Glob"
         ? graph.match(each.patterns)
         : [...new Set(yield* paths(repo, each))].sort();
+
     const byEntry =
       each._tag === "Imports"
         ? yield* graph.closures(entries, each)
         : new Map(entries.map((e) => [e, [e]] as const));
+
     const closures = entries.map((entry) => byEntry.get(entry) ?? [entry]);
     const blobs = new Map((yield* repo.entries).map((e) => [e.path, e.oid]));
     const dirs = [...new Set(closures.flatMap((c) => c.filter((p) => !blobs.has(p))))];
     const trees = yield* repo.objectIds(dirs);
     const id = (path: string) => blobs.get(path) ?? trees.get(path) ?? null;
     const data = new Map<string, string>();
+
     const dataKey = (dir: string) => {
       let key = data.get(dir);
+
       if (key === undefined) {
         key = sha256(graph.data(dir).map((p) => [p, id(p)]));
         data.set(dir, key);
       }
+
       return key;
     };
+
     return entries.map((file, i) => ({
       file,
       key: sha256({
@@ -334,6 +378,7 @@ export interface Derivation {
  */
 export const marksOf = (revision: string, committed: number) => {
   const date = new Date(committed * 1000).toISOString().replace(/[-:T]/g, "").slice(0, 14);
+
   return [revision, revision.slice(0, 7), String(committed), date, date.slice(0, 8)];
 };
 
@@ -353,14 +398,18 @@ interface Cached {
 const readsCommit = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     if (drvs.length === 0) return false;
+
     // A path nix-store wasn't asked about can't be shown not to.
     if (only(drvs).length !== drvs.length) return true;
+
     const closure = (yield* Exec.run(["nix-store", "--query", "--requisites", ...only(drvs)]))
       .split("\n")
       .filter((p) => p.endsWith(".drv"));
+
     return yield* Effect.try(() =>
       closure.some((drv) => {
         const text = readFileSync(drv, "utf8");
+
         return marks.some((mark) => text.includes(mark));
       }),
     );
@@ -386,38 +435,50 @@ export const fromEarlier = (
 ) =>
   Effect.gen(function* () {
     const covered = attrs.filter((attr) => attr in earlier.derivations);
+
     if (covered.length === 0 || Option.isNone(revision.committed)) return undefined;
     const counting = [...revision.nix].find(([, text]) => text.includes("revCount"));
+
     if (counting !== undefined) {
       yield* log(
         `${counting[0]} reads revCount, which differs for every commit, so the flake is evaluated again`,
       );
+
       return undefined;
     }
+
     const committed = revision.committed.value;
+
     const drvs = covered.flatMap((attr) =>
       earlier.derivations[attr] ? [earlier.derivations[attr].drv] : [],
     );
+
     if (only(drvs).length !== drvs.length) return undefined;
+
     if (
       drvs.length > 0 &&
       (yield* Exec.exec(["nix-store", "--check-validity", ...only(drvs)])).exitCode !== 0
     )
       return undefined;
     const short = earlier.revision.slice(0, 12);
+
     if (yield* readsCommit(drvs, marksOf(earlier.revision, committed))) {
       yield* log(
         `${short} has the same tree, but its derivations mention that commit, so the flake is evaluated again`,
       );
+
       return undefined;
     }
+
     const which =
       covered.length === attrs.length
         ? "them"
         : `${covered.length} of the ${attrs.length} attributes`;
+
     yield* log(
       `${short} has the same tree, and its derivations don't mention that commit, so this plan reuses ${which}`,
     );
+
     return new Map(covered.map((attr) => [attr, earlier.derivations[attr] ?? null]));
   });
 
@@ -469,6 +530,7 @@ export const derivations = (
     // An attribute path outside the grammar (Flake.components) never reaches Nix: it evaluates to nothing.
     const refused = attrs.filter((attr) => Flake.components(attr) === null);
     const valid = attrs.filter((attr) => !refused.includes(attr));
+
     return Effect.map(
       derivationsOf(run, valid, cacheDir, log, memory, options),
       (result): Evaluated =>
@@ -503,6 +565,7 @@ const derivationsOf = (
     : cached(run, cacheDir, (entry) =>
         Effect.gen(function* () {
           const known = entry?.derivations ?? {};
+
           // What the cache holds and the store still has; entries cached before derivations carried their
           // system don't count. Only the rest is evaluated, so an attribute that keeps failing costs its own
           // evaluation, not every attribute's. An audit (`fresh`) evaluates everything.
@@ -513,7 +576,9 @@ const derivationsOf = (
                   (attr) =>
                     attr in known && (known[attr] === null || known[attr]?.system !== undefined),
                 );
+
           const drvs = cachedHere.flatMap((attr) => (known[attr] ? [known[attr].drv] : []));
+
           const invalid =
             drvs.length === 0
               ? new Set<string>()
@@ -528,12 +593,15 @@ const derivationsOf = (
                     .split("\n")
                     .filter(Boolean),
                 ]);
+
           const hits = new Map(
             cachedHere
               .filter((attr) => !known[attr] || !invalid.has(known[attr].drv))
               .map((attr) => [attr, known[attr] ?? null]),
           );
+
           const missing = attrs.filter((attr) => !hits.has(attr));
+
           if (missing.length === 0)
             return {
               result: { derivations: hits, errors: new Map(), tooLarge: new Map() } as Evaluated,
@@ -541,6 +609,7 @@ const derivationsOf = (
             };
           // Recording that fails, such as strace without ptrace, leaves the plan to evaluate as before.
           const cadence = options.heartbeat ?? Heartbeat.cadence;
+
           const evaluated = yield* evaluate(
             run.flake,
             missing,
@@ -557,12 +626,14 @@ const derivationsOf = (
                   ).pipe(Effect.andThen(evaluate(run.flake, missing, memory, log, cadence))),
             ),
           );
+
           const result: Evaluated = {
             derivations: new Map([...hits, ...evaluated.derivations]),
             errors: evaluated.errors,
             tooLarge: evaluated.tooLarge,
             ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
           };
+
           return {
             result,
             entry: { derivations: { ...known, ...Object.fromEntries(evaluated.derivations) } },
@@ -584,6 +655,7 @@ export const appOf = (
     Effect.gen(function* () {
       if (entry?.app !== undefined && !fresh)
         return { result: { app: entry.app, recorded: undefined }, entry: {} };
+
       if (recorder === undefined) {
         const app = yield* Exec.run([
           "nix",
@@ -594,17 +666,21 @@ export const appOf = (
           Effect.map((name) => name.trim() || null),
           Effect.orElseSucceed(() => null),
         );
+
         return { result: { app, recorded: undefined }, entry: { app } };
       }
+
       const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"));
       // Recorded like an attribute, so a plan whose footprint of it holds needs no Nix for it either.
       const expr = `let p = (builtins.getFlake ${nixString(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`;
+
       const out = yield* Exec.exec(
         [...straced(join(scratch, "trace")), "nix", "eval", "--json", "--expr", expr],
         {
           env: { ...process.env, ...emptyCache(scratch) },
         },
       ).pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })));
+
       const trace = yield* Effect.sync(() => {
         try {
           return Footprint.parseTrace(
@@ -618,12 +694,16 @@ export const appOf = (
           rmSync(scratch, { recursive: true, force: true });
         }
       });
+
       const app = out.exitCode === 0 ? (JSON.parse(out.stdout) as string | null) || null : null;
+
       const pass =
         out.exitCode === 0 && trace !== undefined
           ? Footprint.footprints({ ...trace, marks: [trace.touches.length] }, recorder.at)
           : undefined;
+
       const count = pass?.counts[0];
+
       const kept =
         pass === undefined || count === undefined || count === null
           ? []
@@ -637,6 +717,7 @@ export const appOf = (
                 outside: trace!.outside.map(([p]) => p),
               },
             ]);
+
       const recorded: Records | undefined =
         pass === undefined || count === undefined || count === null || kept.length === 0
           ? undefined
@@ -653,6 +734,7 @@ export const appOf = (
                 },
               ],
             };
+
       return { result: { app, recorded }, entry: { app } };
     }),
   );
@@ -673,16 +755,20 @@ const defaultCacheDir = join(homedir(), ".cache", "calder");
 export const ownNix = Effect.acquireRelease(
   Effect.sync(() => {
     const dir = mkdtempSync(join(tmpdir(), "calder-nix-"));
+
     const env: Record<string, string> = {
       NIX_USER_CONF_FILES: join(dir, "nix.conf"),
       GIT_CONFIG_GLOBAL: "/dev/null",
     };
+
     for (const kind of ["cache", "config", "data", "state"]) {
       env[`XDG_${kind.toUpperCase()}_HOME`] = join(dir, kind);
       env[`NIX_${kind.toUpperCase()}_HOME`] = join(dir, kind, "nix");
     }
+
     const before = Object.fromEntries(Object.keys(env).map((name) => [name, process.env[name]]));
     Object.assign(process.env, env);
+
     return { dir, before };
   }),
   ({ before, dir }) =>
@@ -691,6 +777,7 @@ export const ownNix = Effect.acquireRelease(
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
       }
+
       rmSync(dir, { recursive: true, force: true });
     }),
 );
@@ -727,10 +814,12 @@ const cached = <A, E, R>(
   Effect.gen(function* () {
     if (cacheDir === null || !/[?&]rev=/.test(run.flake)) return (yield* use(undefined)).result;
     mkdirSync(cacheDir, { recursive: true });
+
     const file = join(
       cacheDir,
       `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`,
     );
+
     // Per revision: a second job of the revision waits and takes the first one's derivations, and one of
     // another revision, such as a push's plan beside an older run's evaluation, doesn't wait for minutes.
     return yield* Effect.acquireUseRelease(
@@ -740,14 +829,17 @@ const cached = <A, E, R>(
           const stored = existsSync(file)
             ? (JSON.parse(readFileSync(file, "utf8")) as Cached)
             : undefined;
+
           const entry = stored?.flake === run.flake ? stored : undefined;
           const { result, entry: added } = yield* use(entry);
+
           if (Object.keys(added).length > 0) {
             const next: Cached = { ...(entry ?? { derivations: {} }), ...added, flake: run.flake };
             const tmp = `${file}.${process.pid}.tmp`;
             writeFileSync(tmp, JSON.stringify(next));
             renameSync(tmp, file);
           }
+
           return result;
         }),
       (path) => Effect.sync(() => rmSync(path, { force: true })),
@@ -782,29 +874,37 @@ export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): 
       return Number.NaN;
     }
   };
+
   // "max" reads as NaN.
   const limitOf = (dir: string) =>
     Math.min(
       ...[read(join(dir, "memory.high")), read(join(dir, "memory.max"))].filter(Number.isFinite),
     );
+
   let limit = Number.POSITIVE_INFINITY;
   let unit: string | undefined;
+
   try {
     const path = /^0::(\/.*)$/m.exec(readFileSync(self, "utf8"))?.[1];
+
     for (
       let dir = join(root, path ?? "");
       path !== undefined && dir.startsWith(root);
       dir = dirname(dir)
     ) {
       limit = Math.min(limit, limitOf(dir));
+
       if (dir === root) break;
     }
+
     if (path !== undefined && path !== "/") unit = join(root, path);
   } catch {
     // Not cgroup v2: nothing limits the job.
   }
+
   // The slice the job's unit runs in, which other jobs share.
   const slice = unit === undefined ? undefined : dirname(unit);
+
   return {
     budget: Number.isFinite(limit) ? Math.floor((limit - process.memoryUsage().rss) * 0.8) : null,
     ...(slice === undefined || slice === root
@@ -812,7 +912,9 @@ export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): 
       : {
           room: () => {
             const sliceLimit = limitOf(slice);
+
             if (!Number.isFinite(sliceLimit)) return null;
+
             // The other units' own charges: the slice's total also holds what finished jobs left behind,
             // such as kernel slab, and this job's worker and page cache, which its own budget covers.
             try {
@@ -822,6 +924,7 @@ export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): 
                   (sum, entry) => sum + (read(join(slice, entry.name, "memory.current")) || 0),
                   0,
                 );
+
               return Math.floor((sliceLimit - others) * 0.8);
             } catch {
               return null;
@@ -837,14 +940,17 @@ export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): 
             .trim()
             .split(/\s+/)
             .filter(Boolean);
+
           return [id, ...children.flatMap((child) => tree(Number(child)))];
         } catch {
           return [id];
         }
       };
+
       return tree(pid).reduce((sum, id) => {
         try {
           const kb = /^RssAnon:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${id}/status`, "utf8"))?.[1];
+
           return sum + (kb === undefined ? 0 : Number(kb) * 1024);
         } catch {
           return sum;
@@ -870,6 +976,7 @@ interface Beat {
 }
 
 const ansi = /\x1b\[[0-9;]*m/g;
+
 // Nix's result type for an activity's progress (src/libutil/logging.hh), with done and expected first.
 const resProgress = 105;
 
@@ -909,20 +1016,26 @@ const evaluator = (
         exitCode: 0,
         stderr: `nix eval gave ${what}`,
       });
+
     // The attribute paths go to Nix as data, a JSON string it parses and walks, never as code: a
     // pipeline's names must not be able to report a derivation for another attribute.
     // Only lines with this evaluator's tag report: the flake's own code can't know it, so can't forge one.
     const tag = randomBytes(8).toString("hex");
+
     const paths = attrs.map((attr) => {
       const parts = Flake.components(attr);
+
       if (parts === null) throw new Error(`${attr} is not an attribute path Calder evaluates`);
+
       return parts;
     });
+
     // Under the recorder, a lookup of a marker that doesn't exist follows each attribute, after its value.
     const mark =
       recorder === undefined
         ? ""
         : `builtins.seq (builtins.pathExists "\${f.outPath}/.calder-derivation-${recorder.nonce}-\${toString i}")`;
+
     const expr = `let f = builtins.getFlake ${nixString(recorder?.url ?? flake)};
       paths = builtins.fromJSON ${nixString(JSON.stringify(paths))};
       at = path: builtins.foldl' (x: name: builtins.getAttr name x) f path;
@@ -931,14 +1044,17 @@ const evaluator = (
       report = i: x: let v = builtins.toJSON [i (one x)]; in builtins.seq v (${mark} (builtins.trace "calder-derivation-${tag} \${v}" null));
       in builtins.seq (builtins.seq f (builtins.trace "calder-flake-${tag}" null))
         (builtins.foldl' (_: x: x) null (builtins.genList (i: report i (at (builtins.elemAt paths i))) ${paths.length}))`;
+
     const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"));
     const nix = ["nix", "eval", "--json", "--log-format", "internal-json", "--expr", expr];
     const argv = recorder === undefined ? nix : [...straced(join(scratch, "trace")), ...nix];
     const fetching = yield* FetchEnv;
+
     // The worker's environment, which strace needs to find nix, and only then what fetching adds.
     const env = {
       env: { ...process.env, ...fetching, ...(recorder === undefined ? {} : emptyCache(scratch)) },
     };
+
     const got: Array<Derivation | null> = [];
     /** Attributes whose report wasn't a derivation's paths, by index, with why. */
     const refused = new Map<number, string>();
@@ -946,54 +1062,75 @@ const evaluator = (
     let loaded = false;
     let pid = 0;
     let peak = 0;
+
     const resident = () => {
       const now = memory.resident(pid);
       peak = Math.max(peak, now);
+
       return now;
     };
+
     // Over the job's budget; or, once it got an attribute, over what the slice has room for. A new
     // evaluator always gets its first attribute within the budget, so the slice only costs evaluators,
     // and an attribute is too large only for the job (`TooLarge`), never for a busy slice.
     let forRoom = false;
+
     const full = () => {
       const now = resident();
+
       if (memory.budget !== null && now > memory.budget) return true;
       const room = got.length === 0 ? null : (memory.room?.() ?? null);
       forRoom = room !== null && now > room;
+
       return forRoom;
     };
+
     const started = Date.now();
+
     /** Nix's activities that haven't ended, oldest first. */
     const activities = new Map<
       number,
       { text: string; started: number; done?: number; expected?: number }
     >();
+
     let said: { readonly text: string; readonly at: number } | undefined;
+
     const text = (stream: "stdout" | "stderr", line: string) =>
       Effect.gen(function* () {
         const report = new RegExp(`^trace: calder-(flake|derivation)-${tag}(?: (.*))?$`).exec(line);
+
         if (report === null) {
           if (stream === "stderr") stderr.push(line);
+
           if (stderr.length > 200) stderr.shift();
+
           if (stream === "stderr" && line.trim() !== "")
             said = { text: line.trim(), at: Date.now() };
+
           return;
         }
+
         if (report[1] === "flake") {
           loaded = true;
+
           return;
         }
+
         const [index, derivation] = yield* Effect.try({
           try: () => JSON.parse(report[2]!) as [number, Derivation | null],
           catch: () => unexpected(`a report it can't read: ${line}`),
         });
+
         if (index !== got.length)
           return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`);
         const bad = derivation === null ? null : malformed(derivation);
+
         if (bad !== null) refused.set(index, bad);
         got.push(bad === null ? derivation : null);
+
         if (got.length < attrs.length && full()) return yield* new Stopped();
       });
+
     const logged = (line: string) => {
       let entry: {
         readonly action?: string;
@@ -1003,12 +1140,15 @@ const evaluator = (
         readonly type?: number;
         readonly fields?: ReadonlyArray<unknown>;
       };
+
       try {
         entry = JSON.parse(line.slice("@nix ".length));
       } catch {
         return text("stderr", line);
       }
+
       const id = entry.id ?? 0;
+
       switch (entry.action) {
         case "msg":
           return Effect.forEach(
@@ -1021,13 +1161,16 @@ const evaluator = (
         case "start":
           if (typeof entry.text === "string" && entry.text !== "")
             activities.set(id, { text: entry.text.replace(ansi, ""), started: Date.now() });
+
           return Effect.void;
         case "stop":
           activities.delete(id);
+
           return Effect.void;
         case "result": {
           const activity = activities.get(id);
           const [done, expected] = entry.fields ?? [];
+
           if (
             activity !== undefined &&
             entry.type === resProgress &&
@@ -1036,15 +1179,19 @@ const evaluator = (
           ) {
             Object.assign(activity, { done, expected });
           }
+
           return Effect.void;
         }
+
         default:
           return Effect.void;
       }
     };
+
     const progress = (): Heartbeat.Progress => {
       const activity = [...activities.values()].at(-1);
       const name = attrs[got.length];
+
       return {
         started,
         loaded,
@@ -1056,15 +1203,19 @@ const evaluator = (
         ...(said === undefined ? {} : { said }),
       };
     };
+
     const heartbeat = (id: number) =>
       Effect.gen(function* () {
         const trace = recorder === undefined ? undefined : join(scratch, "trace");
+
         const look = (daemon: string | null) =>
           Heartbeat.sample(id, { resident: memory.resident, trace, daemon });
+
         // Nix's CPU time counts from its start, before which only strace may run.
         let before: Heartbeat.Sample = { ...look(null), cpu: 0 };
         yield* Effect.sleep(beat.cadence.first);
         const daemon = yield* Heartbeat.daemonCgroup;
+
         while (true) {
           const now = look(daemon);
           yield* beat.log(Heartbeat.describe(progress(), before, now));
@@ -1072,6 +1223,7 @@ const evaluator = (
           yield* Effect.sleep(beat.cadence.every);
         }
       });
+
     const exit = yield* Exec.stream(
       argv,
       env,
@@ -1079,12 +1231,15 @@ const evaluator = (
         stream === "stderr" && line.startsWith("@nix ") ? logged(line) : text(stream, line),
       (id) => {
         pid = id;
+
         const budget = Effect.gen(function* () {
           while (memory.budget !== null) {
             yield* Effect.sleep(memory.every);
+
             if (full()) return yield* new Stopped();
           }
         });
+
         return Effect.all([budget, heartbeat(id)], { concurrency: "unbounded", discard: true });
       },
     ).pipe(
@@ -1099,6 +1254,7 @@ const evaluator = (
         Effect.sync(() => rmSync(join(scratch, "cache"), { recursive: true, force: true })),
       ),
     );
+
     const trace = yield* Effect.sync(() => {
       try {
         return recorder === undefined
@@ -1114,6 +1270,7 @@ const evaluator = (
         rmSync(scratch, { recursive: true, force: true });
       }
     });
+
     // Killed before the flake loaded under the recorder, such as strace by a signal: the recording failed,
     // and the plan evaluates without it. Without the recorder, loading the flake outgrew the memory.
     if (exit !== 0 && exit !== "over" && !loaded && (exit !== "killed" || recorder !== undefined)) {
@@ -1123,8 +1280,10 @@ const evaluator = (
         stderr: stderr.join("\n"),
       });
     }
+
     if (exit === 0 && got.length < attrs.length)
       return yield* unexpected(`${attrs.length - got.length} attributes went unreported`);
+
     // Killed by a signal, such as the kernel's OOM killer (which takes the whole job instead unless its
     // unit sets OOMPolicy=continue): the attribute in flight counts as outgrowing the budget.
     const stop =
@@ -1135,12 +1294,14 @@ const evaluator = (
           : got.length === attrs.length
             ? ("done" as const)
             : ("failed" as const);
+
     // Nix's innermost error comes last.
     const error =
       stderr
         .map((line) => line.trim())
         .findLast((line) => line.startsWith("error:"))
         ?.replace(/^error:\s*/, "") ?? "";
+
     return { got, refused, stop, error, peak, loaded, trace, forRoom: stop === "over" && forRoom };
   });
 
@@ -1168,6 +1329,7 @@ export class TooLarge extends Schema.TaggedError<TooLarge>("calder/TooLarge")("T
   override get message() {
     const what =
       this.attr === loadingTheFlake ? "Loading the flake" : `Evaluating ${this.attr} alone`;
+
     return (
       `${what} took more than ${gib(this.budget)}, 80% of what its job may use, ` +
       "so Calder stopped it instead of swapping. Make the attribute cheaper to evaluate or give the pool's jobs more memory."
@@ -1206,10 +1368,12 @@ const evaluate = (
 ) =>
   Effect.gen(function* () {
     const started = Date.now();
+
     const passes: Array<{
       readonly attrs: ReadonlyArray<string>;
       readonly trace: Footprint.Trace | undefined;
     }> = [];
+
     const derivations = new Map<string, Derivation | null>();
     const errors = new Map<string, string>();
     const tooLarge = new Map<string, TooLarge>();
@@ -1220,8 +1384,10 @@ const evaluate = (
     let evaluators = 0;
     let forRoom = 0;
     let peak = 0;
+
     while (done < attrs.length) {
       const rest = attrs.slice(done);
+
       const pass = yield* evaluator(
         flake,
         rest,
@@ -1229,48 +1395,60 @@ const evaluate = (
         { log, cadence, before: done, total: attrs.length },
         recorder,
       );
+
       if (recorder !== undefined)
         passes.push({ attrs: rest.slice(0, pass.got.length), trace: pass.trace });
       evaluators++;
+
       if (pass.forRoom) forRoom++;
       peak = Math.max(peak, pass.peak);
       pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation));
+
       for (const [i, why] of pass.refused) {
         errors.set(rest[i]!, why);
         yield* log(`${rest[i]} did not evaluate: ${why}`);
       }
+
       done += pass.got.length;
       const next = rest[pass.got.length];
+
       if (next === undefined || (pass.stop === "over" && pass.got.length > 0)) continue;
+
       if (pass.stop === "over" && !pass.loaded)
         return yield* new TooLarge({ attr: loadingTheFlake, budget: memory.budget ?? 0 });
+
       if (pass.stop === "over") {
         tooLarge.set(next, new TooLarge({ attr: next, budget: memory.budget ?? 0 }));
         done++;
         yield* log(tooLarge.get(next)!.message);
         continue;
       }
+
       if (!retried.has(next) && (failedWith.get(pass.error) ?? 0) < 2) {
         retried.add(next);
         // A fetch or the daemon may fail for a moment.
         yield* Effect.sleep(retryAfter);
         continue;
       }
+
       errors.set(next, pass.error);
       failedWith.set(pass.error, (failedWith.get(pass.error) ?? 0) + 1);
       done++;
       yield* log(`${next} did not evaluate: ${pass.error}`);
     }
+
     const budget = memory.budget === null ? "" : ` of ${gib(memory.budget)}`;
     const slice = forRoom === 0 ? "" : `, ${forRoom} of them for want of room in the jobs slice`;
     yield* log(
       `evaluated ${derivations.size} attributes of the flake in ${Date.now() - started} ms with ${evaluators} evaluators${slice}, holding at most ${gib(peak)}${budget}`,
     );
+
     if (recorder === undefined) return { derivations, errors, tooLarge } as Evaluated;
     const recorded = yield* records(recorder, passes, derivations);
     yield* log(
       `recorded footprints of ${recorded.evaluations.length} of ${attrs.length} attributes`,
     );
+
     return { derivations, errors, tooLarge, recorded } as Evaluated;
   });
 
@@ -1303,6 +1481,7 @@ export interface Recorder {
 export const evaluationContext = (system: string) =>
   Effect.gen(function* () {
     const { nix: version, ifd } = yield* nixSettings;
+
     return sha256({ version, system, ifd, config: process.env.NIX_CONFIG ?? "" });
   }).pipe(Effect.orElseSucceed(() => undefined));
 
@@ -1315,8 +1494,10 @@ export const evaluationContext = (system: string) =>
 export const recorder = (run: RunInfo, repo: RepoAt) =>
   Effect.gen(function* () {
     if (process.platform !== "linux" || !/[?&]rev=/.test(run.flake)) return undefined;
+
     if ((yield* Exec.exec(["strace", "-V"])).exitCode !== 0) return undefined;
     const fetching = { env: { ...process.env, ...(yield* FetchEnv) } };
+
     const { path, locked } = JSON.parse(
       yield* Exec.run(["nix", "flake", "metadata", "--json", run.flake], fetching),
     ) as {
@@ -1328,6 +1509,7 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
         readonly narHash?: string;
       };
     };
+
     if (
       path === undefined ||
       locked?.rev === undefined ||
@@ -1336,16 +1518,20 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
     )
       return undefined;
     const context = yield* evaluationContext(run.system);
+
     if (context === undefined) return undefined;
+
     // The inputs flake.lock pins, and Nix's own closure (its libraries and data).
     const archive = JSON.parse(
       yield* Exec.run(["nix", "flake", "archive", "--json", "--dry-run", run.flake], fetching),
     ) as unknown;
+
     const inputs = (node: unknown): ReadonlyArray<string> => {
       const n = node as {
         readonly path?: string;
         readonly inputs?: Record<string, unknown>;
       } | null;
+
       return n === null || typeof n !== "object"
         ? []
         : [
@@ -1353,6 +1539,7 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
             ...Object.values(n.inputs ?? {}).flatMap(inputs),
           ];
     };
+
     const own = (yield* Exec.run([
       "sh",
       "-c",
@@ -1360,12 +1547,14 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
     ]))
       .split("\n")
       .filter(Boolean);
+
     const query = [
       `rev=${locked.rev}`,
       ...(locked.revCount === undefined ? [] : [`revCount=${locked.revCount}`]),
       `lastModified=${locked.lastModified}`,
       `narHash=${encodeURIComponent(locked.narHash)}`,
     ].join("&");
+
     return {
       source: path,
       url: `path:${path}?${query}`,
@@ -1409,27 +1598,34 @@ export const vetted = (recorder: Recorder, candidates: ReadonlyArray<Candidate>)
         ),
       ),
     ];
+
     const sources = yield* recorder.read(nix).pipe(Effect.orElseSucceed(() => undefined));
+
     const counting =
       sources === undefined
         ? new Set(nix)
         : new Set([...sources].filter(([, text]) => text.includes("revCount")).map(([p]) => p));
+
     const foreign = [...new Set(candidates.flatMap((c) => c.outside))].filter(
       (p) => !recorder.pinned.has(p),
     );
+
     const derivers = yield* derivers_(foreign);
     // Without a deriver, a path the evaluation itself wrote by content (`builtins.toFile`, a fixed-output
     // fetch) is a function of what it read, unless it refers to the source or mentions the commit.
     const unknown = foreign.filter((p) => derivers.get(p) === null);
     const byContent = yield* contentAddressed(unknown, recorder);
+
     const roots = (c: Candidate) => [
       ...(c.derivation === null ? [] : [c.derivation.drv]),
       ...c.outside
         .filter((p) => !recorder.pinned.has(p) && !byContent.has(p))
         .map((p) => derivers.get(p) ?? null),
     ];
+
     const all = [...new Set(candidates.flatMap(roots).filter((d): d is string => d !== null))];
     const marked = yield* commitBound(all, recorder);
+
     return candidates.filter(
       (c) =>
         roots(c).every((root) => root !== null && !marked.has(root)) &&
@@ -1444,19 +1640,24 @@ export const vetted = (recorder: Recorder, candidates: ReadonlyArray<Candidate>)
 const contentAddressed = (paths: ReadonlyArray<string>, recorder: Recorder) =>
   Effect.gen(function* () {
     const infos = yield* pathInfo(paths);
+
     return new Set(
       [...infos]
         .filter(([path, info]) => {
           if (!info.ca?.startsWith("text:") && !info.ca?.startsWith("fixed:")) return false;
+
           // A copy of the whole source under another name is the source.
           if (
             info.narHash === recorder.narHash ||
             (info.references ?? []).includes(recorder.source)
           )
             return false;
+
           if (!info.ca.startsWith("text:")) return true;
+
           try {
             const text = readFileSync(path, "utf8");
+
             return !recorder.marks.some((mark) => text.includes(mark));
           } catch {
             return false;
@@ -1472,14 +1673,19 @@ const derivers_ = (paths: ReadonlyArray<string>) =>
     const out = new Map<string, string | null>(
       paths.filter((p) => p.endsWith(".drv")).map((p) => [p, p]),
     );
+
     // Nix answers a line per path it is asked about, so a path it isn't asked about can't shift the others.
     for (const p of paths) if (!out.has(p) && only([p]).length === 0) out.set(p, null);
     const rest = paths.filter((p) => !out.has(p));
+
     if (rest.length === 0) return out;
+
     const lines = (yield* Exec.run(["nix-store", "--query", "--deriver", ...rest]).pipe(
       Effect.orElseSucceed(() => ""),
     )).split("\n");
+
     rest.forEach((p, i) => out.set(p, lines[i]?.endsWith(".drv") ? lines[i]! : null));
+
     return out;
   });
 
@@ -1500,10 +1706,13 @@ const records = (
       if (pass.trace === undefined) return [];
       const trace = pass.trace;
       const { entries, counts } = Footprint.footprints(trace, recorder.at);
+
       return pass.attrs.flatMap((attr, i) => {
         const count = counts[i];
         const derivation = derivations.get(attr);
+
         if (count === undefined || count === null || derivation === undefined) return [];
+
         return [
           {
             attr,
@@ -1516,8 +1725,10 @@ const records = (
         ];
       });
     });
+
     const kept = yield* vetted(recorder, candidates);
     const used = [...new Set(kept.map((c) => c.index))];
+
     return {
       footprints: used.map((index) => ({
         id: String(index),
@@ -1553,23 +1764,29 @@ const commitBound = (drvs: ReadonlyArray<string>, recorder: Pick<Recorder, "mark
             ),
       { concurrency: 4 },
     );
+
     const mentions = (path: string) => {
       try {
         const text = readFileSync(path, "utf8");
+
         return recorder.marks.some((mark) => text.includes(mark));
       } catch {
         return true;
       }
     };
+
     const sources = [
       ...new Set(
         closures.flatMap(([, closure]) => (closure ?? []).filter((p) => !p.endsWith(".drv"))),
       ),
     ];
+
     const infos = yield* pathInfo(sources);
     const bound = new Map<string, boolean>();
+
     const check = (path: string) => {
       let known = bound.get(path);
+
       if (known === undefined) {
         if (path.endsWith(".drv")) known = mentions(path);
         else {
@@ -1579,10 +1796,13 @@ const commitBound = (drvs: ReadonlyArray<string>, recorder: Pick<Recorder, "mark
             info.narHash === recorder.narHash ||
             (info.ca?.startsWith("text:") === true && mentions(path));
         }
+
         bound.set(path, known);
       }
+
       return known;
     };
+
     return new Set(
       closures.filter(([, closure]) => closure === null || closure.some(check)).map(([drv]) => drv),
     );
@@ -1599,6 +1819,7 @@ const pathInfo = (paths: ReadonlyArray<string>) =>
         readonly references?: ReadonlyArray<string>;
       }
     >();
+
     for (let i = 0; i < paths.length; i += 500) {
       // Format 1 is keyed by full store path. `--json-format` needs Nix 2.33; 2.34 warns that `--json` without it will fail.
       const out = yield* Exec.run([
@@ -1610,6 +1831,7 @@ const pathInfo = (paths: ReadonlyArray<string>) =>
         "--",
         ...only(paths.slice(i, i + 500)),
       ]).pipe(Effect.orElseSucceed(() => "{}"));
+
       const parsed = JSON.parse(out) as Record<
         string,
         {
@@ -1618,10 +1840,12 @@ const pathInfo = (paths: ReadonlyArray<string>) =>
           readonly references?: ReadonlyArray<string>;
         } | null
       >;
+
       for (const [path, info] of Object.entries(parsed)) {
         if (info !== null) infos.set(path, info);
       }
     }
+
     return infos;
   });
 
@@ -1637,18 +1861,23 @@ export const fromRecords = (
   context: string,
 ) => {
   const footprints = new Map(records.footprints.map((f) => [f.id, f]));
+
   const held = new Map<
     string,
     { readonly derivation: Derivation | null; readonly id: number | undefined }
   >();
+
   for (const evaluation of records.evaluations) {
     const footprint = footprints.get(evaluation.footprint);
+
     if (held.has(evaluation.attr) || !attrs.includes(evaluation.attr) || footprint === undefined)
       continue;
+
     if (Footprint.digest(at, footprint.entries, evaluation.count, context) === evaluation.digest) {
       held.set(evaluation.attr, { derivation: evaluation.derivation, id: evaluation.id });
     }
   }
+
   return held;
 };
 
@@ -1666,6 +1895,7 @@ export const byDependencies = (
 ) => {
   const placed: Array<string> = [];
   const remaining = attrs.filter((attr) => closures.has(attr));
+
   while (remaining.length > 0) {
     // Of those whose closure contains no other remaining attribute's derivation, the one that read least itself.
     const ready = remaining.filter(
@@ -1674,11 +1904,14 @@ export const byDependencies = (
           (other) => other !== attr && closures.get(attr)!.closure.has(closures.get(other)!.drv),
         ),
     );
+
     const next = (ready.length > 0 ? ready : remaining).reduce((a, b) =>
       (own.get(b) ?? 0) < (own.get(a) ?? 0) ? b : a,
     );
+
     placed.push(...remaining.splice(remaining.indexOf(next), 1));
   }
+
   return [...placed, ...attrs.filter((attr) => !closures.has(attr))];
 };
 
@@ -1689,15 +1922,19 @@ export const byDependencies = (
 export const ownReads = (records: Records | undefined) => {
   const own = new Map<string, number>();
   const byFootprint = new Map<string, Array<Records["evaluations"][number]>>();
+
   for (const e of records?.evaluations ?? [])
     byFootprint.set(e.footprint, [...(byFootprint.get(e.footprint) ?? []), e]);
+
   for (const evaluations of byFootprint.values()) {
     let before = 0;
+
     for (const e of [...evaluations].sort((a, b) => a.count - b.count)) {
       own.set(e.attr, e.count - before);
       before = e.count;
     }
   }
+
   return own;
 };
 
@@ -1705,10 +1942,12 @@ export const ownReads = (records: Records | undefined) => {
 const lastClosures = (attrs: ReadonlyArray<string>, records: Records | undefined) =>
   Effect.gen(function* () {
     const last = new Map<string, string>();
+
     for (const e of records?.evaluations ?? []) {
       if (e.derivation !== null && attrs.includes(e.attr) && !last.has(e.attr))
         last.set(e.attr, e.derivation.drv);
     }
+
     const closures = yield* Effect.forEach(
       [...last],
       ([attr, drv]) =>
@@ -1720,14 +1959,17 @@ const lastClosures = (attrs: ReadonlyArray<string>, records: Records | undefined
         ),
       { concurrency: 4 },
     );
+
     return new Map(closures.flat());
   });
 
 /** The app's name from a record whose footprint holds, if one does. */
 const appFromRecords = (records: Records, at: Footprint.Tree, context: string) => {
   const footprints = new Map(records.footprints.map((f) => [f.id, f]));
+
   const evaluation = records.evaluations.find((e) => {
     const footprint = footprints.get(e.footprint);
+
     return (
       e.attr === appAttr &&
       e.app !== undefined &&
@@ -1735,6 +1977,7 @@ const appFromRecords = (records: Records, at: Footprint.Tree, context: string) =
       Footprint.digest(at, footprint.entries, e.count, context) === e.digest
     );
   });
+
   return evaluation === undefined ? undefined : { app: evaluation.app ?? null, id: evaluation.id };
 };
 
@@ -1746,15 +1989,19 @@ const inStore = <A extends { readonly derivation: Derivation | null }>(
     const drvs = [...held.values()].flatMap((h) =>
       h.derivation === null ? [] : [h.derivation.drv],
     );
+
     if (drvs.length === 0) return held;
+
     const out = yield* Exec.exec([
       "nix-store",
       "--check-validity",
       "--print-invalid",
       ...only(drvs),
     ]);
+
     if (out.exitCode !== 0) return new Map<string, A>();
     const invalid = new Set(out.stdout.split("\n").filter(Boolean));
+
     // A record whose paths aren't a derivation's never counts.
     return new Map(
       [...held].filter(
@@ -1784,10 +2031,12 @@ const missedBy = (records: Records, fresh: Records | undefined, attr: string) =>
   const entries = (set: Records | undefined) => {
     const evaluation = set?.evaluations.find((e) => e.attr === attr);
     const footprint = set?.footprints.find((f) => f.id === evaluation?.footprint);
+
     return evaluation === undefined || footprint === undefined
       ? []
       : footprint.entries.slice(0, evaluation.count);
   };
+
   return fresh === undefined
     ? ["(the fresh evaluation recorded no footprint)"]
     : Footprint.missed(entries(records), entries(fresh)).slice(0, 50);
@@ -1796,6 +2045,7 @@ const missedBy = (records: Records, fresh: Records | undefined, attr: string) =>
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
+
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
@@ -1808,12 +2058,15 @@ export const lock = (path: string) =>
     while (true) {
       try {
         writeFileSync(path, String(process.pid), { flag: "wx" });
+
         return path;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
+
       // The holder can release between our create and this read.
       const holder = existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
+
       if (holder > 0 && !alive(holder)) rmSync(path, { force: true });
       else if (holder > 0) yield* Effect.sleep("2 seconds");
     }
@@ -1835,17 +2088,21 @@ export const directUses = (
 ) => {
   const uses = (a: (typeof builds)[number], b: (typeof builds)[number]) =>
     a.drv !== b.drv && (closures.get(b.name)?.has(a.drv) ?? false);
+
   const edges = new Map<string, Array<string>>();
+
   for (const b of builds) {
     const direct = builds.filter(
       (a) => uses(a, b) && !builds.some((c) => c !== a && uses(a, c) && uses(c, b)),
     );
+
     if (direct.length > 0)
       edges.set(
         b.name,
         direct.map((a) => a.name),
       );
   }
+
   return edges;
 };
 
@@ -1881,31 +2138,40 @@ export const resolve = (
   Effect.gen(function* () {
     yield* checkFiles(project, repo);
     const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared);
+
     const builds = plan.steps.flatMap((p) =>
       p.step.def._tag === "Build" ? [Flake.attrPath(p.step.def.ref, run.system)] : [],
     );
+
     const shells = [
       ...new Set(
         plan.steps.flatMap((p) => {
           const def = p.step.def;
+
           return (def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined
             ? [Flake.attrPath(def.shell, run.system)]
             : [];
         }),
       ),
     ];
+
     // The dev shells a portable task and its setup would enter on agents of the other Linux systems. They
     // evaluate with the plan's, and one that doesn't keeps the task off that system instead of failing the plan.
     const others = linuxSystems.includes(run.system)
       ? linuxSystems.filter((s) => s !== run.system)
       : [];
+
     const portableShells = (p: (typeof plan.steps)[number]) => {
       const def = p.step.def;
+
       if (def._tag !== "Task" || !portable(def, p.preview)) return [];
+
       const setupShell =
         def.setup === undefined || def.setup.def._tag !== "Setup" ? undefined : def.setup.def.shell;
+
       return [def.shell!, ...(setupShell === undefined ? [] : [setupShell])];
     };
+
     const spares = [
       ...new Set(
         plan.steps.flatMap((p) =>
@@ -1913,18 +2179,22 @@ export const resolve = (
         ),
       ),
     ].filter((attr) => !shells.includes(attr));
+
     const job = Option.getOrUndefined(yield* Effect.serviceOption(Job));
     const log: Log = (text) => (job === undefined ? Effect.void : job.log("calder", text));
     // Dev shells first: an evaluator's later attributes' footprints include what earlier ones read, and a
     // shell, which reads little more than the flake's Nix files, then keeps its record when sources change.
     const attrs = [...new Set([...shells, ...spares, ...builds])];
     const refused = attrs.filter((attr) => Flake.components(attr) === null);
+
     if (refused.length > 0) {
       return yield* new Calder.PlanError({
         message: `${refused.join(", ")}: not an attribute path Calder evaluates (letters, digits and _'+- per name, or those and . in double quotes)`,
       });
     }
+
     const audit = options.audit === true;
+
     const reused =
       earlier === undefined || audit
         ? undefined
@@ -1942,12 +2212,16 @@ export const resolve = (
             },
             log,
           );
+
     // Attributes whose recorded footprint holds here need no evaluation, nor does the app's name.
     const at = Footprint.tree(yield* repo.entries);
+
     const context =
       options.records === undefined ? undefined : yield* evaluationContext(run.system);
+
     const records = context === undefined ? undefined : options.records;
     const unreused = attrs.filter((attr) => reused?.has(attr) !== true);
+
     const taken =
       records === undefined || unreused.length === 0
         ? new Map<
@@ -1955,41 +2229,52 @@ export const resolve = (
             { readonly derivation: Derivation | null; readonly id: number | undefined }
           >()
         : yield* inStore(fromRecords(records, unreused, at, context!));
+
     const held = new Map([...taken].map(([attr, h]) => [attr, h.derivation]));
     const heldApp = records === undefined ? undefined : appFromRecords(records, at, context!);
+
     const known = audit
       ? new Map<string, Derivation | null>()
       : new Map([...(reused ?? []), ...held]);
+
     // Builds whose footprints changed are evaluated together once the run's first of them runs, which
     // records their footprints (see Runs.ts `evaluation`). The plan evaluates only dev shells, which task
     // keys need now, and an audit everything.
     const unknown = attrs.filter(
       (attr) => !known.has(attr) && (audit || shells.includes(attr) || spares.includes(attr)),
     );
+
     const deferred = attrs.filter((attr) => !known.has(attr) && !unknown.includes(attr));
+
     if (deferred.length > 0)
       yield* log(`left ${deferred.length} builds to evaluate when the first of them runs`);
+
     // Until then, a deferred build waits for a build slot of the system its last record built for.
     const lastSystem = new Map(
       (records?.evaluations ?? [])
         .toReversed()
         .flatMap((e) => (e.derivation === null ? [] : [[e.attr, e.derivation.system] as const])),
     );
+
     const ordered = (some: ReadonlyArray<string>) =>
       Effect.map(lastClosures(some, records), (closures) =>
         byDependencies(some, closures, ownReads(records)),
       );
+
     const rest = yield* ordered(unknown);
     const appEarlier = reused !== undefined && earlier?.app !== undefined;
     const needsApp = !appEarlier && (audit || heldApp === undefined);
+
     // An audit evaluates exactly as plans did before footprints, through the mirror and without the
     // recorder, so a record and its check never share a way of evaluating.
     const recording =
       !audit && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined;
+
     if (held.size > 0 && !audit)
       yield* log(
         `took ${held.size} of ${attrs.length} attributes from footprints that hold at this commit`,
       );
+
     // When the flake fails to load, builds evaluate on their own when they run, but keys need the dev
     // shells now. An attribute too large to evaluate would swap as much in its build.
     const result =
@@ -2046,32 +2331,41 @@ export const resolve = (
                 }),
             ),
           );
+
     // A spare shell too large to evaluate only keeps its tasks off that system.
     const large = [...result.tooLarge].find(([attr]) => !spares.includes(attr));
+
     if (large !== undefined) return yield* new Calder.PlanError({ message: large[1].message });
     const evaluated = new Map([...known, ...result.derivations]);
     // Evaluated in the order a plan evaluates, so their footprints keep as much as the plan's would.
     const left = deferred.filter((attr) => !evaluated.has(attr));
     const order = left.length === 0 ? [] : yield* ordered(left);
     const broken = shells.filter((shell) => !evaluated.get(shell));
+
     if (broken.length > 0) {
       const why = broken
         .map((shell) => `${shell}: ${result.errors.get(shell) || "it threw"}`)
         .join("; ");
+
       return yield* new Calder.PlanError({
         message: `A dev shell did not evaluate, and task keys include it. ${why}`,
       });
     }
+
     const toolchainOf = (shell: string | null) =>
       shell === null ? null : evaluated.get(shell)!.drv;
+
     const dependencies = (yield* repo.entries).filter((e) =>
       dependencyFiles.some((re) => re.test(e.path)),
     );
+
     const uses = yield* buildEdges(
       plan.steps.flatMap((p) => {
         const def = p.step.def;
+
         const derivation =
           def._tag === "Build" ? evaluated.get(Flake.attrPath(def.ref, run.system)) : undefined;
+
         return derivation ? [{ name: p.name, drv: derivation.drv }] : [];
       }),
     );
@@ -2083,10 +2377,12 @@ export const resolve = (
         (p) =>
           Effect.gen(function* () {
             const def = p.step.def;
+
             if (def._tag !== "Setup") return [p.name, ""] as const;
             const inputs = (yield* paths(repo, def.inputs)).slice().sort();
             const ids = yield* repo.objectIds(inputs);
             const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system);
+
             return [
               p.name,
               sha256({
@@ -2109,6 +2405,7 @@ export const resolve = (
       (p) =>
         Effect.gen(function* () {
           const def = p.step.def;
+
           const base = {
             name: p.name,
             kind: p.kind,
@@ -2125,17 +2422,20 @@ export const resolve = (
             action: null,
             output: null,
           } satisfies Partial<PlannedStep>;
+
           switch (def._tag) {
             case "Build": {
               const attr = Flake.attrPath(def.ref, run.system);
               const derivation = evaluated.get(attr) ?? null;
               const system = derivation?.system ?? lastSystem.get(attr) ?? null;
+
               return {
                 ...base,
                 detail: attr,
                 build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null, system },
               };
             }
+
             case "Setup":
               return {
                 ...base,
@@ -2161,16 +2461,22 @@ export const resolve = (
             case "Task": {
               const inputs = [...new Set([...(yield* paths(repo, def.inputs)), ...shared])].sort();
               const ids = yield* repo.objectIds(inputs);
+
               const split =
                 def.shards?.split === undefined ? [] : yield* paths(repo, def.shards.split);
+
               const splitIds =
                 split.length === 0 ? new Map<string, string>() : yield* repo.objectIds(split);
+
               const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system);
               const toolchain = toolchainOf(shell);
               const count = def.shards?.count ?? 1;
+
               const command =
                 typeof def.run === "function" ? def.run({ index: 1, count, files: [] }) : def.run;
+
               const setup = def.setup === undefined ? null : setupKeys.get(def.setup.name)!;
+
               const keyBase = sha256({
                 kind: "task",
                 inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
@@ -2200,6 +2506,7 @@ export const resolve = (
                 shards: def.shards?.count ?? null,
                 platform: def.platform ?? null,
               });
+
               return {
                 ...base,
                 detail: describeCmd(def.run, count),
@@ -2242,28 +2549,36 @@ export const resolve = (
     );
 
     const appTaken = !appEarlier && heldApp !== undefined && !audit;
+
     const named = appEarlier
       ? { app: earlier!.app!, recorded: undefined }
       : appTaken
         ? { app: heldApp.app, recorded: undefined }
         : yield* appOf(run, localCache(run.trust), recording, audit);
+
     const recorded = merge(result.recorded, named.recorded);
+
     const wrong = !audit
       ? []
       : [...taken].flatMap(([attr, { derivation, id }]) => {
           const fresh = result.derivations.get(attr);
+
           return fresh === undefined || sameDerivation(fresh, derivation)
             ? []
             : [{ attr, recorded: derivation, evaluated: fresh, id }];
         });
+
     const appWrong = audit && heldApp !== undefined && heldApp.app !== named.app;
+
     // What the fresh evaluation read that the wrong records didn't: recorded again, for the log only.
     const again =
       wrong.length === 0 && !appWrong
         ? undefined
         : yield* Effect.gen(function* () {
             const r = yield* recorder(run, repo);
+
             if (r === undefined) return undefined;
+
             const out = yield* derivations(
               run,
               wrong.map((w) => w.attr),
@@ -2272,8 +2587,10 @@ export const resolve = (
               undefined,
               { recorder: r, fresh: true },
             ).pipe(Effect.option);
+
             return Option.getOrUndefined(out)?.recorded;
           });
+
     const mismatches: Array<Mismatch> = [
       ...wrong.map((w) => ({
         attr: w.attr,
@@ -2294,12 +2611,14 @@ export const resolve = (
           ]
         : []),
     ];
+
     const fromRecordIds = audit
       ? []
       : [
           ...[...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id] as const])),
           ...(appTaken && heldApp.id !== undefined ? [[appAttr, heldApp.id] as const] : []),
         ];
+
     const spec: PlanSpec = {
       version: 1,
       app: named.app,
@@ -2324,5 +2643,6 @@ export const resolve = (
       // deploys can be listed and the controller knows whose records the plan trusted.
       ...(fromRecordIds.length === 0 ? {} : { fromRecords: Object.fromEntries(fromRecordIds) }),
     };
+
     return spec;
   });

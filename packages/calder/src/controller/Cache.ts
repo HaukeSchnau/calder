@@ -49,7 +49,9 @@ export const layer = Layer.effect(Cache)(
     return {
       has: (path) => {
         const hash = hashOf(path);
+
         if (hash === undefined) return Effect.succeed(false);
+
         return http.head(`${url}/${hash}.narinfo`).pipe(
           Effect.map((r) => r.status === 200),
           Effect.timeout("20 seconds"),
@@ -58,15 +60,18 @@ export const layer = Layer.effect(Cache)(
       },
       publish: (path, options = {}) => {
         if (command === null) return Effect.void;
+
         const argv = [
           ...command,
           ...(options.pin === undefined ? [] : ["--pin", options.pin]),
           path,
         ];
+
         const queue =
           options.urgent === true
             ? <A, E, R>(effect: Effect.Effect<A, E, R>) => effect
             : one.withPermits(1);
+
         return queue(
           Exec.run(argv).pipe(
             Effect.provideService(Exec.SpawnerTag, spawner),

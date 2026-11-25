@@ -34,6 +34,7 @@ import { Check, Fail, Loaded, Ring, Stopped, Swatch, Waiting, useNow } from "./u
 export function RolloutPage({ id }: { readonly id: string }) {
   const result = useAtomValue(runAtom(id));
   const ov = useAtomValue(overviewAtom);
+
   return (
     <main className="page rollout">
       <Loaded result={result} what="this rollout">
@@ -41,7 +42,9 @@ export function RolloutPage({ id }: { readonly id: string }) {
           const project = AsyncResult.isSuccess(ov)
             ? ov.value.projects.find((p) => p.name === detail.run.project)
             : undefined;
+
           const step = detail.steps.find((s) => s.deploys);
+
           if (!step)
             return (
               <p className="empty">
@@ -51,6 +54,7 @@ export function RolloutPage({ id }: { readonly id: string }) {
                 </a>
               </p>
             );
+
           return <Rollout detail={detail} step={step} deployments={project?.deployments ?? []} />;
         }}
       </Loaded>
@@ -62,11 +66,16 @@ type HostState = "deploying" | "live" | "waiting" | "failed" | "replaced" | "not
 
 function hostState(d: Domain.Deployment, run: Domain.Run, step: Domain.StepRun): HostState {
   if (d.deployingRun === run.id) return "deploying";
+
   if (d.revision === run.commit.sha) return "live";
+
   if (step.status === "running" || step.status === "pending" || step.status === "queued")
     return "waiting";
+
   if (step.status === "failed" || step.status === "died") return "failed";
+
   if (step.status === "passed") return "replaced";
+
   return "not deployed";
 }
 
@@ -100,14 +109,19 @@ function Rollout({
   const sha = run.commit.sha;
   const history = useAtomValue(deployHistoryAtom({ project: run.project, host: null, limit: 40 }));
   const records = AsyncResult.isSuccess(history) ? history.value : [];
+
   const deployedBy = (d: Domain.Deployment) =>
     records.find((r) => r.host === d.host && r.revision === d.revision);
+
   const hosts = [...deployments].sort((a, b) => order(a, run, step) - order(b, run, step));
   const elapsed = stepDuration(step, now);
+
   const waitsFor = [...step.needs, ...step.after].filter((n) => {
     const s = detail.steps.find((x) => x.name === n);
+
     return s && s.status !== "passed" && s.status !== "reused";
   });
+
   const big =
     step.status === "running" ? (
       <span className="big heat">{dur(elapsed ?? 0)}</span>
@@ -118,6 +132,7 @@ function Rollout({
     ) : (
       <span className="big dim">{step.status}</span>
     );
+
   const under =
     step.status === "running"
       ? `deploying since ${clockS(step.startedAt ?? now)}`
@@ -128,6 +143,7 @@ function Rollout({
           : waitsFor.length
             ? `waits for ${waitsFor.join(", ")}`
             : "";
+
   return (
     <>
       <header className="ro-head">
@@ -149,6 +165,7 @@ function Rollout({
           <ol className="stages">
             {hosts.map((d, i) => {
               const state = hostState(d, run, step);
+
               return (
                 <li key={d.host} className={state === "deploying" ? "cur" : ""}>
                   {i > 0 ? <span className="line" aria-hidden="true" /> : null}
@@ -202,6 +219,7 @@ function Rollout({
               {hosts.map((d) => {
                 const state = hostState(d, run, step);
                 const before = d.revision === sha ? d.previous : d.revision;
+
                 return (
                   <tr key={d.host}>
                     <td>
@@ -328,7 +346,9 @@ function DeployTrace({
   const [live] = useState(() => isActive(detail.run.status));
   const result = useAtomValue(traceAtom({ runId: detail.run.id, live }));
   const root = step.spanId;
+
   if (root === null) return <p className="empty">No spans until {step.name} starts.</p>;
+
   return (
     <Loaded result={result} what="the deploy trace">
       {(spans) =>
@@ -382,7 +402,9 @@ function HostHistory({
   readonly runId: string;
 }) {
   const now = useNow();
+
   if (!records.length) return null;
+
   return (
     <section className="hh">
       <p className="hh-h">
@@ -390,6 +412,7 @@ function HostHistory({
       </p>
       {records.slice(0, 6).map((r, i) => {
         const live = i === 0 && r.revision === deployment.revision;
+
         return (
           <a
             key={`${r.runId}-${r.at}`}
@@ -423,9 +446,11 @@ function DeployLog({ runId, step }: { readonly runId: string; readonly step: Dom
   const lines = debug ? all : all.filter((l) => l.level !== "debug");
   useLayoutEffect(() => {
     const el = box.current;
+
     if (el && follow) el.scrollTop = el.scrollHeight;
   }, [lines.length, follow]);
   const origin = step.startedAt ?? lines[0]?.timestamp ?? 0;
+
   const head = (
     <header className="sub-h">
       <h3>Deploy log</h3>
@@ -445,6 +470,7 @@ function DeployLog({ runId, step }: { readonly runId: string; readonly step: Dom
       ) : null}
     </header>
   );
+
   if (!lines.length)
     return (
       <>
@@ -458,6 +484,7 @@ function DeployLog({ runId, step }: { readonly runId: string; readonly step: Dom
         </p>
       </>
     );
+
   return (
     <>
       {head}

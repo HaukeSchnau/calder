@@ -14,6 +14,7 @@ import { Mirror } from "./Mirror.ts";
 export const agentHandlers = AgentRpcs.toLayer(
   Effect.gen(function* () {
     const agents = yield* Agents;
+
     return {
       work: ({ token, name, ...agent }) => agents.connect({ token, name }, agent),
       exited: ({ token, name, job, code }) => agents.exited({ token, name }, job, code),
@@ -29,8 +30,10 @@ const worker = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     const jobs = yield* Jobs;
     const match = /^Bearer ([0-9a-f]+):([0-9a-f]+)$/.exec(request.headers["authorization"] ?? "");
+
     if (match === null) return undefined;
     const active = yield* jobs.authorize(match[1]!, match[2]!).pipe(Effect.option);
+
     return active._tag === "Some" && active.value.remote ? active.value : undefined;
   });
 
@@ -43,22 +46,28 @@ export const cgi = <E>(stdout: Stream.Stream<Uint8Array, E>) =>
     const pull = yield* Stream.toPull(stdout);
     let head = Buffer.alloc(0);
     let split = -1;
+
     while (split === -1) {
       head = Buffer.concat([head, ...(yield* pull)]);
       split = head.indexOf("\r\n\r\n");
     }
+
     const headers: Record<string, string> = {};
     let status = 200;
+
     for (const line of head.subarray(0, split).toString().split("\r\n")) {
       const colon = line.indexOf(":");
       const [name, value] = [line.slice(0, colon).trim(), line.slice(colon + 1).trim()];
+
       if (name.toLowerCase() === "status") status = Number(value.split(" ")[0]);
       else headers[name] = value;
     }
+
     const body = Stream.concat(
       Stream.succeed(head.subarray(split + 4)),
       Stream.fromPull(Effect.succeed(pull)),
     );
+
     return { status, headers, body };
   }).pipe(Pull.catchDone(() => Effect.succeed(undefined)));
 
@@ -79,19 +88,24 @@ export const readable = (spec: Job, project: string, known: ReadonlySet<string>)
 export const git = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     const active = yield* worker(request);
+
     if (active === undefined) return unauthorized;
     const url = new URL(request.url, "http://calder");
     const match = /^\/git\/([^/]+)\.git\/(info\/refs|git-upload-pack)$/.exec(url.pathname);
     const mirror = yield* Mirror;
     const known = new Set(Object.values(mirror.byUrl()).map((path) => basename(path, ".git")));
+
     if (match === null || !readable(active.spec, match[1]!, known))
       return HttpServerResponse.text("not found", { status: 404 });
     const project = match[1]!;
+
     if (match[2] === "info/refs" && url.searchParams.get("service") !== "git-upload-pack") {
       return HttpServerResponse.text("only fetches", { status: 403 });
     }
+
     const path = mirror.path(project);
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
     const handle = yield* spawner.spawn(
       ChildProcess.make("git", ["http-backend"], {
         env: {
@@ -111,10 +125,13 @@ export const git = (request: HttpServerRequest.HttpServerRequest) =>
         stdin: request.method === "POST" ? Stream.orDie(request.stream) : "ignore",
       }),
     );
+
     yield* Effect.forkScoped(Stream.runDrain(handle.stderr));
     const response = yield* cgi(handle.stdout);
+
     if (response === undefined)
       return HttpServerResponse.text("git http-backend failed", { status: 500 });
+
     return HttpServerResponse.stream(response.body, {
       status: response.status,
       headers: response.headers,
@@ -128,26 +145,34 @@ export const git = (request: HttpServerRequest.HttpServerRequest) =>
 export const output = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     const active = yield* worker(request);
+
     if (active === undefined) return unauthorized;
     const name = new URL(request.url, "http://calder").searchParams.get("name") ?? "";
+
     if (!/^[A-Za-z0-9+._?=-]+$/.test(name))
       return HttpServerResponse.text("bad name", { status: 400 });
     const uploads = join((yield* Config).stateDir, "uploads");
     mkdirSync(uploads, { recursive: true });
     const dir = mkdtempSync(join(uploads, `${active.id}-`));
+
     return yield* Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
       const tar = yield* spawner.spawn(
         ChildProcess.make("tar", ["-x", "-C", dir], { stdin: Stream.orDie(request.stream) }),
       );
+
       const [, stderr, code] = yield* Effect.all(
         [Stream.runDrain(tar.stdout), Stream.mkString(Stream.decodeText(tar.stderr)), tar.exitCode],
         { concurrency: "unbounded" },
       );
+
       const entries = readdirSync(dir);
+
       if (code !== 0 || entries.length !== 1)
         return HttpServerResponse.text(`bad upload: ${stderr}`, { status: 400 });
       const path = yield* Exec.run(["nix", "store", "add", "--name", name, join(dir, entries[0]!)]);
+
       return HttpServerResponse.text(path.trim());
     }).pipe(
       Effect.scoped,
@@ -162,15 +187,19 @@ export const output = (request: HttpServerRequest.HttpServerRequest) =>
 export const store = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     const active = yield* worker(request);
+
     if (active === undefined || active.spec._tag !== "Step") return unauthorized;
     const path = new URL(request.url, "http://calder").searchParams.get("path") ?? "";
+
     const input = Object.values(active.spec.inputs).some(
       (o) => o._tag === "Passed" && Values.decode(o.value) === path,
     );
+
     if (!input || !/^\/nix\/store\/[a-z0-9]{32}-[^/]+$/.test(path))
       return HttpServerResponse.text("not an input of this job", { status: 403 });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const entry = basename(path);
+
     const tar = yield* spawner.spawn(
       ChildProcess.make(
         "tar",
@@ -178,5 +207,6 @@ export const store = (request: HttpServerRequest.HttpServerRequest) =>
         { stdin: "ignore" },
       ),
     );
+
     return HttpServerResponse.stream(tar.stdout, { contentType: "application/x-tar" });
   }).pipe(Effect.orDie);

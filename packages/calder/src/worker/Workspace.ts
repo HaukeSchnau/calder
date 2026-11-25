@@ -74,6 +74,7 @@ export const open = (root: string, deps: string | null) =>
     const snapshots = deps !== null && isBtrfs(dirname(root));
     const snapshot = deps === null ? null : join(snapshotDir(root), deps);
     let restored = false;
+
     if (snapshots && snapshot !== null && read(marker) !== deps && existsSync(snapshot)) {
       if (existsSync(root)) yield* remove(root);
       yield* btrfs(["subvolume", "snapshot", snapshot, root]);
@@ -83,13 +84,16 @@ export const open = (root: string, deps: string | null) =>
       if (snapshots) yield* btrfs(["subvolume", "create", root]);
       else mkdirSync(root, { recursive: true });
     }
+
     const src = join(root, "src");
     const cache = join(root, "cache");
     mkdirSync(src, { recursive: true });
     mkdirSync(cache, { recursive: true });
     const fresh = deps !== null && read(marker) !== deps;
+
     if (fresh) rmSync(marker, { force: true });
     used(root);
+
     return { root, src, cache, fresh, restored, snapshots } satisfies Slot;
   });
 
@@ -97,31 +101,39 @@ export const open = (root: string, deps: string | null) =>
 export const remember = (slot: Slot, deps: string, keep = 3) =>
   Effect.gen(function* () {
     writeFileSync(join(slot.root, "deps"), `${deps}\n`);
+
     if (!slot.snapshots) return;
     const dir = snapshotDir(slot.root);
     mkdirSync(dir, { recursive: true });
     rmSync(join(slot.cache, "tmp"), { recursive: true, force: true });
     const target = join(dir, deps);
+
     // Slots set up for the same key at once race for the snapshot: each takes its own, and only the
     // first rename wins.
     if (!existsSync(target)) {
       const own = `${target}.${process.pid}`;
       yield* btrfs(["subvolume", "snapshot", slot.root, own]);
+
       const won = yield* Effect.sync(() => {
         try {
           renameSync(own, target);
+
           return true;
         } catch {
           return false;
         }
       });
+
       if (!won) yield* remove(own);
     }
+
     used(target);
+
     const old = readdirSync(dir)
       .filter((name) => !name.includes("."))
       .map((name) => ({ path: join(dir, name), at: statSync(join(dir, name)).mtimeMs }))
       .sort((a, b) => b.at - a.at)
       .slice(keep);
+
     yield* Effect.forEach(old, (s) => remove(s.path).pipe(Effect.ignore), { discard: true });
   });

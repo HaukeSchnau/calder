@@ -15,6 +15,7 @@ vi.mock("@effect/sql-sqlite-bun", () => ({}));
 const noProcesses = ChildProcessSpawner.make(() =>
   Effect.die(new Error("no processes in this test")),
 );
+
 const path = (name: string) => `/nix/store/${"0".repeat(32)}-${name}`;
 
 describe("output roots", () => {
@@ -24,14 +25,17 @@ describe("output roots", () => {
       yield* insertRun("p-1", { at: 1 });
       yield* insertStep("p-1", "e2e");
       yield* sql`update steps set outputs = ${JSON.stringify({ screenshots: path("screenshots") })} where run_id = 'p-1'`;
+
       const result = (key: string, outputs: Record<string, string>, status: string) =>
         sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
           values (${key}, 'p-1', 'build', 'trusted', 'null', ${JSON.stringify(outputs)}, 1, ${status})`;
+
       yield* result("reusable", { dist: path("dist") }, "passed");
       yield* result("failed", { log: path("log") }, "failed");
 
       const stateDir = mkdtempSync(join(tmpdir(), "calder-roots-"));
       mkdirSync(join(stateDir, "gcroots"));
+
       for (const name of ["screenshots", "dist", "log", "pruned"])
         symlinkSync(path(name), join(stateDir, "gcroots", basename(path(name))));
 
@@ -51,6 +55,7 @@ describe("output roots", () => {
       Effect.gen(function* () {
         const stateDir = mkdtempSync(join(tmpdir(), "calder-roots-"));
         const ran: Array<ReadonlyArray<string>> = [];
+
         const recording = ChildProcessSpawner.make((command) =>
           Effect.sync(() =>
             ran.push([
@@ -59,6 +64,7 @@ describe("output roots", () => {
             ]),
           ).pipe(Effect.andThen(Effect.die(new Error("recorded")))),
         );
+
         // A path outside /nix/store has no hash, and a store path that isn't on disk isn't held here.
         yield* Outputs.rootBuilt(
           stateDir,

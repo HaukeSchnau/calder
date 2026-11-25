@@ -17,6 +17,7 @@ describe("Tests", () => {
       record("passes on retry", "passed"),
       record("fails twice", "timeout"),
     ];
+
     expect(Tests.count(records)).toEqual({ passed: 3, failed: 1, skipped: 0, flaky: 1 });
     expect(Tests.outcomes(records).map((t) => t.superseded)).toEqual([
       true,

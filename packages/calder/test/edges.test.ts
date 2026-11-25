@@ -9,12 +9,14 @@ describe("build edges", () => {
       { name: "gate", drv: "/nix/store/g.drv" },
       { name: "projectRelease", drv: "/nix/store/r.drv" },
     ];
+
     const closures = new Map([
       ["deps", new Set(["/nix/store/d.drv"])],
       ["release", new Set(["/nix/store/r.drv", "/nix/store/d.drv"])],
       ["projectRelease", new Set(["/nix/store/r.drv", "/nix/store/d.drv"])],
       ["gate", new Set(["/nix/store/g.drv", "/nix/store/r.drv", "/nix/store/d.drv"])],
     ]);
+
     expect(Object.fromEntries(directUses(builds, closures))).toEqual({
       release: ["deps"],
       projectRelease: ["deps"],

@@ -5,9 +5,12 @@ import * as Redact from "../src/worker/Redact.ts";
 import { lastWords } from "../src/worker/Steps.ts";
 
 const token = "ghp_0123456789abcdefghijklmnopqrstuvwxyzABCD";
+
 const said = (lines: ReadonlyArray<string>, redact = Redact.make([token])) => {
   const last = lastWords(redact);
+
   for (const line of lines) last.see(line);
+
   return new Calder.TaskFailed({ exitCode: 1, failures: [], ...last.said() }).message;
 };
 
@@ -42,6 +45,7 @@ describe("why a task failed", () => {
 describe("redaction", () => {
   const key =
     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n";
+
   const redact = Redact.make([
     token,
     'CLOUDFLARE_API_TOKEN="cf-secret-0123"\nexport ACCOUNT_ID=acct-4242\nAWS_REGION=auto\nCI=true\nSIGNING_KEY="-----BEGIN KEY-----\\nMIIEdotenvLine1234\\n-----END KEY-----"',
@@ -77,6 +81,7 @@ describe("redaction", () => {
     expect(redact(Buffer.from("cf-secret-0123").toString("base64"))).not.toContain(
       Buffer.from("cf-secret-0123").toString("base64").slice(0, 16),
     );
+
     for (const prefix of ["", "x", "xy"]) {
       const encoded = Buffer.from(`${prefix}${token} and more`).toString("base64");
       expect(redact(encoded)).toContain("***");
@@ -93,6 +98,7 @@ describe("redaction", () => {
       key: "acct-4242",
       outputs: { report: "/nix/store/acct-4242-report" },
     };
+
     expect(Redact.result(redact, failed)).toEqual({
       ...failed,
       message: "exited with 1: *** was refused",
@@ -102,12 +108,14 @@ describe("redaction", () => {
       _tag: "Skipped",
       reason: "*** is offline",
     });
+
     const passed: JobResult = {
       _tag: "Passed",
       value: { url: "https://acct-4242.example" },
       outputs: {},
       key: null,
     };
+
     expect(Redact.result(redact, passed)).toBe(passed);
   });
 });

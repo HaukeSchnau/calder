@@ -12,10 +12,13 @@ import * as Tunnel from "../../src/Tunnel.ts";
 const [verb, ...rest] = process.argv.slice(2);
 const out = process.env.FAKE_OUT!;
 const call = [verb, ...rest].join(" ");
+
 appendFileSync(join(out, "calls"), `${call}\n`);
+
 const failing = existsSync(join(out, "fail"))
   ? readFileSync(join(out, "fail"), "utf8").split("\n")
   : [];
+
 if (failing.includes(call)) {
   writeFileSync(join(out, "fail"), failing.filter((line) => line !== call).join("\n"));
   process.exit(1);
@@ -25,14 +28,18 @@ if (verb === "show") {
   console.log("0");
   process.exit(0);
 }
+
 if (verb !== "start" && verb !== "run") process.exit(0);
 
 const unit = /^calder-job-(\w+)@(\w+)\.service$/.exec(rest.at(-1)!);
+
 const [pool, job, dir] =
   verb === "run"
     ? (rest as [string, string, string])
     : [unit![1]!, unit![2]!, join(process.env.FAKE_UNITS!, unit![2]!)];
+
 if (job === "0c0c") process.exit(0);
+
 const mode = (path: string) => (statSync(path).mode & 0o777).toString(8);
 
 /** What the egress proxy answers to a CONNECT, on its socket. */
@@ -41,6 +48,7 @@ const connectVia = (socket: string, target: string) =>
     const client = connect(socket, () =>
       client.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
     );
+
     client.once("data", (data) => {
       resolve(data.toString("latin1").split("\r\n")[0]!);
       client.destroy();
@@ -53,16 +61,20 @@ const found = await Effect.runPromise(
       const socket = join(dir, "controller.sock");
       const bridge = yield* Tunnel.loopback(socket);
       const base = `http://127.0.0.1:${bridge.port}`;
+
       return yield* Effect.promise(async () => {
         const refs = await fetch(`${base}/git/app.git/info/refs?service=git-upload-pack`, {
           headers: { authorization: "Bearer j:t" },
         });
+
         const pack = await fetch(`${base}/git/app.git/git-upload-pack`, {
           method: "POST",
           body: "want 0123",
         });
+
         const rpc = await fetch(`${base}/rpc`);
         const agent = await fetch(`${base}/agent`);
+
         const echoed = await new Promise<string>((resolve) => {
           const ws = new WebSocket(`ws://127.0.0.1:${bridge.port}/worker`);
           ws.onopen = () => ws.send("hello");
@@ -71,13 +83,17 @@ const found = await Effect.runPromise(
             ws.close();
           };
         });
+
         const egressSocket = join(dir, "egress.sock");
+
         const egress = existsSync(egressSocket)
           ? await connectVia(egressSocket, "example.org:443")
           : null;
+
         const listed = existsSync(egressSocket)
           ? await connectVia(egressSocket, `localhost:${process.env.FAKE_PORT}`)
           : null;
+
         return {
           pool,
           modes: { dir: mode(dir), token: mode(join(dir, "token")), controller: mode(socket) },
@@ -94,7 +110,10 @@ const found = await Effect.runPromise(
     }),
   ),
 );
+
 writeFileSync(join(out, `${job}.json`), JSON.stringify(found));
+
 if (job === "5709") await new Promise(() => {});
+
 while (job === "0b0b" && !existsSync(join(out, "go")))
   await new Promise((resolve) => setTimeout(resolve, 20));

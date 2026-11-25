@@ -14,6 +14,7 @@ import { config } from "./config.ts";
 import { layer as sqlite } from "./sqlite.ts";
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
+
 // On a Calder host the test's user may not hand files to the pools' groups, which the controller does.
 vi.mock("node:fs", async (original) => ({
   ...(await original<typeof import("node:fs")>()),
@@ -24,6 +25,7 @@ vi.mock("node:fs", async (original) => ({
 const systemd = ChildProcessSpawner.make((command) => {
   const args = ChildProcess.isStandardCommand(command) ? command.args : [];
   const stdout = args.includes("ActiveState") ? "ActiveState=active\nResult=success\n" : "";
+
   return Effect.succeed(
     ChildProcessSpawner.makeHandle({
       pid: ChildProcessSpawner.ProcessId(1),
@@ -55,6 +57,7 @@ const run = {
   pipelineDir: "",
   system: "x86_64-linux",
 } as const;
+
 const step = (name: string) =>
   ({
     _tag: "Step",
@@ -69,6 +72,7 @@ const step = (name: string) =>
     deps: null,
     files: null,
   }) as Job;
+
 const plan = { _tag: "Plan", run, requiredChecks: [] } as Job;
 
 /** m1 takes darwin jobs, and `placed` completes once it took one; no agent of another platform is there. */
@@ -93,6 +97,7 @@ const controller = (placed: Deferred.Deferred<void> = Deferred.makeUnsafe()) =>
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => rmSync(runtimeDir, { recursive: true, force: true })),
     );
+
     return yield* Jobs.pipe(
       Effect.provide(
         jobs.pipe(
@@ -132,10 +137,12 @@ describe("what a restart of the controller cuts off", () => {
     Effect.gen(function* () {
       const placed = yield* Deferred.make<void>();
       const service = yield* controller(placed);
+
       const start = (spec: Job, options: Partial<Parameters<typeof service.run>[1]>) =>
         service
           .run(spec, { pool: "trusted", onEvent: () => Effect.void, ...options })
           .pipe(Effect.forkScoped);
+
       yield* start(plan, {});
       yield* start(step("promote"), { uninterruptible: true, adoptable: false });
       yield* start(step("tests-darwin"), { adoptable: true, platform: "aarch64-darwin" });

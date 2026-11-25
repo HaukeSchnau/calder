@@ -16,9 +16,11 @@ export const durations = (
   history: ReadonlyArray<{ readonly file: string; readonly durationMs: number }>,
 ) => {
   const byFile = new Map<string, Array<number>>();
+
   for (const h of history) byFile.set(h.file, [...(byFile.get(h.file) ?? []), h.durationMs]);
   const medians = new Map([...byFile].map(([file, ms]) => [file, median(ms)]));
   const fallback = medians.size > 0 ? median([...medians.values()]) : 5_000;
+
   return (file: string) => medians.get(file) ?? fallback;
 };
 
@@ -32,11 +34,13 @@ export const split = (
     files: [] as Array<string>,
     ms: 0,
   }));
+
   for (const file of [...files].sort((a, b) => duration(b) - duration(a) || a.localeCompare(b))) {
     const bin = bins.reduce((least, b) => (b.ms < least.ms ? b : least));
     bin.files.push(file);
     bin.ms += duration(file);
   }
+
   return bins;
 };
 
@@ -52,9 +56,11 @@ export const outcomes = (
   exitedCleanly: boolean,
 ) => {
   const latest = Tests.outcomes(tests).filter((t) => !t.superseded);
+
   return new Map(
     files.map((file) => {
       const mine = latest.filter((t) => t.file === file);
+
       const status: FileStatus = mine.some(Tests.failing)
         ? "failed"
         : mine.some((t) => t.flaky)
@@ -62,6 +68,7 @@ export const outcomes = (
           : mine.length > 0 || exitedCleanly
             ? "passed"
             : "unknown";
+
       return [file, { status, ms: mine.reduce((sum, t) => sum + t.durationMs, 0) }] as const;
     }),
   );

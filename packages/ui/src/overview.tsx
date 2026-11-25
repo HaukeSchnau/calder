@@ -34,6 +34,7 @@ import { Fail, Loaded, Ring, RunGlyph, Swatch, Waiting, hasBits, useNow } from "
 
 export function OverviewPage() {
   const result = useAtomValue(overviewAtom);
+
   return (
     <main className="page overview">
       <Loaded result={result} what="the overview">
@@ -46,6 +47,7 @@ export function OverviewPage() {
 /** The hosts the projects deploy to, the controller's own first. */
 export const hostsOf = (projects: ReadonlyArray<Domain.Project>, controller: string) => {
   const hosts = [...new Set(projects.flatMap((p) => p.deployments.map((d) => d.host)))];
+
   return hosts.sort((a, b) => (a === controller ? -1 : b === controller ? 1 : a.localeCompare(b)));
 };
 
@@ -65,18 +67,25 @@ function Overview({ ov }: { readonly ov: Domain.Overview }) {
 /** Red: the newest finished run of a default branch or an open pull request failed. A fix in flight doesn't clear it. */
 export function redRuns(ov: Domain.Overview): Array<Domain.Run> {
   const failed = (status: Domain.RunStatus) => status === "failed" || status === "errored";
+
   const mains = ov.projects.flatMap((p) => {
     const done = [...p.history].reverse().find((h) => !isActive(h.status));
+
     if (!done || !failed(done.status)) return [];
     const run = p.main?.id === done.id ? p.main : ov.recent.find((r) => r.id === done.id);
+
     return run ? [run] : [];
   });
+
   const prs = new Map<string, Domain.Run>();
+
   for (const r of ov.recent) {
     if (r.event._tag !== "PullRequest" || isActive(r.status)) continue;
     const key = `${r.project}#${r.event.number}`;
+
     if (!prs.has(key)) prs.set(key, r);
   }
+
   return [...mains, ...[...prs.values()].filter((r) => failed(r.status))].sort(
     (a, b) => b.createdAt - a.createdAt,
   );
@@ -84,15 +93,19 @@ export function redRuns(ov: Domain.Overview): Array<Domain.Run> {
 
 function Attention({ ov }: { readonly ov: Domain.Overview }) {
   const red = redRuns(ov);
+
   const deploying = ov.projects.flatMap((p) =>
     p.deployments.filter((d) => d.deployingRun !== null),
   );
+
   const deployingRuns = new Set(deploying.map((d) => d.deployingRun));
   const running = ov.active.filter((r) => !deployingRuns.has(r.id));
   const waits = useAtomValue(agentWaitsAtom);
   const byRun = new Map<string, Array<Domain.Deployment>>();
+
   for (const d of deploying)
     if (d.deployingRun) byRun.set(d.deployingRun, [...(byRun.get(d.deployingRun) ?? []), d]);
+
   if (!red.length && !running.length && !deploying.length && !waits.length) {
     return (
       <section className="attn" aria-label="Needs attention">
@@ -103,6 +116,7 @@ function Attention({ ov }: { readonly ov: Domain.Overview }) {
       </section>
     );
   }
+
   return (
     <section className="attn" aria-label="Needs attention">
       {red.map((r, i) => (
@@ -151,6 +165,7 @@ function RedRow({
   const d = AsyncResult.isSuccess(detail) ? detail.value : null;
   const step = d?.steps.find((s) => s.status === "failed" || s.status === "died");
   const test = d?.failingTests.find((t) => t.step === step?.name);
+
   return (
     <a
       className={`at at-red${first ? "" : " cont"}`}
@@ -187,6 +202,7 @@ function RedRow({
 function WaitingRow({ wait, first }: { readonly wait: AgentWait; readonly first: boolean }) {
   const now = useNow();
   const { run, step } = wait;
+
   return (
     <a
       className={`at at-wait${first ? "" : " cont"}`}
@@ -220,6 +236,7 @@ function RunningRow({ run, first }: { readonly run: Domain.Run; readonly first: 
   const detail = useAtomValue(runAtom(run.id));
   const steps = AsyncResult.isSuccess(detail) ? detail.value.steps : [];
   const total = totalSteps(run.counts);
+
   const finished = count(
     run.counts,
     "passed",
@@ -231,8 +248,10 @@ function RunningRow({ run, first }: { readonly run: Domain.Run; readonly first: 
     "cancelled",
     "skipped",
   );
+
   const left = (s: Domain.StepRun) => (s.expectedMs ?? 0) - (stepDuration(s, now) ?? 0);
   const longest = steps.filter((s) => s.status === "running").sort((a, b) => left(b) - left(a))[0];
+
   return (
     <a
       className={`at at-run${first ? "" : " cont"}`}
@@ -285,15 +304,20 @@ function DeployingRow({
 }) {
   const now = useNow();
   const detail = useAtomValue(runAtom(runId));
+
   const deploy = AsyncResult.isSuccess(detail)
     ? detail.value.steps.find((s) => s.status === "running" && s.kind === "action")
     : undefined;
+
   const hosts = deployments.map((d) => d.host);
+
   const waiting =
     project?.deployments
       .filter((d) => !hosts.includes(d.host) && run && d.revision !== run.commit.sha)
       .map((d) => d.host) ?? [];
+
   const from = deployments[0];
+
   return (
     <a className={`at at-run${first ? "" : " cont"}`} href={href({ page: "rollout", id: runId })}>
       <span className="at-k">
@@ -348,6 +372,7 @@ export function StepStrip({ steps }: { readonly steps: ReadonlyArray<Domain.Step
 function Board({ ov }: { readonly ov: Domain.Overview }) {
   const hosts = hostsOf(ov.projects, ov.host);
   const cols = `minmax(250px, 1.5fr) 128px 140px 64px 52px ${hosts.map(() => "minmax(170px, 0.8fr)").join(" ")}`;
+
   return (
     <section className="board" aria-label="Projects" style={{ "--ocols": cols }}>
       <div className="board-bar">
@@ -407,15 +432,20 @@ function ProjectRows({
   const now = useNow();
   const main = project.main;
   const deployingId = project.deployments.find((d) => d.deployingRun !== null)?.deployingRun;
+
   const deploying = deployingId
     ? (recent.find((r) => r.id === deployingId) ?? (main?.id === deployingId ? main : undefined))
     : undefined;
+
   const prs = new Map<number, Domain.Run>();
+
   for (const r of recent) {
     if (r.project !== project.name || r.event._tag !== "PullRequest" || prs.has(r.event.number))
       continue;
+
     if (now - r.createdAt < 3 * 86400_000) prs.set(r.event.number, r);
   }
+
   return (
     <>
       <div className="br br-project">
@@ -480,6 +510,7 @@ function ProjectRows({
 
 function RunCell({ run }: { readonly run: Domain.Run }) {
   const word = run.status === "passed" ? null : run.status;
+
   return (
     <a className="runcell" href={href({ page: "run", id: run.id, step: null })}>
       <RunGlyph run={run} />
@@ -499,7 +530,9 @@ export const statusClass = (status: Domain.RunStatus | Domain.StepStatus) =>
 function Took({ run }: { readonly run: Domain.Run }) {
   const now = useNow();
   const d = runDuration(run, now);
+
   if (d === null) return null;
+
   return <span className={isActive(run.status) ? "heat" : ""}>{dur(d)}</span>;
 }
 
@@ -522,9 +555,11 @@ function Host({
 }) {
   const now = useNow();
   const history = useAtomValue(deployHistoryAtom({ project: d.project, host: null, limit: 10 }));
+
   const by = AsyncResult.isSuccess(history)
     ? history.value.find((r) => r.host === d.host && r.revision === d.revision)
     : undefined;
+
   const sha = d.revision ? (
     by && !d.deployingRun ? (
       <a
@@ -538,6 +573,7 @@ function Host({
       shortSha(d.revision)
     )
   ) : null;
+
   const live = d.revision ? (
     <>
       <span className="hl">{d.host}</span>
@@ -550,6 +586,7 @@ function Host({
       <span className="dim">nothing live</span>
     </>
   );
+
   if (d.deployingRun) {
     return (
       <a className="cell host" href={href({ page: "rollout", id: d.deployingRun })}>
@@ -559,6 +596,7 @@ function Host({
       </a>
     );
   }
+
   return (
     <span className="cell host">
       {live}
@@ -587,6 +625,7 @@ function Host({
 
 function Recent({ runs }: { readonly runs: ReadonlyArray<Domain.Run> }) {
   const now = useNow();
+
   return (
     <section className="recent" aria-label="Recent runs">
       <header className="osec-h">
@@ -597,6 +636,7 @@ function Recent({ runs }: { readonly runs: ReadonlyArray<Domain.Run> }) {
         const total = totalSteps(r.counts);
         const reused = count(r.counts, "reused");
         const failed = count(r.counts, "failed", "died");
+
         return (
           <a key={r.id} className="jrow" href={href({ page: "run", id: r.id, step: null })}>
             <span className="jt">{when(r.createdAt, now)}</span>

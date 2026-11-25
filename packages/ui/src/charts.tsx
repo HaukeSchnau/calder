@@ -8,12 +8,15 @@ function useWidth<T extends HTMLElement>() {
   const [width, setWidth] = useState(0);
   useLayoutEffect(() => {
     const el = ref.current;
+
     if (!el) return;
     const observer = new ResizeObserver(() => setWidth(el.clientWidth));
     observer.observe(el);
     setWidth(el.clientWidth);
+
     return () => observer.disconnect();
   }, []);
+
   return [ref, width] as const;
 }
 
@@ -21,6 +24,7 @@ function niceMax(v: number): number {
   if (v <= 0) return 1;
   const p = 10 ** Math.floor(Math.log10(v));
   const m = v / p;
+
   return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p;
 }
 
@@ -60,15 +64,19 @@ function Frame({
   const iw = width - PAD.l - PAD.r;
   const ih = height - PAD.t - PAD.b;
   const y = (v: number) => PAD.t + ih - (v / max) * ih;
+
   const xAt = (i: number) =>
     PAD.l + (bars ? (i + 0.5) * (iw / n) : n <= 1 ? iw / 2 : (i / (n - 1)) * iw);
+
   const pick = (clientX: number, rect: DOMRect) => {
     const px = clientX - rect.left - PAD.l;
+
     return Math.max(
       0,
       Math.min(n - 1, bars ? Math.floor(px / (iw / n)) : Math.round((px / iw) * (n - 1))),
     );
   };
+
   return (
     <svg
       width={width}
@@ -122,6 +130,7 @@ export function BarChart({
   const iw = width - PAD.l - PAD.r;
   const ih = height - PAD.t - PAD.b;
   const bw = Math.max(2, Math.min(10, iw / Math.max(1, n) - 3));
+
   return (
     <div ref={ref} className="chart" style={{ height }}>
       {width > 0 && (
@@ -137,6 +146,7 @@ export function BarChart({
           )}
           {bars.map((b, i) => {
             const cx = PAD.l + (i + 0.5) * (iw / n);
+
             if (b.value === null)
               return (
                 <rect
@@ -150,6 +160,7 @@ export function BarChart({
                 />
               );
             const h = Math.max(1.5, (b.value / max) * ih);
+
             return (
               <rect
                 key={i}
@@ -182,6 +193,7 @@ export function LineChart({
   const x = (i: number) => PAD.l + (n <= 1 ? iw / 2 : (i / (n - 1)) * iw);
   const y = (v: number) => PAD.t + ih - (v / max) * ih;
   const last = values.at(-1);
+
   return (
     <div ref={ref} className="chart" style={{ height }}>
       {width > 0 && n > 0 && (
@@ -214,6 +226,7 @@ export function RunSpark({
   const known = history.map((h) => h.durationMs).filter((d): d is number => d !== null);
   const max = Math.max(1, ...known);
   const offset = n - history.length;
+
   return (
     <svg
       className="rspark"
@@ -226,6 +239,7 @@ export function RunSpark({
       {history.map((h, i) => {
         const v = h.durationMs ?? max * 0.6;
         const bh = Math.max(3, (v / max) * (height - 2));
+
         return (
           <a
             key={h.id}

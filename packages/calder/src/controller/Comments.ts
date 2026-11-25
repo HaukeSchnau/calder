@@ -20,10 +20,13 @@ const cell = (text: string) => text.replaceAll("|", "\\|").replaceAll("\n", " ")
 /** A step's status for people: what it waits for, how it failed, or how it ended. */
 const statusOf = (step: Domain.StepRun) => {
   if (Domain.noFiles(step)) return "no files";
+
   if (step.status === "pending" || step.status === "queued")
     return step.waiting == null ? "waiting" : `waiting for ${step.waiting}`;
+
   if (step.error !== null && step.status !== "passed")
     return `${step.status}: ${step.error.message.split("\n")[0]!.slice(0, 120)}`;
+
   return step.status;
 };
 
@@ -40,6 +43,7 @@ export const render = (input: {
   readonly now: number;
 }) => {
   const { run, now } = input;
+
   const steps = Rows.withReasons(
     input.steps.filter(
       (s) =>
@@ -47,37 +51,48 @@ export const render = (input: {
         !(s.kind === "setup" && s.queuedAt === null && s.status === "reused"),
     ),
   );
+
   const notes = input.notes.map((note) =>
     note.run.id === run.id
       ? `${note.markdown}\n<sub>${took(note.at - run.createdAt)} after the push</sub>`
       : `${note.markdown}\n<sub>from run ${note.run.number}; run ${run.number} hasn't said it yet</sub>`,
   );
+
   const ended = run.finishedAt !== null;
   const total = took((run.finishedAt ?? now) - run.createdAt);
+
   const planned =
     run.plannedAt == null ? "planning" : `planned in ${took(run.plannedAt - run.createdAt)}`;
+
   const header = `**Run ${run.number}** ${ended ? `${run.status} in ${total}` : `${run.status}, ${total} so far`} · \`${run.commit.sha.slice(0, 12)}\` · ${planned} · [steps](${input.link})`;
   const ran = steps.filter((s) => s.status !== "reused" || Domain.noFiles(s));
   const reused = steps.filter((s) => s.status === "reused" && !Domain.noFiles(s));
+
   const row = (s: Domain.StepRun) => {
     const waited =
       s.queuedAt !== null && s.startedAt !== null ? took(s.startedAt - s.queuedAt) : "";
+
     const time =
       s.startedAt === null
         ? ""
         : s.finishedAt === null
           ? `${took(now - s.startedAt)} so far`
           : took(s.finishedAt - s.startedAt);
+
     return `| ${cell(s.name)}${s.critical === true ? " ·" : ""} | ${cell(statusOf(s))} | ${waited} | ${time} |`;
   };
+
   const table =
     ran.length === 0
       ? []
       : ["| Step | Status | Waited | Took |", "| --- | --- | ---: | ---: |", ...ran.map(row)];
+
   const critical = ran.filter(
     (s) => s.critical === true && s.queuedAt !== null && s.startedAt !== null,
   );
+
   const queued = critical.reduce((sum, s) => sum + (s.startedAt! - s.queuedAt!), 0);
+
   const footer = [
     ...(critical.length === 0
       ? []
@@ -93,6 +108,7 @@ export const render = (input: {
             .join(", ")}${reused.length > 12 ? ", ..." : ""}.`,
         ]),
   ];
+
   return [
     ...notes.flatMap((n) => [n, ""]),
     header,
@@ -122,6 +138,7 @@ export const layer = Layer.effect(Comments)(
     const gitea = yield* Gitea;
     const config = yield* Config;
     const projects = yield* Projects;
+
     const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
       effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 
@@ -140,9 +157,11 @@ export const layer = Layer.effect(Comments)(
       Effect.gen(function* () {
         const newest = yield* newestOf(project, pr);
         const repo = projects.get(project)?.repo;
+
         if (newest === undefined || repo === undefined) return;
         const [run] = yield* db(Rows.runsWithCounts([newest]));
         const steps = (yield* db(Rows.loadSteps(newest.id))).map((s) => Rows.step(s));
+
         const notes = yield* db(sql<{
           step: string;
           run_id: string;
@@ -150,6 +169,7 @@ export const layer = Layer.effect(Comments)(
           at: number;
         }>`select step, run_id, markdown, at from pr_notes
         where project = ${project} and pr = ${pr} order by at`);
+
         // Times that only count up don't make an edit; a step's status, reason or a note do.
         const state = JSON.stringify([
           run!.id,
@@ -157,8 +177,11 @@ export const layer = Layer.effect(Comments)(
           steps.map((s) => [s.name, s.status, s.waiting ?? null]),
           notes,
         ]);
+
         const key = `${project}#${pr}`;
+
         if (shown.get(key) === state) return;
+
         const body = render({
           run: run!,
           steps,
@@ -171,11 +194,13 @@ export const layer = Layer.effect(Comments)(
           link: `${config.publicUrl.replace(/\/$/, "")}/#/run/${newest.id}`,
           now: Date.now(),
         });
+
         const existing = yield* db(
           sql<{
             comment_id: number;
           }>`select comment_id from comments where project = ${project} and pr = ${pr} and step = ${own}`,
         );
+
         const id = yield* gitea.comment(repo, pr, body, existing[0]?.comment_id ?? null);
         yield* db(sql`insert into comments (project, pr, step, comment_id) values (${project}, ${pr}, ${own}, ${id})
         on conflict (project, pr, step) do update set comment_id = ${id}`);
@@ -188,11 +213,14 @@ export const layer = Layer.effect(Comments)(
 
     // Steps change in bursts; one update a few seconds after the first change covers the burst.
     const pending = new Set<string>();
+
     const schedule = (project: string, pr: number) =>
       Effect.suspend(() => {
         const key = `${project}#${pr}`;
+
         if (pending.has(key)) return Effect.void;
         pending.add(key);
+
         return Effect.sleep("3 seconds").pipe(
           Effect.andThen(Effect.sync(() => pending.delete(key))),
           Effect.andThen(update(project, pr)),
@@ -210,7 +238,9 @@ export const layer = Layer.effect(Comments)(
       note: (runId, step, markdown) =>
         Effect.gen(function* () {
           const at = yield* pullRequestOf(runId);
+
           if (at === undefined) return;
+
           // A run a newer one replaced keeps its say to itself, such as the URL of a preview it no longer deploys.
           if ((yield* newestOf(at.project, at.pr))?.id !== runId) return;
           yield* db(sql`insert into pr_notes (project, pr, step, run_id, markdown, at) values (${at.project}, ${at.pr}, ${step}, ${runId}, ${markdown}, ${Date.now()})
@@ -220,10 +250,13 @@ export const layer = Layer.effect(Comments)(
       touch: (runId) =>
         Effect.gen(function* () {
           const at = yield* pullRequestOf(runId);
+
           if (at === undefined) return;
+
           const noted = yield* db(
             sql`select 1 from pr_notes where project = ${at.project} and pr = ${at.pr} limit 1`,
           );
+
           if (noted.length > 0) yield* schedule(at.project, at.pr);
         }),
     };

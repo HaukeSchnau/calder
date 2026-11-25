@@ -38,8 +38,10 @@ const failedStatus = (s: Domain.StepStatus) => s === "failed" || s === "died";
 /** Graph order: left to right, top to bottom, the order a person reads the canvas in. */
 export function graphOrder(steps: ReadonlyArray<Domain.StepRun>): Array<Domain.StepRun> {
   const shape = layout(steps);
+
   const pos = (s: Domain.StepRun) =>
     shape.group?.members.includes(s.name) ? shape.group.box : shape.boxes.get(s.name);
+
   return [...steps].sort(
     (a, b) =>
       (pos(a)?.x ?? 0) - (pos(b)?.x ?? 0) ||
@@ -50,6 +52,7 @@ export function graphOrder(steps: ReadonlyArray<Domain.StepRun>): Array<Domain.S
 /** Failure first, then work in progress, then the deploy, then the first step. */
 export function defaultStep(steps: ReadonlyArray<Domain.StepRun>): Domain.StepRun | undefined {
   const ordered = graphOrder(steps);
+
   return (
     ordered.find((s) => failedStatus(s.status)) ??
     ordered.find((s) => s.status === "running") ??
@@ -64,6 +67,7 @@ const prefs: { tab: Tab; open: boolean; height: number } = { tab: "logs", open: 
 
 export function RunPage({ id, step }: { readonly id: string; readonly step: string | null }) {
   const result = useAtomValue(runAtom(id));
+
   return (
     <>
       <Navigator current={id} />
@@ -83,54 +87,71 @@ function RunView({
 }) {
   const phone = usePhone();
   const steps = detail.steps;
+
   // The default selection is decided once per run, and again when a failure shows up.
   const fallback = useMemo(
     () => defaultStep(steps)?.name,
     [shapeKey(steps), detail.run.id, steps.some((s) => failedStatus(s.status))],
   );
+
   const selected =
     steps.find((s) => s.name === requested) ??
     steps.find((s) => s.name === fallback) ??
     steps[0] ??
     null;
+
   const [tab, setTabState] = useState<Tab>(prefs.tab);
   const [open, setOpenState] = useState(prefs.open);
   const [height, setHeight] = useState(prefs.height);
+
   const setTab = (t: Tab) => {
     prefs.tab = t;
     setTabState(t);
     setOpen(true);
   };
+
   const setOpen = (o: boolean) => {
     prefs.open = o;
     setOpenState(o);
   };
+
   const select = (name: string) =>
     go({ page: "run", id: detail.run.id, step: name }, { replace: true });
+
   const ordered = graphOrder(steps);
 
   useKeys(
     (e) => {
       const k = e.key;
+
       if (e.metaKey || e.ctrlKey || e.altKey) {
         if (k.toLowerCase() === "j" && !e.altKey) {
           e.preventDefault();
           setOpen(!prefs.open);
         }
+
         return;
       }
+
       if (k >= "1" && k <= "5") return setTab(TABS[Number(k) - 1] ?? "logs");
+
       if ((k === "]" || k === "[") && selected) {
         const i = ordered.findIndex((s) => s.name === selected.name);
         const next = ordered[(i + (k === "]" ? 1 : -1) + ordered.length) % ordered.length];
+
         if (next) select(next.name);
+
         return;
       }
+
       if (k === "x") {
         const failed = ordered.find((s) => failedStatus(s.status));
+
         if (failed) select(failed.name);
+
         return;
       }
+
       if (k === "/") {
         e.preventDefault();
         setTab("logs");
@@ -206,17 +227,21 @@ function Resizer({ onResize }: { readonly onResize: (height: number) => void }) 
         const handle = e.currentTarget;
         handle.setPointerCapture(e.pointerId);
         const editor = handle.closest(".editor");
+
         if (!editor) return;
+
         const move = (ev: PointerEvent) => {
           const rect = editor.getBoundingClientRect();
           onResize(
             Math.round(Math.max(150, Math.min(rect.height - 160, rect.bottom - ev.clientY))),
           );
         };
+
         const up = () => {
           handle.removeEventListener("pointermove", move);
           handle.removeEventListener("pointerup", up);
         };
+
         handle.addEventListener("pointermove", move);
         handle.addEventListener("pointerup", up);
       }}
@@ -232,6 +257,7 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
   const { run } = detail;
   const d = runDuration(run, now);
   const total = totalSteps(run.counts);
+
   const finished = count(
     run.counts,
     "passed",
@@ -243,7 +269,9 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
     "cancelled",
     "skipped",
   );
+
   const deploys = detail.steps.some((s) => s.deploys);
+
   const statusWord =
     run.status === "passed"
       ? `passed in ${dur(d ?? 0)}`
@@ -256,7 +284,9 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
             : run.status === "errored"
               ? "errored before its steps ran"
               : run.status;
+
   const versions = [detail.run, ...detail.siblings].sort((a, b) => b.number - a.number);
+
   return (
     <header className="chg-h">
       <div className="chg-t">
@@ -316,12 +346,14 @@ function RunHeader({ detail }: { readonly detail: Domain.RunDetail }) {
 
 function RunActions({ run }: { readonly run: Domain.Run }) {
   const { cancel, rerun } = useRunCommands();
+
   if (!isActive(run.status))
     return (
       <button type="button" className="btn" onClick={() => rerun(run)}>
         Rerun
       </button>
     );
+
   return (
     <>
       {hasFailed(run) ? (
@@ -344,6 +376,7 @@ function Siblings({
   readonly current: string;
 }) {
   const now = useNow();
+
   return (
     <nav className="matrix" aria-label="Other runs of this change">
       {runs.slice(0, 7).map((r) => (
@@ -381,6 +414,7 @@ function FailureBlock({
   readonly onTab: (tab: Tab) => void;
 }) {
   const { run } = detail;
+
   if (run.status === "errored") {
     return (
       <section className="failure" aria-label="Failure">
@@ -393,12 +427,15 @@ function FailureBlock({
       </section>
     );
   }
+
   const failed = graphOrder(detail.steps).filter((s) => failedStatus(s.status));
   const shown = step && failedStatus(step.status) ? step : failed[0];
+
   if (!shown || !shown.error) return null;
   const tests = detail.failingTests.filter((t) => t.step === shown.name).sort(testOrder);
   const newer = detail.siblings.find((r) => r.number > run.number);
   const others = failed.filter((s) => s.name !== shown.name);
+
   return (
     <section className="failure" aria-label="Failure">
       <p className="fl-head">
@@ -534,8 +571,10 @@ function Inspector({
 }) {
   const now = useNow();
   const byName = new Map(detail.steps.map((s) => [s.name, s]));
+
   const link = (name: string, extra?: ReactNode) => {
     const s = byName.get(name);
+
     return (
       <span key={name} className="inp">
         {s ? <Swatch k={s.key} solid={hasBits(s.status)} /> : null}
@@ -547,19 +586,23 @@ function Inspector({
       </span>
     );
   };
+
   const neededBy = detail.steps
     .filter(
       (s) =>
         s.needs.includes(step.name) || s.after.includes(step.name) || s.exits.includes(step.name),
     )
     .map((s) => s.name);
+
   const queue =
     step.queuedAt !== null && step.startedAt !== null
       ? step.startedAt - step.queuedAt
       : step.status === "queued" && step.queuedAt !== null
         ? now - step.queuedAt
         : null;
+
   const d = stepDuration(step, now);
+
   return (
     <>
       <header className="ih">
@@ -780,6 +823,7 @@ function Inspector({
 /** Files that failed in their job and passed when they ran again. */
 function Retried({ files }: { readonly files: ReadonlyArray<Domain.RetriedFile> }) {
   if (files.length === 0) return null;
+
   return (
     <section className="isec">
       <h3>Passed on retry</h3>
@@ -859,23 +903,29 @@ function Navigator({ current }: { readonly current: string }) {
   const [filter, setFilter] = useState("");
   const list = useRef<HTMLDivElement>(null);
   const detail = AsyncResult.isSuccess(here) ? here.value : null;
+
   const runs = [
     ...(AsyncResult.isSuccess(ov) ? [...ov.value.active, ...ov.value.recent] : []),
     ...(detail ? [detail.run, ...detail.siblings] : []),
   ];
+
   const unique = [...new Map(runs.map((r) => [r.id, r])).values()].sort(
     (a, b) => b.createdAt - a.createdAt,
   );
+
   const f = filter.trim().toLowerCase();
+
   const match = (r: Domain.Run) =>
     !f ||
     `${r.project} ${titleOf(r)} ${refOf(r)} #${r.number} ${r.commit.author}`
       .toLowerCase()
       .includes(f);
+
   const projects = AsyncResult.isSuccess(ov) ? ov.value.projects.map((p) => p.name) : [];
   useEffect(() => {
     list.current?.querySelector<HTMLElement>(".nr.cur")?.scrollIntoView({ block: "nearest" });
   }, [current]);
+
   return (
     <nav className="navigator" aria-label="Navigator">
       <div className="navtabs">
@@ -891,11 +941,14 @@ function Navigator({ current }: { readonly current: string }) {
         </a>
         {projects.map((p) => {
           const groups = new Map<string, Array<Domain.Run>>();
+
           for (const r of unique)
             if (r.project === p && match(r))
               groups.set(refOf(r), [...(groups.get(refOf(r)) ?? []), r]);
           const shown = [...groups.values()].slice(0, f ? 12 : 4);
+
           if (!shown.length) return null;
+
           return (
             <div key={p}>
               <a className="nh" href={href({ page: "project", name: p })}>
@@ -903,8 +956,10 @@ function Navigator({ current }: { readonly current: string }) {
               </a>
               {shown.map((group) => {
                 const [head] = group;
+
                 if (!head) return null;
                 const open = group.some((r) => r.id === current);
+
                 return (
                   <div key={refOf(head)}>
                     <a

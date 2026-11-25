@@ -13,17 +13,22 @@ export const layer = Layer.effectDiscard(
     const gitea = yield* Gitea;
     const runs = yield* Runs;
     const projects = yield* Projects;
+
     const tick = Effect.gen(function* () {
       const now = new Date();
       now.setSeconds(0, 0);
+
       const rows = yield* sql<{
         project: string;
         cron: string;
       }>`select project, cron from schedules`;
+
       for (const row of rows) {
         const project = projects.get(row.project);
+
         if (project === undefined) continue;
         const cron = Cron.parse(row.cron);
+
         if (cron._tag === "Failure" || !Cron.match(cron.success, now)) continue;
         const sha = yield* gitea.head(project.repo, project.defaultBranch);
         yield* runs.create({
@@ -33,10 +38,12 @@ export const layer = Layer.effectDiscard(
         });
       }
     }).pipe(Effect.catchCause((cause) => Effect.logError("scheduler tick failed", cause)));
+
     // Wake a second into every minute, so a cron match uses the minute it was due.
     const untilNextMinute = Effect.suspend(() =>
       Effect.sleep(60_000 - (Date.now() % 60_000) + 1_000),
     );
+
     yield* untilNextMinute.pipe(Effect.andThen(tick), Effect.forever, Effect.forkScoped);
   }),
 );

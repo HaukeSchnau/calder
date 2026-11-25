@@ -12,6 +12,7 @@ const smoke = Nix.build(flake.checks.serverSmoke, { name: "serverSmoke" });
 const checks = [lint, smoke];
 const bundle = Nix.build(flake.packages.bundle, { name: "bundle" });
 const Outputs = Schema.Struct({ url: Schema.String, readiness: Schema.String });
+
 const stack = {
   shell,
   dir: "deploy",
@@ -20,6 +21,7 @@ const stack = {
   secrets: { FLEET_TOKEN_FILE: "placement-token" },
   outputs: { name: "Studienbuch", schema: Outputs },
 };
+
 const after = (name: string, deployed: Step.Any) =>
   Task.make(name, { shell, run: cmd`true`, after: [deployed] });
 
@@ -82,6 +84,7 @@ describe("Environments.project", () => {
           previews: { url: (_pr, outputs) => outputs.url, after: [smoke] },
           environments: { beta: { on: { push: "main" }, after: checks } },
         });
+
         const pr = yield* Calder.plan(gated, Event.pullRequest({ number: 5 }));
         expect(pr.get("preview")).toMatchObject({ after: ["serverSmoke"], gates: ["serverSmoke"] });
         const push = yield* Calder.plan(gated, Event.push("main"));
@@ -100,6 +103,7 @@ describe("Environments.project", () => {
         artifacts: { CALDER_BUNDLE: bundle },
         environments: { beta: { on: { push: "main" } }, prod: { on: { manual: {} } } },
       });
+
       const plan = yield* Calder.plan(planning, Event.pullRequest({ number: 5 }));
       expect(plan.steps.map((s) => s.name).filter((name) => name.startsWith("plan-"))).toEqual([
         "plan-beta",
@@ -114,17 +118,20 @@ describe("Environments.project", () => {
     () =>
       Effect.gen(function* () {
         const environments = { beta: { on: { push: "m*" } } } as const;
+
         const matched = Environments.project({
           stack,
           checks,
           artifacts: { CALDER_BUNDLE: bundle },
           environments,
         });
+
         expect(
           (yield* Calder.plan(matched, Event.pullRequest({ number: 5 }))).get("plan-beta"),
         ).toBeDefined();
         // A project that plans the stage itself keeps its own step instead of a duplicate.
         const own = Alchemy.plan(stack, { stage: "beta" });
+
         const custom = Environments.project({
           stack,
           checks,
@@ -132,6 +139,7 @@ describe("Environments.project", () => {
           environments,
           rules: [On.preview([own])],
         });
+
         expect(
           (yield* Calder.plan(custom, Event.pullRequest({ number: 5 }))).get("plan-beta")?.step,
         ).toBe(own);

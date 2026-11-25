@@ -7,14 +7,17 @@ export const PullRequest = Schema.TaggedStruct("PullRequest", {
   /** Whether the head branch is in another repository. Unknown on older runs, which previews treat as forks. */
   fork: Schema.optional(Schema.Boolean),
 });
+
 /** A pull request was merged or closed. Its run plans the base branch's head, so it is trusted. */
 export const PullRequestClosed = Schema.TaggedStruct("PullRequestClosed", {
   number: Schema.Number,
   base: Schema.String,
   head: Schema.String,
 });
+
 export const Push = Schema.TaggedStruct("Push", { branch: Schema.String });
 export const Scheduled = Schema.TaggedStruct("Schedule", { cron: Schema.String });
+
 /**
  * A run started by hand (`calder trigger --inputs`) of `branch`'s head. Older runs lack `branch`, also those of
  * another branch: their run's branch is the default branch, but they aren't the default branch's runs.
@@ -23,6 +26,7 @@ export const Manual = Schema.TaggedStruct("Manual", {
   inputs: Schema.Record(Schema.String, Schema.Unknown),
   branch: Schema.optional(Schema.String),
 });
+
 /**
  * A working copy checked before it is pushed (`calder check`), pushed as `ref`. It runs what a pull request
  * would; `background` checks only take slots nothing else wants.
@@ -34,6 +38,7 @@ export const Check = Schema.TaggedStruct("Check", {
 });
 
 export const Event = Schema.Union([PullRequest, PullRequestClosed, Push, Scheduled, Manual, Check]);
+
 export type Event = typeof Event.Type;
 
 export const pullRequest = (options: {

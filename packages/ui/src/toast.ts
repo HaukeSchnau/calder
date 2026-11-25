@@ -23,6 +23,7 @@ export function toast(text: string, kind: Toast["kind"] = "info") {
 
 const subscribe = (f: () => void) => {
   listeners.add(f);
+
   return () => listeners.delete(f);
 };
 

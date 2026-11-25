@@ -68,6 +68,7 @@ const fail = (message: string) => new PlanError({ message });
 
 const matches = (rule: Rule<any, any>, event: Event): boolean => {
   const t = rule.trigger;
+
   switch (event._tag) {
     case "PullRequest":
       return t._tag === "PullRequest" || (t._tag === "Preview" && event.fork === false);
@@ -105,27 +106,35 @@ export const universe = (project: Project): Effect.Effect<Map<string, Step.Any>,
   Effect.gen(function* () {
     const byName = new Map<string, Step.Any>();
     const seen = new Set<Step.Any>();
+
     const visit = (step: Step.Any): PlanError | undefined => {
       if (seen.has(step)) return;
       seen.add(step);
       const existing = byName.get(step.name);
+
       if (existing !== undefined && existing !== step && !sameBuild(existing, step)) {
         return fail(`two different steps are named "${step.name}"`);
       }
+
       if (existing === undefined) byName.set(step.name, step);
+
       for (const dep of dependencies(step)) {
         const error = visit(dep.step);
+
         if (error) return error;
       }
     };
+
     for (const rule of project.rules) {
       for (const target of rule.targets) {
         if (!isStep(target))
           return yield* fail(`a rule lists something that isn't a step: ${String(target)}`);
         const error = visit(target);
+
         if (error) return yield* error;
       }
     }
+
     return byName;
   });
 
@@ -143,8 +152,10 @@ export const plan = (
     const canonical = (step: Step.Any) => all.get(step.name) ?? step;
 
     const rules = project.rules.filter((rule) => matches(rule, event));
+
     const trust: "pr" | "trusted" =
       event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
+
     const reuse: Reuse = rules.some((r) => r.reuse === "none")
       ? "none"
       : rules.some((r) => r.reuse === "builds")
@@ -157,13 +168,16 @@ export const plan = (
 
     const required = (options.requiredChecks ?? []).map((context) => {
       const name = context.startsWith("calder/") ? context.slice("calder/".length) : undefined;
+
       return { context, name };
     });
 
     const planned = new Map<string, PlannedStep>();
     const order: Array<string> = [];
+
     const names = (keep: (rule: Rule<any, any>) => boolean) =>
       new Set(rules.filter(keep).flatMap((r) => r.targets.map((t) => canonical(t).name)));
+
     const previews = names((r) => r.trigger._tag === "Preview");
     const plain = names((r) => r.trigger._tag !== "Preview");
     const targets = new Set([...plain, ...previews]);
@@ -177,7 +191,9 @@ export const plan = (
     ): PlanError | undefined => {
       const step = canonical(input);
       const mark = state.get(step.name);
+
       if (mark === "done") return;
+
       if (mark === "visiting")
         return fail(`steps depend on each other in a cycle: ${[...path, step.name].join(" → ")}`);
       state.set(step.name, "visiting");
@@ -189,10 +205,12 @@ export const plan = (
             : step.def._tag === "Task"
               ? taskSecrets(step.def)
               : [];
+
         const named =
           secrets.length === 0
             ? ""
             : `: the secret${secrets.length === 1 ? "" : "s"} ${secrets.map((n) => `"${n}"`).join(", ")}`;
+
         return fail(
           preview
             ? `previews don't run actions with grants, but "${step.name}" is one${named}`
@@ -201,11 +219,13 @@ export const plan = (
       }
 
       const def = step.def;
+
       if (def._tag === "Setup" && def.run.steps.length > 0) {
         return fail(
           `setup "${step.name}" interpolates other steps; its command can only depend on its inputs`,
         );
       }
+
       if (
         def._tag === "Task" &&
         def.each !== undefined &&
@@ -215,18 +235,22 @@ export const plan = (
           `"${step.name}" checks files one by one, so its run must take the shard's files and it needs a report`,
         );
       }
+
       if (def._tag === "Task" || def._tag === "Setup") {
         const written =
           def._tag === "Setup" ? [def.inputs] : [def.inputs, def.each, def.shards?.split];
+
         const lists = written.flatMap((files) =>
           files === undefined ? [] : Files.includeless(files),
         );
+
         if (lists.length > 0) {
           return fail(
             `"${step.name}" has globs that only leave files out, ${lists.map((l) => JSON.stringify(l)).join(", ")}: add one that includes files`,
           );
         }
       }
+
       if (
         def._tag === "Task" &&
         def.setup !== undefined &&
@@ -237,12 +261,14 @@ export const plan = (
           `"${step.name}" runs on ${def.platform ?? "the controller's platform"} but its setup "${def.setup.name}" on ${def.setup.def.platform ?? "the controller's platform"}`,
         );
       }
+
       const deps = dependencies(step).map((d) => ({ ...d, step: canonical(d.step) }));
       const needs = deps.filter((d) => d.via === "needs").map((d) => d.step.name);
       const exits = deps.filter((d) => d.via === "exit").map((d) => d.step.name);
       const after = deps.filter((d) => d.via === "after").map((d) => d.step.name);
 
       const conflict = after.find((name) => exits.includes(name));
+
       if (conflict !== undefined) {
         return fail(
           `"${step.name}" waits for "${conflict}" to pass and runs whatever its outcome, which contradict each other`,
@@ -250,6 +276,7 @@ export const plan = (
       }
 
       const implicit: Array<string> = [];
+
       if (trust === "trusted" && step.kind === "action" && hasGrants(step)) {
         for (const r of required) {
           if (r.name === undefined) {
@@ -257,17 +284,20 @@ export const plan = (
               `branch protection requires "${r.context}", which Calder doesn't report; required checks must be calder/<step>`,
             );
           }
+
           if (!all.has(r.name)) {
             return fail(
               `branch protection requires "${r.context}", but no step is named "${r.name}"`,
             );
           }
+
           if (r.name !== step.name && !after.includes(r.name)) implicit.push(r.name);
         }
       }
 
       for (const name of [...needs, ...exits, ...after, ...implicit]) {
         const error = visit(all.get(name)!, [...path, step.name], preview);
+
         if (error) return error;
       }
 
@@ -296,13 +326,16 @@ export const plan = (
     ] as const) {
       for (const name of group) {
         const error = visit(all.get(name)!, [], preview);
+
         if (error) return yield* error;
       }
     }
 
     const steps = order.map((name) => planned.get(name)!);
+
     const get = (step: Step.Any | string) =>
       planned.get(typeof step === "string" ? step : step.name);
+
     return {
       trust,
       reuse,

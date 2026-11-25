@@ -28,11 +28,13 @@ describe("builds", () => {
     Effect.gen(function* () {
       // The test config has one build slot. The darwin build waits for its remote builder until the linux one ran.
       const linuxRan = yield* Deferred.make<void>();
+
       const { status, jobs } = yield* drive({
         steps: [build("darwin", "aarch64-darwin"), build("linux", "x86_64-linux")],
         work: (name) =>
           name === "darwin" ? Deferred.await(linuxRan) : Deferred.succeed(linuxRan, undefined),
       });
+
       expect(status).toBe("passed");
       expect(jobs).toEqual(["darwin", "linux"]);
     }),
@@ -47,12 +49,15 @@ describe("builds", () => {
           ...build(name, "x86_64-linux"),
           build: { attr: `checks.x86_64-linux.${name}`, drv: null, out: null, system },
         });
+
         const derivation = (name: string, system = "x86_64-linux") => ({
           drv: `/nix/store/00000000000000000000000000000000-${name}.drv`,
           out: `/nix/store/00000000000000000000000000000000-${name}`,
           system,
         });
+
         const asked: Array<unknown> = [];
+
         const { status, jobs, steps, plan } = yield* drive({
           steps: [
             deferred("lib"),
@@ -85,6 +90,7 @@ describe("builds", () => {
           result: (_step, job) => {
             if (job.evaluate === undefined) return undefined;
             asked.push(job.evaluate);
+
             return {
               _tag: "Evaluated",
               derivations: {
@@ -100,6 +106,7 @@ describe("builds", () => {
             };
           },
         });
+
         expect(status).toBe("failed");
         expect(asked).toEqual([
           {
@@ -138,6 +145,7 @@ describe("builds", () => {
       // infra-1350's plan took 21 s, after 150 minutes behind infra-1332's evaluation of its builds.
       const evaluating = yield* Deferred.make<void>();
       const planned = yield* Deferred.make<void>();
+
       const { status, jobs } = yield* drive({
         steps: [
           {
@@ -180,6 +188,7 @@ describe("builds", () => {
           yield* Deferred.succeed(planned, undefined);
         }).pipe(Effect.orDie),
       });
+
       expect(status).toBe("passed");
       expect(jobs).toEqual(["a evaluates", "plan", "a"]);
     }),
@@ -190,6 +199,7 @@ describe("builds", () => {
     () =>
       Effect.gen(function* () {
         const derivations: Array<string | null> = [];
+
         const { status, jobs, steps } = yield* drive({
           steps: ["a", "b", "c"].map((name) => ({
             ...build(name, "x86_64-linux"),
@@ -198,12 +208,15 @@ describe("builds", () => {
           result: (_step, job) => {
             if (job.evaluate === undefined) {
               derivations.push(job.derivation);
+
               return undefined;
             }
+
             // Together they fail, as when the host is short of memory; alone, c throws.
             if (job.evaluate.builds.length > 1)
               return { _tag: "Died", message: "could not start the worker: timed out" };
             const name = job.evaluate.builds[0]!.name;
+
             return {
               _tag: "Evaluated",
               derivations: {
@@ -222,6 +235,7 @@ describe("builds", () => {
             };
           },
         });
+
         expect(status).toBe("failed");
         expect(jobs.filter((j) => j.endsWith("evaluates")).toSorted()).toEqual([
           "a evaluates",
@@ -277,6 +291,7 @@ describe("builds", () => {
                     uses: {},
                   },
         });
+
         expect(status).toBe("passed");
         expect(large.toSorted()).toEqual([
           "a evaluates",

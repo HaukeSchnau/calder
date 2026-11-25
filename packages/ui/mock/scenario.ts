@@ -5,7 +5,9 @@
 import type { Domain } from "@calder-ci/api";
 
 type Outcome = "passed" | "failed" | "died";
+
 type Kind = Domain.StepKind;
+
 type Event = Domain.Event;
 
 interface StepPlan {
@@ -82,10 +84,12 @@ export interface SimRun {
 
 const fnv = (s: string): number => {
   let h = 0x811c9dc5;
+
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
+
   return h >>> 0;
 };
 
@@ -93,13 +97,16 @@ const fromAlphabet =
   (alphabet: string) =>
   (seed: string, n: number): string => {
     let out = "";
+
     for (let i = 0; out.length < n; i++) {
       let h = fnv(`${seed}:${i}`);
+
       for (let j = 0; j < 6 && out.length < n; j++) {
         out += alphabet[h % alphabet.length];
         h = Math.floor(h / alphabet.length);
       }
     }
+
     return out;
   };
 
@@ -109,11 +116,13 @@ const jjId = fromAlphabet("klmnopqrstuvwxyz");
 
 const rng = (seed: string) => {
   let s = fnv(seed);
+
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;
     let t = s;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 };
@@ -138,6 +147,7 @@ export const CONTROLLER = "host-a";
 export const HOSTS_OF: Readonly<Record<string, ReadonlyArray<string>>> = {
   t3code: [CONTROLLER, "host-b"],
 };
+
 export const hostsOf = (project: string) => HOSTS_OF[project] ?? [CONTROLLER];
 
 const URLS: Readonly<Record<string, string>> = {
@@ -146,6 +156,7 @@ const URLS: Readonly<Record<string, string>> = {
   homepage: "https://example.org",
   "school-site": "https://school.example.org",
 };
+
 export const urlOf = (project: string) => URLS[project] ?? `https://${project}.schnau.dev`;
 
 const NUMBER_BASE: Readonly<Record<string, number>> = {
@@ -186,6 +197,7 @@ export const DARWIN = "aarch64-darwin";
 
 function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
   const main = event._tag === "Push" || event._tag === "Manual";
+
   if (project === "t3code") {
     const steps: Array<StepPlan> = [
       {
@@ -234,6 +246,7 @@ function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
         needs: ["projectRelease"],
       },
     ];
+
     if (main) {
       steps.push(promote(["releaseGate"], T3_CHECKS, 90));
       steps.push({
@@ -265,8 +278,10 @@ function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
         target: true,
       });
     }
+
     return steps;
   }
+
   if (project === "studienbuch") {
     const steps: Array<StepPlan> = [
       { name: "qa", kind: "task", detail: "just qa", duration: 540 },
@@ -278,9 +293,12 @@ function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
       },
       release(project),
     ];
+
     if (event._tag !== "Schedule") steps.push(promote(["qa", "releaseGate"], [], 52));
+
     return steps;
   }
+
   return [
     {
       name: "flake check",
@@ -352,6 +370,7 @@ const SPACING: Readonly<Record<string, number>> = {
 };
 
 const push: Event = { _tag: "Push", branch: "main" };
+
 const pr = (number: number, head: string): Event => ({
   _tag: "PullRequest",
   number,
@@ -365,12 +384,15 @@ function history(project: string): Array<Spec> {
   const spacing = SPACING[project] ?? 86400;
   const out: Array<Spec> = [];
   const count = 20;
+
   for (let i = 0; i < count; i++) {
     const at = -(count - i) * spacing - Math.round(r() * spacing * 0.4) - 1800;
     const plans = pipeline(project, push);
+
     const checks = plans.filter(
       (p) => p.kind === "task" || p.name === "flake check" || p.name === "qa",
     );
+
     const fails = r() < 0.09 && checks.length > 0 && i < count - 2;
     const failing = fails ? checks[Math.floor(r() * checks.length)]?.name : undefined;
     out.push({
@@ -387,6 +409,7 @@ function history(project: string): Array<Spec> {
       ...(failing ? { outcomes: { [failing]: "failed" as const } } : {}),
     });
   }
+
   if (project === "studienbuch") {
     for (let d = 1; d <= 6; d++) {
       out.push({
@@ -399,6 +422,7 @@ function history(project: string): Array<Spec> {
       });
     }
   }
+
   return out;
 }
 
@@ -602,31 +626,41 @@ function plan(
   const plans = spec.error ? [] : pipeline(spec.project, spec.event);
   const done = new Map<string, SimStep>();
   const order = topo(plans);
+
   for (const p of order) {
     const deps = [...(p.needs ?? []), ...(p.after ?? [])];
     const exits = p.exits ?? [];
+
     const upstream = [...deps, ...exits]
       .map((n) => done.get(n))
       .filter((s): s is SimStep => s !== undefined);
+
     const ready = Math.max(startedAt, ...upstream.map((s) => s.finishedAt));
+
     const blockedBy = deps
       .map((n) => done.get(n))
       .find((s) => s && s.outcome !== "passed" && s.outcome !== "reused");
+
     const reusedSpec = spec.reused?.[p.name];
     const reusedRun = reusedSpec ? built.get(reusedSpec) : undefined;
     const reusedStep = reusedRun?.steps.find((s) => s.plan.name === p.name);
     const stable = p.stable ? stableKeys.get(`${spec.project}:${p.name}`) : undefined;
     const history = durations.get(`${spec.project}:${p.name}`) ?? [];
     const expectedMs = history.length ? (median(history.slice(-10)) ?? null) : null;
+
     const ownKey =
       p.kind === "build"
         ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:${sha}`, 32)}-${spec.project}-${p.name}.drv`
         : hex(`key:${spec.project}:${p.name}:${sha}`, 64);
+
     const offline = agentGoneAt === null ? undefined : OFFLINE_DURATIONS[spec.key]?.[p.name];
+
     const duration =
       (offline ?? spec.durations?.[p.name] ?? p.duration * (0.88 + r() * 0.24)) * 1000;
+
     const queue = (p.kind === "action" ? 0.3 : 0.6 + r() * 2.4) * 1000;
     let step: SimStep;
+
     if (blockedBy) {
       step = {
         plan: p,
@@ -667,9 +701,11 @@ function plan(
       const key = p.stable
         ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:lock`, 32)}-${spec.project}-${p.name}.drv`
         : ownKey;
+
       // No agent for its platform: it stays queued, and whatever needs it stays pending.
       const stranded =
         p.platform !== undefined && agentGoneAt !== null && ready + queue > agentGoneAt;
+
       step = {
         plan: p,
         outcome: spec.outcomes?.[p.name] ?? "passed",
@@ -681,14 +717,19 @@ function plan(
         finishedAt: stranded ? Infinity : ready + queue + duration,
         attempts: spec.attempts?.[p.name] ?? 1,
       };
+
       if (p.stable && step.outcome === "passed")
         stableKeys.set(`${spec.project}:${p.name}`, { key, run: id });
+
       if (!stranded)
         durations.set(`${spec.project}:${p.name}`, [...history, step.finishedAt - step.startedAt]);
     }
+
     done.set(p.name, step);
   }
+
   const steps = plans.map((p) => done.get(p.name)).filter((s): s is SimStep => s !== undefined);
+
   return {
     id,
     project: spec.project,
@@ -719,16 +760,22 @@ function topo(plans: ReadonlyArray<StepPlan>): Array<StepPlan> {
   const byName = new Map(plans.map((p) => [p.name, p]));
   const out: Array<StepPlan> = [];
   const seen = new Set<string>();
+
   const visit = (p: StepPlan) => {
     if (seen.has(p.name)) return;
     seen.add(p.name);
+
     for (const d of [...(p.needs ?? []), ...(p.after ?? []), ...(p.exits ?? [])]) {
       const dep = byName.get(d);
+
       if (dep) visit(dep);
     }
+
     out.push(p);
   };
+
   plans.forEach(visit);
+
   return out;
 }
 
@@ -756,12 +803,14 @@ export class World {
   ) {
     this.agentGoneAt = agents === "offline" ? t0 - 6 * 60_000 : null;
     const specs = [...PROJECTS.flatMap(history), ...SCRIPTED].sort((a, b) => a.at - b.at);
+
     for (const spec of specs) this.add(spec);
   }
 
   private add(spec: Spec): SimRun {
     const number = (this.numbers.get(spec.project) ?? NUMBER_BASE[spec.project] ?? 1) + 1;
     this.numbers.set(spec.project, number);
+
     const run = plan(
       spec,
       runId(spec.project, number),
@@ -770,8 +819,10 @@ export class World {
       this.memory,
       this.agentGoneAt,
     );
+
     this.bySpec.set(spec.key, run);
     this.runs.push(run);
+
     return run;
   }
 
@@ -788,7 +839,9 @@ export class World {
     const head = this.latestMain(project);
     const key = `${project}:manual:${now}`;
     const reused = head ? this.reusable(head) : {};
+
     if (head) this.bySpec.set(`${key}:head`, head);
+
     return this.add({
       key,
       project,
@@ -812,11 +865,13 @@ export class World {
   rerun(source: SimRun, now: number): SimRun {
     const key = `${source.project}:rerun:${source.id}:${now}`;
     this.bySpec.set(`${key}:source`, source);
+
     const outcomes = Object.fromEntries(
       source.steps.flatMap((s) =>
         s.outcome === "failed" || s.outcome === "died" ? [[s.plan.name, s.outcome] as const] : [],
       ),
     );
+
     return this.add({
       key,
       project: source.project,
@@ -868,6 +923,7 @@ export function stepState(run: SimRun, s: SimStep, now: number): StepState {
     run.cancelledAt !== null && run.cancelledAt <= now && s.finishedAt > run.cancelledAt
       ? run.cancelledAt
       : null;
+
   if (cut !== null) {
     return {
       status: "cancelled",
@@ -876,19 +932,25 @@ export function stepState(run: SimRun, s: SimStep, now: number): StepState {
       finishedAt: cut,
     };
   }
+
   if (s.outcome === "blocked") {
     return now >= s.finishedAt
       ? { status: "blocked", queuedAt: null, startedAt: null, finishedAt: s.finishedAt }
       : { status: "pending", queuedAt: null, startedAt: null, finishedAt: null };
   }
+
   if (now < s.queuedAt)
     return { status: "pending", queuedAt: null, startedAt: null, finishedAt: null };
+
   if (s.outcome === "reused")
     return { status: "reused", queuedAt: s.queuedAt, startedAt: null, finishedAt: s.finishedAt };
+
   if (now < s.startedAt)
     return { status: "queued", queuedAt: s.queuedAt, startedAt: null, finishedAt: null };
+
   if (now < s.finishedAt)
     return { status: "running", queuedAt: s.queuedAt, startedAt: s.startedAt, finishedAt: null };
+
   return {
     status: s.outcome,
     queuedAt: s.queuedAt,
@@ -899,10 +961,14 @@ export function stepState(run: SimRun, s: SimStep, now: number): StepState {
 
 export function runStatus(run: SimRun, now: number): Domain.RunStatus {
   if (run.error !== null) return now >= run.finishedAt ? "errored" : "planning";
+
   if (run.cancelledAt !== null && run.cancelledAt <= now && run.finishedAt > run.cancelledAt)
     return "cancelled";
+
   if (now < run.startedAt) return "planning";
+
   if (now < run.finishedAt) return "running";
+
   return run.steps.some((s) => s.outcome === "failed" || s.outcome === "died")
     ? "failed"
     : "passed";
@@ -914,11 +980,14 @@ const isActive = (status: Domain.RunStatus) =>
 export function toRun(run: SimRun, now: number): Domain.Run {
   const status = runStatus(run, now);
   const counts: Record<string, number> = {};
+
   for (const s of run.steps) {
     const st = stepState(run, s, now).status;
     counts[st] = (counts[st] ?? 0) + 1;
   }
+
   const end = status === "cancelled" ? run.cancelledAt : isActive(status) ? null : run.finishedAt;
+
   return {
     id: run.id,
     project: run.project,
@@ -943,6 +1012,7 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
   const ran = st.startedAt !== null;
   const seconds = ran ? ((st.finishedAt ?? now) - (st.startedAt ?? now)) / 1000 : 0;
   const cores = s.plan.kind === "build" ? 3.1 : s.plan.kind === "task" ? 1.8 : 0.05;
+
   return {
     runId: run.id,
     name: s.plan.name,
@@ -992,23 +1062,28 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
 
 const spanIdOf = (run: SimRun, name: string) => hex(`span:${run.id}:${name}`, 16);
 const short = (sha: string) => sha.slice(0, 7);
+
 export const storePathOf = (run: SimRun) =>
   `/nix/store/${nixHash(`out:${run.project}:${run.commit.sha}`, 32)}-${run.project}-release`;
 
 function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
   const source = s.reusedFrom ? (world.run(s.reusedFrom) ?? run) : run;
+
   switch (s.plan.kind) {
     case "build": {
       const path =
         s.plan.name === "projectRelease"
           ? storePathOf(source)
           : `/nix/store/${nixHash(`out:${run.project}:${s.plan.name}:${s.key}`, 32)}-${run.project}-${s.plan.name}`;
+
       return { type: null, render: "text", label: "store path", text: path, json: { path } };
     }
+
     case "setup":
       return null;
     case "task": {
       const counts = testCounts(run, s);
+
       return counts
         ? {
             type: null,
@@ -1019,9 +1094,11 @@ function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
           }
         : { type: null, render: null, label: null, text: "exit 0", json: { exitCode: 0 } };
     }
+
     case "action": {
       if (s.plan.name === "promote") {
         const hosts = hostsOf(run.project);
+
         return {
           type: "@calder-ci/std/Release/Live",
           render: "text",
@@ -1030,8 +1107,10 @@ function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
           json: { _tag: "Live", revision: run.commit.sha, hosts },
         };
       }
+
       return { type: null, render: "text", label: null, text: "comment posted", json: null };
     }
+
     case "output":
       return null;
   }
@@ -1045,16 +1124,19 @@ const TOKEN_TEST = {
   name: "formats large counts with a thin space",
   file: "apps/web/src/components/TokenUsage.test.tsx",
 };
+
 const FLAKY_TEST = {
   suite: "ThreadView",
   name: "replays tool output after reconnect",
   file: "apps/web/src/thread/ThreadView.test.tsx",
 };
+
 const HOP_TEST = {
   suite: "ingest",
   name: "rejects a duplicate check-in within a batch",
   file: "src/ingest/batch.test.ts",
 };
+
 const SERVER_TEST = {
   suite: "GitService",
   name: "retries push after a 502 from Gitea",
@@ -1069,6 +1151,7 @@ function flakyTimesOut(run: SimRun) {
 export function testResults(run: SimRun, step: SimStep): Array<Domain.TestResult> {
   const out: Array<Domain.TestResult> = [];
   const base = { runId: run.id, step: step.plan.name, flaky: false };
+
   if (
     run.project === "t3code" &&
     step.plan.name === "test web" &&
@@ -1092,6 +1175,7 @@ export function testResults(run: SimRun, step: SimStep): Array<Domain.TestResult
       flaky: true,
     });
   }
+
   if (run.project === "t3code" && step.plan.name === "test server" && step.outcome === "passed") {
     out.push({
       ...base,
@@ -1102,6 +1186,7 @@ export function testResults(run: SimRun, step: SimStep): Array<Domain.TestResult
       flaky: run.commit.title.includes("Retry git push"),
     });
   }
+
   if (
     run.project === "hopwatch" &&
     step.plan.name === "flake check" &&
@@ -1116,18 +1201,24 @@ export function testResults(run: SimRun, step: SimStep): Array<Domain.TestResult
       message: fails ? "expected 1 check-in, received 2\n  at batch.test.ts:48:31" : null,
     });
   }
+
   return out;
 }
 
 function testCounts(run: SimRun, s: SimStep): Domain.StepRun["tests"] {
   const totals: Readonly<Record<string, number>> = { "test web": 403, "test server": 114, qa: 412 };
+
   const total =
     run.project === "hopwatch" && s.plan.name === "flake check" ? 96 : totals[s.plan.name];
+
   if (total === undefined) return null;
+
   const failed = testResults(run, s).filter(
     (t) => t.status === "failed" || t.status === "timeout",
   ).length;
+
   const server = s.plan.name === "test server";
+
   return {
     passed: total - failed - (server ? 2 : 0),
     failed,
@@ -1149,11 +1240,13 @@ type Line = readonly [
 
 function errorOf(run: SimRun, s: SimStep): Domain.StepError {
   const lines = scriptOf(run, s);
+
   const excerpt = lines
     .filter((l) => l[2] !== "calder")
     .slice(-7)
     .map((l) => l[3])
     .join("\n");
+
   if (run.project === "t3code" && s.plan.name === "test web") {
     return {
       tag: "TestFailed",
@@ -1162,6 +1255,7 @@ function errorOf(run: SimRun, s: SimStep): Domain.StepError {
       excerpt,
     };
   }
+
   if (s.plan.name === "typecheck clients") {
     return {
       tag: "CommandFailed",
@@ -1169,6 +1263,7 @@ function errorOf(run: SimRun, s: SimStep): Domain.StepError {
       excerpt,
     };
   }
+
   if (s.plan.kind === "build") {
     return {
       tag: "BuildFailed",
@@ -1176,6 +1271,7 @@ function errorOf(run: SimRun, s: SimStep): Domain.StepError {
       excerpt,
     };
   }
+
   return { tag: "CommandFailed", message: `${s.plan.detail} exited with code 1`, excerpt };
 }
 
@@ -1229,6 +1325,7 @@ const DIRS = [
   "terminal",
   "diff",
 ];
+
 const FILES = [
   "index",
   "view",
@@ -1250,6 +1347,7 @@ const transforms = (from: number, to: number): Array<Line> =>
     const dir = DIRS[i % DIRS.length] ?? "lib";
     const file = FILES[Math.floor(i / DIRS.length) % FILES.length] ?? "index";
     const at = from + ((to - from) * i) / 3000;
+
     return [
       at,
       "info",
@@ -1260,9 +1358,12 @@ const transforms = (from: number, to: number): Array<Line> =>
 
 function scriptOf(run: SimRun, s: SimStep): Array<Line> {
   const sha = short(run.commit.sha);
+
   const where =
     run.event._tag === "PullRequest" ? `pr/${run.project}/1` : `trusted/${run.project}/1`;
+
   const failed = s.outcome === "failed";
+
   const cmd: Line = [
     0,
     "info",
@@ -1271,16 +1372,20 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
       ? `nix build .#${s.plan.detail.replace(/^\.#/, "")}`
       : `$ ${s.plan.detail}`,
   ];
+
   const ws: Line = [0.004, "debug", "calder", `workspace ${where} at ${sha}`];
   const p = `${run.project}:${s.plan.name}`;
+
   if (s.plan.kind === "build") {
     const drv = `/nix/store/${nixHash(`drv:${p}:${sha}`, 32)}-${run.project}-${s.plan.name}.drv`;
+
     const lines: Array<Line> = [
       cmd,
       [0.01, "debug", "calder", `evaluating ${s.plan.detail} at ${sha}`],
       [0.04, "info", "stderr", `copying ${12 + (fnv(p) % 300)} paths from http://host-b:5080`],
       [0.12, "info", "stderr", `building '${drv}' on host-a`],
     ];
+
     if (s.plan.name === "flake check") {
       lines.push(
         [0.3, "info", "stderr", "checking derivation checks.aarch64-linux.lint"],
@@ -1297,6 +1402,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           0.8,
         ),
       );
+
       if (failed) {
         lines.push(
           [0.84, "error", "stdout", " ✗ src/ingest/batch.test.ts (12 tests | 1 failed) 0.52s"],
@@ -1313,26 +1419,32 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           ],
           [0.99, "error", "calder", "step failed: BuildFailed"],
         );
+
         return lines;
       }
+
       lines.push(
         [0.92, "info", "stdout", " Test Files  12 passed (12)"],
         [0.93, "info", "stdout", "      Tests  96 passed (96)"],
       );
     }
+
     if (s.plan.name === "projectRelease" && run.project === "t3code")
       lines.push(...transforms(0.2, 0.54));
+
     if (s.plan.name === "projectRelease")
       lines.push(
         [0.55, "info", "stdout", "vite v8.3.2 building for production..."],
         [0.7, "info", "stdout", `${900 + (fnv(p) % 1500)} modules transformed.`],
         [0.8, "warn", "stderr", "(!) Some chunks are larger than 500 kB after minification."],
       );
+
     if (s.plan.name === "releaseGate")
       lines.push(
         [0.5, "info", "stdout", "migrations reversible, 0 pending"],
         [0.8, "info", "stdout", "bindings compatible with host-a"],
       );
+
     if (s.plan.name === "pnpmDeps")
       lines.push(
         [0.5, "info", "stderr", "pnpm install --offline --frozen-lockfile"],
@@ -1344,8 +1456,10 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
       "stdout",
       s.plan.name === "projectRelease" ? storePathOf(run) : drv.replace(/\.drv$/, ""),
     ]);
+
     return lines;
   }
+
   if (s.plan.kind === "task") {
     switch (s.plan.name) {
       case "static":
@@ -1403,7 +1517,9 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
             '[vite] warning: Sourcemap for "shiki/dist/langs.mjs" points to missing source files',
           ],
         ];
+
         lines.push(...files(WEB_FILES, 0.1, 0.86));
+
         if (failed) {
           lines.push(
             [
@@ -1433,8 +1549,10 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
             [0.98, "info", "calder", "report: reports/vitest.json decoded, 2 failing"],
             [0.99, "error", "calder", "exit 1"],
           );
+
           return lines;
         }
+
         lines.push(
           [0.9, "info", "stdout", " ✓ src/components/TokenUsage.test.tsx (6 tests) 0.81s"],
           [0.96, "info", "stdout", " Test Files  42 passed (42)"],
@@ -1442,13 +1560,16 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           [0.98, "info", "calder", "report: reports/vitest.json decoded, 403 passed"],
           [0.99, "info", "calder", "exit 0"],
         );
+
         return lines;
       }
+
       case "test server": {
         const lines: Array<Line> = [
           cmd,
           [0.01, "debug", "calder", "3 shards: 38, 38 and 38 files"],
         ];
+
         for (const shard of [1, 2, 3]) {
           lines.push([0.02, "info", "calder", `$ just qa-test-server-shard ${shard} 3`, shard]);
           lines.push(
@@ -1472,6 +1593,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
             shard,
           ]);
         }
+
         if (s.attempts > 1)
           lines.splice(6, 0, [
             0.4,
@@ -1480,8 +1602,10 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
             "shard 2 of 3: TestTimeout, retrying once",
             2,
           ]);
+
         return lines;
       }
+
       case "desktop-package":
         return [
           cmd,
@@ -1521,7 +1645,9 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           [0.02, "info", "stdout", "oxlint: 0 problems in 318 files"],
           [0.12, "info", "stdout", "tsc -b: 0 errors"],
         ];
+
         const total = 412;
+
         for (let i = 1; i <= 24; i++)
           lines.push([
             0.15 + (0.8 * i) / 24,
@@ -1534,12 +1660,16 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           [0.98, "info", "stdout", `vitest: ${total} passed (${total})`],
           [0.99, "info", "calder", "report: reports/junit.xml decoded, 412 passed"],
         );
+
         return lines.sort((a, b) => a[0] - b[0]);
       }
     }
+
     return [cmd, ws, [0.99, "info", "calder", "exit 0"]];
   }
+
   if (s.plan.name === "promote") return promoteScript(run, s);
+
   return [
     [0, "info", "calder", "Gitea.comment"],
     [
@@ -1554,6 +1684,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
 /** Phase boundaries of a deploy as fractions of the promote step: per host, from start to activation. */
 export function phases(run: SimRun): Array<{ host: string; from: number; activate: number }> {
   const hosts = hostsOf(run.project);
+
   return hosts.map((host, i) => ({
     host,
     from: (i / hosts.length) * 0.97,
@@ -1565,6 +1696,7 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
   const sha = short(run.commit.sha);
   const duration = (s.finishedAt - s.startedAt) / 1000;
   const after = [...(s.plan.after ?? [])];
+
   const lines: Array<Line> = [
     [
       0,
@@ -1574,6 +1706,7 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
     ],
     [0.002, "info", "calder", `required checks passed: ${after.join(", ")}`],
   ];
+
   for (const ph of phases(run)) {
     const span = ph.activate - ph.from;
     const at = (f: number) => ph.from + span * f;
@@ -1592,6 +1725,7 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
       `POST ${ph.host}:18100/deploy/${run.project} 202 (fence ${1100 + run.number})`,
     ]);
     const polls = Math.max(1, Math.floor((span * duration) / 15));
+
     for (let i = 1; i < polls; i++) {
       lines.push([
         at(0.1 + (0.88 * i) / polls),
@@ -1600,20 +1734,24 @@ function promoteScript(run: SimRun, s: SimStep): Array<Line> {
         `readiness: ${ph.host} still reports the previous revision, retry in 15 s`,
       ]);
     }
+
     lines.push([at(1), "info", "calder", `readiness: ${ph.host} reports ${sha}`]);
   }
+
   lines.push([
     0.99,
     "info",
     "calder",
     `${run.project} ${sha} live on ${hostsOf(run.project).join(", ")}`,
   ]);
+
   return lines;
 }
 
 export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.LogLine> {
   const st = stepState(run, s, now);
   const name = s.plan.name;
+
   if (st.status === "reused") {
     return [
       {
@@ -1629,6 +1767,7 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
       },
     ];
   }
+
   if (st.status === "blocked") {
     return [
       {
@@ -1641,6 +1780,7 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
       },
     ];
   }
+
   if (st.status === "queued" && s.plan.platform !== undefined) {
     return [
       {
@@ -1653,9 +1793,11 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
       },
     ];
   }
+
   if (st.startedAt === null) return [];
   const duration = s.finishedAt - s.startedAt;
   const until = st.finishedAt ?? now;
+
   const out: Array<Domain.LogLine> = scriptOf(run, s)
     .sort((a, b) => a[0] - b[0])
     .map(([at, level, stream, text, shard]) => ({
@@ -1667,6 +1809,7 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
       text,
     }))
     .filter((l) => l.timestamp <= until);
+
   if (st.status === "cancelled")
     out.push({
       step: name,
@@ -1676,6 +1819,7 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
       timestamp: until,
       text: "cancelled by hauke",
     });
+
   return out;
 }
 
@@ -1684,12 +1828,15 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
 
 export function trace(run: SimRun, now: number): Array<Domain.Span> {
   const status = runStatus(run, now);
+
   const end = isActive(status)
     ? now
     : status === "cancelled"
       ? (run.cancelledAt ?? run.finishedAt)
       : run.finishedAt;
+
   const root = hex(`span:${run.id}:root`, 16);
+
   const spans: Array<Domain.Span> = [
     {
       spanId: root,
@@ -1701,6 +1848,7 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
       attributes: { "calder.run": run.id, "calder.project": run.project },
     },
   ];
+
   spans.push({
     spanId: hex(`span:${run.id}:plan`, 16),
     parentId: root,
@@ -1710,8 +1858,10 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
     status: "ok",
     attributes: { "calder.project": run.project, "calder.run": run.id },
   });
+
   for (const s of run.steps) {
     const st = stepState(run, s, now);
+
     if (st.status === "pending" || st.status === "blocked" || st.status === "queued") continue;
     const id = spanIdOf(run, s.plan.name);
     const from = st.status === "reused" ? s.queuedAt : (st.startedAt ?? s.queuedAt);
@@ -1733,8 +1883,10 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
         ...(s.key ? { "calder.key": s.key } : {}),
       },
     });
+
     if (st.status === "reused" || st.startedAt === null) continue;
     const d = s.finishedAt - s.startedAt;
+
     const child = (
       name: string,
       a: number,
@@ -1743,6 +1895,7 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
       err = false,
     ) => {
       const cs = s.startedAt + a * d;
+
       if (cs > to) return;
       const ce = Math.min(to, s.startedAt + b * d);
       spans.push({
@@ -1755,6 +1908,7 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
         attributes,
       });
     };
+
     if (s.plan.kind === "build") {
       child("evaluate", 0, 0.03, { "nix.activity": "eval" });
       child(`substitute ${12 + (fnv(s.plan.name) % 300)} paths`, 0.03, 0.12, {
@@ -1770,6 +1924,7 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
     } else if (s.plan.kind === "task") {
       child("workspace", 0, 0.01, {});
       child(".ci/setup", 0.01, 0.04, {});
+
       if (s.plan.shards) {
         for (let i = 1; i <= s.plan.shards; i++)
           child(`shard ${i} of ${s.plan.shards}`, 0.04, 0.9 + i * 0.03, {});
@@ -1778,6 +1933,7 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
       }
     } else if (s.plan.name === "promote") {
       child(`lease deploy:${run.project}`, 0, 0.002, { "calder.fence": String(1100 + run.number) });
+
       for (const ph of phases(run)) {
         const span = ph.activate - ph.from;
         const deploy = `http://${ph.host}:18100`;
@@ -1801,17 +1957,20 @@ export function trace(run: SimRun, now: number): Array<Domain.Span> {
       child(s.plan.detail, 0, 0.99, {});
     }
   }
+
   return spans;
 }
 
 export function metrics(run: SimRun, s: SimStep, now: number): Domain.Metrics {
   const st = stepState(run, s, now);
+
   if (st.startedAt === null) return { samples: [] };
   const until = st.finishedAt ?? now;
   const base = s.plan.kind === "build" ? 310 : s.plan.kind === "task" ? 170 : 4;
   const mem = s.plan.kind === "build" ? 2.1 : s.plan.kind === "task" ? 1.1 : 0.06;
   const samples: Array<Domain.Metrics["samples"][number]> = [];
   const seed = fnv(`${run.id}:${s.plan.name}`);
+
   for (let t = st.startedAt, i = 0; t <= until; t += 2000, i++) {
     const wave = Math.sin(i / 3 + (seed % 7)) * 0.22 + Math.sin(i / 11) * 0.12;
     const ramp = Math.min(1, i / 8);
@@ -1821,6 +1980,7 @@ export function metrics(run: SimRun, s: SimStep, now: number): Domain.Metrics {
       memoryBytes: Math.round(mem * 2 ** 30 * (0.35 + 0.65 * ramp) * (1 + wave * 0.15)),
     });
   }
+
   return { samples: samples.slice(-400) };
 }
 
@@ -1832,6 +1992,7 @@ type MutableDeployment = { -readonly [K in keyof Domain.Deployment]: Domain.Depl
 /** Folds every promote that has started by `now` into what each host runs. */
 export function deployments(world: World, now: number): Array<Domain.Deployment> {
   const state = new Map<string, MutableDeployment>();
+
   for (const project of PROJECTS) {
     for (const host of hostsOf(project)) {
       state.set(`${project}|${host}`, {
@@ -1848,6 +2009,7 @@ export function deployments(world: World, now: number): Array<Domain.Deployment>
       });
     }
   }
+
   const promotes = world.runs
     .flatMap((run) =>
       run.steps
@@ -1855,50 +2017,64 @@ export function deployments(world: World, now: number): Array<Domain.Deployment>
         .map((s) => ({ run, s })),
     )
     .sort((a, b) => a.s.startedAt - b.s.startedAt);
+
   for (const { run, s } of promotes) {
     if (now < s.startedAt) continue;
     const d = s.finishedAt - s.startedAt;
+
     for (const ph of phases(run)) {
       const dep = state.get(`${run.project}|${ph.host}`);
+
       if (!dep) continue;
       const from = s.startedAt + ph.from * d;
       const activate = s.startedAt + ph.activate * d;
       const cut = run.cancelledAt;
+
       if (cut !== null && cut < activate) {
         dep.deployingRun =
           now >= from && now < cut ? run.id : dep.deployingRun === run.id ? null : dep.deployingRun;
         continue;
       }
+
       if (now >= activate) {
         if (dep.revision !== run.commit.sha) dep.previous = dep.revision;
         dep.revision = run.commit.sha;
         dep.storePath = storePathOf(run);
         dep.since = Math.round(activate);
         dep.healthy = true;
+
         if (dep.deployingRun === run.id) dep.deployingRun = null;
       } else if (now >= from) {
         dep.deployingRun = run.id;
       }
     }
   }
+
   const audioFinder = state.get("audio-finder|host-a");
+
   if (audioFinder) audioFinder.healthy = false;
   const merkbeet = state.get("merkbeet|host-a");
+
   if (merkbeet) merkbeet.healthy = null;
   const photoAlbum = state.get("photo-album|host-a");
+
   if (photoAlbum) photoAlbum.pending = hex("sha:photo-album:incompatible", 40);
+
   return [...state.values()];
 }
 
 /** Every activation of a revision on a host by `now`, newest first. */
 export function deployRecords(world: World, now: number): Array<Domain.DeploymentRecord> {
   const out: Array<Domain.DeploymentRecord> = [];
+
   for (const run of world.runs) {
     for (const s of run.steps) {
       if (s.plan.name !== "promote" || s.outcome !== "passed" || now < s.startedAt) continue;
       const d = s.finishedAt - s.startedAt;
+
       for (const ph of phases(run)) {
         const at = s.startedAt + ph.activate * d;
+
         if (at > now || (run.cancelledAt !== null && run.cancelledAt < at)) continue;
         out.push({
           project: run.project,
@@ -1912,5 +2088,6 @@ export function deployRecords(world: World, now: number): Array<Domain.Deploymen
       }
     }
   }
+
   return out.sort((a, b) => b.at - a.at);
 }

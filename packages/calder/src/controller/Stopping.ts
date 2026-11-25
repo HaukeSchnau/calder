@@ -12,6 +12,7 @@ export const tracked = <A, E, R>(rpc: string, effect: Effect.Effect<A, E, R>) =>
   Effect.suspend(() => {
     const id = nextCall++;
     calls.set(id, { rpc, since: Date.now() });
+
     return Effect.ensuring(
       effect,
       Effect.sync(() => calls.delete(id)),
@@ -25,9 +26,11 @@ export const report = (now: number) => {
   const layers = [...stopping]
     .sort(([, a], [, b]) => a - b)
     .map(([name, since]) => `${name} for ${ago(now, since)}`);
+
   const inFlight = [...calls.values()]
     .sort((a, b) => a.since - b.since)
     .map((c) => `${c.rpc} for ${ago(now, c.since)}`);
+
   return inFlight.length === 0
     ? layers
     : [...layers, `worker calls in flight: ${inFlight.join(", ")}`];
@@ -41,9 +44,11 @@ export const named = <A, E, R>(name: string, layer: Layer.Layer<A, E, R>): Layer
   const begins = Layer.effectDiscard(
     Effect.addFinalizer(() => Effect.sync(() => stopping.set(name, Date.now()))),
   );
+
   const ends = Layer.effectDiscard(
     Effect.addFinalizer(() => Effect.sync(() => stopping.delete(name))),
   );
+
   // Finalizers run in reverse: `begins`, built last, before the layer's own, and `ends` after them.
   return begins.pipe(Layer.provideMerge(layer), Layer.provideMerge(ends));
 };

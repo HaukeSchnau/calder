@@ -30,6 +30,7 @@ export const Release = Schema.Struct({
   /** Whether this run staged it. */
   staged: Schema.Boolean,
 });
+
 export type Release = typeof Release.Type;
 
 /** Where the script writes the step's value; `git clean` removes it before the next task. */

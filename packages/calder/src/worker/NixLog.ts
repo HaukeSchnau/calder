@@ -14,6 +14,7 @@ const activityTypes: Record<number, string> = {
   111: "waiting",
   112: "fetch",
 };
+
 const resBuildLogLine = 101;
 
 export type NixMessage =
@@ -29,20 +30,25 @@ export type NixMessage =
 /** Parses Nix's `--log-format internal-json` stderr, keeping the state of open activities. */
 export const parser = () => {
   const open = new Map<number, NixActivity>();
+
   return (line: string, now: number): ReadonlyArray<NixMessage> => {
     if (!line.startsWith("@nix "))
       return line.trim() === "" ? [] : [{ _tag: "Log", text: line, error: false }];
     let msg: Record<string, any>;
+
     try {
       msg = JSON.parse(line.slice(5));
     } catch {
       return [{ _tag: "Log", text: line, error: false }];
     }
+
     switch (msg.action) {
       case "start": {
         const type = activityTypes[msg.type as number];
+
         if (type === undefined) return [];
         const fields = (msg.fields ?? []) as Array<unknown>;
+
         const activity: NixActivity = {
           id: msg.id,
           parent: msg.parent ?? 0,
@@ -58,33 +64,43 @@ export const parser = () => {
           end: null,
           failed: false,
         };
+
         open.set(activity.id, activity);
+
         return type === "build" || type === "substitute" || type === "fetch"
           ? [{ _tag: "Activity", activity }]
           : [];
       }
+
       case "stop": {
         const activity = open.get(msg.id);
+
         if (activity === undefined) return [];
         open.delete(msg.id);
         const done = { ...activity, end: now };
+
         return activity.type === "build" ||
           activity.type === "substitute" ||
           activity.type === "fetch"
           ? [{ _tag: "Activity", activity: done }]
           : [];
       }
+
       case "result":
         if (msg.type === resBuildLogLine)
           return [
             { _tag: "Log", text: String(msg.fields?.[0] ?? ""), error: false, buildLog: true },
           ];
+
         return [];
       case "msg": {
         const text = String(msg.msg ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+
         if (text === "") return [];
+
         return [{ _tag: "Log", text, error: (msg.level ?? 3) <= 1 }];
       }
+
       default:
         return [];
     }

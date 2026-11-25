@@ -14,6 +14,7 @@ vi.mock("@effect/sql-sqlite-bun", () => ({}));
 /** Comments with a Gitea that records each comment it gets, and two runs of pull request 5. */
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
   for (const [id, at] of [
     ["app-1", 1],
     ["app-2", 2],
@@ -22,6 +23,7 @@ const setup = Effect.gen(function* () {
         trace_id, span_id) values (${id}, 'app', ${at}, '{"_tag":"PullRequest","number":5}', ${`sha-${at}`}, 'feature', 5, 't', 'h', 0, 'pr',
         'running', ${at}, 't', 's')`;
   }
+
   const spec = {
     name: "lint",
     kind: "task",
@@ -38,10 +40,12 @@ const setup = Effect.gen(function* () {
     action: null,
     output: null,
   };
+
   yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at)
     values ('app-2', 'lint', 'task', 'running', ${JSON.stringify(spec)}, 0, 's', 3)`;
   const posted: Array<string> = [];
   const project = { name: "app", repo: "o/app", defaultBranch: "main", targets: null, secrets: {} };
+
   const service = yield* Effect.provide(
     Effect.gen(function* () {
       return yield* Comments;
@@ -72,6 +76,7 @@ const setup = Effect.gen(function* () {
       ),
     ),
   );
+
   return { sql, service, posted };
 });
 

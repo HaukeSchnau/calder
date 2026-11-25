@@ -75,38 +75,47 @@ export const standard = (options: StandardOptions): Calder.Project => {
   const checks = checksOf(options);
   const branch = options.defaultBranch ?? "main";
   const shared = options.shared === undefined ? {} : { shared: options.shared };
+
   const nightly =
     options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)];
+
   const ref = options.flake.packages.projectRelease;
+
   if (ref === undefined) {
     return Calder.project({
       ...shared,
       rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly],
     });
   }
+
   const release = Nix.build(ref, { name: "release" });
   const systems = [...new Set(options.releaseSystems ?? [])];
+
   const releases = Object.fromEntries(
     systems.map((system) => [
       system,
       Nix.build(Flake.attr(Flake.attrPath(ref, system)), { name: `release-${system}` }),
     ]),
   );
+
   const place =
     options.placement === undefined
       ? []
       : [Alchemy.deploy(options.placement, { stage: "prod", name: "placement", after: checks })];
+
   const promote = Action.make(
     "promote",
     { needs: { release, ...releases }, after: [...checks, ...place], grants: { deploy: true } },
     function* ({ release, ...others }) {
       const run = yield* CurrentRun;
+
       return yield* Release.promote(
         { ...others, [run.system]: release },
         options.readiness === undefined ? {} : { readiness: options.readiness },
       );
     },
   );
+
   return Calder.project({
     ...shared,
     rules: [
@@ -155,6 +164,7 @@ export interface AlchemyOptions<A = void> {
 export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project => {
   const checks = checksOf(options);
   const branch = options.defaultBranch ?? "main";
+
   return Environments.project({
     stack: options.stack,
     checks,

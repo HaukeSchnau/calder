@@ -10,6 +10,7 @@ export const infrastructure = (lines: ReadonlyArray<string>): string | null => {
   // A derivation that ran and failed, also when an unreachable builder shows up beside it.
   const built =
     /builder for '[^']*' failed|build of '[^']*' on '[^']*' failed|Reason: builder failed|hash mismatch in fixed-output derivation|timed out after \d+ seconds|cycle detected in build of|no output reference for/;
+
   // A connection to a Nix daemon that drops in the middle of a build, such as srv-2's to the Mac builder:
   // Nix says the daemon disconnected, and the build hook, which exits 1 after that, makes the goal report
   // "builder failed with exit code 1". That bare report says nothing about the derivation then; a remote
@@ -18,27 +19,34 @@ export const infrastructure = (lines: ReadonlyArray<string>): string | null => {
   const disconnected = lines.some((line) =>
     /^error: Nix daemon disconnected unexpectedly/.test(line),
   );
+
   const builderFailed =
     /^error: Cannot build '[^']*'\.\s+Reason: builder failed with exit code \d+/;
+
   if (lines.some((line) => built.test(line) && !(disconnected && builderFailed.test(line))))
     return null;
+
   const causes: ReadonlyArray<(line: string) => string | null> = [
     (line) => {
       const m = /failed to start SSH connection to '([^']+)'/.exec(line);
+
       return m === null
         ? null
         : `the builder ${m[1]} could not be reached: failed to start SSH connection`;
     },
     (line) => {
       const m = /ssh: connect to host (\S+) port \d+: (.+)/.exec(line);
+
       return m === null ? null : `the builder ${m[1]} could not be reached: ${m[2]!.trim()}`;
     },
     (line) => {
       const m = /cannot build on '([^']+)': (?:error: )?(.+)/.exec(line);
+
       return m === null ? null : `the builder ${host(m[1]!)} could not be used: ${m[2]!.trim()}`;
     },
     (line) => {
       const m = /failed to obtain derivation of '([^']+)'/.exec(line);
+
       return m === null ? null : `the store lost ${m[1]}`;
     },
     (line) =>
@@ -58,13 +66,16 @@ export const infrastructure = (lines: ReadonlyArray<string>): string | null => {
         ? "Nix lost its connection to a Nix daemon, its own or a builder's, in the middle of the build"
         : null,
   ];
+
   // The first kind of cause, in that order, that any line shows: an address says more than a lost connection.
   for (const cause of causes) {
     for (const line of lines) {
       const found = cause(line);
+
       if (found !== null) return found;
     }
   }
+
   return null;
 };
 

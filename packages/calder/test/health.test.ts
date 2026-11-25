@@ -27,9 +27,11 @@ const runs = (
         planned: run.errored !== true,
         status: run.errored === true ? "errored" : "passed",
       });
+
       for (const [name, status] of Object.entries(run.steps))
         yield* insertStep(id, name, { status, finished: i + 1 });
     }
+
     return streaks(yield* load("p", "main", 0));
   });
 
@@ -44,6 +46,7 @@ describe("streaks", () => {
           { steps: { build: "reused", placement: "skipped", publish: "skipped" } },
           { steps: { build: "reused", placement: "failed", publish: "blocked" } },
         );
+
         expect(result).toEqual([
           { step: "placement", since: 1, firstRun: "p-1", runs: 3, endedAt: null, settled: false },
         ]);
@@ -61,6 +64,7 @@ describe("streaks", () => {
         { steps: { deploy: "failed" } },
         { steps: { deploy: "reused" } },
       );
+
       expect(result).toEqual([
         { step: "deploy", since: 4, firstRun: "p-4", runs: 1, endedAt: 5, settled: true },
       ]);
@@ -77,6 +81,7 @@ describe("streaks", () => {
           { steps: { "deploy-new": "passed", "deploy-gitea": "failed" } },
           { steps: { "deploy-new": "passed", "deploy-gitea": "failed" } },
         );
+
         expect(result).toEqual([
           {
             step: "deploy-gitea",
@@ -98,6 +103,7 @@ describe("streaks", () => {
         { errored: true, steps: {} },
         { errored: true, steps: {} },
       );
+
       expect(result).toEqual([
         { step: "(plan)", since: 2, firstRun: "p-2", runs: 2, endedAt: null, settled: true },
       ]);
@@ -151,10 +157,12 @@ describe("streaks", () => {
       yield* insertStep("p-1", "nightly", { status: "passed" });
       yield* insertRun("p-2", { at: 2, branch: "main", planned: true, event: schedule });
       yield* insertStep("p-2", "nightly", { status: "failed" });
+
       for (const i of [3, 4, 5]) {
         yield* insertRun(`p-${i}`, { at: i, branch: "main", planned: true });
         yield* insertStep(`p-${i}`, "test", { status: "passed" });
       }
+
       expect(streaks(yield* load("p", "main", 0, 2))).toEqual([]);
       expect(streaks(yield* load("p", "main", 0, 2, ["nightly"]))).toEqual([
         { step: "nightly", since: 2, firstRun: "p-2", runs: 1, endedAt: null, settled: true },

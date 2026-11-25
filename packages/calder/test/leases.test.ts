@@ -8,6 +8,7 @@ const memory = () => {
   let fence = 0;
   const newest = new Map<string, Leases.Saved["newest"][number]>();
   const holders = new Map<string, Leases.Saved["holders"][number]>();
+
   const store: Leases.Store = {
     nextFence: () => Effect.sync(() => ++fence),
     held: (project, holder, f) =>
@@ -24,10 +25,12 @@ const memory = () => {
       Effect.sync(() => void (holders.get(project)?.job === job && holders.delete(project))),
     kept: () => Effect.void,
   };
+
   const saved = (): Leases.Saved => ({
     newest: [...newest.values()],
     holders: [...holders.values()],
   });
+
   return { store, saved };
 };
 
@@ -43,16 +46,20 @@ describe("Leases", () => {
         const older = yield* Effect.forkChild(
           leases.acquire("p", { job: "b", run: 11, step: "deploy" }),
         );
+
         yield* Effect.yieldNow;
+
         const newer = yield* Effect.forkChild(
           leases.acquire("p", { job: "c", run: 12, step: "deploy" }),
         );
+
         yield* Effect.yieldNow;
 
         yield* leases.release("p", "a");
         expect(yield* Fiber.join(older)).toEqual({ _tag: "Replaced", by: 12 });
         const granted = yield* Fiber.join(newer);
         expect(granted._tag).toBe("Held");
+
         if (first._tag === "Held" && granted._tag === "Held")
           expect(granted.fence).toBeGreaterThan(first.fence);
 
@@ -82,13 +89,17 @@ describe("Leases", () => {
     Effect.gen(function* () {
       const leases = Leases.make(memory().store);
       yield* leases.acquire("p", { job: "srv-1@11", run: 11, step: "deploy-srv-1" });
+
       const older = yield* Effect.forkChild(
         leases.acquire("p", { job: "m1@10", run: 10, step: "deploy-m1" }),
       );
+
       yield* Effect.yieldNow;
+
       const newer = yield* Effect.forkChild(
         leases.acquire("p", { job: "m1@11", run: 11, step: "deploy-m1" }),
       );
+
       yield* Effect.yieldNow;
 
       // Run 12 supersedes run 11, or someone cancels it: its waiting deploy goes away.
@@ -104,13 +115,17 @@ describe("Leases", () => {
       expect((yield* leases.acquire("p", { job: "a", run: 5, step: "deploy-a" }))._tag).toBe(
         "Held",
       );
+
       const b = yield* Effect.forkChild(
         leases.acquire("p", { job: "b", run: 5, step: "deploy-b" }),
       );
+
       yield* Effect.yieldNow;
+
       const c = yield* Effect.forkChild(
         leases.acquire("p", { job: "c", run: 5, step: "deploy-c" }),
       );
+
       yield* Effect.yieldNow;
 
       yield* leases.release("p", "a");
@@ -140,9 +155,11 @@ describe("Leases", () => {
         _tag: "Replaced",
         by: 12,
       });
+
       const waiting = yield* Effect.forkChild(
         after.acquire("p", { job: "srv-1@13", run: 13, step: "deploy-srv-1" }),
       );
+
       yield* Effect.yieldNow;
       expect(after.holder("p")?.job).toBe("m1@12");
       yield* after.release("p", "m1@12");
@@ -157,13 +174,17 @@ describe("Leases", () => {
         const leases = Leases.make(memory().store);
         const stale = Effect.succeed("main moved on to head-sha");
         yield* leases.acquire("p", { job: "a", run: 10, step: "deploy" });
+
         const head = yield* Effect.forkChild(
           leases.acquire("p", { job: "b", run: 11, step: "deploy" }),
         );
+
         yield* Effect.yieldNow;
+
         const rerun = yield* Effect.forkChild(
           leases.acquire("p", { job: "c", run: 12, step: "deploy", stale }),
         );
+
         yield* Effect.yieldNow;
 
         yield* leases.release("p", "a");
@@ -192,6 +213,7 @@ describe("Leases", () => {
         const leases = Leases.make(memory().store);
         const gate = yield* Deferred.make<void>();
         yield* leases.acquire("p", { job: "a", run: 10, step: "deploy" });
+
         // b's staleness check holds the decision until the gate opens.
         const b = yield* Effect.forkChild(
           leases.acquire("p", {
@@ -201,13 +223,16 @@ describe("Leases", () => {
             stale: Deferred.await(gate).pipe(Effect.as(undefined)),
           }),
         );
+
         yield* Effect.yieldNow;
         const releasing = yield* Effect.forkChild(leases.release("p", "a"));
         yield* Effect.yieldNow;
+
         // c queues behind the decision in progress, then its worker goes away.
         const c = yield* Effect.forkChild(
           leases.acquire("p", { job: "c", run: 12, step: "other" }),
         );
+
         yield* Effect.yieldNow;
         yield* Fiber.interrupt(c);
         yield* Deferred.succeed(gate, undefined);
@@ -226,9 +251,11 @@ describe("Leases", () => {
     () =>
       Effect.gen(function* () {
         const leases = Leases.make(memory().store);
+
         const slow = yield* Effect.forkChild(
           leases.acquire("p", { job: "a", run: 10, step: "deploy", stale: Effect.never }),
         );
+
         yield* Effect.yieldNow;
         expect((yield* leases.acquire("q", { job: "b", run: 1, step: "deploy" }))._tag).toBe(
           "Held",
@@ -245,6 +272,7 @@ describe("Leases", () => {
         const leases = Leases.make(memory().store);
         const gate = yield* Deferred.make<void>();
         yield* leases.acquire("p", { job: "a", run: 10, step: "deploy" });
+
         // b's staleness check holds the decision until the gate opens.
         const b = yield* Effect.forkChild(
           leases.acquire("p", {
@@ -254,6 +282,7 @@ describe("Leases", () => {
             stale: Deferred.await(gate).pipe(Effect.as(undefined)),
           }),
         );
+
         yield* Effect.yieldNow;
         // fleetRelease's handler, whose worker disconnects while the decision waits.
         const releasing = yield* Effect.forkChild(leases.release("p", "a"));

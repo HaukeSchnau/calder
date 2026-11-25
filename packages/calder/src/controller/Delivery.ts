@@ -21,8 +21,10 @@ export const failure = (
       ? "failed"
       : `failed before it planned: ${run.error.split("\n")[0]!.slice(0, 200)}`;
   const [first, ...rest] = steps;
+
   const why =
     first!.error_message === null ? "" : `: ${first!.error_message.split("\n")[0]!.slice(0, 200)}`;
+
   return `failed at \`${first!.name}\`${why}${rest.length === 0 ? "" : ` (and ${rest.map((s) => `\`${s.name}\``).join(", ")})`}`;
 };
 
@@ -34,6 +36,7 @@ export const failure = (
 export const deployedRun = (project: Project) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<{
       id: string;
       sha: string;
@@ -43,6 +46,7 @@ export const deployedRun = (project: Project) =>
         and (event like ${'{"_tag":"Push"%'} or ((event like ${'{"_tag":"Schedule"%'} or event like ${'{"_tag":"Manual"%'})
           and exists (select 1 from steps where steps.run_id = runs.id and json_extract(steps.spec, '$.critical') = 1)))
       order by created_at desc limit 1`;
+
     return rows[0];
   });
 
@@ -62,6 +66,7 @@ export const converge = (project: Project, now: number) =>
     const mirror = yield* Mirror;
     const runs = yield* Runs;
     const pushes = sql`project = ${project.name} and branch = ${project.defaultBranch} and trust = 'trusted' and event like ${'{"_tag":"Push"%'}`;
+
     /** Whether the run has a step on a deploy's critical path, one that ended `failing` if given. */
     const critical = (run: string, failing = false) =>
       Effect.map(
@@ -73,9 +78,11 @@ export const converge = (project: Project, now: number) =>
     const [planned] = yield* sql<{
       id: string;
     }>`select id from runs where ${pushes} and planned_at is not null order by created_at desc limit 1`;
+
     if (planned === undefined || !(yield* critical(planned.id))) return null;
     const head = yield* gitea.head(project.repo, project.defaultBranch);
     const deployed = yield* deployedRun(project);
+
     const delivery = {
       head,
       revision: deployed?.sha ?? null,
@@ -83,6 +90,7 @@ export const converge = (project: Project, now: number) =>
       stalled: false,
       retry: null,
     };
+
     if (deployed?.sha === head) return delivery;
 
     const ahead =
@@ -96,6 +104,7 @@ export const converge = (project: Project, now: number) =>
             ),
             Effect.orElseSucceed(() => []),
           );
+
     const behind = ahead.length === 0 ? null : { commits: ahead.length, since: ahead.at(-1)!.at };
 
     const tries = yield* sql<{
@@ -105,12 +114,15 @@ export const converge = (project: Project, now: number) =>
       retries: number;
     }>`select id, status, finished_at, retries from runs
       where ${pushes} and sha = ${head} order by created_at desc`;
+
     const last = tries[0];
+
     // A rerun in place reopens an older try than the newest: one try at a time deploys the head.
     if (tries.some((t) => !Domain.ended.has(t.status)))
       return { ...delivery, behind, stalled: false };
     const stalled = last !== undefined && Domain.ended.has(last.status);
     const state = { ...delivery, behind, stalled };
+
     if (
       last === undefined ||
       last.finished_at === null ||
@@ -119,22 +131,30 @@ export const converge = (project: Project, now: number) =>
     ) {
       return state;
     }
+
     // A rerun that failed before it planned, such as when its plan's worker died, repeats the last one that ran.
     const ran = last.status === "failed" ? last : tries.find((t) => t.status === "failed");
+
     if (ran === undefined || !(yield* critical(ran.id, true))) return state;
+
     // A rerun runs a failed run's steps again in the same run, so each of its retries is an attempt too.
     const attempt = tries
       .filter((t) => t.status === "failed" || t.status === "errored")
       .reduce((sum, t) => sum + 1 + t.retries, 0);
+
     // A try rerun in place can end after a newer one that errored.
     const at = Math.max(...tries.map((t) => t.finished_at ?? 0)) + backoff(attempt);
+
     if (now < at) return { ...state, retry: { runId: ran.id, at, attempt } };
+
     const again = yield* runs.rerun(ran.id, {
       reason: `the deploy of the head failed ${attempt} times; Calder retries it`,
     });
+
     yield* Effect.logInfo(
       `${project.name}'s deploy of ${head.slice(0, 12)} failed ${attempt} times; rerunning ${ran.id}${again.id === ran.id ? " in place" : ` as ${again.id}`}`,
     );
+
     return state;
   });
 
@@ -149,12 +169,14 @@ export const tick = (now: number, looked: Set<string> = new Set()) =>
     const gitea = yield* Gitea;
     const mirror = yield* Mirror;
     const projects = yield* Projects;
+
     const link = (run: string) =>
       `[run ${run.slice(run.lastIndexOf("-") + 1)}](${config.publicUrl.replace(/\/$/, "")}/#/run/${run})`;
 
     for (const project of projects.all()) {
       yield* Effect.gen(function* () {
         const passed = yield* deployedRun(project);
+
         const shipped = (sha: string) =>
           passed === undefined
             ? Effect.succeed(false)
@@ -166,24 +188,30 @@ export const tick = (now: number, looked: Set<string> = new Set()) =>
             and event like ${'{"_tag":"Push"%'} and status in ('failed', 'errored') and finished_at >= ${now - day}
             and sha not in (select sha from shipments where project = ${project.name})
           order by created_at`;
+
         for (const run of failed) {
           // A direct push has no pull request to tell, and asking Gitea once per run is enough.
           if (looked.has(run.id)) continue;
           yield* Effect.gen(function* () {
             if (yield* shipped(run.sha)) return;
             const pr = yield* gitea.mergedPull(project.repo, run.sha);
+
             if (pr === null) {
               looked.add(run.id);
+
               return;
             }
+
             const steps = yield* sql<{
               name: string;
               error_message: string | null;
             }>`select name, error_message from steps
               where run_id = ${run.id} and status in ('failed', 'died') order by position`;
+
             const body =
               `**Merged, not shipped yet.** ${link(run.id)} of this merge on \`${project.defaultBranch}\` ${failure(run, steps)}.\n\n` +
               "Calder edits this comment once a run that includes this merge passes.";
+
             const id = yield* gitea.comment(project.repo, pr, body, null);
             yield* sql`insert into shipments (project, sha, pr, run_id, comment_id) values (${project.name}, ${run.sha}, ${pr}, ${run.id}, ${id})
               on conflict do nothing`;
@@ -195,6 +223,7 @@ export const tick = (now: number, looked: Set<string> = new Set()) =>
         }
 
         if (passed === undefined) return;
+
         const open = yield* sql<{
           sha: string;
           pr: number;
@@ -202,12 +231,15 @@ export const tick = (now: number, looked: Set<string> = new Set()) =>
           comment_id: number;
         }>`select sha, pr, run_id, comment_id
           from shipments where project = ${project.name} and shipped_run is null`;
+
         for (const row of open) {
           yield* Effect.gen(function* () {
             if (!(yield* shipped(row.sha))) return;
+
             const [failedRun] = yield* sql<{
               finished_at: number | null;
             }>`select finished_at from runs where id = ${row.run_id}`;
+
             // A run that passed once it ran again in place no longer knows when it had failed.
             const after =
               passed.id === row.run_id
@@ -215,6 +247,7 @@ export const tick = (now: number, looked: Set<string> = new Set()) =>
                 : failedRun?.finished_at == null
                   ? ""
                   : `, ${span(passed.finished_at - failedRun.finished_at)} after ${link(row.run_id)} failed`;
+
             yield* gitea.comment(
               project.repo,
               row.pr,
@@ -252,12 +285,15 @@ export const layer = Layer.effect(Delivery)(
     const context = yield* Effect.context<
       SqlClient.SqlClient | Config | Gitea | Mirror | Projects | Runs
     >();
+
     const projects = yield* Projects;
     const looked = new Set<string>();
     const states = new Map<string, Domain.Delivery | null>();
+
     const round = Effect.gen(function* () {
       const now = Date.now();
       yield* tick(now, looked);
+
       for (const project of projects.all()) {
         yield* converge(project, now).pipe(
           Effect.tap((state) => Effect.sync(() => states.set(project.name, state))),
@@ -267,12 +303,14 @@ export const layer = Layer.effect(Delivery)(
         );
       }
     });
+
     yield* round.pipe(
       Effect.provide(context),
       Effect.repeat(Schedule.spaced("1 minute")),
       Effect.delay("30 seconds"),
       Effect.forkScoped,
     );
+
     return { status: (project) => states.get(project) ?? null };
   }),
 );

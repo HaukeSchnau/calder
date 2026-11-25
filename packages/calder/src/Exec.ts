@@ -16,7 +16,9 @@ export class CommandFailed extends Schema.TaggedError<CommandFailed>("calder/Com
 }
 
 export type ExecError = CommandFailed | PlatformError.PlatformError;
+
 export type Spawner = ChildProcessSpawner.ChildProcessSpawner;
+
 export const SpawnerTag = ChildProcessSpawner.ChildProcessSpawner;
 
 export interface Options {
@@ -41,6 +43,7 @@ export const run = (argv: ReadonlyArray<string>, options: Options = {}) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const handle = yield* spawner.spawn(command(argv, options));
+
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           Stream.mkString(Stream.decodeText(handle.stdout)),
@@ -49,8 +52,10 @@ export const run = (argv: ReadonlyArray<string>, options: Options = {}) =>
         ],
         { concurrency: "unbounded" },
       );
+
       if (exitCode !== 0)
         return yield* new CommandFailed({ command: argv.join(" "), exitCode, stderr });
+
       return stdout;
     }),
   ).pipe(Effect.withSpan("exec", { attributes: { command: argv.slice(0, 4).join(" ") } }));
@@ -61,6 +66,7 @@ export const exec = (argv: ReadonlyArray<string>, options: Options = {}) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const handle = yield* spawner.spawn(command(argv, options));
+
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           Stream.mkString(Stream.decodeText(handle.stdout)),
@@ -69,6 +75,7 @@ export const exec = (argv: ReadonlyArray<string>, options: Options = {}) =>
         ],
         { concurrency: "unbounded" },
       );
+
       return { stdout, stderr, exitCode: exitCode as number };
     }),
   );
@@ -88,6 +95,7 @@ export const stream = <E = never, R = never>(
   Effect.scoped(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
       const handle = yield* spawner.spawn(
         ChildProcess.make(argv[0]!, argv.slice(1), {
           ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
@@ -97,6 +105,7 @@ export const stream = <E = never, R = never>(
           forceKillAfter: "10 seconds",
         }),
       );
+
       const lines = (
         s: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
         name: "stdout" | "stderr",
@@ -106,6 +115,7 @@ export const stream = <E = never, R = never>(
           Stream.splitLines,
           Stream.runForEach((line) => onLine(name, line)),
         );
+
       const [, , exitCode] = yield* Effect.raceFirst(
         Effect.all(
           [lines(handle.stdout, "stdout"), lines(handle.stderr, "stderr"), handle.exitCode],
@@ -113,6 +123,7 @@ export const stream = <E = never, R = never>(
         ),
         Effect.andThen(watch(handle.pid), Effect.never),
       );
+
       return exitCode as number;
     }),
   );

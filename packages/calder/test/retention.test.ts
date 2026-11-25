@@ -8,6 +8,7 @@ import { insertRun, insertStep, layer } from "./sqlite.ts";
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
 const day = 86_400_000;
+
 /** Thirty days of retention on day 100: runs that finished before day 70 are past it. */
 const pruned = prune(30, 100 * day);
 
@@ -29,25 +30,32 @@ const fileResult = (runId: string, key: string, status: string, at: number) =>
 const left = (runId: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const run = yield* sql<{
       plan: string | null;
     }>`select run_plans.plan from runs left join run_plans on run_plans.run_id = runs.id
       where runs.id = ${runId}`;
+
     if (run[0] === undefined) {
       const plans = yield* sql`select 1 from run_plans where run_id = ${runId}`;
+
       return plans.length === 0 ? null : "a plan without its run";
     }
+
     const count = (table: string) =>
       Effect.map(
         sql<{ n: number }>`select count(*) as n from ${sql(table)} where run_id = ${runId}`,
         (rows) => rows[0]!.n,
       );
+
     const results = yield* sql<{
       key: string;
     }>`select key from results where run_id = ${runId} order by key`;
+
     const files = yield* sql<{
       key: string;
     }>`select key from file_results where run_id = ${runId} order by key`;
+
     return {
       plan: run[0].plan !== null,
       steps: yield* count("steps"),
@@ -62,6 +70,7 @@ describe("prune", () => {
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+
         for (const [id, at] of [
           ["p-1", 1],
           ["p-2", 80],
@@ -71,6 +80,7 @@ describe("prune", () => {
           yield* sql`insert into tests (run_id, project, step, suite, name, status, duration_ms, created_at)
           values (${id}, 'p', 'test', 'suite', 'works', 'passed', 1, ${at * day})`;
         }
+
         expect(yield* pruned).toEqual({ deleted: 1, trimmed: 0 });
         expect(yield* left("p-1")).toBeNull();
         expect(yield* sql`select * from steps where run_id = 'p-1'`).toEqual([]);

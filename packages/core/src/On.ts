@@ -81,6 +81,7 @@ export const push: {
     { readonly reuse?: Reuse },
     ReadonlyArray<Step.Any>,
   ];
+
   return make("trusted", { _tag: "Push", branch }, options.reuse ?? "all", targets);
 };
 
@@ -100,6 +101,7 @@ export const schedule: {
     { readonly reuse?: Reuse },
     ReadonlyArray<Step.Any>,
   ];
+
   return make("trusted", { _tag: "Schedule", cron }, options.reuse ?? "builds", targets);
 };
 
@@ -118,6 +120,7 @@ export const manual: {
     { readonly inputs?: Schema.Struct.Fields; readonly reuse?: Reuse },
     ReadonlyArray<Step.Any>,
   ];
+
   return make(
     "trusted",
     { _tag: "Manual", inputs: options.inputs ?? {} },

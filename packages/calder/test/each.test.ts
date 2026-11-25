@@ -10,6 +10,7 @@ describe("Each", () => {
       a: 1_000,
       b: 1_000,
     };
+
     const bins = Each.split(Object.keys(ms), (f) => ms[f]!, 3);
     expect(bins.map((b) => b.files)).toEqual([["replay"], ["git"], ["mcp", "a", "b"]]);
     expect(Each.split(["a"], () => 1, 6)).toHaveLength(1);
@@ -22,6 +23,7 @@ describe("Each", () => {
       { file: "b", durationMs: 100 },
       { file: "c", durationMs: 1_000 },
     ]);
+
     expect(duration("a")).toBe(30);
     expect(duration("new")).toBe(100);
     expect(Each.durations([])("new")).toBe(5_000);
@@ -34,12 +36,14 @@ describe("Each", () => {
       { file: "bad.test.ts", suite: "", name: "a", status: "passed", durationMs: 5 },
       { file: "bad.test.ts", suite: "", name: "b", status: "timeout", durationMs: 60_000 },
     ];
+
     const after = (clean: boolean) =>
       Object.fromEntries(
         [...Each.outcomes(["ok.test.ts", "bad.test.ts", "silent.test.ts"], tests, clean)].map(
           ([f, o]) => [f, o.status],
         ),
       );
+
     expect(after(false)).toEqual({
       "ok.test.ts": "passed",
       "bad.test.ts": "failed",
@@ -55,6 +59,7 @@ describe("Each", () => {
       { file: "retried.test.ts", suite: "", name: "a", status: "passed", durationMs: 5 },
       { file: "broken.test.ts", suite: "", name: "a", status: "failed", durationMs: 5 },
     ];
+
     const outcomes = Each.outcomes(["retried.test.ts", "broken.test.ts"], tests, false);
     expect(outcomes.get("retried.test.ts")).toEqual({ status: "flaky", ms: 5 });
     expect(outcomes.get("broken.test.ts")?.status).toBe("failed");

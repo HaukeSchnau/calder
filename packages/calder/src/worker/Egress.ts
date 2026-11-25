@@ -11,6 +11,7 @@ export const environment = (url: string): Record<string, string> => {
   // brackets, and Node's http compares it without them. The bracketed forms can go once no job runs
   // Node 24.
   const noProxy = "localhost,127.0.0.1,0.0.0.0,::1,[::1],::,[::]";
+
   return {
     ...Object.fromEntries(
       ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"].map(

@@ -30,6 +30,7 @@ const verified = (secret: string, body: string, signature: string | undefined) =
   if (signature === undefined) return false;
   const expected = createHmac("sha256", secret).update(body).digest();
   const given = Buffer.from(signature, "hex");
+
   return given.length === expected.length && timingSafeEqual(given, expected);
 };
 
@@ -45,30 +46,38 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     const projects = yield* Projects;
     const closes = yield* Closes;
     const body = yield* request.text;
+
     if (!verified(config.webhookSecret, body, request.headers["x-gitea-signature"])) {
       return HttpServerResponse.text("bad signature", { status: 401 });
     }
+
     const event = request.headers["x-gitea-event"];
+
     const payload = yield* Effect.try({
       try: () => JSON.parse(body) as Payload,
       catch: () => "malformed JSON",
     });
+
     const head = event === "push" ? payload.after : payload.pull_request?.head?.sha;
+
     const enrolled = yield* projects.byRepo(payload.repository?.full_name ?? "", {
       sha: head === undefined || zero.test(head) ? undefined : head,
       defaultBranch: payload.repository?.default_branch,
     });
+
     if (enrolled === undefined) return HttpServerResponse.text("not enrolled");
     const project = enrolled.name;
 
     const start = (sha: string, run: Effect.Effect<unknown, unknown>) =>
       Effect.gen(function* () {
         yield* mirror.fetch(project);
+
         if (!(yield* mirror.hasPipeline(project, sha))) {
           return yield* Effect.logInfo(
             `${event} for ${project}@${sha.slice(0, 12)} has no .calder/ci.ts, ignored`,
           );
         }
+
         yield* Effect.logInfo(`${event} for ${project}@${sha.slice(0, 12)}`);
         yield* run;
       }).pipe(
@@ -80,19 +89,24 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
 
     if (event === "push") {
       const sha = payload.after;
+
       if (payload.ref?.startsWith("refs/heads/") !== true || sha === undefined || zero.test(sha))
         return HttpServerResponse.text("ignored");
       const branch = payload.ref.slice("refs/heads/".length);
+
       // `calder check` pushes its working copies here and starts their runs itself.
       if (branch.startsWith("calder/check/")) return HttpServerResponse.text("ignored");
       yield* start(sha, runs.ensure({ project, event: { _tag: "Push", branch }, sha }));
+
       return HttpServerResponse.text("accepted", { status: 202 });
     }
 
     if (event === "pull_request") {
       const pr = payload.pull_request;
       const number = payload.number;
+
       if (pr === undefined || number === undefined) return HttpServerResponse.text("ignored");
+
       if (payload.action === "closed") {
         const closedAt = Date.parse(pr.closed_at ?? "");
         yield* closes
@@ -103,15 +117,20 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
             closedAt: Number.isNaN(closedAt) ? Date.now() : closedAt,
           })
           .pipe(Effect.forkDetach);
+
         return HttpServerResponse.text("accepted", { status: 202 });
       }
+
       if (!["opened", "reopened", "synchronized"].includes(payload.action ?? ""))
         return HttpServerResponse.text("ignored");
       const sha = pr.head?.sha;
+
       if (sha === undefined) return HttpServerResponse.text("ignored");
+
       const fork =
         pr.head?.repo?.full_name !== undefined &&
         pr.head.repo.full_name !== pr.base?.repo?.full_name;
+
       yield* start(
         sha,
         runs.ensure({
@@ -127,6 +146,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
           fork,
         }),
       );
+
       return HttpServerResponse.text("accepted", { status: 202 });
     }
 

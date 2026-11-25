@@ -17,10 +17,12 @@ const tags = new Map<string, Context.Service<any, SecretValue>>();
 
 export const tag = <S extends string>(name: S): Context.Service<Secret<S>, SecretValue> => {
   let t = tags.get(name);
+
   if (t === undefined) {
     t = Context.Service<Secret<S>, SecretValue>(`@calder-ci/core/Secret/${name}`);
     tags.set(name, t);
   }
+
   return t;
 };
 

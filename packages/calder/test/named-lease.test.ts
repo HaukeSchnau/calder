@@ -26,6 +26,7 @@ const unused = () => Effect.die(new Error("not used by this test"));
 const deployStep = (run: number, name: string, lease: true | string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const spec = {
       ...step,
       name,
@@ -46,12 +47,14 @@ const deployStep = (run: number, name: string, lease: true | string) =>
         lease,
       },
     };
+
     yield* sql`insert into runs (id, project, number, event, sha, commit_title, author, commit_time, trust, status, created_at, trace_id, span_id)
       values (${`app-${run}`}, 'app', ${run}, '{"_tag":"Push","branch":"main"}', ${`rev-${run}`}, 'title', 'hauke', 1, 'trusted', 'running', 1, 't', 's')
       on conflict do nothing`;
     yield* sql`insert into run_plans (run_id, plan) values (${`app-${run}`}, '{}') on conflict do nothing`;
     yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
       values (${`app-${run}`}, ${name}, 'task', 'running', ${JSON.stringify(spec)}, 0, 's')`;
+
     const active: ActiveJob = {
       id: `${name}@${run}`,
       tokenHash: "",
@@ -92,6 +95,7 @@ const deployStep = (run: number, name: string, lease: true | string) =>
       scope: yield* Scope.make(),
       lease: undefined,
     };
+
     return active;
   });
 
@@ -103,12 +107,14 @@ describe("a task with a named lease", () => {
         const jobs = new Map<string, ActiveJob>();
         let head = "rev-10";
         let fence = 0;
+
         const leases = Leases.make({
           nextFence: () => Effect.sync(() => ++fence),
           held: () => Effect.void,
           released: () => Effect.void,
           kept: () => Effect.void,
         });
+
         const services = Layer.mergeAll(
           config(),
           Layer.succeed(Jobs)({
@@ -129,6 +135,7 @@ describe("a task with a named lease", () => {
           Layer.succeed(Comments)({} as unknown as Comments["Service"]),
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(ChildProcessSpawner.make(unused)),
         );
+
         const client = yield* RpcTest.makeClient(WorkerRpcs).pipe(
           Effect.provide(handlers.pipe(Layer.provide(services))),
         );

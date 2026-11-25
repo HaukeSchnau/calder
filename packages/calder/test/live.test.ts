@@ -40,11 +40,13 @@ describe("following a run's logs", () => {
     Effect.gen(function* () {
       const live = yield* Live.Live;
       live.append("calder-7", line("plan", "planned"));
+
       const following = yield* live.follow("calder-7").pipe(
         Stream.map((l) => l.text),
         Stream.runCollect,
         Effect.forkChild({ startImmediately: true }),
       );
+
       live.append("calder-7", line("plan", "more planning"));
       live.finish("calder-7", "plan");
       live.append("calder-7", line("qa", "testing"));

@@ -5,6 +5,7 @@ export const TypeId = "~@calder-ci/core/Cmd" as const;
 
 /** The run's pull-request number, such as `--stage pr-${Cmd.pullRequest}`. A run without one can't render it. */
 export const pullRequest = { _tag: "PullRequestNumber" } as const;
+
 export type PullRequestNumber = typeof pullRequest;
 
 /**
@@ -71,6 +72,7 @@ export const cmd = <const V extends ReadonlyArray<Interpolation>>(
     current ??= [];
     current.push(part);
   };
+
   const end = () => {
     if (current !== undefined) args.push(current);
     current = undefined;
@@ -78,28 +80,35 @@ export const cmd = <const V extends ReadonlyArray<Interpolation>>(
 
   strings.forEach((literal, i) => {
     let text = "";
+
     for (const ch of literal) {
       if (quote !== undefined) {
         if (ch === quote) quote = undefined;
         else text += ch;
         continue;
       }
+
       if (ch === "'" || ch === '"') {
         quote = ch;
         current ??= [];
         continue;
       }
+
       if (/\s/.test(ch)) {
         if (text !== "") push(text);
         text = "";
         end();
         continue;
       }
+
       text += ch;
     }
+
     if (text !== "") push(text);
+
     if (i >= values.length) return;
     const value = values[i]!;
+
     if (isStep(value)) {
       steps.push(value);
       push({ step: value.name });
@@ -115,8 +124,10 @@ export const cmd = <const V extends ReadonlyArray<Interpolation>>(
       push(String(value));
     }
   });
+
   if (quote !== undefined) throw new Error(`cmd: unclosed ${quote} in \`${strings.join("${…}")}\``);
   end();
+
   return { [TypeId]: variance, args, steps, secrets, pullRequest: readsPullRequest };
 };
 
@@ -131,26 +142,36 @@ export const render = (
 ): ReadonlyArray<string> =>
   self.args.flatMap((arg) => {
     if (arg.length === 1 && typeof arg[0] === "object" && "list" in arg[0]) return [...arg[0].list];
+
     return [
       arg
         .map((part) => {
           if (typeof part === "string") return part;
+
           if ("list" in part) return part.list.join(" ");
+
           if ("secret" in part) {
             const path = context.secrets?.[part.secret];
+
             if (path === undefined)
               throw new Error(`cmd: the secret ${part.secret} was not granted`);
+
             return path;
           }
+
           if ("pullRequest" in part) {
             if (context.pullRequest === undefined)
               throw new Error("cmd: the run has no pull request");
+
             return String(context.pullRequest);
           }
+
           const value = values[part.step];
+
           if (typeof value !== "string" && typeof value !== "number") {
             throw new Error(`cmd: step ${part.step} has no string or number value`);
           }
+
           return String(value);
         })
         .join(""),

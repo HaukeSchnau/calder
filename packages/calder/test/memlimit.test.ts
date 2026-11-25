@@ -6,7 +6,9 @@ import { goMemLimit } from "../src/worker/Steps.ts";
 
 const cgroup = (files: Record<string, string>) => {
   const dir = mkdtempSync(join(tmpdir(), "calder-cgroup-"));
+
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), `${text}\n`);
+
   return dir;
 };
 

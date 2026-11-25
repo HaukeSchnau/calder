@@ -48,6 +48,7 @@ describe("setups", () => {
         passed: ["lint", "test"],
         value,
       });
+
       expect(status).toBe("passed");
       expect(jobs).toEqual([]);
       expect(steps.get("install")).toMatchObject({
@@ -69,6 +70,7 @@ describe("setups", () => {
         passed: ["lint"],
         value,
       });
+
       expect(status).toBe("passed");
       expect(jobs).toEqual(["install", "test"]);
       expect([

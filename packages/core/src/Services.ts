@@ -87,6 +87,7 @@ export class Busy extends Failure<Busy>("@calder-ci/core/Fleet")("Busy", {
     return `${this.target} is busy with another deployment`;
   }
 }
+
 export class Rejected extends Failure<Rejected>("@calder-ci/core/Fleet")("Rejected", {
   target: Schema.String,
   status: Schema.Number,

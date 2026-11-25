@@ -12,9 +12,12 @@ const readEvent = (kind: string, arg: string | undefined): Event.Event | undefin
     case "pr":
     case "closed": {
       const number = Number(arg ?? 1);
+
       if (!Number.isSafeInteger(number) || number <= 0) return undefined;
+
       return kind === "pr" ? Event.pullRequest({ number }) : Event.pullRequestClosed({ number });
     }
+
     case "check":
       return arg === "" ? undefined : Event.check({ ref: arg ?? "calder/check/local" });
     case "schedule":
@@ -29,10 +32,12 @@ const readEvent = (kind: string, arg: string | undefined): Event.Event | undefin
 /** Reads `calder plan --event`. */
 export const parseEvent = (text: string): Effect.Effect<Event.Event, Error> => {
   const colon = text.indexOf(":");
+
   const event =
     colon === -1
       ? readEvent(text, undefined)
       : readEvent(text.slice(0, colon), text.slice(colon + 1));
+
   return event === undefined
     ? Effect.fail(
         new Error(
@@ -44,8 +49,10 @@ export const parseEvent = (text: string): Effect.Effect<Event.Event, Error> => {
 
 const distance = (a: string, b: string) => {
   let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+
   for (let i = 1; i <= a.length; i++) {
     const row = [i];
+
     for (let j = 1; j <= b.length; j++) {
       row.push(
         Math.min(
@@ -55,8 +62,10 @@ const distance = (a: string, b: string) => {
         ),
       );
     }
+
     previous = row;
   }
+
   return previous[b.length]!;
 };
 
@@ -70,6 +79,7 @@ export const closest = (typed: string, names: ReadonlyArray<string>) =>
 /** A coarse span of time: `40s`, `12m`, `5h`, `3d`. */
 export const span = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000));
+
   return s < 60
     ? `${s}s`
     : s < 3600
@@ -84,14 +94,19 @@ export const ago = (ms: number) => `${span(ms)} ago`;
 /** Where a project's deploys stand, for people: `deployed`, or how far behind and when Calder retries. */
 export const delivery = (d: Domain.Delivery | null | undefined, now: number) => {
   if (d == null) return "";
+
   if (d.revision === d.head) return "deployed";
+
   const from =
     d.revision === null ? "nothing deployed in retention" : `deployed ${d.revision.slice(0, 12)}`;
+
   const behind =
     d.behind === null
       ? from
       : `${from}: ${d.behind.commits} commit${d.behind.commits === 1 ? "" : "s"} / ${span(now - d.behind.since)} behind`;
+
   if (!d.stalled) return `${behind}, deploying`;
+
   return d.retry === null
     ? `${behind}, stalled`
     : `${behind}, retry ${d.retry.attempt} in ${span(d.retry.at - now)}`;
@@ -100,6 +115,7 @@ export const delivery = (d: Domain.Delivery | null | undefined, now: number) => 
 /** A duration for people: `12 s`, `1m 52s`. */
 export const took = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000));
+
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 };
 
@@ -140,6 +156,7 @@ export const table = (rows: ReadonlyArray<ReadonlyArray<string>>) => {
     (w, row) => row.map((cell, i) => Math.max(w[i] ?? 0, cell.length)),
     [],
   );
+
   return rows.map((row) =>
     row.map((cell, i) => (i === row.length - 1 ? cell : cell.padEnd(widths[i]!))).join("  "),
   );
@@ -164,14 +181,17 @@ export const follow = <E>(
 ) =>
   Effect.gen(function* () {
     let last = run;
+
     const report = (r: Domain.Run) =>
       Effect.sync(() => (last = r)).pipe(
         Effect.andThen(Console.log(`${r.status}${r.error ? `: ${r.error}` : ""}`)),
       );
+
     yield* Console.log(
       `${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`,
     );
     yield* report(run);
+
     // The run may end before the change feed starts, so its current state joins the feed.
     const current = Stream.fromEffect(client.run({ id: run.id })).pipe(
       Stream.map((detail): Domain.Change => ({
@@ -180,6 +200,7 @@ export const follow = <E>(
         run: detail.run,
       })),
     );
+
     yield* client.changes().pipe(
       Stream.merge(current),
       Stream.filter((c) =>
@@ -197,5 +218,6 @@ export const follow = <E>(
       Stream.takeUntil((c) => c._tag === "RunChanged" && Domain.ended.has(c.run.status)),
       Stream.runDrain,
     );
+
     return last;
   });

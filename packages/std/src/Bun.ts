@@ -25,6 +25,7 @@ export const install = (options: InstallOptions = {}) => {
   const dir = options.dir ?? ".";
   const inDir = (path: string) => (dir === "." ? path : `${dir}/${path}`);
   const args = [...(options.args ?? [])];
+
   return Setup.make(options.name ?? "install", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     inputs: Files.union(

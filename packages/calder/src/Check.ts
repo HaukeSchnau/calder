@@ -34,11 +34,14 @@ export const target = (remotes: ReadonlyArray<string>, repos: ReadonlyArray<stri
       .replace(/\.git$/, "")
       .replace(/\/$/, "")
       .toLowerCase();
+
     const repo = repos.find(
       (r) => path.endsWith(`/${r.toLowerCase()}`) || path.endsWith(`:${r.toLowerCase()}`),
     );
+
     if (repo !== undefined) return { remote, repo };
   }
+
   return undefined;
 };
 
@@ -51,13 +54,16 @@ export const target = (remotes: ReadonlyArray<string>, repos: ReadonlyArray<stri
 export const workingCopy = (dir: string, options: { readonly snapshot?: boolean } = {}) =>
   Effect.gen(function* () {
     const flags = options.snapshot === false ? ["--ignore-working-copy"] : [];
+
     // A host without jj still has git checkouts.
     const jjGitDir = yield* Exec.exec(["jj", ...flags, "--repository", dir, "git", "root"]).pipe(
       Effect.map((jj) => (jj.exitCode === 0 ? jj.stdout.trim() : null)),
       Effect.orElseSucceed(() => null),
     );
+
     if (jjGitDir !== null) {
       const gitDir = jjGitDir;
+
       const sha = (yield* Exec.run([
         "jj",
         ...flags,
@@ -70,23 +76,30 @@ export const workingCopy = (dir: string, options: { readonly snapshot?: boolean 
         "-T",
         "commit_id",
       ])).trim();
+
       const remotes = urls(
         yield* Exec.run(["jj", ...flags, "--repository", dir, "git", "remote", "list"]),
       );
+
       return { gitDir, sha, remotes } satisfies WorkingCopy;
     }
+
     const top = (yield* Exec.run(["git", "-C", dir, "rev-parse", "--show-toplevel"])).trim();
     const gitDir = (yield* Exec.run(["git", "-C", top, "rev-parse", "--absolute-git-dir"])).trim();
     const scratch = mkdtempSync(join(tmpdir(), "calder-check-"));
     const env = { ...process.env, GIT_INDEX_FILE: join(scratch, "index") };
     const git = (args: ReadonlyArray<string>) => Exec.run(["git", "-C", top, ...args], { env });
+
     const sha = yield* Effect.gen(function* () {
       yield* git(["read-tree", "HEAD"]);
       yield* git(["add", "-A"]);
       const tree = (yield* git(["write-tree"])).trim();
+
       return (yield* git(["commit-tree", tree, "-p", "HEAD", "-m", "calder check"])).trim();
     }).pipe(Effect.ensuring(Effect.sync(() => rmSync(scratch, { recursive: true, force: true }))));
+
     const remotes = urls(yield* Exec.run(["git", "-C", top, "remote", "-v"]));
+
     return { gitDir, sha, remotes } satisfies WorkingCopy;
   });
 
@@ -120,6 +133,7 @@ const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
           join(scratch, "objects", "info", "alternates"),
           `${join(copy.gitDir, "objects")}\n`,
         );
+
         const local = yield* Exec.exec([
           "git",
           "--git-dir",
@@ -129,15 +143,18 @@ const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
           "--null",
           "--list",
         ]);
+
         const settings =
           local.exitCode !== 0
             ? []
             : local.stdout.split("\0").flatMap((entry) => {
                 const at = entry.indexOf("\n");
+
                 return at < 0 || !pushSettings.test(entry.slice(0, at))
                   ? []
                   : [[entry.slice(0, at), entry.slice(at + 1)] as const];
               });
+
         for (const [name, value] of settings)
           yield* Exec.run(["git", "--git-dir", scratch, "config", "--add", name, value]);
         yield* Exec.run(["git", "--git-dir", scratch, "push", "-q", ...args]);
@@ -176,16 +193,19 @@ export const submit = (
   Effect.gen(function* () {
     const copy = yield* workingCopy(dir, { snapshot: options.snapshot ?? true });
     const projects = (yield* client.overview()).projects;
+
     const found = target(
       copy.remotes,
       projects.map((p) => p.repo),
     );
+
     if (found === undefined)
       return yield* Effect.fail(
         new Error("no git remote points at a repository the controller knows"),
       );
     const ref = `calder/check/${options.key ?? copy.sha.slice(0, 12)}`;
     yield* push(copy, found.remote, gitRef(ref));
+
     const run = yield* client
       .check({
         repo: found.repo,
@@ -197,5 +217,6 @@ export const submit = (
         // No run will follow the ref, so nothing else drops it.
         Effect.onError(() => drop(copy, found.remote, gitRef(ref))),
       );
+
     return { run, copy, remote: found.remote, pushed: gitRef(ref) };
   });

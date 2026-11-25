@@ -89,12 +89,14 @@ const read = (file: string) => {
 
 const number = (file: string) => {
   const text = read(file)?.trim();
+
   return text !== undefined && /^\d+$/.test(text) ? Number(text) : undefined;
 };
 
 /** Under the recorder, `pid` is strace and Nix its child. */
 const nixOf = (pid: number) => {
   const queue = [pid];
+
   for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
     if (read(`/proc/${id}/comm`)?.trim() === "nix") return id;
     queue.push(
@@ -105,23 +107,29 @@ const nixOf = (pid: number) => {
         .map(Number),
     );
   }
+
   return pid;
 };
 
 /** State and CPU time from `/proc/<pid>/stat`, whose fields count after the parenthesized name. */
 const stat = (file: string) => {
   const text = read(file);
+
   if (text === undefined) return undefined;
   const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+
   // utime and stime, in ticks of USER_HZ, which is 100 on x86_64 and aarch64.
   return { state: fields[0]!, cpu: (Number(fields[11]) + Number(fields[12])) / 100 };
 };
 
 const stalls = (file: string): Stall | undefined => {
   const text = read(file);
+
   const total = (kind: string) =>
     Number(new RegExp(`^${kind} .*total=(\\d+)`, "m").exec(text ?? "")?.[1]);
+
   const [some, full] = [total("some"), total("full")];
+
   return Number.isFinite(some) && Number.isFinite(full) ? { some, full } : undefined;
 };
 
@@ -131,12 +139,14 @@ const stalls = (file: string): Stall | undefined => {
  */
 const lastOpened = (trace: string) => {
   let fd: number | undefined;
+
   try {
     fd = openSync(trace, "r");
     const size = fstatSync(fd).size;
     const length = Math.min(size, 64 * 1024);
     const tail = Buffer.alloc(length);
     readSync(fd, tail, 0, length, size - length);
+
     const path = tail
       .toString("utf8")
       .split("\n")
@@ -145,6 +155,7 @@ const lastOpened = (trace: string) => {
           /^\d+ +open(?:at2?)?\((?:\w+, *)?"(\/nix\/store\/(?:[^"\\]|\\.)*)"/.exec(line)?.[1],
       )
       .findLast((p) => p !== undefined);
+
     return { path, size };
   } catch {
     return undefined;
@@ -159,22 +170,28 @@ const cgroups = "/sys/fs/cgroup";
 const cgroupOf = (path: string): Cgroup | undefined => {
   const dir = join(cgroups, path);
   const current = number(join(dir, "memory.current"));
+
   if (current === undefined) return undefined;
   let limit: Cgroup["limit"];
+
   for (let at = dir; at.startsWith(cgroups) && at !== cgroups; at = dirname(at)) {
     const used = number(join(at, "memory.current")) ?? 0;
+
     for (const kind of ["memory.high", "memory.max"] as const) {
       const bytes = number(join(at, kind));
+
       if (
         bytes === undefined ||
         (limit !== undefined && bytes - used >= limit.bytes - limit.current)
       )
         continue;
+
       const over = Number(
         new RegExp(`^${kind.slice("memory.".length)} (\\d+)$`, "m").exec(
           read(join(at, "memory.events")) ?? "",
         )?.[1] ?? 0,
       );
+
       const swap = number(join(at, "memory.swap.current"));
       limit = {
         name: basename(at),
@@ -186,7 +203,9 @@ const cgroupOf = (path: string): Cgroup | undefined => {
       };
     }
   }
+
   const memory = stalls(join(dir, "memory.pressure"));
+
   return {
     unit: basename(path),
     current,
@@ -199,6 +218,7 @@ const cgroupOf = (path: string): Cgroup | undefined => {
 const cgroupPath = (pid: number) => /^0::(\/.+)$/m.exec(read(`/proc/${pid}/cgroup`) ?? "")?.[1];
 
 let daemonUnit: string | null | undefined;
+
 /** The Nix daemon's cgroup, asked of systemd once per worker; null where there is no systemd, as on macOS. */
 export const daemonCgroup = Effect.suspend(() =>
   daemonUnit !== undefined
@@ -232,6 +252,7 @@ export const sample = (
   const daemon = options.daemon === null ? undefined : cgroupOf(options.daemon);
   const path = cgroupPath(nix);
   const job = path === undefined ? undefined : cgroupOf(path);
+
   return {
     at: Date.now(),
     ...(whole === undefined ? {} : { cpu: whole.cpu, resident: options.resident(pid) }),
@@ -254,8 +275,11 @@ const gib = (bytes: number) => (bytes / 2 ** 30).toFixed(1);
 
 const span = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000));
+
   if (s < 60) return `${s} s`;
+
   if (s < 3600) return `${Math.floor(s / 60)} min ${s % 60} s`;
+
   return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
 };
 
@@ -265,11 +289,13 @@ const seconds = (s: number) => `${s < 10 ? s.toFixed(1) : Math.round(s)} s`;
 const stalled = (before: Stall | undefined, now: Stall | undefined, interval: number) => {
   if (before === undefined || now === undefined || interval <= 0) return undefined;
   const pct = (a: number, b: number) => Math.round(Math.min(100, (b - a) / (interval * 10)));
+
   return `${pct(before.some, now.some)}% some and ${pct(before.full, now.full)}% full`;
 };
 
 const thread = (main: NonNullable<Sample["main"]>) => {
   const where = main.wchan === "0" || main.wchan === "" ? "" : ` in ${main.wchan}`;
+
   switch (main.state) {
     case "R":
       return "Its main thread is running.";
@@ -299,14 +325,19 @@ export const describe = (progress: Progress, before: Sample, now: Sample) => {
     : progress.attr === undefined
       ? "after its last attribute"
       : `at attribute ${progress.attr.index} of ${progress.attr.total}, ${progress.attr.name}`;
+
   const parts = [`Still evaluating after ${span(now.at - progress.started)}, ${where}.`];
+
   if (now.resident !== undefined) {
     parts.push(
       `Nix holds ${gib(now.resident)} GiB${progress.budget === null ? "" : ` of its ${gib(progress.budget)} GiB budget`}.`,
     );
   }
+
   const doing = now.main === undefined ? undefined : thread(now.main);
+
   if (doing !== undefined) parts.push(doing);
+
   if (now.opened?.path !== undefined) {
     // The trace grows with every file Nix opens or looks up.
     const still = now.opened.size === before.opened?.size;
@@ -314,16 +345,20 @@ export const describe = (progress: Progress, before: Sample, now: Sample) => {
       `The last file it opened is ${now.opened.path}${still ? ", and it touched no file since the last heartbeat" : ""}.`,
     );
   }
+
   if (progress.activity !== undefined) {
     const { text, started, done, expected } = progress.activity;
+
     const of =
       done === undefined || !expected
         ? ""
         : ` (${(done / 2 ** 20).toFixed(1)} of ${(expected / 2 ** 20).toFixed(1)} MiB)`;
+
     parts.push(`Nix has been ${text}${of} for ${span(now.at - started)}.`);
   } else if (progress.said !== undefined) {
     parts.push(`Nix last said, ${span(now.at - progress.said.at)} ago: "${progress.said.text}".`);
   }
+
   const holds = (who: string, cgroup: Cgroup | undefined) => {
     if (cgroup?.limit !== undefined) {
       const { name, current, kind, bytes, swap } = cgroup.limit;
@@ -336,20 +371,26 @@ export const describe = (progress: Progress, before: Sample, now: Sample) => {
       parts.push(`${who} ${cgroup.unit} holds ${gib(cgroup.current)} GiB and has no memory limit.`);
     }
   };
+
   holds("The job's", now.job);
   holds("The Nix daemon's", now.daemon);
   const interval = now.at - before.at;
+
   const pressure = (what: string, a: Stall | undefined, b: Stall | undefined) => {
     const share = stalled(a, b, interval);
+
     return share === undefined ? [] : [`${what} was ${share}`];
   };
+
   // Each limit once, though the job's and the daemon's may be the same slice.
   const key = (limit: NonNullable<Cgroup["limit"]>) => `${limit.name} ${limit.kind}`;
+
   const limits = new Map(
     [before.job, before.daemon].flatMap((c) =>
       c?.limit === undefined ? [] : [[key(c.limit), c.limit.over]],
     ),
   );
+
   const overs = [
     ...new Map(
       [now.job, now.daemon].flatMap((c) =>
@@ -358,8 +399,10 @@ export const describe = (progress: Progress, before: Sample, now: Sample) => {
     ).values(),
   ].flatMap((limit) => {
     const over = limit.over - (limits.get(key(limit)) ?? limit.over);
+
     return over > 0 ? [`${limit.name} went over its ${limit.kind} ${over} times`] : [];
   });
+
   const during = [
     ...(now.cpu === undefined
       ? []
@@ -370,6 +413,8 @@ export const describe = (progress: Progress, before: Sample, now: Sample) => {
     ...pressure("the Nix daemon's memory pressure", before.daemon?.memory, now.daemon?.memory),
     ...overs,
   ];
+
   if (during.length > 0) parts.push(`In the last ${span(interval)}, ${during.join("; ")}.`);
+
   return parts.join(" ");
 };

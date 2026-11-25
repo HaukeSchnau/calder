@@ -22,6 +22,7 @@ const flake = Flake.make({
   checks: ["artifact", "projectRelease"],
   devShells: ["ci"],
 });
+
 const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` });
 
 describe("Project.standard", () => {
@@ -31,6 +32,7 @@ describe("Project.standard", () => {
         Project.standard({ flake, checks: [qa] }),
         Event.pullRequest({ number: 1 }),
       );
+
       expect(plan.steps.map((s) => s.name).sort()).toEqual([
         "artifact",
         "projectRelease",
@@ -48,6 +50,7 @@ describe("Project.standard", () => {
         checks: [qa],
         afterDeploy: (promote) => [Task.make("apple", { run: cmd`true`, after: [promote] })],
       });
+
       const plan = yield* Calder.plan(project, Event.push("main"));
       expect(plan.reuse).toBe("all");
       expect(plan.get("promote")?.after).toEqual(["artifact", "projectRelease", "qa"]);
@@ -58,12 +61,14 @@ describe("Project.standard", () => {
   it.effect("main deploys the placement after the checks and promotes after it", () =>
     Effect.gen(function* () {
       const shell = flake.devShells.ci;
+
       const placement = {
         shell,
         setup: Pnpm.install({ shell }),
         env: "cloudflare",
         secrets: { FLEET_TOKEN_FILE: "placement-token" },
       };
+
       const project = Project.standard({ flake, checks: [qa], placement });
       const plan = yield* Calder.plan(project, Event.push("main"));
       expect(plan.get("placement")?.after).toEqual(["artifact", "projectRelease", "qa"]);
@@ -93,6 +98,7 @@ describe("Project.standard", () => {
           flake,
           releaseSystems: ["aarch64-darwin", "aarch64-darwin", "x86_64-linux"],
         });
+
         const pr = yield* Calder.plan(project, Event.pullRequest({ number: 1 }));
         expect(pr.steps.map((s) => s.name).sort()).toEqual([
           "artifact",
@@ -122,11 +128,16 @@ describe("Project.standard", () => {
           flake,
           releaseSystems: ["aarch64-darwin", "aarch64-linux"],
         });
+
         const promote = (yield* Calder.plan(project, Event.push("main"))).get("promote")!.step.def;
+
         if (promote._tag !== "Action") return expect.unreachable();
+
         const path = (name: string) =>
           StorePath.make(`/nix/store/00000000000000000000000000000000-${name}`);
+
         const deployed: Array<string> = [];
+
         const target = (host: string, system: string) => ({
           host,
           system,
@@ -134,7 +145,9 @@ describe("Project.standard", () => {
           deploy: (r: { readonly storePath: string }) =>
             Effect.sync(() => deployed.push(`${host} ${r.storePath}`)),
         });
+
         const revision = Sha.make("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+
         const body = Effect.gen(() =>
           promote.body({
             release: path("release"),
@@ -142,6 +155,7 @@ describe("Project.standard", () => {
             "aarch64-linux": path("arm"),
           }),
         );
+
         yield* Effect.scoped(body as Effect.Effect<unknown, unknown, any>).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -183,6 +197,7 @@ describe("Project.standard", () => {
         Project.standard({ flake, checks: [qa], nightly: "0 3 * * *" }),
         Event.schedule("0 3 * * *"),
       );
+
       expect(plan.steps.map((s) => s.name).sort()).toEqual(["artifact", "projectRelease", "qa"]);
       expect(plan.reuse).toBe("none");
     }),
@@ -200,11 +215,13 @@ describe("Project.standard", () => {
 
 describe("Project.alchemy", () => {
   const site = Flake.make({ packages: ["site"], checks: ["artifact"], devShells: ["ci"] });
+
   const stack = {
     shell: site.devShells.ci,
     setup: Pnpm.install({ shell: site.devShells.ci }),
     env: "cloudflare",
   };
+
   const project = Project.alchemy({
     flake: site,
     stack,
@@ -249,14 +266,18 @@ describe("Project.alchemy", () => {
   it.effect("production's deploy and a preview have the stack's outputs as their value", () =>
     Effect.gen(function* () {
       const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) };
+
       const site = Project.alchemy({
         flake: Flake.make({ checks: ["artifact"], devShells: ["ci"] }),
         stack: { ...stack, outputs },
         previews: { url: (_pr, o) => o.url },
       });
+
       const prod = (yield* Calder.plan(site, Event.push("main"))).get("deploy-prod")!.step.def;
+
       const preview = (yield* Calder.plan(site, Event.pullRequest({ number: 7 }))).get("preview")!
         .step.def;
+
       expect([prod, preview].map((def) => def._tag === "Task" && def.value?.path)).toEqual([
         ".calder-alchemy-outputs.json",
         ".calder-alchemy-outputs.json",
@@ -270,11 +291,14 @@ describe("Project.alchemy", () => {
         Project.alchemy({ flake: site, stack }),
         Event.pullRequest({ number: 8 }),
       );
+
       expect(plan.steps.map((s) => s.name)).toEqual(["artifact", "install", "plan-prod"]);
+
       const closed = yield* Calder.plan(
         Project.alchemy({ flake: site, stack }),
         Event.pullRequestClosed({ number: 8 }),
       );
+
       expect(closed.steps).toEqual([]);
     }),
   );

@@ -44,11 +44,13 @@ describe("extract", () => {
     Effect.gen(function* () {
       const root = revision();
       const seen: Array<ReadonlyArray<string>> = [];
+
       const watching = (scratch: string) =>
         Effect.andThen(
           fill(scratch),
           Effect.sync(() => seen.push(existsSync(root) ? readdirSync(join(root, ".calder")) : [])),
         );
+
       yield* Effect.all([extract(root, watching), extract(root, watching)], { concurrency: 2 });
       expect(seen.every((files) => files.length === 0 || files.length === 2)).toBe(true);
       expect(readdirSync(join(root, ".calder")).sort()).toEqual(["ci.ts", "flake.ts"]);
@@ -69,9 +71,11 @@ describe("extract", () => {
   it.effect("leaves nothing behind when the extraction fails", () =>
     Effect.gen(function* () {
       const root = revision();
+
       const failed = yield* extract(root, (scratch) =>
         Effect.andThen(fill(scratch), Effect.fail("tar failed")),
       ).pipe(Effect.flip);
+
       expect(failed).toBe("tar failed");
       expect(readdirSync(join(root, ".."))).toEqual([]);
     }),
@@ -89,9 +93,11 @@ const sweptOnce = (state: string) =>
       all: () => [],
       byRepo: () => Effect.die("unused"),
     });
+
     const spawner = Layer.succeed(Exec.SpawnerTag)(
       ChildProcessSpawner.make(() => Effect.die("unused")),
     );
+
     yield* Effect.asVoid(Mirror.Mirror).pipe(
       Effect.provide(
         Mirror.layer.pipe(Layer.provide([config({ stateDir: state }), projects, spawner])),
@@ -124,6 +130,7 @@ describe("Mirror", () => {
       const state = mkdtempSync(join(tmpdir(), "calder-state-"));
       const forge = mkdtempSync(join(tmpdir(), "calder-forge-"));
       const work = join(forge, "work");
+
       const git = (...args: ReadonlyArray<string>) =>
         execFileSync("git", args, {
           encoding: "utf8",
@@ -136,6 +143,7 @@ describe("Mirror", () => {
             GIT_COMMITTER_EMAIL: "t@t",
           },
         }).trim();
+
       git("init", "-q", "--bare", join(forge, "schnau", "app.git"));
       git("init", "-q", "-b", "main", work);
       git("-C", work, "commit", "-q", "--allow-empty", "-m", "base");
@@ -150,6 +158,7 @@ describe("Mirror", () => {
         "HEAD~1:refs/heads/main",
         `${checked}:refs/calder/check/x`,
       );
+
       const projects = Layer.succeed(Projects)({
         get: (name) => ({
           name,
@@ -161,9 +170,11 @@ describe("Mirror", () => {
         all: () => [],
         byRepo: () => Effect.die("unused"),
       });
+
       const processes = BunChildProcessSpawner.layer.pipe(
         Layer.provide([BunFileSystem.layer, BunPath.layer]),
       );
+
       yield* Effect.flatMap(Mirror.Mirror, (mirror) => mirror.fetch("app")).pipe(
         Effect.provide(
           Mirror.layer.pipe(
@@ -192,6 +203,7 @@ describe("Mirror", () => {
         const forge = mkdtempSync(join(tmpdir(), "calder-forge-"));
         const work = join(forge, "work");
         const remote = join(forge, "schnau", "app.git");
+
         const git = (...args: ReadonlyArray<string>) =>
           execFileSync("git", args, {
             encoding: "utf8",
@@ -204,19 +216,23 @@ describe("Mirror", () => {
               GIT_COMMITTER_EMAIL: "t@t",
             },
           }).trim();
+
         git("init", "-q", "--bare", remote);
         git("init", "-q", "-b", "main", work);
         writeFileSync(join(work, "a"), "base\n");
         git("-C", work, "add", "a");
         git("-C", work, "commit", "-q", "-m", "base");
         const base = git("-C", work, "rev-parse", "HEAD");
+
         const branch = (name: string, file: string, content: string) => {
           git("-C", work, "checkout", "-q", "-b", name, base);
           writeFileSync(join(work, file), content);
           git("-C", work, "add", file);
           git("-C", work, "commit", "-q", "-m", name);
+
           return git("-C", work, "rev-parse", "HEAD");
         };
+
         const one = branch("one", "b", "one\n");
         const clash = branch("clash", "b", "clash\n");
         const two = branch("two", "c", "two\n");
@@ -233,6 +249,7 @@ describe("Mirror", () => {
           "two",
           "three",
         );
+
         const projects = Layer.succeed(Projects)({
           get: (name) => ({
             name,
@@ -244,20 +261,25 @@ describe("Mirror", () => {
           all: () => [],
           byRepo: () => Effect.die("unused"),
         });
+
         const processes = BunChildProcessSpawner.layer.pipe(
           Layer.provide([BunFileSystem.layer, BunPath.layer]),
         );
+
         const { built, of, next } = yield* Effect.gen(function* () {
           const mirror = yield* Mirror.Mirror;
           yield* mirror.fetch("app");
+
           const built = yield* mirror.train("app", base, [
             { pr: 1, sha: one },
             { pr: 2, sha: clash },
             { pr: 3, sha: two },
           ]);
+
           yield* mirror.push("app", built.sha!, "refs/heads/main");
           // The next train starts from the landed one, whose tip is a train's merge too.
           const second = yield* mirror.train("app", built.sha!, [{ pr: 4, sha: three }]);
+
           return {
             built,
             of: yield* mirror.trainOf("app", built.sha!),
@@ -277,6 +299,7 @@ describe("Mirror", () => {
             ),
           ),
         );
+
         expect(built.conflicts).toEqual([2]);
         expect(of).toEqual({
           base,
@@ -301,6 +324,7 @@ describe("Mirror", () => {
         revisions.map((sha) => `revs/kept/${sha}`),
       );
       const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000);
+
       for (const sha of ["idle", "idle.scratch", "running"])
         utimesSync(join(state, "revs/kept", sha), twoDaysAgo, twoDaysAgo);
       const sql = yield* SqlClient.SqlClient;
@@ -316,6 +340,7 @@ describe("flake inputs", () => {
   it("come from the project's mirror under every URL a flake input names its repository with", () => {
     const mirror = join(mkdtempSync(join(tmpdir(), "calder-mirror-")), "studienbuch.git");
     execFileSync("git", ["init", "-q", "--bare", mirror]);
+
     const env = {
       ...process.env,
       ...Repo.insteadOf(
@@ -325,6 +350,7 @@ describe("flake inputs", () => {
       ),
       GIT_SSH_COMMAND: "false",
     };
+
     for (const url of [
       "ssh://git@git.example.org/schnau/Studienbuch.git",
       "https://git.example.org/schnau/Studienbuch.git",
@@ -333,6 +359,7 @@ describe("flake inputs", () => {
         execFileSync("git", ["ls-remote", "--get-url", url], { env, encoding: "utf8" }).trim(),
       ).toBe(`file://${mirror}`);
     }
+
     expect(
       execFileSync(
         "git",

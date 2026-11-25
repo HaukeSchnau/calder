@@ -17,11 +17,13 @@ import {
 } from "../src/worker/Resolve.ts";
 
 const run = (flake: string) => ({ flake }) as RunInfo;
+
 const drv = (name: string) => ({
   drv: `/nix/store/00000000000000000000000000000000-${name}.drv`,
   out: `/nix/store/00000000000000000000000000000000-${name}`,
   system: "x86_64-linux",
 });
+
 const GiB = 2 ** 30;
 
 /** What `nix eval` makes of an attribute: a derivation or null, an error Nix can't catch, and how much memory it takes. */
@@ -57,23 +59,27 @@ const nix = (
   const evaluated: Array<ReadonlyArray<string>> = [];
   const held = new Map<number, number>();
   const line = (text: string) => new TextEncoder().encode(`${text}\n`);
+
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
       const argv = ChildProcess.isStandardCommand(command)
         ? [command.command, ...command.args]
         : [];
+
       calls.push(argv.slice(0, 2).join(" "));
       const evaluates = argv[1] === "eval";
       const pid = calls.length;
       held.set(pid, GiB / 4);
       let stderr: Stream.Stream<Uint8Array> = Stream.empty;
       let exit: Effect.Effect<number> = Effect.succeed(evaluates || valid() ? 0 : 1);
+
       if (
         options.killed !== undefined &&
         argv[0] === options.killed &&
         (argv[1] === "eval" || argv[0] === "strace")
       ) {
         calls[calls.length - 1] = argv.slice(0, 2).join(" ");
+
         return ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(pid),
           exitCode: Effect.fail(
@@ -95,10 +101,12 @@ const nix = (
           unref: Effect.succeed(Effect.void),
         });
       }
+
       if (evaluates) {
         yield* options.evaluating ?? Effect.void;
         const asked = askedAttrs(argv.at(-1)!);
         evaluated.push(asked);
+
         const reports: Array<Stream.Stream<Uint8Array>> =
           options.heavyFlake === undefined
             ? [
@@ -116,19 +124,25 @@ const nix = (
                 ),
                 Stream.never,
               ];
+
         if (options.heavyFlake !== undefined) exit = Effect.never;
+
         if (options.broken) exit = Effect.succeed(1);
+
         for (const [i, name] of options.broken || options.silent ? [] : asked.entries()) {
           const attr = options.attrs?.[name] ?? {};
           const value = attr.value === undefined ? (name === "b" ? null : drv(name)) : attr.value;
+
           const grow = Stream.fromEffect(
             Effect.sync(() => held.set(pid, held.get(pid)! + (attr.bytes ?? 0))),
           ).pipe(Stream.drain);
+
           if (value === "missing" || value === "unreachable") {
             const error =
               value === "missing"
                 ? `attribute '${name}' missing`
                 : "unable to download 'https://example.org/x': HTTP error 502";
+
             reports.push(
               Stream.make(
                 line("error:"),
@@ -139,11 +153,13 @@ const nix = (
             exit = Effect.succeed(1);
             break;
           }
+
           if ((attr.bytes ?? 0) > (options.hang ?? Number.POSITIVE_INFINITY)) {
             reports.push(grow, Stream.never);
             exit = Effect.never;
             break;
           }
+
           reports.push(
             grow,
             Stream.make(
@@ -153,17 +169,22 @@ const nix = (
             ),
           );
         }
+
         stderr = Stream.flatten(Stream.fromIterable(reports));
       }
+
       // `--print-invalid` lists the invalid paths and succeeds; without it, any invalid path fails.
       const listing = argv.includes("--print-invalid");
+
       if (listing) exit = Effect.succeed(0);
+
       const stdout =
         argv[1] === "--query"
           ? (options.closure?.() ?? []).join("\n")
           : listing && !valid()
             ? argv.filter((a) => a.startsWith("/nix/store/")).join("\n")
             : "";
+
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(pid),
         exitCode: Effect.map(exit, ChildProcessSpawner.ExitCode),
@@ -179,11 +200,13 @@ const nix = (
       });
     }),
   );
+
   const memory = (budget: number | null): Memory => ({
     budget,
     resident: (pid) => held.get(pid) ?? 0,
     every: "10 millis",
   });
+
   return { calls, evaluated, spawner, memory };
 };
 
@@ -195,6 +218,7 @@ describe("derivations", () => {
       let valid = true;
       const { calls, spawner } = nix(() => valid);
       const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
       const plan = (flake: string) =>
         derivations(run(flake), ["a", "b"], dir, undefined, unlimited).pipe(
           Effect.map((e) => e.derivations),
@@ -213,6 +237,7 @@ describe("derivations", () => {
 
       // Another revision replaces the repository's entry; a subset of it is a hit.
       yield* plan("git+file:///mirror?rev=2");
+
       const subset = yield* derivations(
         run("git+file:///mirror?rev=2"),
         ["a"],
@@ -223,6 +248,7 @@ describe("derivations", () => {
         Effect.map((e) => e.derivations),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
+
       expect(subset).toEqual(new Map([["a", drv("a")]]));
       expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first);
       expect(calls.filter((c) => c === "nix eval")).toHaveLength(3);
@@ -239,6 +265,7 @@ describe("derivations", () => {
     Effect.gen(function* () {
       const { calls, spawner } = nix(() => true, { evaluating: Effect.sleep("50 millis") });
       const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
       const plan = derivations(
         run("git+file:///mirror?rev=1"),
         ["a", "b"],
@@ -246,6 +273,7 @@ describe("derivations", () => {
         undefined,
         unlimited,
       ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
       const [push, schedule] = yield* Effect.all([plan, plan], { concurrency: 2 });
       expect(schedule).toEqual(push);
       expect(calls.filter((c) => c === "nix eval")).toHaveLength(1);
@@ -257,16 +285,21 @@ describe("derivations", () => {
       // Each evaluation goes on only once both started.
       const both = yield* Deferred.make<void>();
       let started = 0;
+
       const evaluating = Effect.suspend(() => {
         started++;
+
         return started === 2 ? Deferred.succeed(both, undefined) : Deferred.await(both);
       });
+
       const { calls, spawner } = nix(() => true, { evaluating });
       const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
       const plan = (flake: string) =>
         derivations(run(flake), ["a"], dir, undefined, unlimited).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
+
       yield* Effect.all([plan("git+file:///mirror?rev=1"), plan("git+file:///mirror?rev=2")], {
         concurrency: 2,
       });
@@ -278,6 +311,7 @@ describe("derivations", () => {
     Effect.gen(function* () {
       const { calls, spawner } = nix(() => true);
       const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
       const plan = derivations(
         run("git+file:///mirror?rev=1"),
         ["a"],
@@ -285,7 +319,9 @@ describe("derivations", () => {
         undefined,
         unlimited,
       ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
       yield* plan;
+
       // No process has this id: Linux caps them at 2^22.
       for (const name of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
         writeFileSync(
@@ -293,6 +329,7 @@ describe("derivations", () => {
           String(2 ** 23),
         );
       }
+
       yield* plan;
       expect(calls).toEqual(["nix eval", "nix-store --check-validity"]);
     }),
@@ -309,9 +346,11 @@ describe("derivations", () => {
         const pr = "1".repeat(40);
         const committed = 1_761_609_600;
         const earlier = { revision: pr, derivations: { a: drv("a"), b: null }, app: "app" };
+
         const flake = new Map([
           ["flake.nix", "{ outputs = { self, nixpkgs }: { packages.x86_64-linux.bundle = 1; }; }"],
         ]);
+
         const take = (
           attrs: ReadonlyArray<string>,
           revision: Partial<Parameters<typeof fromEarlier>[2]> = {},
@@ -332,6 +371,7 @@ describe("derivations", () => {
             ["b", null],
           ]),
         );
+
         // A derivation that embeds the commit, such as a version from `self.shortRev` or `self.lastModified`, doesn't carry over.
         for (const mark of [pr.slice(0, 7), String(committed), "20251028000000", "20251028"]) {
           writeFileSync(
@@ -340,6 +380,7 @@ describe("derivations", () => {
           );
           expect(yield* take(["a", "b"])).toBeUndefined();
         }
+
         // Of a plan that didn't evaluate every attribute this one needs, it takes those it did; none of a flake
         // that reads revCount, nor of one whose commit can't be read.
         writeFileSync(
@@ -369,6 +410,7 @@ describe("evaluating within the job's memory", () => {
     Effect.gen(function* () {
       const logged: Array<string> = [];
       const log = (text: string) => Effect.sync(() => void logged.push(text));
+
       const {
         derivations: result,
         errors,
@@ -380,6 +422,7 @@ describe("evaluating within the job's memory", () => {
         log,
         fake.memory(budget),
       ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
       return { result, errors, tooLarge, logged };
     });
 
@@ -412,6 +455,7 @@ describe("evaluating within the job's memory", () => {
             last: { bytes: GiB / 4 },
           },
         });
+
         const { result } = yield* evaluate(fake, ["check", "host", "other", "last"], 3 * GiB);
         expect(result).toEqual(new Map(["check", "host", "other", "last"].map((h) => [h, drv(h)])));
         expect(fake.evaluated).toEqual([["check", "host", "other", "last"], ["last"]]);
@@ -433,9 +477,11 @@ describe("evaluating within the job's memory", () => {
         writeFileSync(join(unit, "memory.current"), String(5.5 * GiB));
         const self = join(root, "self");
         writeFileSync(self, "0::/calder.slice/calder-jobs.slice/calder-job-trusted@1.service\n");
+
         const fake = nix(() => true, {
           attrs: { x: { bytes: 2 * GiB }, y: { bytes: 2.5 * GiB }, z: { bytes: GiB / 4 } },
         });
+
         const memory = { ...fake.memory(5.5 * GiB), room: jobMemory(root, self).room! };
         yield* derivations(
           run("git+file:///mirror"),
@@ -457,8 +503,10 @@ describe("evaluating within the job's memory", () => {
         const fake = nix(() => true, {
           attrs: { x: { bytes: GiB }, y: { bytes: GiB }, z: { bytes: GiB } },
         });
+
         const logged: Array<string> = [];
         const memory = { ...fake.memory(3 * GiB), room: () => GiB / 2 };
+
         const { derivations: result, tooLarge } = yield* derivations(
           run("git+file:///mirror"),
           ["x", "y", "z"],
@@ -466,6 +514,7 @@ describe("evaluating within the job's memory", () => {
           (text) => Effect.sync(() => void logged.push(text)),
           memory,
         ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
         expect(result).toEqual(new Map(["x", "y", "z"].map((h) => [h, drv(h)])));
         expect(tooLarge.size).toBe(0);
         // Each evaluator gets its first attribute whatever the slice holds, then stops.
@@ -489,6 +538,7 @@ describe("evaluating within the job's memory", () => {
           },
           hang: 3 * GiB,
         });
+
         const { result, tooLarge } = yield* evaluate(fake, ["a", "huge", "c", "d"], 3 * GiB);
         expect(result).toEqual(
           new Map([
@@ -554,6 +604,7 @@ describe("evaluating within the job's memory", () => {
           3 * GiB,
         ),
       );
+
       expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/);
     }),
   );
@@ -563,6 +614,7 @@ describe("evaluating within the job's memory", () => {
     () =>
       Effect.gen(function* () {
         let flaky = true;
+
         const fake = nix(() => true, {
           attrs: {
             get shell() {
@@ -570,7 +622,9 @@ describe("evaluating within the job's memory", () => {
             },
           },
         });
+
         const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
         const plan = derivations(
           run("git+file:///mirror?rev=1"),
           ["shell"],
@@ -578,6 +632,7 @@ describe("evaluating within the job's memory", () => {
           undefined,
           unlimited,
         ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
         const twice = derivations(
           run("git+file:///mirror?rev=1"),
           ["a", "shell"],
@@ -585,6 +640,7 @@ describe("evaluating within the job's memory", () => {
           undefined,
           unlimited,
         ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
         expect((yield* twice).derivations).toEqual(new Map([["a", drv("a")]]));
         flaky = false;
         // The next plan of the commit evaluates only what the cache lacks.
@@ -610,9 +666,11 @@ describe("evaluating within the job's memory", () => {
             3 * GiB,
           ),
         );
+
         expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/);
 
         const fake = nix(() => true, { killed: "strace" });
+
         const recorder = {
           source: "/nix/store/x-source",
           url: "path:/nix/store/x-source?rev=1",
@@ -625,6 +683,7 @@ describe("evaluating within the job's memory", () => {
           narHash: "sha256-source=",
           read: () => Effect.succeed(new Map<string, string>()),
         };
+
         const result = yield* derivations(
           run("git+file:///mirror"),
           ["a"],
@@ -633,6 +692,7 @@ describe("evaluating within the job's memory", () => {
           unlimited,
           { recorder },
         ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
         expect(result.derivations).toEqual(new Map([["a", drv("a")]]));
         expect(fake.calls.filter((c) => c === "strace -f" || c === "nix eval")).toEqual([
           "strace -f",
@@ -644,6 +704,7 @@ describe("evaluating within the job's memory", () => {
   it.live("evaluates as before, recording nothing, when recording what Nix read fails", () =>
     Effect.gen(function* () {
       const fake = nix(() => true);
+
       const recorder = {
         source: "/nix/store/x-source",
         url: "path:/nix/store/x-source?rev=1",
@@ -656,8 +717,10 @@ describe("evaluating within the job's memory", () => {
         narHash: "sha256-source=",
         read: () => Effect.succeed(new Map<string, string>()),
       };
+
       const logged: Array<string> = [];
       const log = (text: string) => Effect.sync(() => void logged.push(text));
+
       const result = yield* derivations(
         run("git+file:///mirror"),
         ["a"],
@@ -666,6 +729,7 @@ describe("evaluating within the job's memory", () => {
         unlimited,
         { recorder },
       ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
       expect(result.derivations).toEqual(new Map([["a", drv("a")]]));
       expect(result.recorded).toBeUndefined();
       // strace ran nothing that reported (as without ptrace), then nix ran alone.

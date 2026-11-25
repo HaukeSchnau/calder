@@ -8,9 +8,11 @@ import { config } from "./config.ts";
 const answering = (status: number) =>
   Effect.gen(function* () {
     const requests: Array<string> = [];
+
     const client = HttpClient.make((request) =>
       Effect.sync(() => {
         requests.push(`${request.method} ${request.url.replace("http://gitea.test/api/v1", "")}`);
+
         return request.method === "PATCH"
           ? HttpClientResponse.fromWeb(
               request,
@@ -22,6 +24,7 @@ const answering = (status: number) =>
             );
       }),
     );
+
     const gitea = yield* Effect.provide(
       Effect.gen(function* () {
         return yield* Gitea;
@@ -30,6 +33,7 @@ const answering = (status: number) =>
         Layer.provide(Layer.mergeAll(config(), Layer.succeed(HttpClient.HttpClient)(client))),
       ),
     );
+
     return { gitea, requests };
   });
 

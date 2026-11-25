@@ -19,6 +19,7 @@ import { type JobEvent, WorkerRpcs } from "../Protocol.ts";
 import * as Repo from "./Repo.ts";
 
 const makeClient = RpcClient.make(WorkerRpcs);
+
 export type Client = Effect.Success<typeof makeClient>;
 
 /** The controller stopped while it handled a call: Effect's RpcServer interrupts its handlers and sends the interrupt back. */
@@ -47,11 +48,14 @@ export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>): Effect.Effe
     // When the latest try began, and when the failures since the last try a controller took began.
     let tried = 0;
     let since: number | undefined;
+
     return Effect.gen(function* () {
       tried = yield* Clock.currentTimeMillis;
       const exit = yield* Fiber.await(yield* Effect.forkChild(call, { startImmediately: true }));
+
       if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause))
         return yield* new ControllerStopped();
+
       return yield* exit;
     }).pipe(
       Effect.retry({
@@ -63,7 +67,9 @@ export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>): Effect.Effe
             )
               return false;
             const now = yield* Clock.currentTimeMillis;
+
             if (since === undefined || now - tried >= Duration.toMillis(taken)) since = now;
+
             return now - since < Duration.toMillis(patience);
           }),
         schedule: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("5 seconds")]),
@@ -144,10 +150,12 @@ export const evaluationEnv = (
     ...new Set(
       Object.values(mirrors).flatMap((target) => {
         const at = /^(https?:\/\/[^/]+)\/git\//.exec(target);
+
         return at === null ? [] : [`${at[1]}/git/`];
       }),
     ),
   ];
+
   return {
     ...Repo.insteadOf(mirrors, [
       ["safe.directory", "*"],
@@ -171,22 +179,28 @@ export const make = (
     let batch = 0;
     // One batch at a time, in order, so the controller can tell a batch sent again by its number.
     const sending = yield* Semaphore.make(1);
+
     const flush = sending.withPermits(1)(
       Effect.suspend(() => {
         if (buffer.length === 0) return Effect.void;
         const events = buffer;
         buffer = [];
         batch += 1;
+
         return reconnecting(client.events({ job: id, token, events, batch })).pipe(Effect.orDie);
       }),
     );
+
     yield* flush.pipe(Effect.delay("250 millis"), Effect.forever, Effect.forkScoped);
     yield* Effect.addFinalizer(() => flush);
+
     const emit = (event: JobEvent) =>
       Effect.suspend(() => {
         buffer.push(event);
+
         return buffer.length >= 500 ? flush : Effect.void;
       });
+
     return {
       id,
       token,

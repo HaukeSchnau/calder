@@ -56,6 +56,7 @@ describe("Release.promote", () => {
       const error = yield* Effect.flip(
         promoting({ _tag: "Held", fence: 1, targets: [], unreachable: [] }),
       );
+
       expect(error).toEqual(new Release.NoHosts({ project: "calder" }));
     }),
   );
@@ -63,15 +64,18 @@ describe("Release.promote", () => {
   it.effect("deploys nowhere while a host that might run the app can't be reached", () =>
     Effect.gen(function* () {
       const touched: Array<string> = [];
+
       const hostA = {
         host: "host-a",
         system: "x86_64-linux",
         preflight: () => Effect.sync(() => touched.push("preflight")),
         deploy: () => Effect.sync(() => touched.push("deploy")),
       };
+
       const error = yield* Effect.flip(
         promoting({ _tag: "Held", fence: 1, targets: [hostA], unreachable: ["host-b"] }),
       );
+
       expect(error).toEqual(new Release.Unreachable({ project: "calder", hosts: ["host-b"] }));
       expect(touched).toEqual([]);
     }),
@@ -82,6 +86,7 @@ describe("Release.promote", () => {
     status: 409,
     reason: "Release topology differs from the host-compatible contract",
   });
+
   /** A host that refuses the first `refusals` preflights with `refused`. */
   const host = (refusals: number, refused: Rejected, touched: Array<string>) => ({
     host: "host-a",
@@ -89,6 +94,7 @@ describe("Release.promote", () => {
     preflight: () =>
       Effect.suspend(() => {
         touched.push("preflight");
+
         return touched.length <= refusals ? Effect.fail(refused) : Effect.void;
       }),
     deploy: () => Effect.sync(() => touched.push("deploy")),
@@ -97,6 +103,7 @@ describe("Release.promote", () => {
   it.effect("waits for the switch that gives a host the release's topology, then deploys", () =>
     Effect.gen(function* () {
       const touched: Array<string> = [];
+
       const promotion = yield* Effect.forkChild(
         promoting({
           _tag: "Held",
@@ -105,6 +112,7 @@ describe("Release.promote", () => {
           unreachable: [],
         }),
       );
+
       yield* TestClock.adjust("1 minute");
       const result = yield* Fiber.join(promotion);
       expect(result._tag).toBe("Live");
@@ -116,12 +124,14 @@ describe("Release.promote", () => {
     Effect.gen(function* () {
       const touched: Array<string> = [];
       let head = revision;
+
       const promotion = yield* Effect.forkChild(
         promoting(
           { _tag: "Held", fence: 1, targets: [host(Infinity, topology, touched)], unreachable: [] },
           () => head,
         ),
       );
+
       yield* TestClock.adjust("30 seconds");
       head = Sha.make("0000000000000000000000000000000000000001");
       yield* TestClock.adjust("30 seconds");
@@ -133,14 +143,17 @@ describe("Release.promote", () => {
   it.effect("fails at once when a host refuses for anything but the topology", () =>
     Effect.gen(function* () {
       const touched: Array<string> = [];
+
       const secret = new Rejected({
         target: "host-a",
         status: 409,
         reason: "missing required Secret binding: token",
       });
+
       const error = yield* Effect.flip(
         promoting({ _tag: "Held", fence: 1, targets: [host(1, secret, touched)], unreachable: [] }),
       );
+
       expect(error).toEqual(secret);
       expect(touched).toEqual(["preflight"]);
     }),
@@ -148,6 +161,7 @@ describe("Release.promote", () => {
 
   const linux = StorePath.make("/nix/store/0000000000000000000000000000000b-release");
   const darwin = StorePath.make("/nix/store/0000000000000000000000000000000c-release");
+
   /** A host of `system` that records what it is asked to deploy. */
   const of = (host: string, system: string, deployed: Array<string>) => ({
     host,
@@ -162,18 +176,22 @@ describe("Release.promote", () => {
       const deployed: Array<string> = [];
       const published: Array<string> = [];
       const unused = StorePath.make("/nix/store/0000000000000000000000000000000d-release");
+
       const targets = [
         of("m1", "aarch64-darwin", deployed),
         of("tower", "x86_64-linux", deployed),
         of("dev", "x86_64-linux", deployed),
       ];
+
       const releases = { "x86_64-linux": linux, "aarch64-darwin": darwin, "aarch64-linux": unused };
+
       const result = yield* promoting(
         { _tag: "Held", fence: 1, targets, unreachable: [] },
         undefined,
         releases,
         published,
       );
+
       expect(result).toEqual(new Release.Live({ revision, hosts: ["m1", "tower", "dev"] }));
       expect(deployed).toEqual([`m1 ${darwin}`, `tower ${linux}`, `dev ${linux}`]);
       expect(published.sort()).toEqual([`aarch64-darwin ${darwin}`, `own ${linux}`]);
@@ -185,6 +203,7 @@ describe("Release.promote", () => {
       const deployed: Array<string> = [];
       const published: Array<string> = [];
       const targets = [of("tower", "x86_64-linux", deployed), of("m1", "aarch64-darwin", deployed)];
+
       const error = yield* Effect.flip(
         promoting(
           { _tag: "Held", fence: 1, targets, unreachable: [] },
@@ -193,6 +212,7 @@ describe("Release.promote", () => {
           published,
         ),
       );
+
       expect(error).toEqual(
         new Release.NoRelease({
           project: "calder",

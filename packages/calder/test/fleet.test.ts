@@ -15,6 +15,7 @@ describe("Fleet", () => {
         Effect.fail("connection refused"),
         Effect.succeed({ apps: ["calder"] }),
       ];
+
       const healthOf = Fleet.remembered(() => answers.shift()!).cached;
       expect(yield* healthOf("http://host-b:18100")).toBeNull();
       expect(yield* healthOf("http://host-b:18100")).toEqual({ apps: ["calder"] });
@@ -30,6 +31,7 @@ describe("Fleet", () => {
           tower: { ok: true, apps: ["calder"] },
           "srv-1": { ok: true, apps: ["other"], system: "aarch64-linux" },
         };
+
         const client = HttpClient.make((request) =>
           Effect.succeed(
             HttpClientResponse.fromWeb(
@@ -38,6 +40,7 @@ describe("Fleet", () => {
             ),
           ),
         );
+
         const fleet = yield* Effect.provide(
           Effect.gen(function* () {
             return yield* Fleet.Fleet;
@@ -61,6 +64,7 @@ describe("Fleet", () => {
             ),
           ),
         );
+
         const project = {
           name: "calder",
           repo: "schnau/calder",
@@ -68,6 +72,7 @@ describe("Fleet", () => {
           targets: null,
           secrets: {},
         };
+
         expect(yield* fleet.deployTargets(project, "calder")).toEqual({
           targets: [
             { url: "http://m1:18100", system: "aarch64-darwin" },
@@ -90,6 +95,7 @@ describe("Fleet", () => {
             )
           : (Effect.fail(new Error("connection refused")) as never),
       );
+
       const fleet = yield* Effect.provide(
         Effect.gen(function* () {
           return yield* Fleet.Fleet;
@@ -112,6 +118,7 @@ describe("Fleet", () => {
           ),
         ),
       );
+
       const project = {
         name: "calder",
         repo: "schnau/calder",
@@ -119,6 +126,7 @@ describe("Fleet", () => {
         targets: null,
         secrets: {},
       };
+
       const resolving = yield* Effect.forkChild(fleet.deployTargets(project, "calder"));
       yield* TestClock.adjust("2 minutes");
       expect(yield* Fiber.join(resolving)).toEqual({
@@ -133,6 +141,7 @@ describe("Fleet", () => {
 
   const asleep = (answersAfter: number) => {
     let asked = 0;
+
     return () => Effect.sync(() => (++asked > answersAfter ? { apps: ["calder"] } : null));
   };
 
@@ -141,15 +150,19 @@ describe("Fleet", () => {
     () =>
       Effect.gen(function* () {
         const woken: Array<string> = [];
+
         const wake = (command: ReadonlyArray<string>) =>
           Effect.sync(() => woken.push(command.join(" ")));
+
         // Asked every 5 seconds, the host first answers after three minutes, past the minute others get.
         const ask = Fleet.patiently(asleep(36), wake);
+
         const tower = {
           url: "http://tower:18100",
           wake: ["systemctl", "start", "calder-wake@tower.service"],
           optional: false,
         };
+
         const probing = yield* Effect.forkChild(ask(tower));
         yield* TestClock.adjust("3 minutes");
         expect(yield* Fiber.join(probing)).toEqual({ apps: ["calder"] });
@@ -165,18 +178,23 @@ describe("Fleet", () => {
     () =>
       Effect.gen(function* () {
         let awake = true;
+
         const healthOf = Fleet.remembered(() =>
           awake ? Effect.succeed({ apps: ["calder"] }) : Effect.fail("connection refused"),
         );
+
         expect(yield* healthOf.cached("http://tower:18100")).toEqual({ apps: ["calder"] });
         awake = false;
         const woken: Array<string> = [];
+
         const ask = Fleet.patiently(healthOf.fresh, (command) =>
           Effect.sync(() => woken.push(command.join(" "))),
         );
+
         const probing = yield* Effect.forkChild(
           ask({ url: "http://tower:18100", wake: ["wake-tower"], optional: false }),
         );
+
         yield* TestClock.adjust("10 seconds");
         expect(woken).toEqual(["wake-tower"]);
         expect(probing.pollUnsafe()).toBeUndefined();
@@ -191,15 +209,19 @@ describe("Fleet", () => {
     () =>
       Effect.gen(function* () {
         const woken: Array<string> = [];
+
         const ask = Fleet.patiently(asleep(Infinity), (command) =>
           Effect.sync(() => woken.push(command.join(" "))),
         );
+
         const plain = yield* Effect.forkChild(
           ask({ url: "http://host-b:18100", wake: undefined, optional: false }),
         );
+
         const sleeper = yield* Effect.forkChild(
           ask({ url: "http://tower:18100", wake: ["wake-tower"], optional: false }),
         );
+
         yield* TestClock.adjust("70 seconds");
         expect(yield* Fiber.join(plain)).toBeNull();
         expect(sleeper.pollUnsafe()).toBeUndefined();

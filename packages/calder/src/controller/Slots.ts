@@ -85,6 +85,7 @@ export const make = (options: {
 
   const fits = (project: string) =>
     options.perProject === undefined || (byProject.get(project) ?? 0) < options.perProject;
+
   const under = (project: string) =>
     options.maxPerProject === undefined || (byProject.get(project) ?? 0) < options.maxPerProject;
 
@@ -98,8 +99,10 @@ export const make = (options: {
       label: claim.label ?? claim.project,
       critical: claim.critical === true,
     };
+
     holders.push(holder);
     byProject.set(claim.project, (byProject.get(claim.project) ?? 0) + 1);
+
     return holder;
   };
 
@@ -119,27 +122,35 @@ export const make = (options: {
     if (!under(w.project)) return false;
     const running = holders.length;
     const regular = running - Math.min(lane, holders.filter((h) => h.critical).length);
+
     if (w.critical === true) return running < options.capacity + lane;
+
     if (yields(w)) return regular < options.capacity - 1 && !waiters.some((o) => !yields(o));
+
     return regular < options.capacity;
   };
 
   const grant = () => {
     while (true) {
       const ready = waiters.filter(eligible);
+
       if (ready.length === 0) return;
       const at = now();
       // Each project's front is its critical work first, then the claim that goes first by `before`.
       const fronts = new Map<string, Waiter>();
+
       for (const waiter of ready) {
         const front = fronts.get(waiter.project);
+
         const first =
           front === undefined ||
           ((waiter.critical === true) !== (front.critical === true)
             ? waiter.critical === true
             : before(waiter, front, at) < 0);
+
         if (first) fronts.set(waiter.project, waiter);
       }
+
       // A project over its share goes only when no other project's front fits; critical work goes first among those that do.
       const fitting = [...fronts.values()].filter((w) => fits(w.project));
       const pool = fitting.length > 0 ? fitting : [...fronts.values()];
@@ -151,9 +162,11 @@ export const make = (options: {
       Deferred.doneUnsafe(next.granted, Effect.void);
     }
   };
+
   const release = (holder: Holder) =>
     Effect.sync(() => {
       const index = holders.indexOf(holder);
+
       if (index < 0) return;
       holders.splice(index, 1);
       byProject.set(holder.project, (byProject.get(holder.project) ?? 1) - 1);
@@ -164,6 +177,7 @@ export const make = (options: {
     Effect.suspend(() => {
       if (eligible(claim) && fits(claim.project) && !waiters.some(eligible))
         return Effect.succeed(take(claim));
+
       const waiter: Waiter = {
         ...claim,
         claim,
@@ -171,19 +185,25 @@ export const make = (options: {
         since: now(),
         granted: Deferred.makeUnsafe<void>(),
       };
+
       waiters.push(waiter);
       grant();
+
       const handOver = Effect.sync(() => {
         const holder = holding.get(waiter.granted)!;
         holding.delete(waiter.granted);
+
         return holder;
       });
+
       const granted = Deferred.await(waiter.granted);
+
       // Once other work waits for it, the queue looks at the claim again as that work's, which waits from now on.
       const raise = Effect.sync(() => {
         waiter.since = now();
         grant();
       });
+
       const waited =
         yields(claim) && claim.raised !== undefined
           ? Effect.raceFirst(
@@ -191,19 +211,24 @@ export const make = (options: {
               Deferred.await(claim.raised).pipe(Effect.andThen(raise), Effect.andThen(granted)),
             )
           : granted;
+
       return waited.pipe(
         Effect.andThen(handOver),
         Effect.onInterrupt(() =>
           Effect.suspend(() => {
             const index = waiters.indexOf(waiter);
+
             if (index >= 0) {
               waiters.splice(index, 1);
+
               // Background work may have waited only for this claim.
               return Effect.sync(grant);
             }
+
             // Granted just as we were interrupted: hand the slot on.
             const holder = holding.get(waiter.granted);
             holding.delete(waiter.granted);
+
             return holder === undefined ? Effect.void : release(holder);
           }),
         ),
@@ -213,11 +238,13 @@ export const make = (options: {
   /** Why `claim` would wait for a slot now, or null when it would get one at once. A waiting claim counts only the claims queued before it. */
   const waitsFor = (claim: Claim): string | null => {
     const mine = waiters.find((w) => w.claim === claim);
+
     if (mine === undefined && eligible(claim) && fits(claim.project) && !waiters.some(eligible))
       return null;
     // The waiters the queue's order puts first: critical ones, then by `before`.
     const at = now();
     const self = mine ?? { ...claim, claim, seq: seq, since: at, granted: undefined as never };
+
     const ahead = waiters.filter(
       (w) =>
         w !== mine &&
@@ -225,23 +252,29 @@ export const make = (options: {
           ? w.critical === true
           : before(w, self, at) < 0),
     ).length;
+
     // A check doesn't count the critical work in the lane, since the lane is beyond the capacity.
     const inLane = Math.min(lane, holders.filter((h) => h.critical).length);
+
     const busy =
       claim.critical === true
         ? `${holders.length} of ${options.capacity}${lane > 0 ? ` (+${lane} for deploys)` : ""} busy`
         : `${holders.length - inLane} of ${options.capacity} busy${inLane > 0 ? ` (+${inLane} ${inLane === 1 ? "deploy or preview" : "deploys or previews"})` : ""}`;
+
     // Reasons reach pull requests' comments, so other projects' steps stay nameless.
     const others = holders.filter((h) => h.project !== claim.project).length;
     const own = holders.filter((h) => h.project === claim.project).map((h) => h.label);
+
     const who = [
       ...own.slice(0, 4),
       ...(own.length > 4 ? ["..."] : []),
       ...(others === 0 ? [] : [`${others} of other projects`]),
     ].join(", ");
+
     const yielding = yields(claim)
       ? "; background work starts only while another slot stays free"
       : "";
+
     return `${busy}${who === "" ? "" : `: ${who}`}${ahead > 0 ? `; ${ahead} ahead` : ""}${yielding}`;
   };
 
@@ -249,19 +282,23 @@ export const make = (options: {
   const reporting = (claim: Claim, onWaiting: (reason: string) => Effect.Effect<void>) =>
     Effect.gen(function* () {
       const first = waitsFor(claim);
+
       if (first === null) return yield* acquire(claim);
       yield* onWaiting(first);
       let shown = first;
+
       const follow = Effect.gen(function* () {
         while (true) {
           yield* Effect.sleep(options.refresh ?? "15 seconds");
           const reason = waitsFor(claim);
+
           if (reason !== null && reason !== shown) {
             shown = reason;
             yield* onWaiting(reason);
           }
         }
       });
+
       return yield* Effect.scoped(Effect.forkScoped(follow).pipe(Effect.andThen(acquire(claim))));
     });
 
@@ -310,8 +347,10 @@ export const make = (options: {
           pools.includes(w.spill.pool) &&
           (othersOnly ? w.spill.to.slice(1) : w.spill.to).includes(platform),
       );
+
       if (takers.length === 0) return false;
       const at = now();
+
       const next = takers.reduce((best, w) =>
         (w.critical === true) !== (best.critical === true)
           ? w.critical === true
@@ -321,10 +360,12 @@ export const make = (options: {
             ? w
             : best,
       );
+
       waiters.splice(waiters.indexOf(next), 1);
       Deferred.doneUnsafe(next.spill!.signal, Effect.void);
       // Background work may have waited only for this claim.
       grant();
+
       return true;
     },
     /** Where and for whom the claims waiting right now may spill (`Claim.spill`). */

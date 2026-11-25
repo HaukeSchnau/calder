@@ -7,6 +7,7 @@ class Live extends Calder.Result<Live>("@test/values")("Live", {
   revision: Schema.String,
   hosts: Schema.Array(Schema.String),
 }) {}
+
 class Busy extends Calder.Failure<Busy>("@test/values")("Busy", { target: Schema.String }) {}
 
 describe("Values", () => {

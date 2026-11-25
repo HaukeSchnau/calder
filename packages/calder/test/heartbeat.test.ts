@@ -21,6 +21,7 @@ describe("a heartbeat", () => {
   it("says in one line what a stalled evaluation waits for, and leaves out what the platform doesn't show", () => {
     // casa-crema's plan on 2026-11-03: 24 minutes loading the flake while the daemon's slice sat at its memory.high.
     const start = 1_000_000;
+
     const progress: Heartbeat.Progress = {
       started: start,
       loaded: false,
@@ -30,10 +31,12 @@ describe("a heartbeat", () => {
         started: start + 30_000,
       },
     };
+
     const trace = {
       path: "/nix/store/00000000000000000000000000000000-source/flake.lock",
       size: 52_000,
     };
+
     const daemon = (over: number, some: number, full: number) => ({
       unit: "nix-daemon.service",
       current: 3.9 * GiB,
@@ -46,6 +49,7 @@ describe("a heartbeat", () => {
         over,
       },
     });
+
     const before: Heartbeat.Sample = {
       at: start + minutes(21),
       cpu: 11.6,
@@ -53,6 +57,7 @@ describe("a heartbeat", () => {
       host: { memory: { some: 0, full: 0 }, io: { some: 0, full: 0 } },
       daemon: daemon(1_000, 0, 0),
     };
+
     const now: Heartbeat.Sample = {
       at: start + minutes(24),
       cpu: 12,
@@ -65,6 +70,7 @@ describe("a heartbeat", () => {
       },
       daemon: daemon(1_840_221, 0.6 * minutes(3) * 1000, 0.58 * minutes(3) * 1000),
     };
+
     expect(Heartbeat.describe(progress, before, now)).toBe(
       "Still evaluating after 24 min 0 s, loading the flake. Nix holds 0.4 GiB of its 2.6 GiB budget. " +
         "Its main thread waits for the Nix daemon (unix_stream_read_generic). " +
@@ -90,6 +96,7 @@ describe("a heartbeat", () => {
         swap: 4 * GiB,
       },
     });
+
     const lines = Heartbeat.describe(
       {
         started: start,
@@ -100,6 +107,7 @@ describe("a heartbeat", () => {
       { at: start + minutes(4), job: job(10, 0, 0) },
       { at: start + minutes(7), job: job(52, 0.21 * minutes(3) * 1000, 0.19 * minutes(3) * 1000) },
     );
+
     expect(lines).toBe(
       "Still evaluating after 7 min 0 s, at attribute 18 of 25, checks.aarch64-linux.srv-2. " +
         "The job's calder-job-trusted@4f2a.service is in calder-jobs.slice, which holds 7.9 of its 8.0 GiB memory.high and 4.0 GiB of swap. " +
@@ -114,6 +122,7 @@ describe("a heartbeat", () => {
       attr: { index: 2, total: 6, name: "packages.aarch64-darwin.app" },
       said: { text: "warning: Git tree is dirty", at: start + minutes(1) },
     };
+
     expect(Heartbeat.describe(mac, { at: start }, { at: start + minutes(4) })).toBe(
       'Still evaluating after 4 min 0 s, at attribute 2 of 6, packages.aarch64-darwin.app. Nix last said, 3 min 0 s ago: "warning: Git tree is dirty".',
     );
@@ -121,6 +130,7 @@ describe("a heartbeat", () => {
 
   const system = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-linux`;
   const can = (argv: ReadonlyArray<string>) => spawnSync(argv[0]!, argv.slice(1)).status === 0;
+
   const processes = BunChildProcessSpawner.layer.pipe(
     Layer.provide([BunFileSystem.layer, BunPath.layer]),
   );
@@ -148,6 +158,7 @@ describe("a heartbeat", () => {
           };
         }`,
         );
+
         const meta = JSON.parse(
           yield* Exec.run(["nix", "flake", "metadata", "--json", `path:${dir}`]),
         ) as {
@@ -155,6 +166,7 @@ describe("a heartbeat", () => {
           readonly path: string;
           readonly locked: { readonly narHash: string };
         };
+
         const recorder = {
           source: meta.path,
           url: meta.url,
@@ -167,8 +179,10 @@ describe("a heartbeat", () => {
           narHash: meta.locked.narHash,
           read: () => Effect.succeed(new Map<string, string>()),
         };
+
         const logged: Array<string> = [];
         const log = (text: string) => Effect.sync(() => void logged.push(text));
+
         const { derivations: result } = yield* derivations(
           { flake: meta.url } as RunInfo,
           ["waits"],
@@ -180,14 +194,17 @@ describe("a heartbeat", () => {
             heartbeat: { first: "300 millis", every: "300 millis" },
           },
         );
+
         expect(result.get("waits")?.drv).toMatch(/-waited\.drv$/);
         const beats = logged.filter((line) => line.startsWith("Still evaluating"));
         expect(beats.length).toBeGreaterThan(0);
+
         // A line from while the daemon builds: before, it may still add the flake's source or set the build up.
         const building = beats.find(
           (line) =>
             line.includes("waits for the Nix daemon") && line.includes("Nix has been building"),
         );
+
         expect(building, logged.join("\n")).toMatch(
           new RegExp(
             "^Still evaluating after \\d+ s, at attribute 1 of 1, waits\\. Nix holds [\\d.]+ GiB.*" +

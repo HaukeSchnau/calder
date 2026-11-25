@@ -28,15 +28,20 @@ import { askedAttrs, reportTag } from "./expression.ts";
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
 const src = "/nix/store/00000000000000000000000000000000-source";
+
 /** strace's lines for a call: `openat` of a file, a directory, a lookup, or a failed one. */
 const open = (path: string, fd = 7) =>
   `1 openat(AT_FDCWD, "${path}", O_RDONLY|O_NOFOLLOW|O_CLOEXEC) = ${fd}`;
+
 const list = (path: string) =>
   `1 openat(AT_FDCWD, "${path}", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 8`;
+
 const look = (path: string) =>
   `1 newfstatat(AT_FDCWD, "${path}", {st_mode=S_IFREG|0444, st_size=1, ...}, AT_SYMLINK_NOFOLLOW) = 0`;
+
 const missing = (path: string) =>
   `1 newfstatat(AT_FDCWD, "${path}", 0x7ffc, AT_SYMLINK_NOFOLLOW) = -1 ENOENT (No such file or directory)`;
+
 const nonce = "5eed";
 const mark = (i: number) => missing(`${src}/.calder-derivation-${nonce}-${i}`);
 
@@ -66,6 +71,7 @@ describe("footprints", () => {
       src,
       nonce,
     );
+
     expect(trace.broken).toBeNull();
     expect(trace.marks).toEqual([2, 6]);
     const at = files({ "flake.nix": "1", "flake.lock": "2", "hosts/a.nix": "3", "README.md": "4" });
@@ -82,6 +88,7 @@ describe("footprints", () => {
 
     const digests = (tree: Footprint.Tree) =>
       pass.counts.map((count) => Footprint.digest(tree, pass.entries, count!, "nix"));
+
     const before = digests(at);
     // Changing a file only looked up, or one nobody touched, keeps both footprints.
     expect(
@@ -107,10 +114,12 @@ describe("footprints", () => {
         }),
       ),
     ).toEqual([before[0], expect.not.stringMatching(before[1]!)]);
+
     // A read file's content or mode changes the first, and so the second.
     const changed = digests(
       files({ "flake.nix": "1", "flake.lock": "6", "hosts/a.nix": "3", "README.md": "4" }),
     );
+
     expect(changed[0]).not.toEqual(before[0]);
     expect(changed[1]).not.toEqual(before[1]);
     expect(
@@ -128,6 +137,7 @@ describe("footprints", () => {
       { "flake.nix": "1", "sub/flake.nix": "2", vendor: "c0ffee" },
       { vendor: "160000" },
     );
+
     const trace = (line: string) =>
       Footprint.parseTrace(
         [open(`${src}/flake.nix`), mark(0), line, mark(1), open(`${src}/flake.nix`), mark(2)].join(
@@ -136,6 +146,7 @@ describe("footprints", () => {
         src,
         nonce,
       );
+
     const counts = (line: string) => Footprint.footprints(trace(line), at).counts;
     // A flake input relative to the source (`path:./sub`) is read from the source: an ordinary entry.
     expect(counts(open(`${src}/sub/flake.nix`))).toEqual([1, 2, 2]);
@@ -166,15 +177,18 @@ describe("footprints", () => {
 
 describe("records", () => {
   const at = files({ "flake.nix": "1", "flake.lock": "2", "src/app.ts": "3" });
+
   const entries = [
     ["flake.nix", "read"],
     ["flake.lock", "read"],
   ] as const;
+
   const drv = {
     drv: "/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell.drv",
     out: "/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell",
     system: "aarch64-linux",
   };
+
   const records = {
     footprints: [{ id: "1", revision: "a".repeat(40), entries: [...entries] }],
     evaluations: [
@@ -221,7 +235,9 @@ describe("records", () => {
                 const argv = ChildProcess.isStandardCommand(command)
                   ? [command.command, ...command.args]
                   : [];
+
                 const answer = answers[argv.slice(0, 2).join(" ")] ?? { code: 1 };
+
                 return ChildProcessSpawner.makeHandle({
                   pid: ChildProcessSpawner.ProcessId(1),
                   exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(answer.code)),
@@ -238,21 +254,26 @@ describe("records", () => {
               })(),
             ),
           );
+
         const run = { flake: `git+file:///mirror?rev=${"a".repeat(40)}` } as RunInfo;
         const repo = memoryRepo({ "flake.nix": "{}" });
+
         const with_ = (answers: Record<string, { code: number; stdout?: string }>) =>
           recorder(run, repo).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, answering(answers)),
           );
+
         const metadata = JSON.stringify({
           path: src,
           locked: { rev: "a".repeat(40), revCount: 3, lastModified: 1, narHash: "sha256-x=" },
         });
+
         const nix = {
           "nix --version": { code: 0, stdout: "nix (Nix) 2.34.9" },
           "nix config": { code: 0, stdout: "true" },
           "sh -c": { code: 0, stdout: "" },
         };
+
         if (process.platform === "linux") {
           expect(
             (yield* with_({
@@ -262,6 +283,7 @@ describe("records", () => {
             }))?.url,
           ).toBe(`path:${src}?rev=${"a".repeat(40)}&revCount=3&lastModified=1&narHash=sha256-x%3D`);
         }
+
         expect(yield* with_({ "nix flake": { code: 0, stdout: metadata } })).toBeUndefined();
         expect(
           yield* with_({ "strace -V": { code: 0 }, "nix flake": { code: 1 } }),
@@ -278,6 +300,7 @@ describe("records", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const push = (branch: string) => JSON.stringify({ _tag: "Push", branch });
+
         const keep = (
           id: string,
           trust: "pr" | "trusted",
@@ -289,6 +312,7 @@ describe("records", () => {
             ...records,
             evaluations: [{ ...records.evaluations[0]!, derivation }],
           });
+
         yield* keep("app-1", "trusted", 0, drv);
         yield* keep(
           "app-2",
@@ -324,17 +348,21 @@ describe("records", () => {
             (r) => r.run_id,
           ),
         ).toEqual(["app-1", "app-2"]);
+
         const keeps = (event: unknown) =>
           Rows.writesRecords({ fork: 0, trust: "trusted", event: JSON.stringify(event) }, "main");
+
         expect(keeps({ _tag: "Schedule", cron: "0 * * * *" })).toBe(true);
         // A manual run without a branch is from before runs recorded it, and counts as the default branch's.
         // From before manual runs named their branch, when one of another branch looked the same.
         expect(keeps({ _tag: "Manual", inputs: {} })).toBe(false);
         expect(keeps({ _tag: "Manual", inputs: {}, branch: "main" })).toBe(true);
+
         const newest = (trust: "pr" | "trusted", fork: 0 | 1) =>
           Effect.map(Rows.records({ project: "app", trust, fork }), (r) =>
             r?.evaluations.map((e) => e.derivation?.drv),
           );
+
         // A pull request's ci.ts runs in the worker that records, so what it recorded never reaches a trusted run.
         expect(yield* newest("trusted", 0)).toEqual([
           "/nix/store/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-shell.drv",
@@ -359,6 +387,7 @@ describe("evaluation order", () => {
       ["gate", { drv: "g.drv", closure: new Set(["g.drv", "r.drv", "deps.drv"]) }],
       ["deps", { drv: "deps.drv", closure: new Set(["deps.drv"]) }],
     ]);
+
     expect(byDependencies(["shell", "gate", "release", "new", "deps"], closures)).toEqual([
       "shell",
       "deps",
@@ -377,11 +406,13 @@ describe("evaluation order", () => {
       digest: "",
       derivation: null,
     });
+
     // Last time two hosts went first and read 900 files each; the check after them read 10 more.
     const records = {
       footprints: [{ id: "1", revision: "a", entries: [] }],
       evaluations: [entry("srv-1", 900), entry("srv-2", 1800), entry("lint", 1810)],
     };
+
     const own = ownReads(records);
     expect(own).toEqual(
       new Map([
@@ -410,17 +441,21 @@ const answering = (
 ) => {
   const evaluated: Array<string> = [];
   const line = (text: string) => new TextEncoder().encode(`${text}\n`);
+
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
       const argv = ChildProcess.isStandardCommand(command)
         ? [command.command, ...command.args]
         : [];
+
       const reports = askedAttrs(argv.at(-1) ?? "").map(
         (attr, i) => [attr, String(i), attr] as const,
       );
+
       let stderr: Stream.Stream<Uint8Array> = Stream.empty;
       let code = 1;
       let stdout = "";
+
       if (argv[1] === "eval" && reports.length > 0 && evaluate !== undefined) {
         evaluated.push(...reports.map((m) => m[2]!));
         const tag = reportTag(argv.at(-1) ?? "");
@@ -439,6 +474,7 @@ const answering = (
         stdout =
           typeof answer?.stdout === "function" ? answer.stdout(argv) : (answer?.stdout ?? "");
       }
+
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(1),
         exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(code)),
@@ -454,6 +490,7 @@ const answering = (
       });
     }),
   );
+
   return { spawner, evaluated };
 };
 
@@ -466,6 +503,7 @@ describe("a plan of tasks that may run on another Linux system", () => {
         out: "/nix/store/ssssssssssssssssssssssssssssssss-shell",
         system: "x86_64-linux",
       };
+
       const { spawner } = answering(
         {
           "nix --version": { stdout: "nix (Nix) 2.34.9" },
@@ -480,27 +518,34 @@ describe("a plan of tasks that may run on another Linux system", () => {
               ? null
               : { ...shellDrv, system: aarch64 },
       );
+
       const flake = Flake.make({ devShells: ["ci"] });
       const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` });
+
       const bundle = Task.make("bundle", {
         shell: flake.devShells.ci,
         run: cmd`just bundle`,
         outputs: { dist: "dist" },
       });
+
       const here = Task.make("here", {
         shell: flake.devShells.ci,
         run: cmd`just here`,
         offload: false,
       });
+
       // A build's store path holds the run's system's binaries.
       const app = Nix.build(Flake.attr("packages.x86_64-linux.app"), { name: "app" });
       const e2e = Task.make("e2e", { shell: flake.devShells.ci, run: cmd`${app}/bin/e2e` });
+
       // One attribute names one system's shell.
       const pinned = Task.make("pinned", {
         shell: Flake.attr("devShells.x86_64-linux.ci") as never,
         run: cmd`just pinned`,
       });
+
       const project = Calder.project({ rules: [On.push("main", [qa, bundle, here, e2e, pinned])] });
+
       const run = {
         id: "app-1",
         project: "app",
@@ -515,12 +560,14 @@ describe("a plan of tasks that may run on another Linux system", () => {
         pipelineDir: "",
         system: "x86_64-linux",
       } satisfies RunInfo;
+
       const spec = yield* resolve(
         yield* Calder.plan(project, run.event),
         project,
         run,
         memoryRepo({ "flake.nix": "{ }" }),
       ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
       return Object.fromEntries(
         spec.steps.flatMap((s) => (s.task === null ? [] : [[s.name, s.task.systems]])),
       );
@@ -573,6 +620,7 @@ describe("a plan with builds whose footprints changed", () => {
           out: "/nix/store/ssssssssssssssssssssssssssssssss-shell",
           system: "x86_64-linux",
         };
+
         const { spawner, evaluated } = answering(
           {
             "nix --version": { stdout: "nix (Nix) 2.34.9" },
@@ -582,10 +630,12 @@ describe("a plan with builds whose footprints changed", () => {
           },
           () => shellDrv,
         );
+
         const flake = Flake.make({ devShells: ["ci"] });
         const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` });
         const host = Nix.build(Flake.attr("checks.x86_64-linux.host"), { name: "host" });
         const project = Calder.project({ rules: [On.push("main", [qa, host])] });
+
         const run = {
           id: "app-1",
           project: "app",
@@ -600,6 +650,7 @@ describe("a plan with builds whose footprints changed", () => {
           pipelineDir: "",
           system: "x86_64-linux",
         } satisfies RunInfo;
+
         const records: Records = {
           footprints: [{ id: "f", revision: "a", entries: [["flake.nix", "read"]] }],
           evaluations: [
@@ -616,6 +667,7 @@ describe("a plan with builds whose footprints changed", () => {
             },
           ],
         };
+
         const spec = yield* Effect.gen(function* () {
           return yield* resolve(
             yield* Calder.plan(project, run.event),
@@ -626,6 +678,7 @@ describe("a plan with builds whose footprints changed", () => {
             { records },
           );
         }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
         // The task may also run on aarch64-linux agents, whose dev shell evaluates with it.
         expect([...new Set(evaluated)]).toEqual([
           "devShells.x86_64-linux.ci",
@@ -651,20 +704,24 @@ describe("a plan of a tree another plan evaluated", () => {
     () =>
       Effect.gen(function* () {
         const dir = mkdtempSync(join(tmpdir(), "calder-earlier-"));
+
         const hostDrv = {
           drv: join(dir, "h-host.drv"),
           out: "/nix/store/h-host",
           system: "x86_64-linux",
         };
+
         writeFileSync(
           hostDrv.drv,
           `Derive([("out","/nix/store/h-host","","")],[],[],"x86_64-linux","/bin/sh",[],[])`,
         );
+
         const shellDrv = {
           drv: "/nix/store/ssssssssssssssssssssssssssssssss-shell.drv",
           out: "/nix/store/ssssssssssssssssssssssssssssssss-shell",
           system: "x86_64-linux",
         };
+
         const { spawner, evaluated } = answering(
           {
             "git --git-dir": { stdout: "1761609600" },
@@ -673,10 +730,12 @@ describe("a plan of a tree another plan evaluated", () => {
           },
           () => shellDrv,
         );
+
         const flake = Flake.make({ devShells: ["ci"] });
         const deploy = Task.make("deploy", { shell: flake.devShells.ci, run: cmd`deploy` });
         const host = Nix.build(Flake.attr("checks.x86_64-linux.host"), { name: "host" });
         const project = Calder.project({ rules: [On.push("main", [host, deploy])] });
+
         const run = {
           id: "app-2",
           project: "app",
@@ -691,12 +750,14 @@ describe("a plan of a tree another plan evaluated", () => {
           pipelineDir: "",
           system: "x86_64-linux",
         } satisfies RunInfo;
+
         // The pull request's rules built the host and ran no task, so its plan has no dev shell.
         const pullRequest = {
           revision: "1".repeat(40),
           derivations: { "checks.x86_64-linux.host": hostDrv },
           app: "app",
         };
+
         const spec = yield* Effect.gen(function* () {
           return yield* resolve(
             yield* Calder.plan(project, run.event),
@@ -706,6 +767,7 @@ describe("a plan of a tree another plan evaluated", () => {
             pullRequest,
           );
         }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
         // The task may also run on aarch64-linux agents, whose dev shell evaluates with it.
         expect([...new Set(evaluated)]).toEqual([
           "devShells.x86_64-linux.ci",
@@ -734,21 +796,25 @@ describe("a plan of a tree another plan evaluated", () => {
       Effect.gen(function* () {
         const hostAttr = "checks.x86_64-linux.host";
         const shellAttr = "devShells.x86_64-linux.ci";
+
         const hostDrv = {
           drv: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host.drv",
           out: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host",
           system: "x86_64-linux",
         };
+
         const recordedShell = {
           drv: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-shell.drv",
           out: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-shell",
           system: "x86_64-linux",
         };
+
         const freshShell = {
           drv: "/nix/store/ssssssssssssssssssssssssssssssss-shell.drv",
           out: "/nix/store/ssssssssssssssssssssssssssssssss-shell",
           system: "x86_64-linux",
         };
+
         const check = {
           ...step,
           name: "check",
@@ -757,6 +823,7 @@ describe("a plan of a tree another plan evaluated", () => {
           detail: "check",
           action: { deploy: false, secrets: [], preview: false },
         } as const;
+
         const pullRequest = {
           _tag: "PullRequest",
           number: 5,
@@ -764,6 +831,7 @@ describe("a plan of a tree another plan evaluated", () => {
           head: "feature",
           fork: false,
         } as const;
+
         const sql = <A>(f: (sql: SqlClient.SqlClient) => Effect.Effect<A, unknown>) =>
           Effect.flatMap(SqlClient.SqlClient, f);
 
@@ -785,6 +853,7 @@ describe("a plan of a tree another plan evaluated", () => {
             fromRecords: { [shellAttr]: 1 },
           },
         });
+
         expect(second.plan.trusted).toEqual([hostAttr, appAttr]);
 
         const merge = yield* drive({
@@ -801,6 +870,7 @@ describe("a plan of a tree another plan evaluated", () => {
           ),
           resume: sql((sql) => sql`update runs set tree = 'tree-1' where id = 'app-2'`),
         });
+
         const earlier = merge.planJob!.earlier!;
         expect(earlier).toEqual({
           revision: "1".repeat(40),
@@ -813,6 +883,7 @@ describe("a plan of a tree another plan evaluated", () => {
           join(dir, "h-host.drv"),
           `Derive([("out","/nix/store/h-host","","")],[],[],"x86_64-linux","/bin/sh",[],[])`,
         );
+
         const { spawner, evaluated } = answering(
           {
             "git --git-dir": { stdout: "1761609600" },
@@ -821,10 +892,12 @@ describe("a plan of a tree another plan evaluated", () => {
           },
           () => freshShell,
         );
+
         const flake = Flake.make({ devShells: ["ci"] });
         const deploy = Task.make("deploy", { shell: flake.devShells.ci, run: cmd`deploy` });
         const host = Nix.build(Flake.attr(hostAttr), { name: "host" });
         const project = Calder.project({ rules: [On.push("main", [host, deploy])] });
+
         const run = {
           id: "app-2",
           project: "app",
@@ -839,6 +912,7 @@ describe("a plan of a tree another plan evaluated", () => {
           pipelineDir: "",
           system: "x86_64-linux",
         } satisfies RunInfo;
+
         const spec = yield* Effect.gen(function* () {
           return yield* resolve(
             yield* Calder.plan(project, run.event),
@@ -848,6 +922,7 @@ describe("a plan of a tree another plan evaluated", () => {
             earlier,
           );
         }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
         // The deploy may also run on aarch64-linux agents, whose dev shell evaluates with it.
         const spareAttr = "devShells.aarch64-linux.ci";
         expect([...new Set(evaluated)]).toEqual([shellAttr, spareAttr]);
@@ -869,6 +944,7 @@ describe("a plan of a tree another plan evaluated", () => {
           out: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-host",
           system: "x86_64-linux",
         };
+
         const { spawner, evaluated } = answering(
           {
             "git --git-dir": { stdout: "1761609600" },
@@ -878,8 +954,10 @@ describe("a plan of a tree another plan evaluated", () => {
           },
           () => hostDrv,
         );
+
         const host = Nix.build(Flake.attr("checks.x86_64-linux.host"), { name: "host" });
         const project = Calder.project({ rules: [On.push("main", [host])] });
+
         const run = {
           id: "app-2",
           project: "app",
@@ -894,10 +972,12 @@ describe("a plan of a tree another plan evaluated", () => {
           pipelineDir: "",
           system: "x86_64-linux",
         } satisfies RunInfo;
+
         const pullRequest = {
           revision: "1".repeat(40),
           derivations: { "checks.x86_64-linux.host": hostDrv },
         };
+
         const spec = yield* Effect.gen(function* () {
           return yield* resolve(
             yield* Calder.plan(project, run.event),
@@ -907,6 +987,7 @@ describe("a plan of a tree another plan evaluated", () => {
             pullRequest,
           );
         }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
         expect(evaluated).toEqual([]);
         expect(spec.app).toBe("evaluated");
         expect(spec.reused).toEqual({
@@ -934,10 +1015,12 @@ describe("what a record may be trusted with", () => {
           plain,
           `Derive([("out","/nix/store/pppppppppppppppppppppppppppppppp-plain","","")],[],[],"x86_64-linux","/bin/sh",[],[])`,
         );
+
         const derivers: Record<string, string> = {
           "/nix/store/gggggggggggggggggggggggggggggggg-gen": gen,
           "/nix/store/pppppppppppppppppppppppppppppppp-plain": plain,
         };
+
         // A JSON file the evaluation wrote with builtins.toFile has no deriver but is addressed by its text.
         const json = join(dir, "inventory.json");
         writeFileSync(json, "{}");
@@ -952,6 +1035,7 @@ describe("what a record may be trusted with", () => {
           `Derive([("out","/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-reads","","")],[],["${rev}"],"x86_64-linux","/bin/sh",[],[])`,
         );
         const requisites: Record<string, ReadonlyArray<string>> = { [reads]: [reads, rev] };
+
         const { spawner } = answering({
           "nix-store --query": {
             stdout: (argv) =>
@@ -971,6 +1055,7 @@ describe("what a record may be trusted with", () => {
             }),
           },
         });
+
         const recorder = {
           source: src,
           url: "",
@@ -983,6 +1068,7 @@ describe("what a record may be trusted with", () => {
           narHash: "sha256-source=",
           read: () => Effect.succeed(new Map<string, string>()),
         };
+
         const candidate = (attr: string, outside: ReadonlyArray<string>) => ({
           attr,
           index: 0,
@@ -991,6 +1077,7 @@ describe("what a record may be trusted with", () => {
           derivation: null,
           outside,
         });
+
         const kept = yield* vetted(recorder, [
           candidate("imports-gen", ["/nix/store/gggggggggggggggggggggggggggggggg-gen"]),
           candidate("reads-unknown", ["/nix/store/uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu-unknown"]),
@@ -1007,6 +1094,7 @@ describe("what a record may be trusted with", () => {
             },
           },
         ]).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
         expect(kept.map((c) => c.attr)).toEqual([
           "reads-nixpkgs",
           "reads-plain",
@@ -1021,16 +1109,19 @@ describe("what a record may be trusted with", () => {
       Effect.gen(function* () {
         // As with `self ? submodules`, the record's evaluation (through path:) and the mirror's disagree.
         const attr = "packages.x86_64-linux.app";
+
         const recordedDrv = {
           drv: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app.drv",
           out: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app",
           system: "x86_64-linux",
         };
+
         const freshDrv = {
           drv: "/nix/store/ffffffffffffffffffffffffffffffff-app.drv",
           out: "/nix/store/ffffffffffffffffffffffffffffffff-app",
           system: "x86_64-linux",
         };
+
         const { spawner, evaluated } = answering(
           {
             "nix --version": { stdout: "nix (Nix) 2.34.9" },
@@ -1040,11 +1131,15 @@ describe("what a record may be trusted with", () => {
           },
           () => freshDrv,
         );
+
         const tree = { "flake.nix": "{ outputs = _: { }; }" };
+
         const context = yield* evaluationContext("x86_64-linux").pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
+
         const entries = [["flake.nix", "read"]] as const;
+
         const records = {
           footprints: [{ id: "1", revision: "a", entries: [...entries] }],
           evaluations: [
@@ -1065,6 +1160,7 @@ describe("what a record may be trusted with", () => {
             },
           ],
         };
+
         const run = {
           id: "app-1",
           project: "app",
@@ -1079,9 +1175,11 @@ describe("what a record may be trusted with", () => {
           pipelineDir: "",
           system: "x86_64-linux",
         } satisfies RunInfo;
+
         const project = Calder.project({
           rules: [On.push("main", [Nix.build(Flake.attr(attr), { name: "app" })])],
         });
+
         const plan = (audit: boolean) =>
           Effect.gen(function* () {
             return yield* resolve(
@@ -1093,6 +1191,7 @@ describe("what a record may be trusted with", () => {
               { records, audit },
             );
           }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
         // A plan takes the record, and says which.
         const planned = yield* plan(false);
         expect(planned.derivations?.[attr]).toEqual(recordedDrv);
@@ -1112,11 +1211,13 @@ describe("what a record may be trusted with", () => {
     () =>
       Effect.gen(function* () {
         const attr = "packages.x86_64-linux.app";
+
         const drv = {
           drv: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app.drv",
           out: "/nix/store/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr-app",
           system: "x86_64-linux",
         };
+
         const { spawner, evaluated } = answering(
           {
             "nix --version": { stdout: "nix (Nix) 2.34.9" },
@@ -1126,17 +1227,22 @@ describe("what a record may be trusted with", () => {
           },
           () => drv,
         );
+
         const tree = { "flake.nix": "{ outputs = _: { }; }" };
+
         const context = yield* evaluationContext("x86_64-linux").pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
+
         const entries = [["flake.nix", "read"]] as const;
+
         const digest = Footprint.digest(
           files({ "flake.nix": createHash("sha256").update(tree["flake.nix"]).digest("hex") }),
           entries,
           1,
           context!,
         );
+
         // The build's record is a trusted run's, the app's another pull request's: only the controller can tell them apart.
         const records = {
           footprints: [{ id: "1", revision: "a", entries: [...entries] }],
@@ -1153,6 +1259,7 @@ describe("what a record may be trusted with", () => {
             },
           ],
         };
+
         const run = {
           id: "app-1",
           project: "app",
@@ -1167,9 +1274,11 @@ describe("what a record may be trusted with", () => {
           pipelineDir: "",
           system: "x86_64-linux",
         } satisfies RunInfo;
+
         const project = Calder.project({
           rules: [On.push("main", [Nix.build(Flake.attr(attr), { name: "app" })])],
         });
+
         const planned = yield* Effect.gen(function* () {
           return yield* resolve(
             yield* Calder.plan(project, run.event),
@@ -1180,6 +1289,7 @@ describe("what a record may be trusted with", () => {
             { records },
           );
         }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
         expect(evaluated).toEqual([]);
         expect(planned.app).toBe("forged");
         expect(planned.fromRecords).toEqual({ [attr]: 7, "lib.project.project": 8 });

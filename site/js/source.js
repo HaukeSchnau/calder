@@ -121,6 +121,7 @@ const KEYWORDS = new Set([
   "as",
   "type",
 ]);
+
 export const esc = (t) =>
   String(t)
     .replace(/&/g, "&amp;")
@@ -135,16 +136,20 @@ export const esc = (t) =>
 export function highlight(text, { def, marks = {}, quiet = false } = {}) {
   const re =
     /(\/\*.*?\*\/|\/\/.*$)|("(?:[^"\\]|\\.)*")|(`[^`]*`)|(\b\d+\b)|([A-Za-z_$][\w$]*)|(\s+)|([{}()[\],.:;=*<>|])|(.)/g;
+
   let html = "";
   let prev = "";
   let defDone = false;
+
   for (const m of text.matchAll(re)) {
     const [t, com, str, tpl, num, id, ws, pun] = m;
+
     if (com) html += `<span class="t-com">${esc(t)}</span>`;
     else if (str || tpl) html += `<span class="t-str">${esc(t)}</span>`;
     else if (num) html += `<span class="t-num">${t}</span>`;
     else if (id) {
       const property = prev === ".";
+
       if (KEYWORDS.has(id) && !property) html += `<span class="t-kw">${id}</span>`;
       else if (def === id && !defDone && !property) {
         html += `<span class="t-def">${id}</span>`;
@@ -158,8 +163,10 @@ export function highlight(text, { def, marks = {}, quiet = false } = {}) {
     else if (pun && "([{,".includes(pun)) html += `<span class="t-pun">${esc(t)}</span><wbr>`;
     else if (pun) html += `<span class="t-pun">${esc(t)}</span>`;
     else html += esc(t);
+
     if (!ws) prev = t;
   }
+
   return quiet ? html.replace(/class="t-(def)"/g, "") : html;
 }
 
@@ -203,6 +210,7 @@ export const CI_MARKS = {
   28: { site: "t-val" },
   29: { site: "t-val" },
 };
+
 export const CHILDREN = {
   "part:install": ["f:plate"],
   "part:site": ["f:tenon"],
@@ -215,6 +223,7 @@ export const CHILDREN = {
  */
 export const indentOf = (html) => {
   const n = (html ?? "").match(/^ */)[0].length;
+
   return { n, rest: (html ?? "").slice(n), style: n ? ` style="--ind:${n}ch"` : "" };
 };
 
@@ -223,10 +232,13 @@ export function lineEl(no, html, { link, owner, cls } = {}) {
   const ln = document.createElement("div");
   ln.className = `ln${cls ? " " + cls : ""}`;
   ln.dataset.line = no;
+
   if (link) ln.dataset.link = link;
+
   if (owner) ln.dataset.owner = owner;
   const { rest, style } = indentOf(html);
   ln.innerHTML = `<span class="no">${no}</span><span class="src"${style}>${rest || " "}</span>`;
+
   return ln;
 }
 
@@ -239,6 +251,7 @@ export const keepWords = (text) =>
     .split(/("[^"]*")/)
     .map((part, i) => {
       if (i % 2) return `<span class="nowrap">${esc(part)}</span>`;
+
       return part
         .split(/(\s+)/)
         .map((w) =>
@@ -255,6 +268,7 @@ export const keepWords = (text) =>
 /** One line of tool output, indented by its own leading spaces. */
 export const oline = (text, { cls = "", attrs = "", html = null } = {}) => {
   const { n, style } = indentOf(text);
+
   return `<span class="oline${cls ? ` ${cls}` : ""}"${attrs}${style}>${html ?? keepWords(text.slice(n))}</span>`;
 };
 
@@ -271,11 +285,14 @@ export function renderCode(container, lines, opts = {}) {
     after = {},
     cls = {},
   } = opts;
+
   container.replaceChildren();
   container.classList.add("code");
   let block = null;
+
   for (let no = from; no <= to; no++) {
     const b = blocks.find(([a, z]) => no >= a && no <= z);
+
     if (b && no === b[0]) {
       block = document.createElement("div");
       block.className = "blk";
@@ -285,10 +302,13 @@ export function renderCode(container, lines, opts = {}) {
       block.setAttribute("aria-label", b[3]);
       container.append(block);
     }
+
     const html = custom[no] ?? highlight(lines[no - 1], { def: defs[no], marks: marks[no] });
     const ln = lineEl(no, html, { link: links[no], owner: b ? b[2] : undefined, cls: cls[no] });
     (b ? block : container).append(ln);
+
     if (after[no]) (b ? block : container).append(after[no]);
+
     if (b && no === b[1]) block = null;
   }
 }
@@ -297,11 +317,15 @@ export function renderCode(container, lines, opts = {}) {
 export function parsePlan(out) {
   const planned = new Set();
   const pulled = new Set();
+
   for (const line of out.split("\n").slice(1)) {
     const m = line.match(/^\s+(setup|task|build|action)\s+(\S+)(\s+\(pulled in\))?/);
+
     if (!m) continue;
     planned.add(m[2]);
+
     if (m[3]) pulled.add(m[2]);
   }
+
   return { planned, pulled };
 }

@@ -66,6 +66,7 @@ export class Telemetry extends Context.Service<
 
 const attrs = (record: Record<string, string>) =>
   Object.entries(record).map(([key, value]) => ({ key, value: { stringValue: value } }));
+
 const nanos = (ms: number) => `${BigInt(Math.round(ms)) * 1_000_000n}`;
 const severity = { debug: 5, info: 9, warn: 13, error: 17 } as const;
 
@@ -82,6 +83,7 @@ const retrying = Schedule.min([
 const refused = (e: HttpClientError.HttpClientError | Cause.TimeoutError) => {
   if (e._tag !== "HttpClientError" || e.reason._tag !== "StatusCodeError") return false;
   const { status } = e.reason.response;
+
   return status >= 400 && status < 500 && status !== 429;
 };
 
@@ -89,6 +91,7 @@ export const layer = Layer.effect(Telemetry)(
   Effect.gen(function* () {
     const config = yield* Config;
     const client = yield* HttpClient.HttpClient;
+
     const resource = {
       attributes: attrs({
         "service.name": "calder",
@@ -96,10 +99,12 @@ export const layer = Layer.effect(Telemetry)(
         "host.name": config.host,
       }),
     };
+
     let spans: Array<SpanData> = [];
     let logs: Array<LogRecord> = [];
 
     const collector = client.pipe(HttpClient.filterStatusOk);
+
     /** Sends a batch, retrying on `schedule` unless the collector refused it, and says what it drops. */
     const post = (
       path: string,
@@ -128,6 +133,7 @@ export const layer = Layer.effect(Telemetry)(
         const l = logs;
         spans = [];
         logs = [];
+
         return Effect.all(
           [
             s.length === 0
@@ -192,6 +198,7 @@ export const layer = Layer.effect(Telemetry)(
           { concurrency: 2, discard: true },
         );
       });
+
     // Batches wait while one is retried, so they arrive in order.
     yield* flush(retrying).pipe(Effect.delay("2 seconds"), Effect.forever, Effect.forkScoped);
     yield* Effect.addFinalizer(() => flush(Schedule.recurs(0)));
@@ -206,6 +213,7 @@ export const layer = Layer.effect(Telemetry)(
               `"calder.run":=${JSON.stringify(query.run)}`,
               ...(query.step === undefined ? [] : [`"calder.step":=${JSON.stringify(query.step)}`]),
             ];
+
             const response = yield* client.execute(
               HttpClientRequest.post(`${config.telemetry.victoriaLogs}/select/logsql/query`).pipe(
                 HttpClientRequest.bodyUrlParams({
@@ -214,13 +222,16 @@ export const layer = Layer.effect(Telemetry)(
                 }),
               ),
             );
+
             const text = yield* response.text;
+
             return text
               .split("\n")
               .filter(Boolean)
               .map((line): Domain.LogLine => {
                 const row = JSON.parse(line) as Record<string, string>;
                 const shard = row["calder.shard"];
+
                 return {
                   step: row["calder.step"] ?? "",
                   shard: shard === undefined || shard === "" ? null : Number(shard),
@@ -247,13 +258,17 @@ export const layer = Layer.effect(Telemetry)(
             const response = yield* client.get(`${config.telemetry.tempo}/api/traces/${id}`, {
               headers: { Accept: "application/json" },
             });
+
             if (response.status !== 200) return [];
+
             const json = (yield* response.json) as {
               batches?: ReadonlyArray<OtlpResourceSpans>;
               trace?: { resourceSpans?: ReadonlyArray<OtlpResourceSpans> };
               resourceSpans?: ReadonlyArray<OtlpResourceSpans>;
             };
+
             const batches = json.batches ?? json.trace?.resourceSpans ?? json.resourceSpans ?? [];
+
             return batches
               .flatMap((b) =>
                 (b.scopeSpans ?? b.instrumentationLibrarySpans ?? []).flatMap((s) =>
@@ -290,6 +305,7 @@ export const layer = Layer.effect(Telemetry)(
       gauge: (name, description, points) => {
         if (points.length === 0) return Effect.void;
         const timeUnixNano = nanos(Date.now());
+
         return post(
           "/v1/metrics",
           {
@@ -335,6 +351,7 @@ export const layer = Layer.effect(Telemetry)(
             error: Exit.isFailure(exit),
             attributes,
           });
+
           return yield* exit;
         }),
       logs: logs_,
@@ -347,6 +364,7 @@ interface OtlpResourceSpans {
   readonly scopeSpans?: ReadonlyArray<OtlpScopeSpans>;
   readonly instrumentationLibrarySpans?: ReadonlyArray<OtlpScopeSpans>;
 }
+
 interface OtlpScopeSpans {
   readonly spans?: ReadonlyArray<{
     readonly spanId: string;

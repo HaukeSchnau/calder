@@ -25,6 +25,7 @@ const sessionDays = 30;
 /** `<payload>.<signature>`, both base64url: the payload as JSON, signed with HMAC-SHA256. */
 export const sign = (key: Buffer, payload: unknown): string => {
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+
   return `${body}.${createHmac("sha256", key).update(body).digest("base64url")}`;
 };
 
@@ -35,11 +36,14 @@ export const verify = <A extends { readonly expires: number }>(
   now: number,
 ) => {
   const [body, signature] = (value ?? "").split(".");
+
   if (body === undefined || signature === undefined) return undefined;
   const expected = createHmac("sha256", key).update(body).digest();
   const given = Buffer.from(signature, "base64url");
+
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return undefined;
   const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as A;
+
   return payload.expires > now ? payload : undefined;
 };
 
@@ -66,8 +70,10 @@ export const admit = (options: {
   readonly users: ReadonlyArray<string>;
 }): "pass" | "sign-in" | "refuse" => {
   if (options.path.startsWith(`${options.prefix}/auth/`)) return "pass";
+
   if (options.session !== undefined && options.users.includes(options.session.user)) return "pass";
   const page = options.method === "GET" && options.path !== `${options.prefix}/rpc`;
+
   return page ? "sign-in" : "refuse";
 };
 
@@ -80,7 +86,9 @@ const nextOf = (prefix: string, next: string | null) =>
 /** The key that signs sessions, made once and kept with the controller's state so restarts keep sessions. */
 const sessionKey = (stateDir: string) => {
   const path = join(stateDir, "web-session.key");
+
   if (!existsSync(path)) writeFileSync(path, randomBytes(32), { mode: 0o600, flag: "wx" });
+
   return readFileSync(path);
 };
 
@@ -97,18 +105,21 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* Config;
     const web = config.web;
+
     if (web === null) return Layer.empty;
 
     const key = sessionKey(config.stateDir);
     const clientSecret = readFileSync(web.oauth.clientSecretFile, "utf8").trim();
     const publicUrl = new URL(config.publicUrl);
     const prefix = publicUrl.pathname.replace(/\/$/, "");
+
     if (!isPath(prefix))
       return yield* Effect.die(
         new Error(`publicUrl ${config.publicUrl} needs a path, such as /app, for the web UI`),
       );
     const redirectUri = `${publicUrl.origin}${prefix}/auth/callback`;
     const gitea = config.gitea.url.replace(/\/$/, "");
+
     const cookie = {
       httpOnly: true,
       secure: publicUrl.protocol === "https:",
@@ -117,6 +128,7 @@ export const layer = Layer.unwrap(
 
     const urlOf = (request: HttpServerRequest.HttpServerRequest) =>
       new URL(request.url, publicUrl.origin);
+
     const clear = (name: string, path: string) =>
       HttpServerResponse.setCookieUnsafe(name, "", { ...cookie, path, maxAge: 0 });
 
@@ -125,10 +137,12 @@ export const layer = Layer.unwrap(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           const url = urlOf(request);
+
           // The UI's page finds its assets and RPC next to it, so it must end in a slash.
           if (url.pathname === prefix)
             return HttpServerResponse.redirect(`${prefix}/${url.search}`);
           const session = verify<Session>(key, request.cookies[sessionCookie], Date.now());
+
           switch (
             admit({ prefix, path: url.pathname, method: request.method, session, users: web.users })
           ) {
@@ -158,6 +172,7 @@ export const layer = Layer.unwrap(
         state,
       }).toString();
       const saved: SignIn = { state, next, expires: Date.now() + 10 * 60_000 };
+
       return HttpServerResponse.redirect(authorize.toString()).pipe(
         HttpServerResponse.setCookieUnsafe(stateCookie, sign(key, saved), {
           ...cookie,
@@ -172,13 +187,16 @@ export const layer = Layer.unwrap(
       const url = urlOf(request);
       const saved = verify<SignIn>(key, request.cookies[stateCookie], Date.now());
       const code = url.searchParams.get("code");
+
       if (saved === undefined || saved.state !== url.searchParams.get("state") || code === null) {
         return HttpServerResponse.text(
           `This sign-in expired or was already used. Open ${publicUrl.href} to sign in again.`,
           { status: 400 },
         );
       }
+
       const client = yield* HttpClient.HttpClient;
+
       const token = yield* client
         .execute(
           HttpClientRequest.post(`${gitea}/login/oauth/access_token`).pipe(
@@ -196,6 +214,7 @@ export const layer = Layer.unwrap(
           Effect.flatMap(HttpClientResponse.filterStatusOk),
           Effect.flatMap(HttpClientResponse.schemaBodyJson(AccessToken)),
         );
+
       const user = yield* client
         .execute(
           HttpClientRequest.get(`${gitea}/login/oauth/userinfo`).pipe(
@@ -207,17 +226,21 @@ export const layer = Layer.unwrap(
           Effect.flatMap(HttpClientResponse.filterStatusOk),
           Effect.flatMap(HttpClientResponse.schemaBodyJson(UserInfo)),
         );
+
       const login = user.preferred_username;
+
       if (!web.users.includes(login)) {
         return HttpServerResponse.text(
           `Gitea signed you in as ${login}, who may not open Calder.`,
           { status: 403 },
         ).pipe(clear(stateCookie, `${prefix}/auth`));
       }
+
       const session: Session = {
         user: login,
         expires: Date.now() + sessionDays * 24 * 60 * 60_000,
       };
+
       return HttpServerResponse.redirect(saved.next).pipe(
         HttpServerResponse.setCookieUnsafe(sessionCookie, sign(key, session), {
           ...cookie,
@@ -245,6 +268,7 @@ export const layer = Layer.unwrap(
       Layer.provide(RpcServer.layerProtocolWebsocket({ path: `${prefix}/rpc` })),
       Layer.provide(RpcSerialization.layerJson),
     );
+
     const routes = Layer.mergeAll(
       gate,
       HttpRouter.add("GET", `${prefix}/auth/sign-in`, signIn),
@@ -261,6 +285,7 @@ export const layer = Layer.unwrap(
         ? Layer.empty
         : HttpStaticServer.layer({ root: config.ui, spa: true, prefix }),
     );
+
     return HttpRouter.serve(routes, { disableLogger: true }).pipe(
       Layer.provide(
         BunHttpServer.layer({ port: web.listen.port, hostname: web.listen.host, idleTimeout: 0 }),

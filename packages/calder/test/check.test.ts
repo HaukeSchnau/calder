@@ -54,14 +54,17 @@ describe("calder check", () => {
         })) {
           vi.stubEnv(name, value);
         }
+
         const dir = mkdtempSync(join(tmpdir(), "calder-check-jj-"));
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))),
         );
         const remote = join(dir, "remote.git");
         const work = join(dir, "work");
+
         const jj = (...args: ReadonlyArray<string>) =>
           Exec.run(["jj", "--repository", work, ...args]);
+
         yield* Exec.run(["git", "init", "-q", "--bare", remote]);
         yield* Exec.run(["jj", "git", "init", work]);
         yield* jj("git", "remote", "add", "origin", remote);
@@ -71,6 +74,7 @@ describe("calder check", () => {
         yield* jj("git", "push", "--bookmark", "main");
         writeFileSync(join(work, "b"), "b");
         yield* jj("commit", "-m", "an agent's work, without a bookmark");
+
         const log = jj(
           "log",
           "-r",
@@ -79,6 +83,7 @@ describe("calder check", () => {
           "-T",
           'description.first_line() ++ " [" ++ bookmarks ++ "]\n"',
         );
+
         const before = yield* log;
 
         const copy = yield* workingCopy(work);
@@ -134,6 +139,7 @@ describe("a refused check", () => {
         })) {
           vi.stubEnv(name, value);
         }
+
         const dir = mkdtempSync(join(tmpdir(), "calder-check-refused-"));
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))),
@@ -160,10 +166,12 @@ describe("a refused check", () => {
           `url.${remote}.pushInsteadOf`,
           "https://forge.invalid/schnau/app.git",
         ]);
+
         const client = {
           overview: () => Effect.succeed({ projects: [{ repo: "schnau/app" }] }),
           check: () => Effect.fail(new Refused({ reason: "revision not found" })),
         } as unknown as Client;
+
         const error = yield* Effect.flip(submit(client, work, { key: "x" }));
         expect(error).toMatchObject({ _tag: "Refused" });
         expect(
@@ -190,6 +198,7 @@ describe("calder plan", () => {
         })) {
           vi.stubEnv(name, value);
         }
+
         const dir = mkdtempSync(join(tmpdir(), "calder-plan-"));
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))),
@@ -206,10 +215,13 @@ describe("calder plan", () => {
           Calder.project({
             rules: [On.push("main", [Task.make("build", { inputs, run: cmd`make` })])],
           });
+
         yield* checkFiles(dir, build(Files.glob("package.json", "src/**")));
+
         const error = yield* Effect.flip(
           checkFiles(dir, build(Files.of("package.json", "static"))),
         );
+
         expect(error.message).toContain(`No file matches "static" (build's inputs).`);
       }).pipe(Effect.scoped, Effect.provide(processes)),
   );

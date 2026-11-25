@@ -18,13 +18,16 @@ declare module "react" {
 
 let now = Date.now();
 const tickers = new Set<() => void>();
+
 setInterval(() => {
   now = Date.now();
+
   for (const f of tickers) f();
 }, 1000);
 
 const subscribeTick = (f: () => void) => {
   tickers.add(f);
+
   return () => tickers.delete(f);
 };
 
@@ -37,6 +40,7 @@ export const useNow = () => useSyncExternalStore(subscribeTick, () => now);
 export function Ring({ p = 0.3 }: { readonly p?: number }) {
   const r = 3.8;
   const c = 2 * Math.PI * r;
+
   return (
     <svg className="g g-run" viewBox="0 0 10 10" aria-label="running">
       <circle className="trk" cx="5" cy="5" r={r} />
@@ -99,6 +103,7 @@ export function RunGlyph({ run }: { readonly run: Domain.Run }) {
     case "running": {
       const total = Object.values(run.counts).reduce((a, b) => a + b, 0);
       const done = (run.counts["passed"] ?? 0) + (run.counts["reused"] ?? 0);
+
       return <Ring p={total ? done / total : 0.1} />;
     }
   }
@@ -136,6 +141,7 @@ export function Swatch({
   readonly solid?: boolean;
 }) {
   if (k === null) return <i className="sw none" aria-hidden="true" />;
+
   return (
     <i
       className={solid ? "sw" : "sw hollow"}
@@ -164,28 +170,38 @@ export function Loaded<A, E>({
   readonly what: string;
 }) {
   if (AsyncResult.isSuccess(result)) return children(result.value);
+
   if (AsyncResult.isFailure(result)) {
     const previous = result.previousSuccess;
+
     if (previous._tag === "Some") return children(previous.value.value);
+
     return <p className="empty">{failureText(result.cause, what)}</p>;
   }
+
   return <p className="empty">Loading {what}</p>;
 }
 
 function failureText<E>(cause: Cause.Cause<E>, what: string): string {
   const error: unknown = Cause.squash(cause);
+
   if (typeof error === "object" && error !== null && "_tag" in error) {
     if (error._tag === "NotFound") return `Calder has no record of ${what}.`;
+
     if (error._tag === "Refused" && "reason" in error) return String(error.reason);
   }
+
   return `Couldn't load ${what}.`;
 }
 
 export function errorText(error: unknown): string {
   if (typeof error === "object" && error !== null && "_tag" in error) {
     if (error._tag === "Refused" && "reason" in error) return String(error.reason);
+
     if (error._tag === "NotFound" && "what" in error) return `${String(error.what)} not found`;
+
     if (error._tag === "RpcClientError") return "The controller is unreachable";
   }
+
   return error instanceof Error ? error.message : "Something went wrong";
 }

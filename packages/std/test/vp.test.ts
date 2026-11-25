@@ -11,20 +11,24 @@ const setup = Pnpm.install({ shell });
 
 const task = (step: Step.Any) => {
   if (step.def._tag !== "Task") throw new Error("not a task");
+
   return step.def;
 };
 
 /** The command a job of `files` runs, from `vp` on. */
 const command = (step: Step.Any, files: ReadonlyArray<string>) => {
   const { run } = task(step);
+
   if (typeof run !== "function") throw new Error("not a task with each");
   const argv = Cmd.render(run({ index: 1, count: 1, files }), {});
+
   return argv.slice(argv.indexOf("vp"));
 };
 
 describe("Vp.check", () => {
   it("runs `vp check` after the install, keyed by the whole repository", () => {
     const check = task(Vp.check({ shell, setup }));
+
     if (typeof check.run === "function") return expect.unreachable();
     expect(Cmd.render(check.run, {})).toEqual(["vp", "check"]);
     expect(check.setup).toBe(setup);
@@ -38,8 +42,10 @@ describe("Vp.test", () => {
   /** The whole-suite task's command from the script's arguments on: `vitest`, `dir`, the report, then vitest's own. */
   const suiteCommand = (step: Step.Any) => {
     const { run } = task(step);
+
     if (typeof run === "function") throw new Error("a task with each");
     const argv = Cmd.render(run, {});
+
     return argv.slice(argv.indexOf("vitest"));
   };
 
@@ -66,6 +72,7 @@ describe("Vp.test", () => {
       before: ["node", "fetch.ts"],
       args: ["--maxWorkers", "2"],
     });
+
     expect(suiteCommand(step)).toEqual([
       "vitest",
       "site",
@@ -78,6 +85,7 @@ describe("Vp.test", () => {
       "2",
     ]);
     const { run } = task(step);
+
     if (typeof run === "function") return expect.unreachable();
     expect(Cmd.render(run, {})[2]).toContain("'node' 'fetch.ts'");
   });
@@ -168,9 +176,11 @@ describe("the `vp` option", () => {
         flake,
         vp: { ...vp, test: { tests: ["src/**/*.test.ts"] } },
       });
+
       const test = (yield* Calder.plan(project, Event.pullRequest({ number: 1 }))).get(
         "test",
       )!.step;
+
       expect(task(test).each).toEqual(Files.imports(["src/**/*.test.ts"]));
     }),
   );

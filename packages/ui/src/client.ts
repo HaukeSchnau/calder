@@ -10,6 +10,7 @@ export const connectionAtom = Atom.make<Connection>("connecting").pipe(Atom.keep
 
 /** Next to the page, which is at `/` on the private network and at `/app/` for the web. */
 const url = new URL("rpc", location.href);
+
 url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
 
 /** The controller's UI RPCs over one WebSocket next to the page, reconnecting on its own. */

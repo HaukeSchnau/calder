@@ -20,6 +20,7 @@ import { bytes, clockS, dur, spanDur, stepDuration } from "./format.ts";
 import { Check, Dash, Fail, Kbd, Loaded, Ring, useNow } from "./ui.tsx";
 
 export type Tab = "logs" | "trace" | "metrics" | "tests" | "value";
+
 export const TABS: ReadonlyArray<Tab> = ["logs", "trace", "metrics", "tests", "value"];
 
 const tabLabel = (tab: Tab, step: Domain.StepRun | null) =>
@@ -36,6 +37,7 @@ interface Props {
 
 export function Panel({ detail, step, tab, onTab, onSelect, onClose }: Props) {
   const failing = step ? detail.failingTests.filter((t) => t.step === step.name).length : 0;
+
   return (
     <section className="panel" aria-label="Observability">
       <div className="phead">
@@ -93,6 +95,7 @@ export function Panel({ detail, step, tab, onTab, onSelect, onClose }: Props) {
 /* Logs                                                                */
 
 type Level = Domain.LogLine["level"];
+
 type LogStream = Domain.LogLine["stream"];
 
 // Filters outlive a step switch, like an editor panel's.
@@ -119,12 +122,15 @@ function LogsTab({
   readonly onSelect: (name: string) => void;
 }) {
   const [scope, setScope] = useState(memory.scope);
+
   const changeScope = (s: "step" | "run") => {
     memory.scope = s;
     setScope(s);
   };
+
   // Decided once per view: a stream that follows ends by itself when the step finishes.
   const follow = scope === "step" ? !isTerminal(step.status) : isActive(detail.run.status);
+
   return (
     <LogsView
       key={scope}
@@ -154,6 +160,7 @@ function LogsView({
   readonly onSelect: (name: string) => void;
 }) {
   const [followKey] = useState(follow);
+
   const result = useAtomValue(
     logsAtom({
       runId: detail.run.id,
@@ -161,25 +168,31 @@ function LogsView({
       follow: followKey,
     }),
   );
+
   const [levels, setLevels] = useState(memory.levels);
   const [streams, setStreams] = useState(memory.streams);
   const [query, setQuery] = useState("");
   const [stick, setStick] = useState(true);
+
   const latest = AsyncResult.isSuccess(result)
     ? result.value
     : AsyncResult.isFailure(result) && result.previousSuccess._tag === "Some"
       ? result.previousSuccess.value.value
       : [];
+
   const [earlier, setEarlier] = useState<ReadonlyArray<Domain.LogEntry>>([]);
   const [paging, setPaging] = useState(false);
   const fetchEarlier = useAtomSet(earlierLogs, { mode: "promiseExit" });
+
   const lines = useMemo(
     () => (earlier.length ? [...earlier, ...latest] : latest),
     [earlier, latest],
   );
+
   const oldest = lines[0];
   const streaming = followKey && AsyncResult.isWaiting(result);
   const q = query.trim().toLowerCase();
+
   const shown = useMemo(
     () =>
       lines.filter(
@@ -187,32 +200,41 @@ function LogsView({
       ),
     [lines, levels, streams, q],
   );
+
   const origin =
     (scope === "step" ? (step.startedAt ?? step.queuedAt) : detail.run.startedAt) ??
     lines[0]?.timestamp ??
     0;
+
   const sharded = scope === "step" && step.shards !== null;
 
   const body = useRef<HTMLDivElement>(null);
   const jumped = useRef(false);
   // The scroll height before earlier lines went in on top, so the view stays on the same line.
   const anchor = useRef<number | null>(null);
+
   const loadEarlier = async () => {
     if (!oldest || paging) return;
     setPaging(true);
+
     const exit = await fetchEarlier({
       runId: detail.run.id,
       step: scope === "step" ? step.name : null,
       before: oldest.index,
     });
+
     setPaging(false);
+
     if (exit._tag !== "Success") return;
     anchor.current = body.current?.scrollHeight ?? null;
     setEarlier((e) => [...exit.value, ...e]);
   };
+
   useLayoutEffect(() => {
     const el = body.current;
+
     if (!el) return;
+
     if (anchor.current !== null) {
       el.scrollTop += el.scrollHeight - anchor.current;
       anchor.current = null;
@@ -233,8 +255,10 @@ function LogsView({
     set((r) => {
       const next = { ...r, [key]: !r[key] };
       save(next);
+
       return next;
     });
+
   const count = (level: Level) => lines.filter((l) => l.level === level).length;
 
   return (
@@ -321,6 +345,7 @@ function LogsView({
         onScroll={(e) => {
           const el = e.currentTarget;
           const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+
           if (followKey && atEnd !== stick) setStick(atEnd);
         }}
       >
@@ -400,13 +425,16 @@ function LogsView({
 
 const offset = (ms: number) => {
   const t = Math.max(0, ms) / 1000;
+
   return `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
 };
 
 function mark(text: string, q: string): ReactNode {
   if (!q) return text;
   const i = text.toLowerCase().indexOf(q);
+
   if (i < 0) return text;
+
   return (
     <>
       {text.slice(0, i)}
@@ -430,8 +458,10 @@ function TraceTab({
 }) {
   const [live] = useState(() => isActive(detail.run.status));
   const result = useAtomValue(traceAtom({ runId: detail.run.id, live }));
+
   if (detail.run.traceId === null && !AsyncResult.isSuccess(result))
     return <p className="empty">This run has no trace.</p>;
+
   return (
     <Loaded result={result} what="the trace">
       {(spans) =>
@@ -455,10 +485,15 @@ type SpanKind = "run" | "build" | "task" | "action" | "nix" | "http" | "detail";
 function spanKind(s: Domain.Span): SpanKind {
   if (s.parentId === null) return "run";
   const kind = s.attributes["calder.kind"];
+
   if (kind === "build" || kind === "task" || kind === "action") return kind;
+
   if (kind === "setup") return "task";
+
   if (s.attributes["http.status"] !== undefined) return "http";
+
   if (s.attributes["nix.activity"] !== undefined) return "nix";
+
   return "detail";
 }
 
@@ -471,26 +506,34 @@ export interface Ordered {
 export function orderSpans(spans: ReadonlyArray<Domain.Span>, root?: string): Array<Ordered> {
   const ids = new Set(spans.map((s) => s.spanId));
   const kids = new Map<string | null, Array<Domain.Span>>();
+
   for (const s of spans) {
     const parent = s.parentId !== null && ids.has(s.parentId) ? s.parentId : null;
     kids.set(parent, [...(kids.get(parent) ?? []), s]);
   }
+
   const out: Array<Ordered> = [];
+
   const walk = (parent: string | null, depth: number) => {
     for (const s of (kids.get(parent) ?? []).sort((a, b) => a.start - b.start)) {
       out.push({ span: s, depth });
       walk(s.spanId, depth + 1);
     }
   };
+
   if (root !== undefined) {
     const top = spans.find((s) => s.spanId === root);
+
     if (top) {
       out.push({ span: top, depth: 0 });
       walk(root, 1);
     }
+
     return out;
   }
+
   walk(null, 0);
+
   return out;
 }
 
@@ -517,41 +560,52 @@ export function Waterfall({
   const own = step ? stepSpanOf(spans, step) : undefined;
   const [picked, setPicked] = useState<string | null>(null);
   const selected = ordered.find((o) => o.span.spanId === picked)?.span ?? own ?? ordered[0]?.span;
+
   const inside = useMemo(() => {
     const set = new Set<string>();
+
     if (!own) return set;
     const parents = new Map(spans.map((s) => [s.spanId, s.parentId]));
+
     for (const s of spans) {
       for (let p = parents.get(s.spanId) ?? null; p !== null; p = parents.get(p) ?? null) {
         if (p === own.spanId) set.add(s.spanId);
       }
     }
+
     return set;
   }, [spans, own]);
+
   const t0 = Math.min(...ordered.map((o) => o.span.start));
   const t1 = Math.max(...ordered.map((o) => o.span.end), t0 + 1);
   const total = t1 - t0;
+
   const stepOf = (s: Domain.Span): string | undefined => {
     const byId = new Map(spans.map((x) => [x.spanId, x]));
+
     for (
       let cur: Domain.Span | undefined = s;
       cur;
       cur = cur.parentId ? byId.get(cur.parentId) : undefined
     ) {
       const name = cur.attributes["calder.step"];
+
       if (name !== undefined) return name;
     }
+
     return undefined;
   };
 
   const body = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const row = body.current?.querySelector<HTMLElement>(".tr.on");
+
     if (row && body.current) body.current.scrollTop = Math.max(0, row.offsetTop - 70);
   }, [own?.spanId]);
 
   const ticks = niceTicks(total);
   const rootSpan = ordered[0]?.span;
+
   return (
     <>
       {!compact && (
@@ -587,6 +641,7 @@ export function Waterfall({
           {ordered.map(({ span, depth }) => {
             const kind = spanKind(span);
             const open = live && span.status === "unset" && t1 - span.end < 1500;
+
             const cls = [
               "tr",
               `k-${kind}`,
@@ -596,10 +651,12 @@ export function Waterfall({
               own && span.spanId === own.spanId ? "on" : inside.has(span.spanId) ? "in" : "",
               selected && span.spanId === selected.spanId ? "sel" : "",
             ].join(" ");
+
             const tag = span.attributes["http.status"]
               ? `http ${span.attributes["http.status"]}`
               : (span.attributes["nix.activity"] ??
                 (span.attributes["calder.status"] === "reused" ? "reused" : ""));
+
             return (
               <div
                 key={span.spanId}
@@ -607,6 +664,7 @@ export function Waterfall({
                 onClick={() => {
                   setPicked(span.spanId);
                   const name = stepOf(span);
+
                   if (name && onSelect) onSelect(name);
                 }}
               >
@@ -668,9 +726,12 @@ function niceTicks(total: number): Array<number> {
     100, 200, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000,
     1_200_000, 1_800_000, 3_600_000,
   ];
+
   const step = steps.find((s) => total / s <= 7) ?? 7_200_000;
   const out: Array<number> = [];
+
   for (let t = 0; t <= total; t += step) out.push(t);
+
   return out;
 }
 
@@ -696,6 +757,7 @@ function MetricsTab({
   const stats = useAtomValue(
     Calder.query("stepStats", { project: detail.run.project, step: step.name }),
   );
+
   return (
     <div className="pbody">
       <div className="metrics">
@@ -725,10 +787,13 @@ function MetricsTab({
 
 const median = (xs: ReadonlyArray<number>) => {
   const s = [...xs].sort((a, b) => a - b);
+
   return s[Math.floor(s.length / 2)] ?? 0;
 };
+
 const p95 = (xs: ReadonlyArray<number>) => {
   const s = [...xs].sort((a, b) => a - b);
+
   return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))] ?? 0;
 };
 
@@ -771,6 +836,7 @@ function HistoryCards({
   const live = step.status === "running" && !samples.some((s) => s.runId === runId);
   const durations = samples.flatMap((s) => (s.durationMs === null ? [] : [s.durationMs]));
   const reused = samples.filter((s) => s.reused).length;
+
   const bars = samples.map((s) => ({
     value: s.durationMs,
     cls:
@@ -782,13 +848,17 @@ function HistoryCards({
             ? "failed"
             : "",
   }));
+
   if (live) bars.push({ value: stepDuration(step, now), cls: "cur s-running" });
   const queues = samples.map((s) => ({ value: s.queueMs, cls: s.runId === runId ? "cur" : "" }));
   const own = stepDuration(step, now);
   const shown = hover !== null ? (bars[hover]?.value ?? null) : own;
+
   const ownQueue =
     step.queuedAt !== null && step.startedAt !== null ? step.startedAt - step.queuedAt : null;
+
   const queueValues = samples.flatMap((s) => (s.queueMs === null ? [] : [s.queueMs]));
+
   if (!samples.length && !live) {
     return (
       <section className="metric note">
@@ -801,6 +871,7 @@ function HistoryCards({
       </section>
     );
   }
+
   return (
     <>
       <Metric
@@ -862,6 +933,7 @@ function ResourceCards({ runId, step }: { readonly runId: string; readonly step:
   const result = useAtomValue(metricsAtom({ runId, step: step.name, live }));
   const [hover, setHover] = useState<number | null>(null);
   const [hoverM, setHoverM] = useState<number | null>(null);
+
   return (
     <Loaded result={result} what="metrics">
       {({ samples }) => {
@@ -881,14 +953,17 @@ function ResourceCards({ runId, step }: { readonly runId: string; readonly step:
             </section>
           );
         }
+
         const cpu = samples.map((s) => s.cpuPercent / 100);
         const mem = samples.map((s) => s.memoryBytes);
         const cls = step.status === "running" ? "heat" : "";
         const span = (samples.at(-1)?.timestamp ?? 0) - (samples[0]?.timestamp ?? 0);
+
         const at = (i: number | null) =>
           i === null
             ? ""
             : ` at +${dur((samples[i]?.timestamp ?? 0) - (samples[0]?.timestamp ?? 0))}`;
+
         return (
           <>
             <Metric
@@ -943,13 +1018,17 @@ function TestsTab({
   readonly onSelect: (name: string) => void;
 }) {
   const failing = detail.failingTests.filter((t) => t.step === step.name).sort(testOrder);
+
   const elsewhere = [
     ...new Set(detail.failingTests.filter((t) => t.step !== step.name).map((t) => t.step)),
   ];
+
   const [open, setOpen] = useState<string | null>(
     failing[0] ? `${failing[0].suite}›${failing[0].name}` : null,
   );
+
   const t = step.tests;
+
   return (
     <>
       <div className="ptool">
@@ -993,6 +1072,7 @@ function TestsTab({
             </div>
             {failing.map((test) => {
               const id = `${test.suite}›${test.name}`;
+
               return (
                 <div
                   key={id}
@@ -1042,8 +1122,10 @@ export function TestHistory({
   const result = useAtomValue(
     Calder.query("testHistory", { project, suite: test.suite, name: test.name }),
   );
+
   if (!AsyncResult.isSuccess(result)) return <span className="thist" />;
   const runs = result.value.slice(-20);
+
   return (
     <span className="thist" aria-label={`last ${runs.length} runs`}>
       {runs.map((r) => (
@@ -1081,7 +1163,9 @@ function ValueTab({ step }: { readonly step: Domain.StepRun }) {
       </div>
     );
   }
+
   const v = step.value;
+
   if (!v) {
     return (
       <div className="pbody">
@@ -1093,6 +1177,7 @@ function ValueTab({ step }: { readonly step: Domain.StepRun }) {
       </div>
     );
   }
+
   return (
     <div className="pbody vbody">
       <p className="vhead">

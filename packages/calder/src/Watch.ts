@@ -21,6 +21,7 @@ const snapshot = (dir: string) =>
   Effect.gen(function* () {
     const jj = (args: ReadonlyArray<string>) =>
       Exec.run(["jj", "--ignore-working-copy", "--repository", dir, ...args]);
+
     const changed = (yield* jj([
       "log",
       "--no-graph",
@@ -29,7 +30,9 @@ const snapshot = (dir: string) =>
       "-T",
       `commit_id ++ "\\n"`,
     ])).trim();
+
     if (changed === "") return null;
+
     return (yield* jj(["log", "--no-graph", "-r", "@", "-T", "commit_id"])).trim();
   }).pipe(Effect.orElseSucceed(() => null));
 
@@ -65,17 +68,22 @@ export const watch = (
         checked: boolean;
       }
     >();
+
     let first = true;
+
     const tick = Effect.gen(function* () {
       for (const dir of workspaces(roots)) {
         const known = seen.get(dir);
         const current = stamp(dir);
         const sha = current !== null && known?.stamp === current ? known.sha : yield* snapshot(dir);
+
         if (known === undefined || known.sha !== sha) {
           seen.set(dir, { stamp: current, sha, since: Date.now(), checked: first });
           continue;
         }
+
         known.stamp = current;
+
         if (sha === null || known.checked || Date.now() - known.since < options.settle) continue;
         known.checked = true;
         yield* Check.submit(client, dir, {
@@ -91,8 +99,11 @@ export const watch = (
           Effect.catchCause((cause) => Effect.logWarning(`checking ${dir} failed`, cause)),
         );
       }
+
       first = false;
     }).pipe(Effect.catchCause((cause) => Effect.logWarning("watch tick failed", cause)));
+
     yield* Console.log(`watching ${workspaces(roots).length} workspaces`);
+
     return yield* tick.pipe(Effect.repeat(Schedule.spaced(options.every)), Effect.asVoid);
   });

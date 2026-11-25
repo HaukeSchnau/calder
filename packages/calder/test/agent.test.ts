@@ -11,12 +11,14 @@ import * as Agent from "../src/Agent.ts";
 const start = (argv: ReadonlyArray<string>) => {
   const child = spawn(argv[0]!, argv.slice(1), { detached: true, stdio: "ignore" });
   child.unref();
+
   return child.pid!;
 };
 
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
+
     return true;
   } catch {
     return false;
@@ -47,6 +49,7 @@ describe("Agent", () => {
       (...pools: ReadonlyArray<string>) =>
       (pool: string) =>
         pools.includes(pool);
+
     expect(Agent.poolsOf({ units: "/run/jobs", pools: ["pr", "trusted"] }, groups())).toEqual([
       "pr",
       "trusted",

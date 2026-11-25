@@ -174,25 +174,33 @@ export const startUnit = <E, R>(
   Effect.gen(function* () {
     for (let attempt = 1; ; attempt++) {
       const { exitCode, stderr } = yield* start;
+
       if (exitCode === 0) {
         if (attempt > 1) yield* Effect.interruptible(Effect.void);
+
         return undefined;
       }
+
       const unitResult = (yield* result) || "unknown";
+
       const line =
         stderr.trim().split("\n")[0]!.replace(/\.$/, "") || `systemctl exited with ${exitCode}`;
+
       // A host from before a pool existed, such as forks', runs none of its jobs. systemd asks polkit before it
       // looks the unit up, so such a host denies the start rather than say the unit is missing.
       const missing =
         /^Failed to start (calder-job-[\w-]+)@\S*: (Access denied|Interactive authentication required)$/.exec(
           line,
         );
+
       if (missing !== null)
         return `the host has no ${missing[1]}@ unit the controller may start: ${missing[2]}`;
       const said = /^Job for (\S+) failed because (.+)$/.exec(line);
       const cause = said?.[2] ?? line;
       const where = said === null ? `result ${unitResult}` : `result ${unitResult}, ${said[1]}`;
+
       if (unitResult !== "timeout") return `${cause} (${where})`;
+
       if (attempt === startAttempts) return `${cause}, tried ${startAttempts} times (${where})`;
       const seconds = 15 * 2 ** (attempt - 1);
       yield* log(`the worker didn't start: ${cause} (${where}); starting it again in ${seconds} s`);
@@ -201,6 +209,7 @@ export const startUnit = <E, R>(
   });
 
 const parseCpuUsec = (stat: string) => Number(/usage_usec (\d+)/.exec(stat)?.[1] ?? 0);
+
 const readNumber = (path: string) => {
   try {
     return Number(readFileSync(path, "utf8").trim());
@@ -208,6 +217,7 @@ const readNumber = (path: string) => {
     return null;
   }
 };
+
 const readText = (path: string) => {
   try {
     return readFileSync(path, "utf8");
@@ -222,12 +232,15 @@ export const layer = Layer.effect(Jobs)(
     const agents = yield* Agents;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const sql = yield* SqlClient.SqlClient;
+
     const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
       effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
+
     const jobs = new Map<string, ActiveJob>();
     // Workers outlive a stopping controller; the next one adopts or stops them. Effect interrupts every fiber
     // on the signal, and only this tells that apart from cancelling a job.
     let stopping = false;
+
     for (const signal of ["SIGTERM", "SIGINT"] as const)
       process.once(signal, () => (stopping = true));
     const jobsDir = join(config.runtimeDir, "jobs");
@@ -235,17 +248,20 @@ export const layer = Layer.effect(Jobs)(
     // systemd creates the runtime directory with the controller's own group; workers need to reach the
     // socket and their token files in it.
     const workers = workersGroup(config.jobs.mode);
+
     if (workers !== undefined) {
       chownSync(config.runtimeDir, process.getuid!(), workers);
       chmodSync(config.runtimeDir, 0o750);
       chownSync(jobsDir, process.getuid!(), workers);
       chmodSync(jobsDir, 0o750);
     }
+
     const exec = (argv: ReadonlyArray<string>) =>
       Exec.exec(argv).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
 
     const templateOf = (pool: Pool, large: boolean) =>
       `calder-job-${pool}${large && pool !== "trusted" ? "-large" : ""}`;
+
     const unit = (template: string, id: string) => `${template}@${id}.service`;
 
     const groupOf = (pool: Pool) => groupId(`calder-${pool}`);
@@ -267,6 +283,7 @@ export const layer = Layer.effect(Jobs)(
               .split("\n")
               .map((l) => l.split("=") as [string, string]),
           );
+
           return {
             active: props.ActiveState === "active" || props.ActiveState === "activating",
             result: props.Result ?? "",
@@ -281,38 +298,49 @@ export const layer = Layer.effect(Jobs)(
         const cpuStart = 0;
         let cpuLast: { usec: number; at: number } | null = null;
         let cgroup: string | undefined;
+
         const sample = Effect.gen(function* () {
           cgroup ??= yield* cgroupOf(job.template, job.id);
+
           if (cgroup === undefined) return;
           const usec = parseCpuUsec(readText(join(cgroup, "cpu.stat")) ?? "");
           const memory = readNumber(join(cgroup, "memory.current")) ?? 0;
           const now = Date.now();
+
           const percent =
             cpuLast === null ? 0 : ((usec - cpuLast.usec) / 1000 / (now - cpuLast.at)) * 100;
+
           cpuLast = { usec, at: now };
           job.samples.push({
             timestamp: now,
             cpuPercent: Math.round(percent),
             memoryBytes: memory,
           });
+
           if (job.samples.length > 1800) job.samples.shift();
         });
+
         let memoryPeak: number | null = null;
+
         const finalUsage = Effect.sync((): Usage => {
           if (cgroup !== undefined)
             memoryPeak = readNumber(join(cgroup, "memory.peak")) ?? memoryPeak;
           const cpuSeconds = cpuLast === null ? null : (cpuLast.usec - cpuStart) / 1e6;
+
           return {
             cpuSeconds,
             memoryPeakBytes: memoryPeak ?? Math.max(0, ...job.samples.map((s) => s.memoryBytes)),
           };
         });
+
         const watch = Effect.gen(function* () {
           yield* sample.pipe(Effect.ignore);
           const state = yield* unitState(job.template, job.id);
+
           if (!state.active) {
             yield* Effect.sleep("1 second");
             const done = yield* Deferred.poll(job.result);
+
             if (Option.isNone(done)) {
               yield* Deferred.succeed(job.result, {
                 _tag: "Died",
@@ -324,10 +352,12 @@ export const layer = Layer.effect(Jobs)(
             }
           }
         }).pipe(Effect.repeat(Schedule.spaced("2 seconds")), Effect.forkScoped);
+
         const fiber = yield* watch;
         const value = yield* Deferred.await(job.result);
         yield* sample.pipe(Effect.ignore);
         yield* Fiber.interrupt(fiber);
+
         return { result: value, usage: yield* finalUsage };
       });
 
@@ -336,22 +366,28 @@ export const layer = Layer.effect(Jobs)(
 
     // Workers the last controller left running: adopt those whose units still run, stop the rest.
     const adoptable = new Map<string, Adopted>();
+
     const sinks = new Map<
       string,
       { buffer: Array<JobEvent>; target: ((event: JobEvent) => Effect.Effect<void>) | undefined }
     >();
+
     const settledOf = new Map<string, Deferred.Deferred<void>>();
+
     const forget = (id: string) =>
       Effect.gen(function* () {
         const job = jobs.get(id);
+
         if (job !== undefined) yield* Scope.close(job.scope, Exit.void);
         jobs.delete(id);
         adoptable.delete(id);
         sinks.delete(id);
         yield* db(sql`delete from jobs where id = ${id}`);
         const settled = settledOf.get(id);
+
         if (settled !== undefined) yield* Deferred.succeed(settled, undefined);
       });
+
     if (config.jobs.mode === "systemd") {
       const rows = yield* db(
         sql<{
@@ -363,18 +399,22 @@ export const layer = Layer.effect(Jobs)(
           created_at: number;
         }>`select * from jobs`,
       );
+
       for (const row of rows) {
         const spec = JSON.parse(row.spec) as Job;
         const template = row.template ?? templateOf(row.pool, false);
         const state = yield* unitState(template, row.id);
+
         if (!state.active || spec._tag !== "Step") {
           yield* db(sql`delete from jobs where id = ${row.id}`);
           continue;
         }
+
         const sink = {
           buffer: [] as Array<JobEvent>,
           target: undefined as ((event: JobEvent) => Effect.Effect<void>) | undefined,
         };
+
         sinks.set(row.id, sink);
         settledOf.set(row.id, Deferred.makeUnsafe<void>());
         adoptable.set(row.id, { id: row.id, spec, pool: row.pool, startedAt: row.created_at });
@@ -394,6 +434,7 @@ export const layer = Layer.effect(Jobs)(
           lease: undefined,
         });
       }
+
       const listed = yield* exec([
         "systemctl",
         "list-units",
@@ -406,14 +447,18 @@ export const layer = Layer.effect(Jobs)(
         "calder-job-fork-large@*.service",
         "calder-job-trusted@*.service",
       ]);
+
       const kept = new Set(
         [...adoptable.values()].map((a) => unit(jobs.get(a.id)!.template, a.id)),
       );
+
       const orphans = listed.stdout
         .split("\n")
         .map((l) => l.trim().split(/\s+/)[0] ?? "")
         .filter((u) => u.startsWith("calder-job-") && !kept.has(u));
+
       if (orphans.length > 0) yield* exec(["systemctl", "stop", ...orphans]).pipe(Effect.ignore);
+
       if (adoptable.size > 0) yield* Effect.logInfo(`adopted ${adoptable.size} running workers`);
       // A step reattaches within seconds of the restart; a worker no step claims is of no use.
       yield* Effect.forEach(
@@ -422,6 +467,7 @@ export const layer = Layer.effect(Jobs)(
           Effect.gen(function* () {
             if (!adoptable.has(id)) return;
             const job = jobs.get(id);
+
             if (job !== undefined) yield* stopUnit(job.template, id);
             yield* forget(id);
           }),
@@ -435,20 +481,25 @@ export const layer = Layer.effect(Jobs)(
         const token = randomBytes(32).toString("hex");
         const result = yield* Deferred.make<JobResult>();
         const platform = options.platform ?? config.system;
+
         const remote =
           options.agent === true || options.evaluation === true || platform !== config.system;
+
         if (remote && refusedOnAgents(options)) {
           const refused: JobResult = {
             _tag: "Died",
             message: "agents don't evaluate forks' pull requests",
           };
+
           return { result: refused, usage: { cpuSeconds: null, memoryPeakBytes: null }, id };
         }
+
         const persisted =
           options.adoptable === true &&
           !remote &&
           config.jobs.mode === "systemd" &&
           spec._tag === "Step";
+
         const job: ActiveJob = {
           id,
           tokenHash: sha256(token),
@@ -464,20 +515,24 @@ export const layer = Layer.effect(Jobs)(
           scope: yield* Scope.make(),
           lease: undefined,
         };
+
         const tokenFile = join(jobsDir, `${id}.token`);
 
         const start = Effect.gen(function* () {
           jobs.set(id, job);
           writeFileSync(tokenFile, token, { mode: 0o640 });
           const gid = groupOf(options.pool);
+
           if (gid !== undefined && config.jobs.mode === "systemd")
             chownSync(tokenFile, process.getuid!(), gid);
+
           // The worker fetched its secrets when it started; the journal never holds them.
           if (persisted) {
             yield* db(sql`insert into jobs (id, token_hash, pool, template, spec, created_at)
             values (${id}, ${job.tokenHash}, ${options.pool}, ${job.template}, ${JSON.stringify({ ...spec, secrets: {} })}, ${Date.now()})`);
           }
         });
+
         const onStart = options.onStart ?? Effect.void;
 
         // A worker the next controller adopts keeps what its job's scope holds, such as the deploy lease.
@@ -485,23 +540,30 @@ export const layer = Layer.effect(Jobs)(
           if (stopping && persisted) return;
           yield* Scope.close(job.scope, Exit.void);
           jobs.delete(id);
+
           if (existsSync(tokenFile)) rmSync(tokenFile);
+
           if (persisted) yield* db(sql`delete from jobs where id = ${id}`);
         });
 
         let usage: Usage = { cpuSeconds: null, memoryPeakBytes: null };
+
         const systemd = Effect.gen(function* () {
           // Without --no-block this returns once systemd has executed the worker (Type=exec), so the unit
           // is active when the watch below first looks.
           yield* onStart;
+
           const log = (text: string) =>
             options.onEvent({ _tag: "Log", stream: "calder", text, timestamp: Date.now() });
+
           const unitResult = Effect.map(unitState(job.template, id), (state) => state.result);
+
           const failed = yield* startUnit(
             exec(["systemctl", "start", unit(job.template, id)]),
             unitResult,
             log,
           );
+
           if (failed !== undefined)
             return {
               _tag: "Died",
@@ -509,12 +571,14 @@ export const layer = Layer.effect(Jobs)(
             } satisfies JobResult;
           const followed = yield* follow(job);
           usage = followed.usage;
+
           return followed.result;
         });
 
         const processMode = Effect.gen(function* () {
           const [command, ...args] = config.workerCommand;
           yield* onStart;
+
           const handle = yield* spawner.spawn(
             ChildProcess.make(command!, [...args, "worker", id], {
               env: {
@@ -528,6 +592,7 @@ export const layer = Layer.effect(Jobs)(
               forceKillAfter: "10 seconds",
             }),
           );
+
           const exited = yield* handle.exitCode.pipe(
             Effect.flatMap((code) =>
               Effect.sleep("500 millis").pipe(
@@ -542,31 +607,38 @@ export const layer = Layer.effect(Jobs)(
             Effect.ignore,
             Effect.forkScoped,
           );
+
           const value = yield* Deferred.await(result);
           yield* Fiber.interrupt(exited);
+
           return value;
         });
 
         const agentMode = Effect.gen(function* () {
           const log = (text: string) =>
             options.onEvent({ _tag: "Log", stream: "calder", text, timestamp: Date.now() });
+
           // An offloaded job never waits: no agent takes it, and it runs here.
           if (options.offload !== true) {
             const evaluation = options.evaluation === true;
+
             const stale = agents
               .usage()
               .filter(
                 (a) =>
                   a.connected && !a.current && (evaluation ? a.evaluator : a.platform === platform),
               );
+
             const why = stale
               .map(
                 (a) =>
                   `; ${a.name} has compatibility version ${a.compatibility}, not ${compatibility}, and gets no jobs`,
               )
               .join("");
+
             yield* log(`waiting for ${evaluation ? "an evaluator" : `a ${platform}`} agent${why}`);
           }
+
           const exited = yield* agents
             .run({ id, token }, platform, {
               pool: options.pool,
@@ -615,8 +687,10 @@ export const layer = Layer.effect(Jobs)(
               ),
               Effect.forkScoped,
             );
+
           const value = yield* Deferred.await(result);
           yield* Fiber.interrupt(exited);
+
           return value;
         });
 
@@ -640,11 +714,13 @@ export const layer = Layer.effect(Jobs)(
             } satisfies JobResult),
           ),
         );
+
         const value = yield* Effect.acquireUseRelease(
           start,
           () => (options.uninterruptible === true ? Effect.uninterruptible(body) : body),
           () => cleanup,
         );
+
         return { result: value, usage, id };
       });
 
@@ -652,6 +728,7 @@ export const layer = Layer.effect(Jobs)(
       Effect.gen(function* () {
         const job = jobs.get(id);
         const sink = sinks.get(id);
+
         if (job === undefined || sink === undefined || !adoptable.delete(id)) {
           return {
             result: { _tag: "Died", message: "the adopted worker is gone" } satisfies JobResult,
@@ -659,12 +736,15 @@ export const layer = Layer.effect(Jobs)(
             id,
           };
         }
+
         for (const event of sink.buffer.splice(0)) yield* onEvent(event);
         sink.target = onEvent;
+
         const followed = yield* Effect.scoped(follow(job)).pipe(
           Effect.onInterrupt(() => (stopping ? Effect.void : stopUnit(job.template, id))),
           Effect.ensuring(Effect.suspend(() => (stopping ? Effect.void : forget(id)))),
         );
+
         return { ...followed, id };
       });
 
@@ -674,10 +754,12 @@ export const layer = Layer.effect(Jobs)(
       reattach,
       settled: (id) => {
         const settled = settledOf.get(id);
+
         return settled === undefined ? Effect.void : Deferred.await(settled);
       },
       authorize: (id, token) => {
         const job = jobs.get(id);
+
         return job !== undefined && job.tokenHash === sha256(token)
           ? Effect.succeed(job)
           : Effect.fail(new Unauthorized({ reason: "unknown job or wrong token" }));

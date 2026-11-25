@@ -49,6 +49,7 @@ describe("Projects", () => {
         const enrolled = yield* Effect.gen(function* () {
           const p = yield* Projects.Projects;
           yield* scanned;
+
           return [
             yield* p.byRepo("schnau/pushed", { sha: "abc" }),
             yield* p.byRepo("schnau/default", { defaultBranch: "trunk" }),
@@ -64,6 +65,7 @@ describe("Projects", () => {
             ]),
           ),
         );
+
         expect(enrolled).toEqual(["pushed", "default", undefined, undefined]);
         const sql = yield* SqlClient.SqlClient;
         expect(yield* sql<{ name: string }>`select name from projects order by name`).toEqual([
@@ -78,15 +80,20 @@ describe("Projects", () => {
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+
         for (const name of ["idle", "ran", "carries", "configured"]) {
           yield* sql`insert into projects (name, repo, default_branch, created_at) values (${name}, ${`schnau/${name}`}, 'main', 0)`;
         }
+
         yield* insertRun("ran-1", { at: 0 });
+
         const left = yield* Effect.gen(function* () {
           const p = yield* Projects.Projects;
           yield* scanned;
+
           return p.all().map((project) => project.name);
         }).pipe(Effect.provide(projects(["schnau/carries@main:.calder/ci.ts"])));
+
         expect(left).toEqual(["carries", "configured", "ran"]);
         expect(yield* sql<{ name: string }>`select name from projects order by name`).toEqual([
           { name: "carries" },

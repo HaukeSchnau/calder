@@ -8,17 +8,21 @@ import { config } from "./config.ts";
 /** A collector that answers with `statuses` in turn, then with 200. */
 const collector = (statuses: Array<number>) => {
   const answered: Array<number> = [];
+
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
       const status = statuses.shift() ?? 200;
       answered.push(status);
+
       return HttpClientResponse.fromWeb(request, new Response(null, { status }));
     }),
   );
+
   return { answered, layer: Layer.succeed(HttpClient.HttpClient)(client) };
 };
 
 const warnings: Array<string> = [];
+
 const capture = Logger.layer([
   Logger.make((log) => {
     if (log.logLevel === "Warn") warnings.push(String(log.message));
@@ -53,6 +57,7 @@ const logTwice = (statuses: Array<number>) =>
       ),
       Effect.provide(capture),
     );
+
     return otlp.answered;
   });
 

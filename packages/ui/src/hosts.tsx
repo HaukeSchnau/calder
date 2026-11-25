@@ -26,6 +26,7 @@ export function HostSlots({
   const waits = useAtomValue(agentWaitsAtom);
   const unknown = [...new Set(waits.filter((w) => w.agent === null).map((w) => w.platform))];
   const { slots } = ov;
+
   return (
     <span className={compact ? "hslots compact" : "hslots"}>
       <span className="hsl">
@@ -43,6 +44,7 @@ export function HostSlots({
       </span>
       {ov.agents.map((a) => {
         const awaited = waits.filter((w) => w.agent === a.name);
+
         if (a.connected && !a.current) {
           return (
             <span
@@ -55,6 +57,7 @@ export function HostSlots({
             </span>
           );
         }
+
         return a.connected ? (
           <span
             key={a.name}

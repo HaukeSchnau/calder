@@ -10,6 +10,7 @@ describe("Report", () => {
   <testcase classname="api" name="breaks" time="0.1" file="src/a.test.ts"><failure message="expected 1"><![CDATA[at a.test.ts:3 <x>]]></failure></testcase>
   <testcase classname="api" name="later"><skipped/></testcase>
 </testsuite></testsuites>`;
+
     const results = Report.parseJUnit(xml);
     expect(results.map((r) => [r.name, r.status, r.durationMs])).toEqual([
       ["adds & stores", "passed", 12],
@@ -46,6 +47,7 @@ describe("Report", () => {
         { name: "/w/b.test.ts", status: "failed", message: "SyntaxError", assertionResults: [] },
       ],
     });
+
     const results = Report.parseVitest(json);
     expect(results.map((r) => [r.suite, r.name, r.status])).toEqual([
       ["math", "adds", "passed"],

@@ -20,6 +20,7 @@ import { socketList } from "./assembly.js";
 import { reduced, s } from "./svg.js";
 
 const MOVABLE = ["typecheck", "test", "site", "deploy"];
+
 const EVENT_CMD = {
   pr: "calder plan --event pr:7",
   push: "calder plan --event push:main",
@@ -32,14 +33,18 @@ export const initial = () => ({
   refused: false,
   event: "pr",
 });
+
 const keyOf = (w) => `${w.typecheck},${w.test},${w.site}`;
 export const entryOf = (st) => ARRANGEMENTS[keyOf(st.where)][st.refused ? "refused" : "ok"];
+
 export const arrangementOf = (st) => {
   const pr = ["typecheck", "test", "site"].filter((n) => st.where[n] === "pr");
   const push = ["typecheck", "test", "site"].filter((n) => st.where[n] === "push");
   (st.refused ? pr : push).push("deploy");
+
   return { pr: order("pr", pr), push: order("push", push) };
 };
+
 const tscLocation = (out) => out.match(/\((\d+),(\d+)\): error (TS\d+)/);
 
 /**
@@ -51,16 +56,20 @@ export function linkScope(root, onChange) {
   let focus = null;
   let tapped = null;
   const keys = (e, attr) => (e?.dataset?.[attr] ?? "").split(" ").filter(Boolean);
+
   const apply = () => {
     const src = hover ?? tapped ?? focus;
     const own = new Set(keys(src, "link"));
     const owner = keys(src, "owner");
     const precise = owner.length > 0;
     const K = new Set(own);
+
     if (precise) for (const k of owner) K.add(k);
     else for (const k of own) for (const c of CHILDREN[k] ?? []) K.add(c);
+
     for (const e of root.querySelectorAll("[data-link], [data-owner]")) {
       let lit = false;
+
       if (src && !e.classList.contains("blk")) {
         if (e.classList.contains("ln")) {
           lit = precise
@@ -73,17 +82,23 @@ export function linkScope(root, onChange) {
           lit = keys(e, "link").some((k) => (precise ? owner.includes(k) || own.has(k) : K.has(k)));
         } else lit = keys(e, "link").some((k) => K.has(k));
       }
+
       e.classList.toggle("is-lit", lit);
     }
+
     onChange?.(K, src);
   };
+
   const target = (e) => {
     const t = e.target.closest?.("[data-link], [data-owner]");
+
     return t && root.contains(t) && !t.classList.contains("blk") ? t : null;
   };
+
   root.addEventListener("pointerover", (e) => {
     if (e.pointerType === "touch") return;
     const t = target(e);
+
     if (t !== hover) {
       hover = t;
       apply();
@@ -106,6 +121,7 @@ export function linkScope(root, onChange) {
       apply();
     }
   });
+
   return {
     refresh: apply,
     tap: (t) => {
@@ -118,11 +134,13 @@ export function linkScope(root, onChange) {
 // The readout: what the pointer or focus is on, as tsrs infers it, and one sentence about its shape.
 const typeLine = (name) => {
   const text = name === "install" ? "install: Setup" : `${name}: Step<${TYPES[name].join(", ")}>`;
+
   return highlight(text, { def: name, marks: { StorePath: "t-val", HttpClient: "t-svc" } }).replace(
     /(<span class="t-pun">\{<\/span> readonly.*<span class="t-pun">\}<\/span>)/,
     '<span class="t-grant">$1</span>',
   );
 };
+
 const SAY = {
   install:
     "A setup is the plate its tasks stand on. <code>typecheck</code> and <code>test</code> start from it, so a plan with either pulls it in.",
@@ -133,31 +151,39 @@ const SAY = {
   deploy:
     "Its socket takes a <code>StorePath</code>. <code>R</code> is <code>HttpClient</code>, one pin, in socket 2. <code>G</code> is a grant, the brass bit, which only an open floor takes.",
 };
+
 const BASE = { pr: "PrBase", push: "Base" };
+
 function readoutFor(src, refusedAt) {
   const keys = (attr) => (src?.dataset?.[attr] ?? "").split(" ").filter(Boolean);
   const own = keys("link");
   const owner = keys("owner");
   const sock = own.find((k) => k.startsWith("socket:"));
+
   if (sock) {
     const n = Number(sock.slice(7));
     const sv = SERVICES[n - 1];
     const by = ["pr", "push"].filter((r) => RULES[r].supplies.includes(sv));
+
     const say =
       by.length === 2
         ? "Both rules supply it, so both rails are drilled there."
         : by[0] === "pr"
           ? "Only the pull-request rule supplies it, so the push rail is solid there."
           : "Only the push rule supplies it, so the pull-request rail is solid there.";
+
     return {
       type: `<span class="ro-k">Socket ${n}</span> <span class="t-svc">${esc(sv)}</span>`,
       say,
     };
   }
+
   const rail = own.find((k) => k.startsWith("rail:"));
+
   if (rail) {
     const rule = rail.slice(5);
     const r = RULES[rule];
+
     return {
       type: `${BASE[rule]} <span class="t-pun">=</span> ${r.supplies.map((sv) => `<span class="t-svc">${sv}</span>`).join(' <span class="t-pun">|</span> ')}`,
       say:
@@ -166,20 +192,25 @@ function readoutFor(src, refusedAt) {
           : `The push rule supplies these, as sockets ${socketList(rule)}. Its open floor takes any grant.`,
     };
   }
+
   if (own.includes("f:after"))
     return {
       type: highlight("after: [typecheck, test]"),
       say: "<code>deploy</code> runs after <code>typecheck</code> and <code>test</code>. The link carries no value, so no type parameter cuts it.",
     };
+
   if (own.includes("f:plate") || own.includes("part:install"))
     return { type: typeLine("install"), say: SAY.install };
   const part = [...own, ...owner].find((k) => k.startsWith("part:"))?.slice(5);
+
   if (!part || !SAY[part]) return null;
+
   if (part === "deploy" && refusedAt)
     return {
       type: typeLine(part),
       say: `Its grant bit stands on the pull-request rail's closed floor, so it doesn't seat. tsrs reports ${refusedAt}.`,
     };
+
   return { type: typeLine(part), say: SAY[part] };
 }
 
@@ -204,11 +235,13 @@ function foldImports(code) {
   close.innerHTML = `<span class="fold-pill">Fold the imports</span>`;
   lines[4].querySelector(".src").replaceChildren(close);
   const open = row.querySelector("button");
+
   const set = (expanded) => {
     body.hidden = !expanded;
     row.hidden = expanded;
     (expanded ? close : open).focus({ preventScroll: true });
   };
+
   open.addEventListener("click", () => set(true));
   close.addEventListener("click", () => set(false));
 }
@@ -248,11 +281,13 @@ export function setupHero() {
     note: (name) => (planNow().pulled.has(name) ? "pulled in" : null),
     onRender: (v) => decorate(v),
   });
+
   view.svg.classList.add("is-interactive");
 
   const planNow = () => {
     const e = entryOf(st);
     const p = e.plans[st.event];
+
     return p.exit === 0 ? parsePlan(p.out) : { planned: new Set(), pulled: new Set() };
   };
 
@@ -266,29 +301,36 @@ export function setupHero() {
       g.addEventListener("pointerdown", (e) => onDown(e, name));
       g.addEventListener("keydown", (e) => onKey(e, name));
     }
+
     const planned = planNow().planned;
+
     for (const [name, t] of Object.entries(v.textEls)) {
       t.classList.toggle("is-off", !planned.has(name));
       t.dataset.link = `part:${name}`;
     }
+
     for (const p of v.L.plates) {
       p.el.classList.toggle("is-off", !planned.has("install"));
       p.textEl.dataset.link = "f:plate";
     }
+
     for (const g of v.afterEls) g.classList.toggle("is-off", !planned.has("deploy"));
     paint(v);
     links?.refresh();
   }
+
   function showReadout() {
     const loc = st.refused ? tscLocation(entryOf(st).tsc.out) : null;
     const subject = pointed ?? (carry ? view.partEls[carry.name] : null);
     const r = subject ? readoutFor(subject, loc ? `${loc[3]} at ${loc[1]},${loc[2]}` : null) : null;
     head.classList.toggle("is-reading", !!r);
+
     if (r) {
       roType.innerHTML = r.type;
       roSay.innerHTML = r.say;
     }
   }
+
   function paint(v = view) {
     for (const [name, g] of Object.entries(v.partEls)) {
       if (!MOVABLE.includes(name)) continue;
@@ -301,8 +343,10 @@ export function setupHero() {
       g.setAttribute("aria-pressed", String(carry?.name === name));
       g.classList.toggle("is-carried", carry?.name === name);
     }
+
     for (const rule of ["pr", "push"])
       v.railEls[rule].classList.toggle("is-target", !!carry && carry.target === rule);
+
     for (const rule of ["pr", "push"])
       v.railLabelEls?.[rule]?.classList.toggle("is-target", !!carry && carry.target === rule);
     showReadout();
@@ -311,34 +355,42 @@ export function setupHero() {
   // Code pane.
   const diag = document.createElement("div");
   diag.className = "diag";
+
   const renderSource = (changed = []) => {
     const e = entryOf(st);
     const custom = {};
     const loc = e.tsc.exit ? tscLocation(e.tsc.out) : null;
+
     for (const [no, text] of [
       [34, e.line34],
       [35, e.line35],
     ]) {
       let html = highlight(text);
+
       if (loc && Number(loc[1]) === no) {
         const col = Number(loc[2]) - 1;
         const word = text.slice(col).match(/^[A-Za-z_$][\w$]*/)?.[0] ?? "";
         html = `${highlight(text.slice(0, col))}<span class="squiggle">${esc(word)}</span>${highlight(text.slice(col + word.length))}`;
       }
+
       custom[no] = html;
     }
+
     const after = {};
+
     if (loc) {
       diag.innerHTML = e.tsc.out
         .split("\n")
         .map((l, i) => {
           if (i > 0) return oline(l);
           const m = l.match(/^(\.calder\/ci\.ts\(\d+,\d+\))(.*)$/);
+
           return `<span class="oline"><span class="loc">${esc(m[1])}</span>${keepWords(m[2])}</span>`;
         })
         .join("");
       after[Number(loc[1])] = diag;
     }
+
     const folded = code.querySelector(".fold-body")?.hidden ?? true;
     renderCode(code, CI_TS, {
       links: CI_LINKS,
@@ -350,10 +402,12 @@ export function setupHero() {
       cls: { 27: "is-grant", ...(loc ? { [Number(loc[1])]: "is-error" } : {}) },
     });
     foldImports(code);
+
     if (!folded) {
       code.querySelector(".fold-body").hidden = false;
       code.querySelector(".fold-row").hidden = true;
     }
+
     for (const n of changed)
       code.querySelector(`.ln[data-line="${n}"]`)?.classList.add("is-changed");
     status.textContent = loc ? "1 error" : "37 lines";
@@ -362,6 +416,7 @@ export function setupHero() {
     tscText.textContent = loc ? `${loc[3]} at ${loc[1]},${loc[2]}` : "no errors";
     // The innermost line of the error is the reason; the grant's type is elided to keep it to a line.
     why.hidden = !loc;
+
     if (loc)
       why.textContent = e.tsc.out
         .split("\n")
@@ -401,31 +456,41 @@ export function setupHero() {
         pulled: plan.pulled,
       },
     });
+
     if (opts.flip !== false) flip(before, opts.from);
     renderOut();
+
     for (const r of radios) {
       const on = r.dataset.event === st.event;
       r.setAttribute("aria-checked", String(on));
       r.tabIndex = on ? 0 : -1;
     }
+
     if (opts.focus) view.partEls[opts.focus]?.focus({ preventScroll: true });
   };
 
   // Parts slide from where they were to where the new layout puts them.
   const snapshot = () => {
     const m = {};
+
     if (!view.L) return m;
+
     for (const [name, p] of Object.entries(view.L.pos))
       m[name] = { x: p.x, y: p.yTop, s: view.map(p.x, p.yTop) };
+
     return m;
   };
+
   const flip = (before, from) => {
     if (reduced()) return;
+
     for (const [name, p] of Object.entries(view.L.pos)) {
       const b = from?.name === name ? from : before[name];
+
       if (!b) continue;
       const dx = b.x - p.x;
       const dy = b.y - p.yTop;
+
       if (!dx && !dy) continue;
       const s1 = view.map(p.x, p.yTop);
       const sdx = b.s.X - s1.X;
@@ -443,6 +508,7 @@ export function setupHero() {
         opts,
       );
     }
+
     for (const c of view.svg.querySelectorAll(".contact")) {
       c.animate([{ opacity: 0 }, { opacity: 0, offset: 0.7 }, { opacity: 1 }], { duration: 460 });
     }
@@ -451,15 +517,19 @@ export function setupHero() {
   // Moving a part: the code follows.
   const move = (name, rule, from) => {
     const was = { ...st, where: { ...st.where } };
+
     if (name === "deploy") st.refused = rule === "pr";
     else st.where[name] = rule;
     const e = entryOf(st);
     const prev = entryOf(was);
+
     const changed = [34, 35].filter((n) =>
       n === 34 ? e.line34 !== prev.line34 : e.line35 !== prev.line35,
     );
+
     renderSource(changed);
     renderAll({ from, focus: name });
+
     if (e.tsc.exit) {
       const loc = tscLocation(e.tsc.out);
       say(
@@ -473,6 +543,7 @@ export function setupHero() {
 
   // Pointer: a drag moves the part; a press without movement picks it up like Space.
   const toAssembly = (dx, dy) => ({ x: dx / view.k, y: dy / view.k });
+
   // The rail whose row band is nearest the pointer.
   const ruleAt = (clientX, clientY) => {
     const r = view.svg.getBoundingClientRect();
@@ -480,28 +551,35 @@ export function setupHero() {
     const Y = clientY - r.top;
     let best = null;
     let bestD = Infinity;
+
     for (const seg of view.L.segments) {
       const a = view.map(seg.x0, view.L.rows[seg.row].top);
       const b = view.map(seg.x1, seg.y + DIM.rail.t);
       const d = Math.hypot(Math.max(a.X - X, 0, X - b.X), Math.max(a.Y - Y, 0, Y - b.Y));
+
       if (d < bestD) {
         bestD = d;
         best = seg.rule;
       }
     }
+
     return best;
   };
+
   function onDown(e, name) {
     if (e.button !== 0) return;
     drag = { name, id: e.pointerId, sx: e.clientX, sy: e.clientY, moved: false };
     e.currentTarget.setPointerCapture(e.pointerId);
     const g = e.currentTarget;
+
     const moveH = (ev) => {
       if (!drag || ev.pointerId !== drag.id) return;
       const dx = ev.clientX - drag.sx;
       const dy = ev.clientY - drag.sy;
+
       if (!drag.moved && Math.hypot(dx, dy) < 4) return;
       const p = view.L.pos[name];
+
       if (!drag.moved) {
         drag.moved = true;
         carry = null;
@@ -512,28 +590,34 @@ export function setupHero() {
         ghost.classList.add("is-ghost");
         ghost.removeAttribute("tabindex");
         ghost.removeAttribute("data-link");
+
         for (const e of ghost.querySelectorAll("[data-link]")) e.removeAttribute("data-link");
         g.before(ghost);
         drag.ghost = ghost;
+
         // Above every other part and label while it moves.
         const layer = s(
           "g",
           { transform: view.geo.getAttribute("transform"), class: "drag-layer" },
           view.svg,
         );
+
         layer.append(g);
         view.svg.append(view.textEls[name]);
         g.focus({ preventScroll: true });
       }
+
       const a = toAssembly(dx, dy);
       g.style.transform = `translate(${p.x + a.x}px, ${p.yTop + a.y}px)`;
       view.textEls[name].style.transform = `translate(${dx}px, ${dy}px)`;
       const target = ruleAt(ev.clientX, ev.clientY);
+
       for (const rule of ["pr", "push"])
         view.railEls[rule].classList.toggle("is-target", rule === target);
       drag.target = target;
       drag.a = a;
     };
+
     const up = (ev) => {
       if (!drag || ev.pointerId !== drag.id) return;
       g.removeEventListener("pointermove", moveH);
@@ -541,11 +625,15 @@ export function setupHero() {
       g.removeEventListener("pointercancel", up);
       const d = drag;
       drag = null;
+
       if (!d.moved) {
         if (carry?.name === name) return cancelCarry();
+
         return startCarry(name);
       }
+
       const p = view.L.pos[name];
+
       const from = {
         name,
         x: p.x + d.a.x,
@@ -555,14 +643,17 @@ export function setupHero() {
           Y: view.map(p.x, p.yTop).Y + (ev.clientY - d.sy),
         },
       };
+
       drag?.ghost?.remove();
       d.ghost?.remove();
       view.textEls[name].style.transform = "";
       view.svg.classList.remove("is-dragging");
       const rule = ev.type === "pointercancel" ? p.rule : d.target;
+
       if (rule === p.rule) renderAll({ from });
       else move(name, rule, from);
     };
+
     g.addEventListener("pointermove", moveH);
     g.addEventListener("pointerup", up);
     g.addEventListener("pointercancel", up);
@@ -570,6 +661,7 @@ export function setupHero() {
 
   // Keyboard and tap: pick up, choose a rail, put down.
   const ruleName = (r) => (r === "pr" ? "pull-request" : "push");
+
   function startCarry(name) {
     const rule = view.L.pos[name].rule;
     carry = { name, target: rule === "pr" ? "push" : "pr" };
@@ -578,25 +670,34 @@ export function setupHero() {
       `Picked up ${name}. The arrow keys choose a rail; the ${ruleName(carry.target)} rail is chosen. Space puts it down, Escape cancels.`,
     );
   }
+
   function cancelCarry() {
     carry = null;
     paint();
     say("Put back.");
   }
+
   function onKey(e, name) {
     const k = e.key;
+
     if (k === " " || k === "Enter") {
       e.preventDefault();
+
       if (!carry) return startCarry(name);
+
       if (carry.name === name) {
         const target = carry.target;
         carry = null;
+
         if (target === view.L.pos[name].rule) return renderAll({ focus: name });
+
         return move(name, target);
       }
     }
+
     if (!carry || carry.name !== name) return;
     const dirs = { ArrowLeft: "pr", ArrowUp: "pr", ArrowRight: "push", ArrowDown: "push" };
+
     if (dirs[k]) {
       e.preventDefault();
       carry.target = dirs[k];
@@ -607,12 +708,14 @@ export function setupHero() {
       cancelCarry();
     }
   }
+
   // A tap on a rail while carrying puts the part there.
   dwgRoot.addEventListener("pointerup", (e) => {
     if (!carry || drag || e.target.closest(".part")) return;
     const target = ruleAt(e.clientX, e.clientY);
     const name = carry.name;
     carry = null;
+
     if (target === view.L.pos[name].rule) return renderAll({ focus: name });
     move(name, target);
   });
@@ -624,6 +727,7 @@ export function setupHero() {
     });
     r.addEventListener("keydown", (e) => {
       const d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+
       if (!d) return;
       e.preventDefault();
       const next = radios[(radios.indexOf(r) + d + radios.length) % radios.length];
@@ -632,6 +736,7 @@ export function setupHero() {
       next.focus();
     });
   }
+
   reset.addEventListener("click", () => {
     const event = st.event;
     st = initial();
@@ -648,6 +753,7 @@ export function setupHero() {
   const pane = scope.querySelector(".hero-code .pane");
   const main = scope.querySelector(".hero-main");
   let fitting = false;
+
   const fit = () => {
     if (fitting || st.refused) return;
     fitting = true;
@@ -656,12 +762,14 @@ export function setupHero() {
     scope.style.setProperty("--row-h", `${h}px`);
     requestAnimationFrame(() => (fitting = false));
   };
+
   new ResizeObserver(fit).observe(scope);
   links = linkScope(scope, (K, src) => {
     pointed = src;
     showReadout();
   });
   renderAll({ flip: false });
+
   /**
    * The derivation on load: a scan reads ci.ts; each part is drawn as the line that declares it is
    * read, rails are hatched at lines 34 and 35 and their parts settle onto them, then the plan for
@@ -669,6 +777,7 @@ export function setupHero() {
    */
   function derive() {
     const box = dwgRoot.getBoundingClientRect();
+
     if (reduced() || box.bottom < 0 || box.top > innerHeight) return;
     const beside = matchMedia("(min-width: 1400px)").matches;
     const STEP = 26;
@@ -682,24 +791,31 @@ export function setupHero() {
     const svg = view.svg;
     const L = view.L;
     svg.classList.add("is-deriving");
+
     const all = [
       ...svg.querySelectorAll(
         ".part, .part-text, .plate, .plate-text, .rail, .rail-label, .socknums, .after, .t-joint, .t-after",
       ),
     ];
+
     for (const e of all) e.style.opacity = "0";
     const lines = [...out.querySelectorAll(".oline")];
+
     for (const l of lines) l.style.opacity = "0";
     const lift = 10;
+
     for (const p of Object.values(L.pos))
       view.partEls[p.name].style.transform = `translate(${p.x}px, ${p.yTop - lift}px)`;
+
     const draw = (g, dur = 440) => {
       if (!g) return;
       g.style.opacity = "";
+
       for (const p of g.querySelectorAll(
         ".outline, .rail-edge, .plate-body, .value-edge, .bit, .after-line",
       )) {
         p.setAttribute("pathLength", "1");
+
         const a = p.animate(
           [
             { strokeDasharray: "1 1", strokeDashoffset: 1 },
@@ -707,12 +823,14 @@ export function setupHero() {
           ],
           { duration: dur, easing: ease },
         );
+
         a.finished.then(
           () => p.removeAttribute("pathLength"),
           () => p.removeAttribute("pathLength"),
         );
         anims.push(a);
       }
+
       for (const f of g.querySelectorAll(
         ".body, .rail-fill, .tenon-wash, .pin, .after-head, .after-dot",
       )) {
@@ -724,11 +842,13 @@ export function setupHero() {
         );
       }
     };
+
     const fade = (e, dur = 260) => {
       if (!e) return;
       e.style.opacity = "";
       anims.push(e.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur, easing: ease }));
     };
+
     const settle = (name) => {
       const p = L.pos[name];
       const g = view.partEls[name];
@@ -749,13 +869,17 @@ export function setupHero() {
         ),
       );
     };
+
     let scanned = null;
+
     const scan = (n) => {
       scanned?.classList.remove("is-scan");
       scanned = n ? code.querySelector(`.ln[data-line="${n}"]`) : null;
       scanned?.classList.add("is-scan");
     };
+
     const PARTS_AT = { 9: "typecheck", 16: "test", 22: "site", 24: "deploy" };
+
     for (let n = FIRST; n <= LAST; n++) if (beside) at(time(n), () => scan(n));
     at(time(7), () => {
       for (const p of L.plates) {
@@ -763,17 +887,20 @@ export function setupHero() {
         fade(p.textEl);
       }
     });
+
     for (const [n, name] of Object.entries(PARTS_AT)) {
       at(time(Number(n)), () => {
         draw(view.partEls[name]);
         at(260, () => fade(view.textEls[name]));
       });
     }
+
     at(time(25) + 200, () => svg.querySelectorAll(".t-joint").forEach((e) => fade(e)));
     at(time(26) + 200, () => {
       for (const g of view.afterEls) draw(g, 520);
       svg.querySelectorAll(".t-after").forEach((e) => fade(e));
     });
+
     for (const [n, rule] of [
       [34, "pr"],
       [35, "push"],
@@ -787,6 +914,7 @@ export function setupHero() {
         });
       });
     }
+
     const planAt = time(LAST) + 520;
     at(time(LAST) + STEP, () => scan(null));
     at(planAt, () => {
@@ -802,21 +930,28 @@ export function setupHero() {
         );
       });
     });
+
     const finish = () => {
       for (const id of timers) clearTimeout(id);
       timers.length = 0;
+
       for (const a of anims) a.finish?.();
       scan(null);
+
       for (const e of all) e.style.opacity = "";
+
       for (const l of lines) l.style.opacity = "";
+
       for (const p of Object.values(L.pos))
         view.partEls[p.name].style.transform = `translate(${p.x}px, ${p.yTop}px)`;
+
       for (const p of svg.querySelectorAll("[pathLength]")) p.removeAttribute("pathLength");
       svg.classList.remove("is-deriving");
       scope.removeEventListener("pointerdown", finish, true);
       scope.removeEventListener("keydown", finish, true);
       removeEventListener("resize", finish);
     };
+
     scope.addEventListener("pointerdown", finish, true);
     scope.addEventListener("keydown", finish, true);
     addEventListener("resize", finish);

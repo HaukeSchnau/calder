@@ -22,27 +22,35 @@ const recent = (
   read: (project: string) => Effect.Effect<ReadonlyArray<Execution>, SqlError.SqlError>,
 ) => {
   const projects = new Map<string, Map<string, Array<Execution>>>();
+
   const add = (byName: Map<string, Array<Execution>>, execution: Execution) => {
     const known = byName.get(execution.name) ?? [];
+
     if (known.some((e) => e.id === execution.id)) return;
     byName.set(
       execution.name,
       [...known, execution].sort((a, b) => b.finishedAt - a.finishedAt).slice(0, window),
     );
   };
+
   const load = (project: string) =>
     Effect.gen(function* () {
       const loaded = projects.get(project);
+
       if (loaded !== undefined) return loaded;
       const rows = yield* read(project).pipe(Effect.orDie);
       // Another fiber may have read the project meanwhile and added executions that finished since.
       const raced = projects.get(project);
+
       if (raced !== undefined) return raced;
       const byName = new Map<string, Array<Execution>>();
+
       for (const row of rows) add(byName, row);
       projects.set(project, byName);
+
       return byName;
     });
+
   return {
     medians: (project: string): Effect.Effect<ReadonlyMap<string, number>> =>
       Effect.map(
@@ -87,6 +95,7 @@ export class Estimates extends Context.Service<
 export const layer = Layer.effect(Estimates)(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     const steps = recent(
       10,
       (project) =>
@@ -97,6 +106,7 @@ export const layer = Layer.effect(Estimates)(
         where runs.project = ${project} and steps.status in ('passed', 'failed') and steps.started_at is not null
       ) where n <= 10`,
     );
+
     const shards = recent(
       30,
       (project) =>
@@ -109,6 +119,7 @@ export const layer = Layer.effect(Estimates)(
           and shards.finished_at is not null
       ) where n <= 30`,
     );
+
     return {
       steps: steps.medians,
       shards: shards.medians,

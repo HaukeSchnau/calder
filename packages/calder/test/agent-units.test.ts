@@ -15,6 +15,7 @@ describe("an agent's units", () => {
       "/git/app.git/git-upload-pack",
     ])
       expect(forwarded(route)).toBe(true);
+
     for (const route of ["/rpc", "/agent", "/hooks/gitea", "/", "/gitx", "/worker/x"])
       expect(forwarded(route)).toBe(false);
   });
@@ -33,6 +34,7 @@ describe("an agent's units", () => {
         "proxy-authorization": "Basic x",
       }),
     );
+
     expect([...headers.keys()].sort()).toEqual(["authorization", "content-type"]);
   });
 
@@ -46,6 +48,7 @@ describe("an agent's units", () => {
         encoding: "utf8",
         timeout: 60_000,
       });
+
       expect(ran.status, ran.stderr).toBe(0);
       const result = JSON.parse(ran.stdout.trim().split("\n").at(-1)!);
       expect(result.code).toBe(0);

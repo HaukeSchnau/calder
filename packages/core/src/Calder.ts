@@ -4,9 +4,11 @@ import type { Rule } from "./On.ts";
 import type { Base, PrBase } from "./Services.ts";
 
 export const StorePath = Schema.String.pipe(Schema.brand("@calder-ci/core/StorePath"));
+
 export type StorePath = typeof StorePath.Type;
 
 export const Sha = Schema.String.pipe(Schema.brand("@calder-ci/core/Sha"));
+
 export type Sha = typeof Sha.Type;
 
 declare const ResultBrandId: unique symbol;
@@ -17,6 +19,7 @@ export declare namespace Result {
     readonly [ResultBrandId]: true;
   }
 }
+
 export declare namespace Failure {
   interface Brand {
     readonly [FailureBrandId]: true;
@@ -42,6 +45,7 @@ export const registry = new Map<string, Registered>();
 
 const register = <C>(id: string, schema: C, render?: Render): C => {
   registry.set(id, { schema: schema as Schema.Top, render });
+
   return schema;
 };
 
@@ -86,6 +90,7 @@ export const TestFailure = Schema.Struct({
   file: Schema.optional(Schema.String),
   message: Schema.String,
 });
+
 export type TestFailure = typeof TestFailure.Type;
 
 export class TaskFailed extends Failure<TaskFailed>("@calder-ci/core")("TaskFailed", {
@@ -97,6 +102,7 @@ export class TaskFailed extends Failure<TaskFailed>("@calder-ci/core")("TaskFail
   override get message() {
     if (this.failures.length > 0)
       return `${this.failures.length} failing test${this.failures.length === 1 ? "" : "s"}`;
+
     return this.lastLine === undefined
       ? `exited with ${this.exitCode}`
       : `exited with ${this.exitCode}: ${this.lastLine}`;

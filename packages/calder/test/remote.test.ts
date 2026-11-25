@@ -11,6 +11,7 @@ describe("cgi", () => {
       const response = yield* cgi(
         bytes("Status: 404 Not Found\r\nContent-Type: text/plain\r", "\n\r\nnot ", "here"),
       );
+
       expect(response).toMatchObject({ status: 404, headers: { "Content-Type": "text/plain" } });
       expect(yield* Stream.mkString(Stream.decodeText(response!.body))).toBe("not here");
       expect(yield* cgi(bytes("Content-Type: text/plain\r\n"))).toBeUndefined();

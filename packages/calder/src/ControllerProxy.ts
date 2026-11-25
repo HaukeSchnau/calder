@@ -19,10 +19,12 @@ export const forwarded = (pathname: string) =>
  */
 export const withoutHopByHop = (headers: Headers) => {
   const kept = new Headers(headers);
+
   const named = (headers.get("connection") ?? "")
     .split(",")
     .map((name) => name.trim().toLowerCase())
     .filter((name) => name !== "");
+
   for (const name of [
     ...named,
     "connection",
@@ -36,6 +38,7 @@ export const withoutHopByHop = (headers: Headers) => {
   ]) {
     kept.delete(name);
   }
+
   return kept;
 };
 
@@ -63,15 +66,18 @@ export const serve = (path: string, controller: string) =>
     Effect.sync(() => {
       if (existsSync(path)) rmSync(path);
       const base = controller.replace(/\/$/, "");
+
       return Bun.serve<Peer, never>({
         unix: path,
         // Outputs such as packaged desktop apps, far past Bun's 128 MiB default (controller/Http.ts).
         maxRequestBodySize: 8 * 1024 ** 3,
         fetch(request, server) {
           const url = new URL(request.url);
+
           if (!forwarded(url.pathname))
             return new Response("not a worker's route\n", { status: 404 });
           const target = `${base}${url.pathname}${url.search}`;
+
           if (url.pathname === "/worker") {
             const data: Peer = {
               target: target.replace(/^http/, "ws"),
@@ -79,13 +85,16 @@ export const serve = (path: string, controller: string) =>
               early: [],
               earlyBytes: 0,
             };
+
             return server.upgrade(request, { data })
               ? undefined
               : new Response("WebSocket only\n", { status: 426 });
           }
+
           const headers = withoutHopByHop(request.headers);
           headers.delete("host");
           const body = request.method === "GET" || request.method === "HEAD" ? null : request.body;
+
           return fetch(target, {
             method: request.method,
             headers,
@@ -111,6 +120,7 @@ export const serve = (path: string, controller: string) =>
             upstream.onopen = () => {
               for (const message of ws.data.early.splice(0)) upstream.send(message);
             };
+
             upstream.onmessage = (event) =>
               ws.send(
                 typeof event.data === "string"
@@ -126,10 +136,12 @@ export const serve = (path: string, controller: string) =>
           },
           message(ws: ServerWebSocket<Peer>, message) {
             const upstream = ws.data.upstream;
+
             if (upstream !== null && upstream.readyState === WebSocket.OPEN)
               return void upstream.send(message);
             ws.data.earlyBytes +=
               typeof message === "string" ? Buffer.byteLength(message) : message.byteLength;
+
             if (ws.data.earlyBytes > earlyLimit)
               return ws.close(1009, "too much before the controller answered");
             ws.data.early.push(message);

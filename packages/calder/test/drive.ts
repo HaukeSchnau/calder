@@ -167,6 +167,7 @@ export const drive = ({
     const sql = yield* SqlClient.SqlClient;
     const trust = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
     const pr = event._tag === "PullRequest" ? event.number : null;
+
     const plan: PlanSpec = {
       version: 1,
       app: null,
@@ -176,12 +177,15 @@ export const drive = ({
       steps: [...planned],
       ...extra,
     };
+
     yield* seed;
     yield* insertRun("app-1", { at: 1 });
+
     for (const name of passed) {
       yield* sql`insert into results (key, run_id, step, trust, value, outputs, created_at, status)
         values (${taskKey(name, {}, null)}, 'app-1', ${name}, 'trusted', 'null', '{}', 1, 'passed')`;
     }
+
     for (const s of rerunOf ?? []) {
       yield* insertStep("app-1", s.name, {
         status: s.status,
@@ -189,20 +193,25 @@ export const drive = ({
       });
       yield* sql`update steps set value = ${JSON.stringify(s.value ?? null)}, secrets_digest = ${s.secrets ?? null}
         where run_id = 'app-1' and name = ${s.name}`;
+
       if (s.lease !== undefined)
         yield* sql`insert into lease_steps (project, step, run) values ('app', ${s.name}, ${s.lease})`;
     }
+
     const fork = event._tag === "PullRequest" && event.fork ? 1 : 0;
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, rerun_of, fork)
       values ('app-2', 'app', ${number}, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
         2, 2, 't', 's', ${rerunOf === undefined ? null : "app-1"}, ${fork})`;
+
     if (!unplanned)
       yield* sql`insert into run_plans (run_id, plan) values ('app-2', ${JSON.stringify(plan)})`;
+
     for (const [position, s] of unplanned ? [] : plan.steps.entries()) {
       yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id)
         values ('app-2', ${s.name}, ${s.kind}, 'pending', ${JSON.stringify(s)}, ${position}, 's')`;
     }
+
     yield* resume;
 
     const jobs: Array<string> = [];
@@ -210,6 +219,7 @@ export const drive = ({
     const commands: Array<ReadonlyArray<string>> = [];
     /** The plan job the controller ran, with the earlier plan it handed the worker. */
     let planJob: Extract<Job, { _tag: "Plan" }> | undefined;
+
     const adopted =
       adoptedEvaluations.length === 0
         ? []
@@ -234,12 +244,14 @@ export const drive = ({
               } as unknown as Extract<Job, { _tag: "Step" }>,
             },
           ];
+
     /** The pool each step's job ran in, and the plan's as `plan`. */
     const pools = new Map<string, string>();
     /** The jobs that ran in the larger pull-request unit. */
     const large: Array<string> = [];
     /** The jobs that went to an evaluator agent (Jobs `evaluation`). */
     const evaluations: Array<string> = [];
+
     /** Where each step's last job went: to an agent, and which other systems' agents could take it. */
     const placements = new Map<
       string,
@@ -249,11 +261,13 @@ export const drive = ({
         readonly systems: ReadonlyArray<string>;
       }
     >();
+
     const statuses = new Map<string, string>();
     /** The platforms whose sleeping agents' hosts the controller woke (Agents `rouse`). */
     const roused: Array<string> = [];
     /** Every commit status Calder reported, in order, as `context: state: description`. */
     const history: Array<string> = [];
+
     const project: Project = {
       name: "app",
       repo: "schnau/app",
@@ -262,6 +276,7 @@ export const drive = ({
       secrets: {},
       ...configured,
     };
+
     const services = Layer.mergeAll(
       config({
         ...(placementKey === undefined ? {} : { placementKey }),
@@ -311,19 +326,23 @@ export const drive = ({
         ChildProcessSpawner.make((command) => {
           if (ChildProcess.isStandardCommand(command))
             commands.push([command.command, ...command.args]);
+
           const answers =
             ChildProcess.isStandardCommand(command) &&
             requisites !== undefined &&
             command.args[1] === "--requisites";
+
           const checks =
             ChildProcess.isStandardCommand(command) &&
             valid !== undefined &&
             command.args[0] === "--check-validity" &&
             command.args[1] === "--print-invalid";
+
           if (checks) {
             const invalid = (command as ChildProcess.StandardCommand).args.filter(
               (a) => a.startsWith("/nix/store/") && !valid!(a),
             );
+
             return Effect.succeed(
               ChildProcessSpawner.makeHandle({
                 pid: ChildProcessSpawner.ProcessId(1),
@@ -340,16 +359,20 @@ export const drive = ({
               }),
             );
           }
+
           const collected =
             ChildProcess.isStandardCommand(command) &&
             command.command === "nix" &&
             nix !== undefined;
+
           if (collected) nix.push(command.args);
+
           const realises =
             ChildProcess.isStandardCommand(command) &&
             valid !== undefined &&
             command.args.includes("--realise") &&
             command.args.slice(command.args.indexOf("--realise") + 1).every((a) => valid(a));
+
           return ChildProcess.isStandardCommand(command) &&
             (command.command === "nix-store" || collected)
             ? Effect.succeed(
@@ -406,7 +429,9 @@ export const drive = ({
             statuses.set(status.context, `${status.state}: ${status.description}`);
             history.push(`${status.context}: ${status.state}: ${status.description}`);
           });
+
           const delay = statusDelay(status.context, status.state, status.description);
+
           return delay === undefined ? record : Effect.sleep(delay).pipe(Effect.andThen(record));
         },
         requiredChecks: () => Effect.succeed([]),
@@ -429,16 +454,21 @@ export const drive = ({
             if (job._tag === "Plan") {
               jobs.push(job.rules === true ? "rules" : "plan");
               pools.set(job.rules === true ? "rules" : "plan", options.pool);
+
               if (job.rules !== true) planJob = job;
+
               return {
                 result: { _tag: "Planned", plan },
                 usage: { cpuSeconds: null, memoryPeakBytes: null },
                 id: "job-plan",
               };
             }
+
             if (job._tag === "Step")
               jobs.push(job.evaluate === undefined ? job.step : `${job.step} evaluates`);
+
             if (job._tag === "Step") pools.set(job.step, options.pool);
+
             if (job._tag === "Step" && job.evaluate === undefined) {
               placements.set(job.step, {
                 remote: options.agent === true,
@@ -446,10 +476,14 @@ export const drive = ({
                 systems: options.systems ?? [],
               });
             }
+
             if (options.large === true) large.push(jobs.at(-1) ?? "plan");
+
             if (options.evaluation === true) evaluations.push(jobs.at(-1) ?? "plan");
             yield* options.onStart ?? Effect.void;
+
             if (job._tag === "Step") yield* work(job.step, options.onEvent);
+
             return {
               result: (job._tag === "Step" ? result(job.step, job) : undefined) ?? {
                 _tag: "Passed",
@@ -467,6 +501,7 @@ export const drive = ({
             const job = adopted.find((a) => a.id === id)!;
             adopted.splice(adopted.indexOf(job), 1);
             jobs.push(`${job.spec.step} evaluates (adopted)`);
+
             return {
               result: result(job.spec.step, job.spec) ?? { _tag: "Died", message: "no result" },
               usage: { cpuSeconds: null, memoryPeakBytes: null },
@@ -479,9 +514,11 @@ export const drive = ({
         active: () => [],
       }),
     );
+
     // The workflow drives unfinished runs as it starts.
     const ended = Effect.gen(function* () {
       const run = yield* Rows.loadRun("app-2");
+
       return run?.status ?? "missing";
     }).pipe(
       Effect.repeat({
@@ -490,29 +527,37 @@ export const drive = ({
       }),
       Effect.timeout("5 seconds"),
     );
+
     const status = yield* Effect.gen(function* () {
       const beside = yield* Effect.forkChild(meanwhile);
       yield* ended;
       yield* Fiber.join(beside);
+
       // What runs beside may run the run again, such as a rerun once it ended.
       return yield* ended;
     }).pipe(
       Effect.provide(Workflow.layer.pipe(Layer.provideMerge(layerCore), Layer.provide(services))),
     );
+
     const load = Effect.map(
       Rows.loadSteps("app-2"),
       (rows) => new Map(rows.map((s) => [s.name, Rows.step(s)])),
     );
+
     const steps = yield* load.pipe(
       Effect.repeat({ until: settled, schedule: Schedule.spaced("10 millis") }),
       Effect.timeout("5 seconds"),
     );
+
     const stored = JSON.parse((yield* Rows.loadRun("app-2"))?.plan ?? "null") as PlanSpec;
+
     const records = yield* sql<{
       attr: string;
       trust: string;
     }>`select attr, trust from evaluations order by id`;
+
     const trusted = yield* Rows.records({ project: "app", trust: "trusted", fork: 0 });
+
     return {
       status,
       jobs,

@@ -44,6 +44,7 @@ describe("skipped steps", () => {
             ? { _tag: "Skipped", reason: "mbp is offline; a later run deploys it" }
             : undefined,
       });
+
       expect(status).toBe("passed");
       expect(jobs.toSorted()).toEqual(["deploy-m1", "deploy-mbp"]);
       expect(steps.get("deploy-mbp")).toMatchObject({
@@ -66,6 +67,7 @@ describe("skipped steps", () => {
     () =>
       Effect.gen(function* () {
         let inputs: unknown;
+
         const { status, jobs, steps } = yield* drive({
           steps: [
             task("deploy-mbp"),
@@ -88,6 +90,7 @@ describe("skipped steps", () => {
                     }
                   : undefined,
         });
+
         expect(status).toBe("failed");
         expect(jobs.at(-1)).toBe("deploy-srv-2");
         expect(steps.get("deploy-mbp")?.status).toBe("skipped");

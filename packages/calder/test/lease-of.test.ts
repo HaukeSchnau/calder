@@ -66,14 +66,17 @@ describe("the lease a deploy takes", () => {
     () =>
       Effect.gen(function* () {
         let fence = 0;
+
         const leases = Leases.make({
           nextFence: () => Effect.sync(() => ++fence),
           held: () => Effect.void,
           released: () => Effect.void,
           kept: () => Effect.void,
         });
+
         const push = (number: number) =>
           ({ ...run({ _tag: "Push", branch: "main" }, "main"), number }) as RunInfo;
+
         const store = leaseOf(push(10), "testflight");
         expect(
           (yield* leases.acquire(store.key, { job: "testflight@10", run: 10, step: "testflight" }))
@@ -95,6 +98,7 @@ describe("the lease a deploy takes", () => {
             step: "testflight",
           }),
         );
+
         yield* Effect.yieldNow;
         expect(leases.holder(store.key)?.job).toBe("testflight@10");
         yield* leases.release(store.key, "testflight@10");

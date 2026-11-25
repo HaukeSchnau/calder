@@ -109,6 +109,7 @@ describe("an infrastructure failure of a build", () => {
 
 const drv = "/nix/store/00000000000000000000000000000000-m1.drv";
 const shell = "/nix/store/11111111111111111111111111111111-shell.drv";
+
 const m1: PlannedStep = {
   ...step,
   name: "m1",
@@ -122,7 +123,9 @@ const m1: PlannedStep = {
     system: "aarch64-darwin",
   },
 };
+
 const cause = "the builder 100.83.228.36 could not be reached: failed to start SSH connection";
+
 // As the worker sends it (Steps.ts `toResult`).
 const unreachable: JobResult = {
   _tag: "Failed",
@@ -136,11 +139,13 @@ describe("a build that failed for an infrastructure reason", () => {
   it.live("runs again and passes", () =>
     Effect.gen(function* () {
       let tries = 0;
+
       const { status, jobs, steps } = yield* drive({
         steps: [m1],
         value: () => "/nix/store/00000000000000000000000000000000-m1",
         result: () => (++tries === 1 ? unreachable : undefined),
       });
+
       expect(status).toBe("passed");
       expect(jobs).toEqual(["m1", "m1"]);
       expect(steps.get("m1")?.attempts).toBe(2);
@@ -173,6 +178,7 @@ describe("a build that failed for an infrastructure reason", () => {
             where run_id = 'app-2' and name = 'm1'`;
         }),
       });
+
       expect(status).toBe("failed");
       expect(jobs).toEqual(["m1"]);
       expect(steps.get("m1")?.attempts).toBe(3);
@@ -189,6 +195,7 @@ describe("a build that failed for an infrastructure reason", () => {
           yield* sql`update steps set status = 'running', attempts = 2 where run_id = 'app-2' and name = 'm1'`;
         }),
       });
+
       expect(status).toBe("failed");
       expect(jobs).toEqual(["m1", "m1"]);
       expect(steps.get("m1")?.attempts).toBe(3);
@@ -202,16 +209,19 @@ describe("a build that failed for an infrastructure reason", () => {
         result: () => unreachable,
         meanwhile: Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+
           const ended = sql<{ status: string }>`select status from runs where id = 'app-2'`.pipe(
             Effect.map((rows) => rows[0]?.status),
             Effect.orDie,
           );
+
           yield* ended.pipe(
             Effect.repeat({ until: (s) => s === "failed", schedule: Schedule.spaced("10 millis") }),
           );
           yield* (yield* Workflow.Runs).rerun("app-2").pipe(Effect.orDie);
         }),
       });
+
       expect(status).toBe("failed");
       expect(jobs).toEqual(["m1", "m1", "m1", "m1", "m1", "m1"]);
       expect(steps.get("m1")?.attempts).toBe(3);
@@ -230,6 +240,7 @@ describe("a build that failed for an infrastructure reason", () => {
           key: drv,
         }),
       });
+
       expect(status).toBe("failed");
       expect(jobs).toEqual(["m1"]);
     }),
@@ -245,6 +256,7 @@ describe("a run's derivations", () => {
       const stale = join(stateDir, "derivations", "app-0");
       const nix: Array<ReadonlyArray<string>> = [];
       let rootedWhileBuilding = false;
+
       const { status } = yield* drive({
         steps: [m1],
         unplanned: true,
@@ -262,6 +274,7 @@ describe("a run's derivations", () => {
         seed: Effect.sync(() => void mkdirSync(stale, { recursive: true })),
         work: () => Effect.sync(() => void (rootedWhileBuilding = existsSync(roots))),
       });
+
       expect(status).toBe("passed");
       const built = nix.filter((args) => args.includes("build") && args.includes("--out-link"));
       expect(built[0]?.slice(-2)).toEqual([drv, shell]);
