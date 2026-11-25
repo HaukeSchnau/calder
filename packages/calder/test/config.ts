@@ -21,6 +21,7 @@ export const config = (overrides: Partial<Config["Service"]> = {}) =>
     telemetry: { otlp: null, victoriaLogs: null, tempo: null },
     jobs: { mode: "process", slots: { plans: 1, builds: 1, tasks: 1, actions: 1 } },
     owners: [],
+    untrustedBranches: [],
     fleet: [],
     egress: null,
     agents: null,

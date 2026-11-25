@@ -122,6 +122,25 @@ describe("Calder.plan", () => {
     }),
   );
 
+  it.effect("a push the controller doesn't trust runs its push rules like a pull request", () =>
+    Effect.gen(function* () {
+      const secret = Task.make("secret", { run: cmd`cat ${Secret.file("token")}` });
+      const rules = Calder.project({ rules: [On.push("*", [qa]), On.push("main", [secret])] });
+
+      const checks = yield* Calder.plan(rules, Event.push("renovate"), { trust: "pr" });
+      expect(checks.trust).toBe("pr");
+      expect(names(checks)).toEqual(["qa"]);
+
+      const deploys = yield* Effect.exit(Calder.plan(project, Event.push("main"), { trust: "pr" }));
+      expect(String(deploys)).toContain(
+        `this push to main has code Calder doesn't trust, so it runs like a pull request, without steps with grants or secrets, but "promote" has them`,
+      );
+
+      const secrets = yield* Effect.exit(Calder.plan(rules, Event.push("main"), { trust: "pr" }));
+      expect(String(secrets)).toContain(`but "secret" has them: the secret "token"`);
+    }),
+  );
+
   it.effect("previews read secrets on same-repo pull requests only", () =>
     Effect.gen(function* () {
       const deploy = Task.make("deploy-preview", {

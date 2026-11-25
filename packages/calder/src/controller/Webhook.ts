@@ -6,6 +6,7 @@ import { Closes } from "./Closes.ts";
 import { Config } from "./Config.ts";
 import { Mirror } from "./Mirror.ts";
 import { Projects } from "./Projects.ts";
+import * as Trust from "./Trust.ts";
 import { Runs } from "./Workflow.ts";
 
 interface Payload {
@@ -18,6 +19,7 @@ interface Payload {
     readonly closed_at?: string | null;
     readonly head?: {
       readonly ref?: string;
+      readonly label?: string;
       readonly sha?: string;
       readonly repo?: { readonly full_name?: string };
     };
@@ -140,7 +142,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
             _tag: "PullRequest",
             number,
             base: pr.base?.ref ?? "main",
-            head: pr.head?.ref ?? `pr-${number}`,
+            head: Trust.head(number, pr.head),
             fork,
           },
           sha,

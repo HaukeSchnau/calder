@@ -119,7 +119,7 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   There a pull request's job runs as its pool's user in the host's unit template for it, `calder-job-pr@`, with
   its own home and workspaces, apart from trusted jobs' `calder-job-trusted@`. A fork's pull request has a pool
   of its own, `calder-job-fork@`, so nothing a fork's job leaves behind reaches a same-repo pull request's job,
-  whose plan the default branch may take. A host that defines no unit for a pool fails its jobs, saying so.
+  whose plan the default branch may take. Runs of a bot's branches run there too (see below). A host that defines no unit for a pool fails its jobs, saying so.
   Tasks get `GOMEMLIMIT` at 90% of their worker's memory limit, so Go tools such as tsgo collect
   garbage before the limit throttles them; a task's own `env` overrides it.
   Pull-request tasks reach the network only through the controller's egress allowlist. Their commands get
@@ -309,9 +309,25 @@ disagree. It logs each as `footprint record wrong:` with the runs whose plans to
 such a plan among them (infra alerts on that line), and the project's page shows it for two weeks. No
 run reuses a plan that took a record the audit found wrong.
 
+Calder decides whose code a run holds by its branch alone. The controller's `untrustedBranches` names the
+branches a bot such as `renovate` pushes, as Gitea's branch protection names them (`renovate/**`): a name
+matches regardless of case, `*` and `?` stop at `/`, `**` doesn't. A run of such a branch runs like a fork's
+pull request: a push, a pull request from it, a closed pull request into it and a manual run of it. It gets
+the fork pool, no `secrets` or `defaultBranchSecrets`, no deploy lease and no previews; its plan refuses
+steps with grants or secrets, as a pull request's does; it records nothing, and no other run takes its
+results or plan. So does a pull request whose head is no branch of the repository, such as one pushed with
+Gitea's AGit flow, which anyone who may open a pull request can, and whose `label` Gitea leaves blank. A
+rule that doesn't parse, or that a JavaScript regexp can't read as Go's does, makes every branch but the
+default one the bot's; in a plain name, a character other than ASCII matches any. A run Calder trusted
+when it started but no longer would, such as one from before `untrustedBranches` named its branch, is
+cancelled when the controller starts, and running it again starts a new run like a fork's. The default
+branch is never the bot's. Every other branch is trusted, so the repository's branch protection must let
+the bot push only the branches `untrustedBranches` names, and only the trusted push every other branch.
+The controller logs each run it doesn't trust.
+
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
-same repository, never for forks or `calder check`. Their tasks may read the project's `secrets`, not its
-`defaultBranchSecrets`: whoever can push a branch is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
+same repository that isn't a bot's, never for forks or `calder check`. Their tasks may read the project's
+`secrets`, not its `defaultBranchSecrets`: whoever can push such a branch is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
 and home, and so does a preview's action, such as one that waits for the preview to be ready on the
 private network; it keeps the pull request's services. A task with `lease` holds the pull request's own
 lease. Actions with grants stay refused.
@@ -322,8 +338,8 @@ replaced says nothing there. Once a pull request has that comment, Calder edits 
 the state of its newest run changed: each step's status, what a waiting step
 waits for, why a failed one failed, how long each waited for a slot and ran, how long the run planned, and how long the steps on the
 critical path queued. `On.pullRequestClosed` rules run when
-a pull request is merged or closed, as a trusted run of the base branch's head that knows the pull
-request's number, such as to remove its preview. `calder plan --event closed:<n>` shows them.
+a pull request is merged or closed, as a trusted run of the base branch's head (unless the base is a bot's
+branch) that knows the pull request's number, such as to remove its preview. `calder plan --event closed:<n>` shows them.
 
 Gitea doesn't send a webhook again that the controller missed, such as while a host switch restarted it.
 30 s after it starts and every 5 minutes, the controller catches up. Each default branch head and open

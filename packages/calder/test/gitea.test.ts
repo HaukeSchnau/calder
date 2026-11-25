@@ -59,3 +59,46 @@ describe("Gitea", () => {
       }),
   );
 });
+
+describe("Gitea's open pull requests", () => {
+  // As Gitea v28.3.0's list endpoint answers (services/convert/pull.go `ToAPIPullRequests`).
+  const pull = (number: number, head: object) => ({
+    number,
+    head: { sha: `sha-${number}`, repo: { full_name: "o/app" }, ...head },
+    base: { ref: "main", repo: { full_name: "o/app" } },
+  });
+
+  it.effect(
+    "name an AGit pull request's head by its ref, also when a branch has its topic's name",
+    () =>
+      Effect.gen(function* () {
+        const client = HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(
+                JSON.stringify([
+                  pull(7, { ref: "feature", label: "" }),
+                  pull(8, { ref: "refs/pull/8/head", label: "" }),
+                  pull(9, { ref: "feature", label: "feature" }),
+                ]),
+              ),
+            ),
+          ),
+        );
+
+        const gitea = yield* Effect.provide(
+          Effect.service(Gitea),
+          layer.pipe(
+            Layer.provide(Layer.mergeAll(config(), Layer.succeed(HttpClient.HttpClient)(client))),
+          ),
+        );
+
+        expect((yield* gitea.openPulls("o/app")).map((p) => [p.number, p.head])).toEqual([
+          [7, "refs/pull/7/head"],
+          [8, "refs/pull/8/head"],
+          [9, "feature"],
+        ]);
+      }),
+  );
+});

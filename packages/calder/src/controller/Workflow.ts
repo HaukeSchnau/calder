@@ -1,6 +1,8 @@
 import { Domain } from "@calder-ci/api";
+import { Event } from "@calder-ci/core";
 import { Context, Deferred, Effect, FiberMap, FiberSet, Layer, Schema, Semaphore } from "effect";
 import { SqlClient } from "effect/sql";
+import { Config } from "./Config.ts";
 import * as Counters from "./Counters.ts";
 import { Gitea } from "./Gitea.ts";
 import { Live } from "./Live.ts";
@@ -9,6 +11,7 @@ import { Projects } from "./Projects.ts";
 import * as Rows from "./Rows.ts";
 import { RunsCore } from "./Runs.ts";
 import * as Telemetry from "./Telemetry.ts";
+import * as Trust from "./Trust.ts";
 
 export class RunError extends Schema.TaggedError<RunError>("calder/RunError")("RunError", {
   message: Schema.String,
@@ -18,7 +21,10 @@ export interface RunInput {
   readonly project: string;
   readonly event: Domain.Event;
   readonly sha: string;
-  /** A pull request whose head lives in another repository. */
+  /**
+   * A pull request whose head lives in another repository, or code that runs like one: `create` adds the
+   * branches a bot pushes (Trust.ts `untrusted`).
+   */
   readonly fork?: boolean;
   /** The run this one reruns, whose passed steps it takes instead of running them again. */
   readonly rerunOf?: string;
@@ -74,6 +80,7 @@ export const layer = Layer.effect(Runs)(
     const gitea = yield* Gitea;
     const live = yield* Live;
     const projects = yield* Projects;
+    const config = yield* Config;
 
     const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
       effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
@@ -227,11 +234,38 @@ export const layer = Layer.effect(Runs)(
         return FiberMap.run(drivers, runId, drive(runId, entry)).pipe(Effect.asVoid);
       });
 
-    // A restart interrupted these; their steps that were running start over. Cancelled ones only finish.
-    const unfinished = yield* db(sql<{ id: string }>`select id from runs
+    /**
+     * Why Calder wouldn't trust a run it trusted when it started (`create`), such as a run of renovate's
+     * branch from before `untrustedBranches` named it; null when it still would.
+     */
+    const distrusted = (row: Rows.RunRow) => {
+      const project = projects.get(row.project);
+
+      if (row.fork === 1 || project === undefined) return null;
+      const event = JSON.parse(row.event) as Domain.Event;
+      const branch = branchOf(event, project.defaultBranch);
+
+      return Trust.untrusted(config.untrustedBranches, event, branch, project.defaultBranch)
+        ? `Calder no longer trusts ${branch} (untrustedBranches)`
+        : null;
+    };
+
+    // A restart interrupted these; their steps that were running start over, unless Calder no longer
+    // trusts the run's code. Cancelled ones only finish.
+    const unfinished = yield* db(sql<Rows.RunRow>`select * from runs
     where status in ('queued', 'planning', 'running') or (status = 'cancelled' and finished_at is null) order by created_at`);
 
-    yield* Effect.forEach(unfinished, (r) => start(r.id), { discard: true });
+    yield* Effect.forEach(
+      unfinished,
+      (r) => {
+        const why = distrusted(r);
+
+        return (why === null ? Effect.void : core.cancel(r.id, why)).pipe(
+          Effect.andThen(start(r.id)),
+        );
+      },
+      { discard: true },
+    );
 
     const create: Runs["Service"]["create"] = (input) =>
       Effect.gen(function* () {
@@ -252,11 +286,19 @@ export const layer = Layer.effect(Runs)(
         );
 
         const event = input.event;
+        const branch = branchOf(event, project.defaultBranch);
+
+        const fork =
+          input.fork === true ||
+          Trust.untrusted(config.untrustedBranches, event, branch, project.defaultBranch);
 
         const trust: Domain.Trust =
-          event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
+          event._tag === "PullRequest" || event._tag === "Check" || fork ? "pr" : "trusted";
 
-        const branch = branchOf(event, project.defaultBranch);
+        if (fork && input.fork !== true)
+          yield* Effect.logInfo(
+            `${Event.describe(event)} of ${input.project} at ${input.sha.slice(0, 12)} runs like a fork's pull request: Calder doesn't trust ${branch} (untrustedBranches)`,
+          );
 
         const pr =
           event._tag === "PullRequest" || event._tag === "PullRequestClosed" ? event.number : null;
@@ -269,7 +311,7 @@ export const layer = Layer.effect(Runs)(
           trust, status, created_at, trace_id, span_id, fork, tree, rerun_of)
         values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
           ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
-          ${input.fork === true ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`);
+          ${fork ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`);
 
         const older = yield* db(
           Rows.replaced({ project: input.project, event, branch, pr, sha: input.sha }),
@@ -328,7 +370,13 @@ export const layer = Layer.effect(Runs)(
 
           if (row === undefined) return yield* RunError.make({ message: `no run ${runId}` });
 
-          if (options.force !== true && row.plan !== null && row.status !== "cancelled") {
+          // A run whose code Calder no longer trusts doesn't run again as it was: a new run of it does.
+          if (
+            options.force !== true &&
+            row.plan !== null &&
+            row.status !== "cancelled" &&
+            distrusted(row) === null
+          ) {
             const reason = options.reason ?? "calder rerun";
 
             // The steps it reset run again even when the caller goes away, such as a CLI interrupted while

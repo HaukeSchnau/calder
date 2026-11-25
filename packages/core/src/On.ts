@@ -45,7 +45,8 @@ export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, an
 /**
  * Runs on pull requests from a branch of the same repository, next to the `pullRequest` rules. Its
  * tasks may read secrets, such as the token a preview deploy needs: the people who can push a branch
- * are the ones a trusted run trusts. Fork pull requests and `calder check` don't run it. Actions with
+ * are the ones a trusted run trusts. Fork pull requests, those from a bot's branch (the controller's
+ * `untrustedBranches`, such as `renovate/**`) and `calder check` don't run it. Actions with
  * grants and tasks that hold the deploy lease are still refused, and the run gets `PrBase`.
  */
 export const preview = <const T extends ReadonlyArray<Step<any, any, any, any>>>(
