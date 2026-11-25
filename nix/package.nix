@@ -1,9 +1,7 @@
 {
   lib,
   stdenvNoCC,
-  bun,
-  nodejs_24,
-  pnpm_11,
+  toolchain,
   fetchPnpmDeps,
   pnpmConfigHook,
   makeWrapper,
@@ -18,6 +16,7 @@ let
   src = lib.fileset.toSource {
     inherit root;
     fileset = lib.fileset.difference (lib.fileset.unions [
+      ../.npmrc
       ../package.json
       ../pnpm-lock.yaml
       ../pnpm-workspace.yaml
@@ -34,14 +33,14 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
-    pnpm = pnpm_11;
+    inherit (toolchain) pnpm;
     fetcherVersion = 4;
-    hash = "sha256-HiqCFQkiEX/fsnczhd5gS5uQfT3RTjT+ny7IZJARUJc=";
+    hash = "sha256-kC6fg4knOeZpsJAAcC35H2uUn0jA5RS9CIXYRxQXYrU=";
   };
 
   nativeBuildInputs = [
-    nodejs_24
-    pnpm_11
+    toolchain.nodejs
+    toolchain.pnpm
     pnpmConfigHook
     makeWrapper
   ];
@@ -58,12 +57,15 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   # the very modules the worker runs, so the sources ship unbundled with their node_modules.
   installPhase = ''
     runHook preInstall
+    # Vite+, tsrs and the UI's build tools stay out of the package, which needs only what Calder runs with.
+    # That includes @schnau/tsconfig, which tsconfig.base.json extends: none of its options change how Bun runs the sources.
+    pnpm install --offline --prod --frozen-lockfile --ignore-scripts --config.modules-cache-max-age=0
     mkdir -p $out/lib/calder $out/bin
     cp -a package.json pnpm-workspace.yaml tsconfig.base.json node_modules packages sdk $out/lib/calder/
     # The source's path depends only on its content, so every platform's build of it gets the same id.
     # Twelve characters, because Nix would take the whole hash for a runtime reference to the source.
     basename "$src" | cut -c1-12 > $out/lib/calder/build
-    makeWrapper ${lib.getExe bun} $out/bin/calder \
+    makeWrapper ${lib.getExe toolchain.bun} $out/bin/calder \
       --add-flags $out/lib/calder/packages/calder/src/main.ts \
       --prefix PATH : ${
         lib.makeBinPath (

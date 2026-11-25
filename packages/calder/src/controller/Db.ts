@@ -1,14 +1,14 @@
-import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun"
-import { Effect, Layer, Schedule } from "effect"
-import { SqlClient } from "effect/sql"
-import { join } from "node:path"
-import { Config } from "./Config.ts"
-import * as Outputs from "./Outputs.ts"
-import * as Rows from "./Rows.ts"
+import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun";
+import { Effect, Layer, Schedule } from "effect";
+import { SqlClient } from "effect/sql";
+import { join } from "node:path";
+import { Config } from "./Config.ts";
+import * as Outputs from "./Outputs.ts";
+import * as Rows from "./Rows.ts";
 
 export const migrations = {
-  "0001_init": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0001_init": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     yield* sql`create table runs (
       id text primary key,
       project text not null,
@@ -31,9 +31,9 @@ export const migrations = {
       trace_id text not null,
       span_id text not null,
       plan text
-    )`
-    yield* sql`create index runs_project on runs (project, created_at desc)`
-    yield* sql`create index runs_status on runs (status)`
+    )`;
+    yield* sql`create index runs_project on runs (project, created_at desc)`;
+    yield* sql`create index runs_status on runs (status)`;
     yield* sql`create table steps (
       run_id text not null,
       name text not null,
@@ -60,7 +60,7 @@ export const migrations = {
       tests_failed integer,
       tests_skipped integer,
       primary key (run_id, name)
-    )`
+    )`;
     yield* sql`create table results (
       key text not null,
       run_id text not null,
@@ -69,8 +69,8 @@ export const migrations = {
       value text,
       outputs text,
       created_at integer not null
-    )`
-    yield* sql`create index results_key on results (key, created_at desc)`
+    )`;
+    yield* sql`create index results_key on results (key, created_at desc)`;
     yield* sql`create table tests (
       run_id text not null,
       project text not null,
@@ -82,11 +82,11 @@ export const migrations = {
       duration_ms integer not null,
       message text,
       created_at integer not null
-    )`
-    yield* sql`create index tests_name on tests (project, suite, name, created_at desc)`
-    yield* sql`create index tests_run on tests (run_id)`
-    yield* sql`create table counters (name text primary key, value integer not null)`
-    yield* sql`create table comments (project text not null, pr integer not null, step text not null, comment_id integer not null, primary key (project, pr, step))`
+    )`;
+    yield* sql`create index tests_name on tests (project, suite, name, created_at desc)`;
+    yield* sql`create index tests_run on tests (run_id)`;
+    yield* sql`create table counters (name text primary key, value integer not null)`;
+    yield* sql`create table comments (project text not null, pr integer not null, step text not null, comment_id integer not null, primary key (project, pr, step))`;
     yield* sql`create table deployments (
       project text not null,
       host text not null,
@@ -94,28 +94,35 @@ export const migrations = {
       store_path text not null,
       run_id text not null,
       at integer not null
-    )`
-    yield* sql`create index deployments_project on deployments (project, host, at desc)`
-    yield* sql`create table schedules (project text not null, cron text not null, primary key (project, cron))`
+    )`;
+    yield* sql`create index deployments_project on deployments (project, host, at desc)`;
+    yield* sql`create table schedules (project text not null, cron text not null, primary key (project, cron))`;
   }),
-  "0002_forks": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0002_forks": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Pull requests from forks never count for trusted runs; same-repo ones may.
-    yield* sql`alter table runs add column fork integer not null default 0`
+    yield* sql`alter table runs add column fork integer not null default 0`;
   }),
-  "0003_projects": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    yield* sql`create table projects (name text primary key, repo text not null, default_branch text not null, created_at integer not null)`
+  "0003_projects": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`create table projects (name text primary key, repo text not null, default_branch text not null, created_at integer not null)`;
   }),
-  "0004_no_workflow_engine": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0004_no_workflow_engine": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
     // Runs are driven from the journal; effect/cluster's tables held the old workflow engine's state.
-    for (const table of ["cluster_messages", "cluster_replies", "cluster_runners", "cluster_locks", "cluster_migrations"]) {
-      yield* sql`drop table if exists ${sql(table)}`
+    for (const table of [
+      "cluster_messages",
+      "cluster_replies",
+      "cluster_runners",
+      "cluster_locks",
+      "cluster_migrations",
+    ]) {
+      yield* sql`drop table if exists ${sql(table)}`;
     }
   }),
-  "0005_shards": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0005_shards": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Each shard has its own key, result and timing, so a rerun repeats only the shards that didn't pass.
     yield* sql`create table shards (
       run_id text not null,
@@ -129,10 +136,10 @@ export const migrations = {
       cpu_seconds real,
       memory_peak integer,
       primary key (run_id, step, shard)
-    )`
+    )`;
   }),
-  "0006_jobs": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0006_jobs": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Local step workers, so a restarted controller adopts the ones still running. Specs without secrets.
     yield* sql`create table jobs (
       id text primary key,
@@ -140,10 +147,10 @@ export const migrations = {
       pool text not null,
       spec text not null,
       created_at integer not null
-    )`
+    )`;
   }),
-  "0007_file_results": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0007_file_results": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Outcomes of the files of tasks with `each`, by the file's key: passed, flaky (passed on retry) or failed.
     yield* sql`create table file_results (
       key text not null,
@@ -155,18 +162,18 @@ export const migrations = {
       status text not null,
       duration_ms integer not null,
       created_at integer not null
-    )`
-    yield* sql`create index file_results_key on file_results (key, created_at desc)`
-    yield* sql`create index file_results_file on file_results (project, step, file, created_at desc)`
+    )`;
+    yield* sql`create index file_results_key on file_results (key, created_at desc)`;
+    yield* sql`create index file_results_file on file_results (project, step, file, created_at desc)`;
   }),
-  "0008_step_files": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    yield* sql`alter table steps add column files_total integer`
-    yield* sql`alter table steps add column files_ran integer`
-    yield* sql`alter table steps add column files_flaky integer`
+  "0008_step_files": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`alter table steps add column files_total integer`;
+    yield* sql`alter table steps add column files_ran integer`;
+    yield* sql`alter table steps add column files_flaky integer`;
   }),
-  "0009_merges": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0009_merges": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Pull requests Calder merges once they are green and up to date with their base.
     yield* sql`create table merges (
       project text not null,
@@ -176,164 +183,164 @@ export const migrations = {
       message text,
       requested_at integer not null,
       primary key (project, pr)
-    )`
+    )`;
   }),
-  "0010_file_jobs": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0010_file_jobs": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // The job a file first ran in, so a file that passed only on retry can name the files it ran with.
-    yield* sql`alter table file_results add column job integer`
-    yield* sql`create index file_results_job on file_results (run_id, step, job)`
+    yield* sql`alter table file_results add column job integer`;
+    yield* sql`create index file_results_job on file_results (run_id, step, job)`;
   }),
-  "0011_test_retries": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0011_test_retries": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // A test that ran again in its step keeps every record; the last one holds its outcome.
-    yield* sql`alter table tests add column superseded integer not null default 0`
-    yield* sql`alter table steps add column tests_flaky integer`
+    yield* sql`alter table tests add column superseded integer not null default 0`;
+    yield* sql`alter table steps add column tests_flaky integer`;
   }),
-  "0012_result_outcomes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0012_result_outcomes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Failed results too, so a key whose outcome changes shows. Only passed ones are reused.
-    yield* sql`alter table results add column status text not null default 'passed'`
-    yield* sql`alter table steps add column contradicts text`
+    yield* sql`alter table results add column status text not null default 'passed'`;
+    yield* sql`alter table steps add column contradicts text`;
   }),
-  "0013_retention_indexes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0013_retention_indexes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // What pruning a run looks up: its results, and newer runs that reused them.
-    yield* sql`create index results_run on results (run_id)`
-    yield* sql`create index steps_reused_from on steps (reused_from) where reused_from is not null`
+    yield* sql`create index results_run on results (run_id)`;
+    yield* sql`create index steps_reused_from on steps (reused_from) where reused_from is not null`;
   }),
-  "0014_publish_errors": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0014_publish_errors": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // A build whose output the binary cache didn't take says so on its step.
-    yield* sql`alter table steps add column publish_error text`
+    yield* sql`alter table steps add column publish_error text`;
   }),
-  "0015_leases": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0015_leases": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // The newest run each deploy step held the lease in, and the holder, so a restart forgets neither (Leases).
-    yield* sql`create table lease_steps (project text not null, step text not null, run integer not null, primary key (project, step))`
-    yield* sql`create table lease_holders (project text primary key, job text not null, run integer not null, step text not null, fence integer not null)`
+    yield* sql`create table lease_steps (project text not null, step text not null, run integer not null, primary key (project, step))`;
+    yield* sql`create table lease_holders (project text primary key, job text not null, run integer not null, step text not null, fence integer not null)`;
   }),
-  "0016_waiting_and_notes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0016_waiting_and_notes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // What a step that hasn't started waits for, while it waits.
-    yield* sql`alter table steps add column waiting text`
+    yield* sql`alter table steps add column waiting text`;
     // When the plan was stored, which ends a run's planning.
-    yield* sql`alter table runs add column planned_at integer`
+    yield* sql`alter table runs add column planned_at integer`;
     // The commit's root tree: a plan of another commit with the same tree reuses its derivations.
-    yield* sql`alter table runs add column tree text`
-    yield* sql`create index runs_tree on runs (project, tree)`
+    yield* sql`alter table runs add column tree text`;
+    yield* sql`create index runs_tree on runs (project, tree)`;
     // What steps of a pull request's runs said for its comment (PullRequest.comment), newest per step.
     yield* sql`create table pr_notes (project text not null, pr integer not null, step text not null, run_id text not null,
-      markdown text not null, at integer not null, primary key (project, pr, step))`
+      markdown text not null, at integer not null, primary key (project, pr, step))`;
   }),
-  "0017_footprints": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0017_footprints": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // What plans' evaluations read of a flake's source (worker/Footprint.ts): one row per evaluator, whose
     // attributes' footprints are prefixes of its entries.
     yield* sql`create table footprints (id integer primary key autoincrement, project text not null, revision text not null,
-      entries text not null, created_at integer not null)`
+      entries text not null, created_at integer not null)`;
     // What each attribute evaluated to, with its footprint's prefix and digest. Forks write none.
     yield* sql`create table evaluations (id integer primary key autoincrement, project text not null, attr text not null,
       footprint integer not null, count integer not null, digest text not null, derivation text, app text, trust text not null,
-      run_id text not null, created_at integer not null)`
-    yield* sql`create index evaluations_attr on evaluations (project, attr, created_at desc)`
+      run_id text not null, created_at integer not null)`;
+    yield* sql`create index evaluations_attr on evaluations (project, attr, created_at desc)`;
     // Which record gave a run's plan each attribute it took, so a wrong record's deploys can be listed.
     yield* sql`create table run_records (run_id text not null, attr text not null, evaluation integer not null,
-      primary key (run_id, attr))`
-    yield* sql`create index run_records_evaluation on run_records (evaluation)`
+      primary key (run_id, attr))`;
+    yield* sql`create index run_records_evaluation on run_records (evaluation)`;
     // Footprints an audit found wrong: a record of the attribute with the same digest isn't kept again,
     // until the footprint changes.
     yield* sql`create table record_blocks (project text not null, attr text not null, digest text not null,
-      primary key (project, attr, digest))`
+      primary key (project, attr, digest))`;
     // Records an audit found wrong: a fresh evaluation of the default branch's head disagreed with them.
     yield* sql`create table audit_mismatches (id integer primary key autoincrement, project text not null, attr text not null,
-      revision text not null, detail text not null, at integer not null)`
+      revision text not null, detail text not null, at integer not null)`;
   }),
-  "0018_job_templates": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0018_job_templates": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // The unit template a persisted worker runs in, when it isn't its pool's (Jobs.ts `large`).
-    yield* sql`alter table jobs add column template text`
+    yield* sql`alter table jobs add column template text`;
   }),
-  "0019_rerun_of": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0019_rerun_of": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // The run a rerun repeats, whose passed steps it takes (Runs.ts `fromRerun`), and what a step's
     // secrets were, keyed, so a rerun after a secret changed runs the step.
-    yield* sql`alter table runs add column rerun_of text`
-    yield* sql`alter table steps add column secrets_digest text`
+    yield* sql`alter table runs add column rerun_of text`;
+    yield* sql`alter table steps add column secrets_digest text`;
   }),
-  "0020_delivery": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0020_delivery": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Merges whose run on the default branch failed, with Calder's comment on the pull request, until a
     // run that includes them passes (Delivery.ts).
     yield* sql`create table shipments (project text not null, sha text not null, pr integer not null, run_id text not null,
-      comment_id integer not null, shipped_run text, primary key (project, sha))`
+      comment_id integer not null, shipped_run text, primary key (project, sha))`;
     // Where each step's newest failing streak started and when it ended, which outlives the runs retention prunes (Health.ts).
     yield* sql`create table streak_starts (project text not null, step text not null, first_run text not null, since integer not null,
-      ended_at integer, primary key (project, step))`
+      ended_at integer, primary key (project, step))`;
   }),
-  "0021_lease_holder_leases": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0021_lease_holder_leases": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // What the holder deploys (Jobs.ts `Lease`), as JSON, so a restarted controller gives it back to the adopted worker's job.
-    yield* sql`alter table lease_holders add column lease text`
+    yield* sql`alter table lease_holders add column lease text`;
   }),
-  "0022_pipeline_pushes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0022_pipeline_pushes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // The branches the push rules of each `.calder/` tree that was planned name, as a JSON array.
-    yield* sql`create table pipeline_pushes (project text not null, tree text not null, branches text not null, primary key (project, tree))`
+    yield* sql`create table pipeline_pushes (project text not null, tree text not null, branches text not null, primary key (project, tree))`;
   }),
-  "0023_run_retries": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0023_run_retries": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // How often a run ran its failed steps again in place (Runs.ts `retry`), which a deploy's backoff counts (Delivery.ts).
-    yield* sql`alter table runs add column retries integer not null default 0`
+    yield* sql`alter table runs add column retries integer not null default 0`;
   }),
-  "0024_steps_to_build": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0024_steps_to_build": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // How many derivations a build's dry run said it would build, which sizes later builds of the step (Runs.ts `sized`).
-    yield* sql`alter table steps add column to_build integer`
+    yield* sql`alter table steps add column to_build integer`;
   }),
-  "0025_overview_and_sweep_indexes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0025_overview_and_sweep_indexes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // bun:sqlite blocks the event loop while a statement runs. Without these, the overview's and `calder runs`'
     // newest runs and the outputs sweep each read a quarter of srv-2's 944 MB database from disk, which froze
     // the controller for up to 45 s, long enough for every agent to drop its connection.
-    yield* sql`create index runs_created on runs (created_at desc)`
-    yield* sql`create index steps_outputs on steps (outputs) where outputs is not null`
-    yield* sql`create index results_passed_outputs on results (outputs) where status = 'passed'`
+    yield* sql`create index runs_created on runs (created_at desc)`;
+    yield* sql`create index steps_outputs on steps (outputs) where outputs is not null`;
+    yield* sql`create index results_passed_outputs on results (outputs) where status = 'passed'`;
   }),
-  "0026_run_plans": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0026_run_plans": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // A plan is up to a megabyte of JSON. In its run's row, each read of the row, or of a column added after
     // the plan, walked its overflow pages: the overview read 48 MB of plans a call, and with srv-2 short of
     // memory those reads froze the event loop for long enough that every agent dropped its connection.
-    yield* sql`create table run_plans (run_id text primary key, plan text not null)`
-    yield* sql`insert into run_plans (run_id, plan) select id, plan from runs where plan is not null`
-    yield* sql`alter table runs drop column plan`
+    yield* sql`create table run_plans (run_id text primary key, plan text not null)`;
+    yield* sql`insert into run_plans (run_id, plan) select id, plan from runs where plan is not null`;
+    yield* sql`alter table runs drop column plan`;
     // A step's spec is kilobytes of JSON before most of its columns, so the health export reads steps from these
     // covering indexes: when each step last passed (Health.ts `lastPassed`), and each run's outcomes (`load`).
-    yield* sql`create index steps_passed on steps (name, finished_at desc, run_id, status) where status in ('passed', 'reused')`
-    yield* sql`create index steps_outcomes on steps (run_id, position, name, status, finished_at)`
+    yield* sql`create index steps_passed on steps (name, finished_at desc, run_id, status) where status in ('passed', 'reused')`;
+    yield* sql`create index steps_outcomes on steps (run_id, position, name, status, finished_at)`;
   }),
-  "0027_counts_and_durations_indexes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0027_counts_and_durations_indexes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Covering, so neither read touches the rows: on srv-2's busy disk, runs' step counts (Rows.ts `counts`)
     // walked each step's spec to its files_total, and a sharded step's file durations (Runs.ts) read one
     // row per earlier file result, up to 70,000 pages a call, which froze the event loop for seconds.
-    yield* sql`drop index steps_outcomes`
-    yield* sql`create index steps_outcomes on steps (run_id, position, name, status, finished_at, kind, files_total)`
-    yield* sql`drop index file_results_file`
-    yield* sql`create index file_results_file on file_results (project, step, file, created_at desc, status, duration_ms)`
+    yield* sql`drop index steps_outcomes`;
+    yield* sql`create index steps_outcomes on steps (run_id, position, name, status, finished_at, kind, files_total)`;
+    yield* sql`drop index file_results_file`;
+    yield* sql`create index file_results_file on file_results (project, step, file, created_at desc, status, duration_ms)`;
   }),
-  "0028_pull_closes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  "0028_pull_closes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     // Per pull request, the time up to which its closings had their closed run (Closes.ts).
-    yield* sql`create table pull_closes (project text not null, pr integer not null, settled integer not null, primary key (project, pr))`
+    yield* sql`create table pull_closes (project text not null, pr integer not null, settled integer not null, primary key (project, pr))`;
     // Until now only the webhook started closed runs, and what it missed was handled by hand, such as Studienbuch
     // #121's preview. Closings up to the newest run count as handled, since the controller before this one still
     // took webhooks then. The catch-up handles later ones, such as those while this version started.
     yield* sql`insert into pull_closes (project, pr, settled)
-      select distinct project, pr, (select max(created_at) from runs) from runs where pr is not null`
+      select distinct project, pr, (select max(created_at) from runs) from runs where pr is not null`;
   }),
-}
+};
 
 /**
  * Prunes runs that finished more than `days` ago, one at a time so other queries get their turn: their
@@ -345,91 +352,143 @@ export const migrations = {
  * project's newest planned run stays whole.
  */
 export const prune = (days: number, now = Date.now()) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    const cutoff = now - days * 86_400_000
-    const old = yield* sql<{ id: string; project: string; event: string; tag: string; fork: number; created_at: number }>`
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const cutoff = now - days * 86_400_000;
+
+    const old = yield* sql<{
+      id: string;
+      project: string;
+      event: string;
+      tag: string;
+      fork: number;
+      created_at: number;
+    }>`
       select id, project, event, json_extract(event, '$._tag') as tag, fork, created_at from runs
       where finished_at < ${cutoff} and status not in ('queued', 'planning', 'running')
         and id not in (select id from (
           select id, row_number() over (partition by project order by created_at desc) as n from runs join run_plans on run_plans.run_id = runs.id
         ) where n = 1)
-      order by finished_at`
-    const counts = { deleted: 0, trimmed: 0 }
+      order by finished_at`;
+
+    const counts = { deleted: 0, trimmed: 0 };
+
     for (const run of old) {
       // A run can have tens of thousands of test results, too many for one statement.
-      while ((yield* sql`delete from tests where rowid in (select rowid from tests where run_id = ${run.id} limit 1000) returning 1`).length > 0) {
-        yield* Rows.pause
+      while (
+        (yield* sql`delete from tests where rowid in (select rowid from tests where run_id = ${run.id} limit 1000) returning 1`)
+          .length > 0
+      ) {
+        yield* Rows.pause;
       }
-      const outcome = yield* sql.withTransaction(Effect.gen(function*() {
-        const recent = sql`(runs.finished_at is null or runs.finished_at >= ${cutoff})`
-        const reused = (yield* sql`select 1 from steps join runs on runs.id = steps.run_id where steps.reused_from = ${run.id} and ${recent}
+
+      const outcome = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const recent = sql`(runs.finished_at is null or runs.finished_at >= ${cutoff})`;
+
+          const reused =
+            (yield* sql`select 1 from steps join runs on runs.id = steps.run_id where steps.reused_from = ${run.id} and ${recent}
           union all select 1 from shards join runs on runs.id = shards.run_id where shards.reused_from = ${run.id} and ${recent}
-          limit 1`).length > 0
-        const latest = (run.tag === "Push" || run.tag === "PullRequest") && (yield* sql`select 1 from runs
-          where project = ${run.project} and event = ${run.event} and created_at > ${run.created_at} limit 1`).length === 0
-        if (!reused) {
-          yield* sql`delete from results where run_id = ${run.id} and exists (
+          limit 1`).length > 0;
+
+          const latest =
+            (run.tag === "Push" || run.tag === "PullRequest") &&
+            (yield* sql`select 1 from runs
+          where project = ${run.project} and event = ${run.event} and created_at > ${run.created_at} limit 1`)
+              .length === 0;
+
+          if (!reused) {
+            yield* sql`delete from results where run_id = ${run.id} and exists (
             select 1 from results as newer join runs on runs.id = newer.run_id
             where newer.key = results.key and newer.status = results.status and newer.trust = results.trust
-              and runs.fork = ${run.fork} and newer.created_at > results.created_at)`
-        }
-        yield* sql`delete from file_results where run_id = ${run.id} and (status = 'failed' or exists (
+              and runs.fork = ${run.fork} and newer.created_at > results.created_at)`;
+          }
+
+          yield* sql`delete from file_results where run_id = ${run.id} and (status = 'failed' or exists (
           select 1 from file_results as newer join runs on runs.id = newer.run_id
           where newer.key = file_results.key and newer.trust = file_results.trust and newer.status != 'failed'
-            and runs.fork = ${run.fork} and newer.created_at > file_results.created_at))`
-        yield* sql`delete from shards where run_id = ${run.id}`
-        yield* sql`delete from steps where run_id = ${run.id}`
-        const holds = (yield* sql`select 1 from results where run_id = ${run.id}
-          union all select 1 from file_results where run_id = ${run.id} limit 1`).length > 0
-        if (reused || latest || holds) {
-          const trimmed = yield* sql`delete from run_plans where run_id = ${run.id} returning run_id`
-          return trimmed.length > 0 ? "trimmed" : "kept"
-        }
-        yield* sql`delete from run_plans where run_id = ${run.id}`
-        yield* sql`delete from runs where id = ${run.id}`
-        return "deleted"
-      }))
-      if (outcome !== "kept") counts[outcome]++
-      yield* Rows.pause
-    }
-    return counts
-  })
+            and runs.fork = ${run.fork} and newer.created_at > file_results.created_at))`;
+          yield* sql`delete from shards where run_id = ${run.id}`;
+          yield* sql`delete from steps where run_id = ${run.id}`;
 
-export const layer = Layer.unwrap(Effect.gen(function*() {
-  const config = yield* Config
-  const filename = join(config.stateDir, "calder.db")
-  const client = SqliteClient.layer({ filename })
-  // The client runs in WAL mode, where a power loss can drop the last commits but never corrupts the
-  // database. The default (full) syncs every commit, and each sync blocks the event loop. So would the
-  // checkpoints a commit runs, which Checkpoints.ts runs on its own thread instead.
-  const synchronous = Layer.effectDiscard(Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    yield* sql`pragma synchronous = normal`
-    yield* sql`pragma wal_autocheckpoint = 0`
-    const worker = yield* Effect.acquireRelease(
-      Effect.sync(() => new Worker(new URL("./Checkpoints.ts", import.meta.url).href)),
-      (worker) => Effect.sync(() => worker.terminate()),
-    )
-    // Without it the WAL would grow without end, so the controller's commits checkpoint again.
-    worker.addEventListener("error", (event) => {
-      console.error("checkpointing failed, so commits checkpoint again:", event.message)
-      Effect.runFork(sql`pragma wal_autocheckpoint = 1000`.pipe(Effect.ignore))
-    })
-    worker.postMessage(filename)
-  }))
-  const migrate = SqliteMigrator.layer({ loader: SqliteMigrator.fromRecord(migrations), table: "calder_migrations" })
-  const retention = Layer.effectDiscard(
-    prune(config.retention.days).pipe(
-      Effect.tap(({ deleted, trimmed }) =>
-        deleted + trimmed === 0 ? Effect.void : Effect.logInfo(`pruned runs past retention: deleted ${deleted}, trimmed ${trimmed}`)
+          const holds =
+            (yield* sql`select 1 from results where run_id = ${run.id}
+          union all select 1 from file_results where run_id = ${run.id} limit 1`).length > 0;
+
+          if (reused || latest || holds) {
+            const trimmed =
+              yield* sql`delete from run_plans where run_id = ${run.id} returning run_id`;
+
+            return trimmed.length > 0 ? "trimmed" : "kept";
+          }
+
+          yield* sql`delete from run_plans where run_id = ${run.id}`;
+          yield* sql`delete from runs where id = ${run.id}`;
+
+          return "deleted";
+        }),
+      );
+
+      if (outcome !== "kept") counts[outcome]++;
+      yield* Rows.pause;
+    }
+
+    return counts;
+  });
+
+export const layer = Layer.unwrap(
+  Effect.gen(function* () {
+    const config = yield* Config;
+    const filename = join(config.stateDir, "calder.db");
+    const client = SqliteClient.layer({ filename });
+
+    // The client runs in WAL mode, where a power loss can drop the last commits but never corrupts the
+    // database. The default (full) syncs every commit, and each sync blocks the event loop. So would the
+    // checkpoints a commit runs, which Checkpoints.ts runs on its own thread instead.
+    const synchronous = Layer.effectDiscard(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`pragma synchronous = normal`;
+        yield* sql`pragma wal_autocheckpoint = 0`;
+
+        const worker = yield* Effect.acquireRelease(
+          Effect.sync(() => new Worker(new URL("./Checkpoints.ts", import.meta.url).href)),
+          (worker) => Effect.sync(() => worker.terminate()),
+        );
+
+        // Without it the WAL would grow without end, so the controller's commits checkpoint again.
+        worker.addEventListener("error", (event) => {
+          console.error("checkpointing failed, so commits checkpoint again:", event.message);
+          Effect.runFork(sql`pragma wal_autocheckpoint = 1000`.pipe(Effect.ignore));
+        });
+        worker.postMessage(filename);
+      }),
+    );
+
+    const migrate = SqliteMigrator.layer({
+      loader: SqliteMigrator.fromRecord(migrations),
+      table: "calder_migrations",
+    });
+
+    const retention = Layer.effectDiscard(
+      prune(config.retention.days).pipe(
+        Effect.tap(({ deleted, trimmed }) =>
+          deleted + trimmed === 0
+            ? Effect.void
+            : Effect.logInfo(`pruned runs past retention: deleted ${deleted}, trimmed ${trimmed}`),
+        ),
+        Effect.andThen(Outputs.sweep(config.stateDir)),
+        Effect.andThen(Outputs.sweepDeploys(config.stateDir, config.retention.days)),
+        Effect.catchCause((cause) => Effect.logWarning("pruning history failed", cause)),
+        Effect.repeat(Schedule.spaced("6 hours")),
+        Effect.forkScoped,
       ),
-      Effect.andThen(Outputs.sweep(config.stateDir)),
-      Effect.andThen(Outputs.sweepDeploys(config.stateDir, config.retention.days)),
-      Effect.catchCause((cause) => Effect.logWarning("pruning history failed", cause)),
-      Effect.repeat(Schedule.spaced("6 hours")),
-      Effect.forkScoped,
-    ),
-  )
-  return retention.pipe(Layer.provideMerge(migrate), Layer.provideMerge(synchronous), Layer.provideMerge(client))
-}))
+    );
+
+    return retention.pipe(
+      Layer.provideMerge(migrate),
+      Layer.provideMerge(synchronous),
+      Layer.provideMerge(client),
+    );
+  }),
+);

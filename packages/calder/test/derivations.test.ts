@@ -1,23 +1,35 @@
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { describe, expect, it } from "@effect/vitest"
-import { Deferred, Effect, Option, PlatformError, Sink, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { sha256 } from "../src/Keys.ts"
-import type { RunInfo } from "../src/Protocol.ts"
-import { askedAttrs, reportTag } from "./expression.ts"
-import * as Footprint from "../src/worker/Footprint.ts"
-import { type Derivation, derivations, fromEarlier, jobMemory, type Memory } from "../src/worker/Resolve.ts"
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "@effect/vitest";
+import { Deferred, Effect, Option, PlatformError, Sink, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { sha256 } from "../src/Keys.ts";
+import type { RunInfo } from "../src/Protocol.ts";
+import { askedAttrs, reportTag } from "./expression.ts";
+import * as Footprint from "../src/worker/Footprint.ts";
+import {
+  type Derivation,
+  derivations,
+  fromEarlier,
+  jobMemory,
+  type Memory,
+} from "../src/worker/Resolve.ts";
 
-const run = (flake: string) => ({ flake }) as RunInfo
-const drv = (name: string) => ({ drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system: "x86_64-linux" })
-const GiB = 2 ** 30
+const run = (flake: string) => ({ flake }) as RunInfo;
+
+const drv = (name: string) => ({
+  drv: `/nix/store/00000000000000000000000000000000-${name}.drv`,
+  out: `/nix/store/00000000000000000000000000000000-${name}`,
+  system: "x86_64-linux",
+});
+
+const GiB = 2 ** 30;
 
 /** What `nix eval` makes of an attribute: a derivation or null, an error Nix can't catch, and how much memory it takes. */
 interface Attr {
-  readonly value?: Derivation | null | "missing" | "unreachable"
-  readonly bytes?: number
+  readonly value?: Derivation | null | "missing" | "unreachable";
+  readonly bytes?: number;
 }
 
 /**
@@ -29,40 +41,55 @@ interface Attr {
 const nix = (
   valid: () => boolean,
   options: {
-    readonly evaluating?: Effect.Effect<void>
-    readonly closure?: () => ReadonlyArray<string>
-    readonly attrs?: Readonly<Record<string, Attr>>
-    readonly hang?: number
+    readonly evaluating?: Effect.Effect<void>;
+    readonly closure?: () => ReadonlyArray<string>;
+    readonly attrs?: Readonly<Record<string, Attr>>;
+    readonly hang?: number;
     /** Loading the flake itself takes this much and never ends. */
-    readonly heavyFlake?: number
+    readonly heavyFlake?: number;
     /** The flake itself fails to load, such as an input that can't be fetched. */
-    readonly broken?: boolean
+    readonly broken?: boolean;
     /** Nix succeeds without reporting any attribute, as a Nix whose trace output changed would. */
-    readonly silent?: boolean
+    readonly silent?: boolean;
     /** The command (nix, or strace in front of it) is killed by a signal before the flake loads. */
-    readonly killed?: "nix" | "strace"
+    readonly killed?: "nix" | "strace";
   } = {},
 ) => {
-  const calls: Array<string> = []
-  const evaluated: Array<ReadonlyArray<string>> = []
-  const held = new Map<number, number>()
-  const line = (text: string) => new TextEncoder().encode(`${text}\n`)
+  const calls: Array<string> = [];
+  const evaluated: Array<ReadonlyArray<string>> = [];
+  const held = new Map<number, number>();
+  const line = (text: string) => new TextEncoder().encode(`${text}\n`);
+
   const spawner = ChildProcessSpawner.make((command) =>
-    Effect.gen(function*() {
-      const argv = ChildProcess.isStandardCommand(command) ? [command.command, ...command.args] : []
-      calls.push(argv.slice(0, 2).join(" "))
-      const evaluates = argv[1] === "eval"
-      const pid = calls.length
-      held.set(pid, GiB / 4)
-      let stderr: Stream.Stream<Uint8Array> = Stream.empty
-      let exit: Effect.Effect<number> = Effect.succeed(evaluates || valid() ? 0 : 1)
-      if (options.killed !== undefined && argv[0] === options.killed && (argv[1] === "eval" || argv[0] === "strace")) {
-        calls[calls.length - 1] = argv.slice(0, 2).join(" ")
+    Effect.gen(function* () {
+      const argv = ChildProcess.isStandardCommand(command)
+        ? [command.command, ...command.args]
+        : [];
+
+      calls.push(argv.slice(0, 2).join(" "));
+      const evaluates = argv[1] === "eval";
+      const pid = calls.length;
+      held.set(pid, GiB / 4);
+      let stderr: Stream.Stream<Uint8Array> = Stream.empty;
+      let exit: Effect.Effect<number> = Effect.succeed(evaluates || valid() ? 0 : 1);
+
+      if (
+        options.killed !== undefined &&
+        argv[0] === options.killed &&
+        (argv[1] === "eval" || argv[0] === "strace")
+      ) {
+        calls[calls.length - 1] = argv.slice(0, 2).join(" ");
+
         return ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(pid),
-          exitCode: Effect.fail(PlatformError.systemError({
-            _tag: "Unknown", module: "ChildProcess", method: "exitCode", cause: new Error("Process interrupted due to receipt of signal: 'SIGKILL'"),
-          })),
+          exitCode: Effect.fail(
+            PlatformError.systemError({
+              _tag: "Unknown",
+              module: "ChildProcess",
+              method: "exitCode",
+              cause: new Error("Process interrupted due to receipt of signal: 'SIGKILL'"),
+            }),
+          ),
           isRunning: Effect.succeed(false),
           kill: () => Effect.void,
           stdin: Sink.drain,
@@ -72,41 +99,92 @@ const nix = (
           getInputFd: () => Sink.drain,
           getOutputFd: () => Stream.empty,
           unref: Effect.succeed(Effect.void),
-        })
+        });
       }
+
       if (evaluates) {
-        yield* options.evaluating ?? Effect.void
-        const asked = askedAttrs(argv.at(-1)!)
-        evaluated.push(asked)
-        const reports: Array<Stream.Stream<Uint8Array>> = options.heavyFlake === undefined
-          ? [Stream.make(line(options.broken ? "error: cannot fetch input 'nixpkgs'" : `trace: calder-flake-${reportTag(argv.at(-1)!)}`))]
-          : [Stream.fromEffect(Effect.sync(() => held.set(pid, options.heavyFlake!))).pipe(Stream.drain), Stream.never]
-        if (options.heavyFlake !== undefined) exit = Effect.never
-        if (options.broken) exit = Effect.succeed(1)
+        yield* options.evaluating ?? Effect.void;
+        const asked = askedAttrs(argv.at(-1)!);
+        evaluated.push(asked);
+
+        const reports: Array<Stream.Stream<Uint8Array>> =
+          options.heavyFlake === undefined
+            ? [
+                Stream.make(
+                  line(
+                    options.broken
+                      ? "error: cannot fetch input 'nixpkgs'"
+                      : `trace: calder-flake-${reportTag(argv.at(-1)!)}`,
+                  ),
+                ),
+              ]
+            : [
+                Stream.fromEffect(Effect.sync(() => held.set(pid, options.heavyFlake!))).pipe(
+                  Stream.drain,
+                ),
+                Stream.never,
+              ];
+
+        if (options.heavyFlake !== undefined) exit = Effect.never;
+
+        if (options.broken) exit = Effect.succeed(1);
+
         for (const [i, name] of options.broken || options.silent ? [] : asked.entries()) {
-          const attr = options.attrs?.[name] ?? {}
-          const value = attr.value === undefined ? (name === "b" ? null : drv(name)) : attr.value
-          const grow = Stream.fromEffect(Effect.sync(() => held.set(pid, held.get(pid)! + (attr.bytes ?? 0)))).pipe(Stream.drain)
+          const attr = options.attrs?.[name] ?? {};
+          const value = attr.value === undefined ? (name === "b" ? null : drv(name)) : attr.value;
+
+          const grow = Stream.fromEffect(
+            Effect.sync(() => held.set(pid, held.get(pid)! + (attr.bytes ?? 0))),
+          ).pipe(Stream.drain);
+
           if (value === "missing" || value === "unreachable") {
-            const error = value === "missing" ? `attribute '${name}' missing` : "unable to download 'https://example.org/x': HTTP error 502"
-            reports.push(Stream.make(line("error:"), line("       … while calling the 'seq' builtin"), line(`       error: ${error}`)))
-            exit = Effect.succeed(1)
-            break
+            const error =
+              value === "missing"
+                ? `attribute '${name}' missing`
+                : "unable to download 'https://example.org/x': HTTP error 502";
+
+            reports.push(
+              Stream.make(
+                line("error:"),
+                line("       … while calling the 'seq' builtin"),
+                line(`       error: ${error}`),
+              ),
+            );
+            exit = Effect.succeed(1);
+            break;
           }
+
           if ((attr.bytes ?? 0) > (options.hang ?? Number.POSITIVE_INFINITY)) {
-            reports.push(grow, Stream.never)
-            exit = Effect.never
-            break
+            reports.push(grow, Stream.never);
+            exit = Effect.never;
+            break;
           }
-          reports.push(grow, Stream.make(line(`trace: calder-derivation-${reportTag(argv.at(-1)!)} ${JSON.stringify([i, value])}`)))
+
+          reports.push(
+            grow,
+            Stream.make(
+              line(
+                `trace: calder-derivation-${reportTag(argv.at(-1)!)} ${JSON.stringify([i, value])}`,
+              ),
+            ),
+          );
         }
-        stderr = Stream.flatten(Stream.fromIterable(reports))
+
+        stderr = Stream.flatten(Stream.fromIterable(reports));
       }
+
       // `--print-invalid` lists the invalid paths and succeeds; without it, any invalid path fails.
-      const listing = argv.includes("--print-invalid")
-      if (listing) exit = Effect.succeed(0)
-      const stdout = argv[1] === "--query" ? (options.closure?.() ?? []).join("\n")
-        : listing && !valid() ? argv.filter((a) => a.startsWith("/nix/store/")).join("\n") : ""
+      const listing = argv.includes("--print-invalid");
+
+      if (listing) exit = Effect.succeed(0);
+
+      const stdout =
+        argv[1] === "--query"
+          ? (options.closure?.() ?? []).join("\n")
+          : listing && !valid()
+            ? argv.filter((a) => a.startsWith("/nix/store/")).join("\n")
+            : "";
+
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(pid),
         exitCode: Effect.map(exit, ChildProcessSpawner.ExitCode),
@@ -119,252 +197,514 @@ const nix = (
         getInputFd: () => Sink.drain,
         getOutputFd: () => Stream.empty,
         unref: Effect.succeed(Effect.void),
-      })
-    })
-  )
-  const memory = (budget: number | null): Memory => ({ budget, resident: (pid) => held.get(pid) ?? 0, every: "10 millis" })
-  return { calls, evaluated, spawner, memory }
-}
+      });
+    }),
+  );
 
-const unlimited: Memory = { budget: null, resident: () => 0, every: "1 second" }
+  const memory = (budget: number | null): Memory => ({
+    budget,
+    resident: (pid) => held.get(pid) ?? 0,
+    every: "10 millis",
+  });
+
+  return { calls, evaluated, spawner, memory };
+};
+
+const unlimited: Memory = { budget: null, resident: () => 0, every: "1 second" };
 
 describe("derivations", () => {
   it.effect("evaluates a locked revision once while its derivations are in the store", () =>
-    Effect.gen(function*() {
-      let valid = true
-      const { calls, spawner } = nix(() => valid)
-      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
-      const plan = (flake: string) => derivations(run(flake), ["a", "b"], dir, undefined, unlimited).pipe(Effect.map((e) => e.derivations), Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+    Effect.gen(function* () {
+      let valid = true;
+      const { calls, spawner } = nix(() => valid);
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
 
-      const first = yield* plan("git+file:///mirror?rev=1")
-      expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first)
-      expect(first).toEqual(new Map([["a", drv("a")], ["b", null]]))
-      expect(calls).toEqual(["nix eval", "nix-store --check-validity"])
+      const plan = (flake: string) =>
+        derivations(run(flake), ["a", "b"], dir, undefined, unlimited).pipe(
+          Effect.map((e) => e.derivations),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+
+      const first = yield* plan("git+file:///mirror?rev=1");
+      expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first);
+      expect(first).toEqual(
+        new Map([
+          ["a", drv("a")],
+          ["b", null],
+        ]),
+      );
+      expect(calls).toEqual(["nix eval", "nix-store --check-validity"]);
 
       // Another revision replaces the repository's entry; a subset of it is a hit.
-      yield* plan("git+file:///mirror?rev=2")
-      const subset = yield* derivations(run("git+file:///mirror?rev=2"), ["a"], dir, undefined, unlimited).pipe(Effect.map((e) => e.derivations), Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
-      expect(subset).toEqual(new Map([["a", drv("a")]]))
-      expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first)
-      expect(calls.filter((c) => c === "nix eval")).toHaveLength(3)
+      yield* plan("git+file:///mirror?rev=2");
 
-      valid = false
-      yield* plan("git+file:///mirror?rev=1")
-      yield* plan("git+file:///mirror")
-      yield* plan("git+file:///mirror")
-      expect(calls.filter((c) => c === "nix eval")).toHaveLength(6)
-    }))
+      const subset = yield* derivations(
+        run("git+file:///mirror?rev=2"),
+        ["a"],
+        dir,
+        undefined,
+        unlimited,
+      ).pipe(
+        Effect.map((e) => e.derivations),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+
+      expect(subset).toEqual(new Map([["a", drv("a")]]));
+      expect(yield* plan("git+file:///mirror?rev=1")).toEqual(first);
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(3);
+
+      valid = false;
+      yield* plan("git+file:///mirror?rev=1");
+      yield* plan("git+file:///mirror");
+      yield* plan("git+file:///mirror");
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(6);
+    }),
+  );
 
   it.live("evaluates a revision once when two plans of it start together", () =>
-    Effect.gen(function*() {
-      const { calls, spawner } = nix(() => true, { evaluating: Effect.sleep("50 millis") })
-      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
-      const plan = derivations(run("git+file:///mirror?rev=1"), ["a", "b"], dir, undefined, unlimited).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
-      const [push, schedule] = yield* Effect.all([plan, plan], { concurrency: 2 })
-      expect(schedule).toEqual(push)
-      expect(calls.filter((c) => c === "nix eval")).toHaveLength(1)
-    }))
+    Effect.gen(function* () {
+      const { calls, spawner } = nix(() => true, { evaluating: Effect.sleep("50 millis") });
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
+      const plan = derivations(
+        run("git+file:///mirror?rev=1"),
+        ["a", "b"],
+        dir,
+        undefined,
+        unlimited,
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+      const [push, schedule] = yield* Effect.all([plan, plan], { concurrency: 2 });
+      expect(schedule).toEqual(push);
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(1);
+    }),
+  );
 
   it.live("evaluates another revision beside a plan that holds the repository's cache", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // Each evaluation goes on only once both started.
-      const both = yield* Deferred.make<void>()
-      let started = 0
+      const both = yield* Deferred.make<void>();
+      let started = 0;
+
       const evaluating = Effect.suspend(() => {
-        started++
-        return started === 2 ? Deferred.succeed(both, undefined) : Deferred.await(both)
-      })
-      const { calls, spawner } = nix(() => true, { evaluating })
-      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
-      const plan = (flake: string) => derivations(run(flake), ["a"], dir, undefined, unlimited).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
-      yield* Effect.all([plan("git+file:///mirror?rev=1"), plan("git+file:///mirror?rev=2")], { concurrency: 2 })
-      expect(calls.filter((c) => c === "nix eval")).toHaveLength(2)
-    }))
+        started++;
+
+        return started === 2 ? Deferred.succeed(both, undefined) : Deferred.await(both);
+      });
+
+      const { calls, spawner } = nix(() => true, { evaluating });
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
+      const plan = (flake: string) =>
+        derivations(run(flake), ["a"], dir, undefined, unlimited).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+
+      yield* Effect.all([plan("git+file:///mirror?rev=1"), plan("git+file:///mirror?rev=2")], {
+        concurrency: 2,
+      });
+      expect(calls.filter((c) => c === "nix eval")).toHaveLength(2);
+    }),
+  );
 
   it.effect("takes over the lock of a worker that died holding it", () =>
-    Effect.gen(function*() {
-      const { calls, spawner } = nix(() => true)
-      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
-      const plan = derivations(run("git+file:///mirror?rev=1"), ["a"], dir, undefined, unlimited).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
-      yield* plan
+    Effect.gen(function* () {
+      const { calls, spawner } = nix(() => true);
+      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
+      const plan = derivations(
+        run("git+file:///mirror?rev=1"),
+        ["a"],
+        dir,
+        undefined,
+        unlimited,
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+      yield* plan;
+
       // No process has this id: Linux caps them at 2^22.
       for (const name of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
-        writeFileSync(join(dir, `${name}.${sha256("git+file:///mirror?rev=1").slice(0, 16)}.lock`), String(2 ** 23))
+        writeFileSync(
+          join(dir, `${name}.${sha256("git+file:///mirror?rev=1").slice(0, 16)}.lock`),
+          String(2 ** 23),
+        );
       }
-      yield* plan
-      expect(calls).toEqual(["nix eval", "nix-store --check-validity"])
-    }))
 
-  it.effect("takes an earlier plan's derivations of the same tree, unless they mention its commit", () =>
-    Effect.gen(function*() {
-      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
-      // The closure of the earlier derivation: one .drv file, which may mention the commit.
-      const closure = join(dir, "x-bundle.drv")
-      const { calls, spawner } = nix(() => true, { closure: () => [closure] })
-      const pr = "1".repeat(40)
-      const committed = 1_761_609_600
-      const earlier = { revision: pr, derivations: { a: drv("a"), b: null }, app: "app" }
-      const flake = new Map([["flake.nix", "{ outputs = { self, nixpkgs }: { packages.x86_64-linux.bundle = 1; }; }"]])
-      const take = (attrs: ReadonlyArray<string>, revision: Partial<Parameters<typeof fromEarlier>[2]> = {}) =>
-        fromEarlier(earlier, attrs, { committed: Option.some(committed), nix: flake, ...revision })
-          .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner))
+      yield* plan;
+      expect(calls).toEqual(["nix eval", "nix-store --check-validity"]);
+    }),
+  );
 
-      writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`)
-      expect(yield* take(["a", "b"])).toEqual(new Map([["a", drv("a")], ["b", null]]))
-      // A derivation that embeds the commit, such as a version from `self.shortRev` or `self.lastModified`, doesn't carry over.
-      for (const mark of [pr.slice(0, 7), String(committed), "20251028000000", "20251028"]) {
-        writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1-${mark}")])`)
-        expect(yield* take(["a", "b"])).toBeUndefined()
-      }
-      // Of a plan that didn't evaluate every attribute this one needs, it takes those it did; none of a flake
-      // that reads revCount, nor of one whose commit can't be read.
-      writeFileSync(closure, `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`)
-      expect(yield* take(["a", "c"])).toEqual(new Map([["a", drv("a")]]))
-      expect(yield* take(["c"])).toBeUndefined()
-      expect(yield* take(["a", "b"], { nix: new Map([["nix/version.nix", "self: \"0.${toString self.revCount}\""]]) })).toBeUndefined()
-      expect(yield* take(["a", "b"], { committed: Option.none() })).toBeUndefined()
-      expect(yield* take(["a", "b"])).toBeDefined()
-      expect(calls.filter((c) => c === "nix eval")).toHaveLength(0)
-    }))
-})
+  it.effect(
+    "takes an earlier plan's derivations of the same tree, unless they mention its commit",
+    () =>
+      Effect.gen(function* () {
+        const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+        // The closure of the earlier derivation: one .drv file, which may mention the commit.
+        const closure = join(dir, "x-bundle.drv");
+        const { calls, spawner } = nix(() => true, { closure: () => [closure] });
+        const pr = "1".repeat(40);
+        const committed = 1_761_609_600;
+        const earlier = { revision: pr, derivations: { a: drv("a"), b: null }, app: "app" };
+
+        const flake = new Map([
+          ["flake.nix", "{ outputs = { self, nixpkgs }: { packages.x86_64-linux.bundle = 1; }; }"],
+        ]);
+
+        const take = (
+          attrs: ReadonlyArray<string>,
+          revision: Partial<Parameters<typeof fromEarlier>[2]> = {},
+        ) =>
+          fromEarlier(earlier, attrs, {
+            committed: Option.some(committed),
+            nix: flake,
+            ...revision,
+          }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+        writeFileSync(
+          closure,
+          `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`,
+        );
+        expect(yield* take(["a", "b"])).toEqual(
+          new Map([
+            ["a", drv("a")],
+            ["b", null],
+          ]),
+        );
+
+        // A derivation that embeds the commit, such as a version from `self.shortRev` or `self.lastModified`, doesn't carry over.
+        for (const mark of [pr.slice(0, 7), String(committed), "20251028000000", "20251028"]) {
+          writeFileSync(
+            closure,
+            `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1-${mark}")])`,
+          );
+          expect(yield* take(["a", "b"])).toBeUndefined();
+        }
+
+        // Of a plan that didn't evaluate every attribute this one needs, it takes those it did; none of a flake
+        // that reads revCount, nor of one whose commit can't be read.
+        writeFileSync(
+          closure,
+          `Derive([("out","/nix/store/x-bundle","","")],[],[],"x86_64-linux","/bin/sh",[],[("version","0.1")])`,
+        );
+        expect(yield* take(["a", "c"])).toEqual(new Map([["a", drv("a")]]));
+        expect(yield* take(["c"])).toBeUndefined();
+        expect(
+          yield* take(["a", "b"], {
+            nix: new Map([["nix/version.nix", 'self: "0.${toString self.revCount}"']]),
+          }),
+        ).toBeUndefined();
+        expect(yield* take(["a", "b"], { committed: Option.none() })).toBeUndefined();
+        expect(yield* take(["a", "b"])).toBeDefined();
+        expect(calls.filter((c) => c === "nix eval")).toHaveLength(0);
+      }),
+  );
+});
 
 describe("evaluating within the job's memory", () => {
-  const evaluate = (fake: ReturnType<typeof nix>, attrs: ReadonlyArray<string>, budget: number | null) =>
-    Effect.gen(function*() {
-      const logged: Array<string> = []
-      const log = (text: string) => Effect.sync(() => void logged.push(text))
-      const { derivations: result, errors, tooLarge } = yield* derivations(run("git+file:///mirror"), attrs, undefined, log, fake.memory(budget))
-        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      return { result, errors, tooLarge, logged }
-    })
+  const evaluate = (
+    fake: ReturnType<typeof nix>,
+    attrs: ReadonlyArray<string>,
+    budget: number | null,
+  ) =>
+    Effect.gen(function* () {
+      const logged: Array<string> = [];
+      const log = (text: string) => Effect.sync(() => void logged.push(text));
+
+      const {
+        derivations: result,
+        errors,
+        tooLarge,
+      } = yield* derivations(
+        run("git+file:///mirror"),
+        attrs,
+        undefined,
+        log,
+        fake.memory(budget),
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+      return { result, errors, tooLarge, logged };
+    });
 
   it.live("shares one evaluator while the attributes fit", () =>
-    Effect.gen(function*() {
-      const fake = nix(() => true, { attrs: { a: { bytes: GiB / 2 }, c: { bytes: GiB / 2 } } })
-      const { result } = yield* evaluate(fake, ["a", "b", "c"], 3 * GiB)
-      expect(result).toEqual(new Map([["a", drv("a")], ["b", null], ["c", drv("c")]]))
-      expect(fake.evaluated).toEqual([["a", "b", "c"]])
-    }))
+    Effect.gen(function* () {
+      const fake = nix(() => true, { attrs: { a: { bytes: GiB / 2 }, c: { bytes: GiB / 2 } } });
+      const { result } = yield* evaluate(fake, ["a", "b", "c"], 3 * GiB);
+      expect(result).toEqual(
+        new Map([
+          ["a", drv("a")],
+          ["b", null],
+          ["c", drv("c")],
+        ]),
+      );
+      expect(fake.evaluated).toEqual([["a", "b", "c"]]);
+    }),
+  );
 
-  it.live("stops an evaluator only once it holds more than the budget, and goes on in a new one", () =>
-    Effect.gen(function*() {
-      // A host's check evaluates the host's configuration, which the host then shares: stopping after the
-      // check because the host might grow as much would evaluate the configuration twice.
-      const fake = nix(() => true, { attrs: { check: { bytes: 2 * GiB }, host: { bytes: GiB / 4 }, other: { bytes: GiB }, last: { bytes: GiB / 4 } } })
-      const { result } = yield* evaluate(fake, ["check", "host", "other", "last"], 3 * GiB)
-      expect(result).toEqual(new Map(["check", "host", "other", "last"].map((h) => [h, drv(h)])))
-      expect(fake.evaluated).toEqual([["check", "host", "other", "last"], ["last"]])
-    }))
+  it.live(
+    "stops an evaluator only once it holds more than the budget, and goes on in a new one",
+    () =>
+      Effect.gen(function* () {
+        // A host's check evaluates the host's configuration, which the host then shares: stopping after the
+        // check because the host might grow as much would evaluate the configuration twice.
+        const fake = nix(() => true, {
+          attrs: {
+            check: { bytes: 2 * GiB },
+            host: { bytes: GiB / 4 },
+            other: { bytes: GiB },
+            last: { bytes: GiB / 4 },
+          },
+        });
 
-  it.live("keeps a lone evaluator going in a slice that holds only leftover slab and the job itself", () =>
-    Effect.gen(function*() {
-      // srv-2's idle jobs slice held 1.47 GB of slab; the job's own unit charges its worker and page cache.
-      const root = mkdtempSync(join(tmpdir(), "calder-cgroup-"))
-      const slice = join(root, "calder.slice", "calder-jobs.slice")
-      const unit = join(slice, "calder-job-trusted@1.service")
-      mkdirSync(unit, { recursive: true })
-      writeFileSync(join(slice, "memory.high"), String(8 * GiB))
-      writeFileSync(join(slice, "memory.current"), String(1.5 * GiB + 5.5 * GiB))
-      writeFileSync(join(unit, "memory.high"), String(7.5 * GiB))
-      writeFileSync(join(unit, "memory.current"), String(5.5 * GiB))
-      const self = join(root, "self")
-      writeFileSync(self, "0::/calder.slice/calder-jobs.slice/calder-job-trusted@1.service\n")
-      const fake = nix(() => true, { attrs: { x: { bytes: 2 * GiB }, y: { bytes: 2.5 * GiB }, z: { bytes: GiB / 4 } } })
-      const memory = { ...fake.memory(5.5 * GiB), room: jobMemory(root, self).room! }
-      yield* derivations(run("git+file:///mirror"), ["x", "y", "z"], undefined, undefined, memory)
-        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      // 4.75 GiB after y, within the job's budget and the slice's room of 6.4 GiB: one evaluator. Counting
-      // the slab and the job's own charge as neighbors left room for 4.6 GiB and stopped it before z.
-      expect(fake.evaluated).toEqual([["x", "y", "z"]])
-    }))
+        const { result } = yield* evaluate(fake, ["check", "host", "other", "last"], 3 * GiB);
+        expect(result).toEqual(new Map(["check", "host", "other", "last"].map((h) => [h, drv(h)])));
+        expect(fake.evaluated).toEqual([["check", "host", "other", "last"], ["last"]]);
+      }),
+  );
 
-  it.live("starts new evaluators when the slice has no room for more, but never fails an attribute for it", () =>
-    Effect.gen(function*() {
-      const fake = nix(() => true, { attrs: { x: { bytes: GiB }, y: { bytes: GiB }, z: { bytes: GiB } } })
-      const logged: Array<string> = []
-      const memory = { ...fake.memory(3 * GiB), room: () => GiB / 2 }
-      const { derivations: result, tooLarge } = yield* derivations(run("git+file:///mirror"), ["x", "y", "z"], undefined, (text) => Effect.sync(() => void logged.push(text)), memory)
-        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      expect(result).toEqual(new Map(["x", "y", "z"].map((h) => [h, drv(h)])))
-      expect(tooLarge.size).toBe(0)
-      // Each evaluator gets its first attribute whatever the slice holds, then stops.
-      expect(fake.evaluated).toEqual([["x", "y", "z"], ["y", "z"], ["z"]])
-      expect(logged.at(-1)).toContain("with 3 evaluators, 2 of them for want of room in the jobs slice")
-    }))
+  it.live(
+    "keeps a lone evaluator going in a slice that holds only leftover slab and the job itself",
+    () =>
+      Effect.gen(function* () {
+        // srv-2's idle jobs slice held 1.47 GB of slab; the job's own unit charges its worker and page cache.
+        const root = mkdtempSync(join(tmpdir(), "calder-cgroup-"));
+        const slice = join(root, "calder.slice", "calder-jobs.slice");
+        const unit = join(slice, "calder-job-trusted@1.service");
+        mkdirSync(unit, { recursive: true });
+        writeFileSync(join(slice, "memory.high"), String(8 * GiB));
+        writeFileSync(join(slice, "memory.current"), String(1.5 * GiB + 5.5 * GiB));
+        writeFileSync(join(unit, "memory.high"), String(7.5 * GiB));
+        writeFileSync(join(unit, "memory.current"), String(5.5 * GiB));
+        const self = join(root, "self");
+        writeFileSync(self, "0::/calder.slice/calder-jobs.slice/calder-job-trusted@1.service\n");
 
-  it.live("leaves out an attribute that outgrows the budget even on its own, saying which, and goes on with the rest", () =>
-    Effect.gen(function*() {
-      const fake = nix(() => true, { attrs: { a: { bytes: GiB / 2 }, huge: { bytes: 4 * GiB }, c: { bytes: GiB / 2 }, d: { bytes: GiB / 2 } }, hang: 3 * GiB })
-      const { result, tooLarge } = yield* evaluate(fake, ["a", "huge", "c", "d"], 3 * GiB)
-      expect(result).toEqual(new Map([["a", drv("a")], ["c", drv("c")], ["d", drv("d")]]))
-      expect([...tooLarge.values()]).toMatchObject([{ _tag: "TooLarge", attr: "huge", budget: 3 * GiB }])
-      expect(tooLarge.get("huge")!.message).toContain("took more than 3.0 GiB")
-      // It gets another try in an evaluator of its own before it counts as too large; nothing swaps or waits,
-      // and how much it grew doesn't give the rest an evaluator each.
-      expect(fake.evaluated).toEqual([["a", "huge", "c", "d"], ["huge", "c", "d"], ["c", "d"]])
-    }))
+        const fake = nix(() => true, {
+          attrs: { x: { bytes: 2 * GiB }, y: { bytes: 2.5 * GiB }, z: { bytes: GiB / 4 } },
+        });
 
-  it.live("tries an attribute Nix can't evaluate once more, then leaves it out with Nix's reason, uncached", () =>
-    Effect.gen(function*() {
-      const fake = nix(() => true, { attrs: { gone: { value: "missing" } } })
-      const { result, errors, logged } = yield* evaluate(fake, ["a", "gone", "c"], null)
-      expect(result).toEqual(new Map([["a", drv("a")], ["c", drv("c")]]))
-      expect(errors).toEqual(new Map([["gone", "attribute 'gone' missing"]]))
-      expect(fake.evaluated).toEqual([["a", "gone", "c"], ["gone", "c"], ["c"]])
-      expect(logged).toContain("gone did not evaluate: attribute 'gone' missing")
-    }))
+        const memory = { ...fake.memory(5.5 * GiB), room: jobMemory(root, self).room! };
+        yield* derivations(
+          run("git+file:///mirror"),
+          ["x", "y", "z"],
+          undefined,
+          undefined,
+          memory,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+        // 4.75 GiB after y, within the job's budget and the slice's room of 6.4 GiB: one evaluator. Counting
+        // the slab and the job's own charge as neighbors left room for 4.6 GiB and stopped it before z.
+        expect(fake.evaluated).toEqual([["x", "y", "z"]]);
+      }),
+  );
+
+  it.live(
+    "starts new evaluators when the slice has no room for more, but never fails an attribute for it",
+    () =>
+      Effect.gen(function* () {
+        const fake = nix(() => true, {
+          attrs: { x: { bytes: GiB }, y: { bytes: GiB }, z: { bytes: GiB } },
+        });
+
+        const logged: Array<string> = [];
+        const memory = { ...fake.memory(3 * GiB), room: () => GiB / 2 };
+
+        const { derivations: result, tooLarge } = yield* derivations(
+          run("git+file:///mirror"),
+          ["x", "y", "z"],
+          undefined,
+          (text) => Effect.sync(() => void logged.push(text)),
+          memory,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+        expect(result).toEqual(new Map(["x", "y", "z"].map((h) => [h, drv(h)])));
+        expect(tooLarge.size).toBe(0);
+        // Each evaluator gets its first attribute whatever the slice holds, then stops.
+        expect(fake.evaluated).toEqual([["x", "y", "z"], ["y", "z"], ["z"]]);
+        expect(logged.at(-1)).toContain(
+          "with 3 evaluators, 2 of them for want of room in the jobs slice",
+        );
+      }),
+  );
+
+  it.live(
+    "leaves out an attribute that outgrows the budget even on its own, saying which, and goes on with the rest",
+    () =>
+      Effect.gen(function* () {
+        const fake = nix(() => true, {
+          attrs: {
+            a: { bytes: GiB / 2 },
+            huge: { bytes: 4 * GiB },
+            c: { bytes: GiB / 2 },
+            d: { bytes: GiB / 2 },
+          },
+          hang: 3 * GiB,
+        });
+
+        const { result, tooLarge } = yield* evaluate(fake, ["a", "huge", "c", "d"], 3 * GiB);
+        expect(result).toEqual(
+          new Map([
+            ["a", drv("a")],
+            ["c", drv("c")],
+            ["d", drv("d")],
+          ]),
+        );
+        expect([...tooLarge.values()]).toMatchObject([
+          { _tag: "TooLarge", attr: "huge", budget: 3 * GiB },
+        ]);
+        expect(tooLarge.get("huge")!.message).toContain("took more than 3.0 GiB");
+        // It gets another try in an evaluator of its own before it counts as too large; nothing swaps or waits,
+        // and how much it grew doesn't give the rest an evaluator each.
+        expect(fake.evaluated).toEqual([
+          ["a", "huge", "c", "d"],
+          ["huge", "c", "d"],
+          ["c", "d"],
+        ]);
+      }),
+  );
+
+  it.live(
+    "tries an attribute Nix can't evaluate once more, then leaves it out with Nix's reason, uncached",
+    () =>
+      Effect.gen(function* () {
+        const fake = nix(() => true, { attrs: { gone: { value: "missing" } } });
+        const { result, errors, logged } = yield* evaluate(fake, ["a", "gone", "c"], null);
+        expect(result).toEqual(
+          new Map([
+            ["a", drv("a")],
+            ["c", drv("c")],
+          ]),
+        );
+        expect(errors).toEqual(new Map([["gone", "attribute 'gone' missing"]]));
+        expect(fake.evaluated).toEqual([["a", "gone", "c"], ["gone", "c"], ["c"]]);
+        expect(logged).toContain("gone did not evaluate: attribute 'gone' missing");
+      }),
+  );
 
   it.live("retries an error many attributes share only until two failed with it", () =>
-    Effect.gen(function*() {
-      const down = { value: "unreachable" as const }
-      const fake = nix(() => true, { attrs: { x: down, y: down, z: down } })
-      const { errors } = yield* evaluate(fake, ["x", "y", "z"], null)
-      expect([...errors.keys()]).toEqual(["x", "y", "z"])
-      expect(fake.evaluated).toEqual([["x", "y", "z"], ["x", "y", "z"], ["y", "z"], ["y", "z"], ["z"]])
-    }))
+    Effect.gen(function* () {
+      const down = { value: "unreachable" as const };
+      const fake = nix(() => true, { attrs: { x: down, y: down, z: down } });
+      const { errors } = yield* evaluate(fake, ["x", "y", "z"], null);
+      expect([...errors.keys()]).toEqual(["x", "y", "z"]);
+      expect(fake.evaluated).toEqual([
+        ["x", "y", "z"],
+        ["x", "y", "z"],
+        ["y", "z"],
+        ["y", "z"],
+        ["z"],
+      ]);
+    }),
+  );
 
   it.live("says it was loading the flake that outgrew the budget", () =>
-    Effect.gen(function*() {
-      const error = yield* Effect.flip(evaluate(nix(() => true, { heavyFlake: 4 * GiB }), ["a"], 3 * GiB))
-      expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/)
-    }))
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        evaluate(
+          nix(() => true, { heavyFlake: 4 * GiB }),
+          ["a"],
+          3 * GiB,
+        ),
+      );
 
-  it.live("doesn't cache an attribute whose evaluation failed, so the next plan tries it again", () =>
-    Effect.gen(function*() {
-      let flaky = true
-      const fake = nix(() => true, { attrs: { get shell() { return flaky ? { value: "missing" as const } : {} } } })
-      const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"))
-      const plan = derivations(run("git+file:///mirror?rev=1"), ["shell"], dir, undefined, unlimited)
-        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      const twice = derivations(run("git+file:///mirror?rev=1"), ["a", "shell"], dir, undefined, unlimited)
-        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      expect((yield* twice).derivations).toEqual(new Map([["a", drv("a")]]))
-      flaky = false
-      // The next plan of the commit evaluates only what the cache lacks.
-      expect((yield* twice).derivations).toEqual(new Map([["a", drv("a")], ["shell", drv("shell")]]))
-      expect(fake.evaluated.at(-1)).toEqual(["shell"])
-      expect((yield* plan).derivations).toEqual(new Map([["shell", drv("shell")]]))
-    }))
+      expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/);
+    }),
+  );
 
-  it.live("fails fast as too large when nix is killed loading the flake, and falls back when strace is", () =>
-    Effect.gen(function*() {
-      const error = yield* Effect.flip(evaluate(nix(() => true, { killed: "nix" }), ["a"], 3 * GiB))
-      expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/)
+  it.live(
+    "doesn't cache an attribute whose evaluation failed, so the next plan tries it again",
+    () =>
+      Effect.gen(function* () {
+        let flaky = true;
 
-      const fake = nix(() => true, { killed: "strace" })
-      const recorder = {
-        source: "/nix/store/x-source", url: "path:/nix/store/x-source?rev=1", revision: "1", at: Footprint.tree([]), marks: [],
-        pinned: new Set<string>(), context: "nix", nonce: "5eed", narHash: "sha256-source=", read: () => Effect.succeed(new Map<string, string>()),
-      }
-      const result = yield* derivations(run("git+file:///mirror"), ["a"], undefined, undefined, unlimited, { recorder })
-        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      expect(result.derivations).toEqual(new Map([["a", drv("a")]]))
-      expect(fake.calls.filter((c) => c === "strace -f" || c === "nix eval")).toEqual(["strace -f", "nix eval"])
-    }))
+        const fake = nix(() => true, {
+          attrs: {
+            get shell() {
+              return flaky ? { value: "missing" as const } : {};
+            },
+          },
+        });
+
+        const dir = mkdtempSync(join(tmpdir(), "calder-derivations-"));
+
+        const plan = derivations(
+          run("git+file:///mirror?rev=1"),
+          ["shell"],
+          dir,
+          undefined,
+          unlimited,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+        const twice = derivations(
+          run("git+file:///mirror?rev=1"),
+          ["a", "shell"],
+          dir,
+          undefined,
+          unlimited,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+        expect((yield* twice).derivations).toEqual(new Map([["a", drv("a")]]));
+        flaky = false;
+        // The next plan of the commit evaluates only what the cache lacks.
+        expect((yield* twice).derivations).toEqual(
+          new Map([
+            ["a", drv("a")],
+            ["shell", drv("shell")],
+          ]),
+        );
+        expect(fake.evaluated.at(-1)).toEqual(["shell"]);
+        expect((yield* plan).derivations).toEqual(new Map([["shell", drv("shell")]]));
+      }),
+  );
+
+  it.live(
+    "fails fast as too large when nix is killed loading the flake, and falls back when strace is",
+    () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          evaluate(
+            nix(() => true, { killed: "nix" }),
+            ["a"],
+            3 * GiB,
+          ),
+        );
+
+        expect(error.message).toMatch(/^Loading the flake took more than 3.0 GiB/);
+
+        const fake = nix(() => true, { killed: "strace" });
+
+        const recorder = {
+          source: "/nix/store/x-source",
+          url: "path:/nix/store/x-source?rev=1",
+          revision: "1",
+          at: Footprint.tree([]),
+          marks: [],
+          pinned: new Set<string>(),
+          context: "nix",
+          nonce: "5eed",
+          narHash: "sha256-source=",
+          read: () => Effect.succeed(new Map<string, string>()),
+        };
+
+        const result = yield* derivations(
+          run("git+file:///mirror"),
+          ["a"],
+          undefined,
+          undefined,
+          unlimited,
+          { recorder },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+        expect(result.derivations).toEqual(new Map([["a", drv("a")]]));
+        expect(fake.calls.filter((c) => c === "strace -f" || c === "nix eval")).toEqual([
+          "strace -f",
+          "nix eval",
+        ]);
+      }),
+  );
 
   it.live("evaluates as before, recording nothing, when recording what Nix read fails", () =>
-    Effect.gen(function*() {
-      const fake = nix(() => true)
+    Effect.gen(function* () {
+      const fake = nix(() => true);
+
       const recorder = {
         source: "/nix/store/x-source",
         url: "path:/nix/store/x-source?rev=1",
@@ -376,60 +716,79 @@ describe("evaluating within the job's memory", () => {
         nonce: "5eed",
         narHash: "sha256-source=",
         read: () => Effect.succeed(new Map<string, string>()),
-      }
-      const logged: Array<string> = []
-      const log = (text: string) => Effect.sync(() => void logged.push(text))
-      const result = yield* derivations(run("git+file:///mirror"), ["a"], undefined, log, unlimited, { recorder })
-        .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner))
-      expect(result.derivations).toEqual(new Map([["a", drv("a")]]))
-      expect(result.recorded).toBeUndefined()
+      };
+
+      const logged: Array<string> = [];
+      const log = (text: string) => Effect.sync(() => void logged.push(text));
+
+      const result = yield* derivations(
+        run("git+file:///mirror"),
+        ["a"],
+        undefined,
+        log,
+        unlimited,
+        { recorder },
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+      expect(result.derivations).toEqual(new Map([["a", drv("a")]]));
+      expect(result.recorded).toBeUndefined();
       // strace ran nothing that reported (as without ptrace), then nix ran alone.
-      expect(fake.calls.filter((c) => c === "strace -f" || c === "nix eval")).toEqual(["strace -f", "nix eval"])
-      expect(logged.some((l) => l.startsWith("recording what Nix read failed"))).toBe(true)
-    }))
+      expect(fake.calls.filter((c) => c === "strace -f" || c === "nix eval")).toEqual([
+        "strace -f",
+        "nix eval",
+      ]);
+      expect(logged.some((l) => l.startsWith("recording what Nix read failed"))).toBe(true);
+    }),
+  );
 
   it.live("fails without caching when Nix's reports don't match the expression", () =>
-    Effect.gen(function*() {
-      const fake = nix(() => true, { silent: true })
-      const error = yield* Effect.flip(evaluate(fake, ["a", "b"], null))
-      expect(error._tag === "CommandFailed" && error.stderr).toContain("2 attributes went unreported")
-    }))
+    Effect.gen(function* () {
+      const fake = nix(() => true, { silent: true });
+      const error = yield* Effect.flip(evaluate(fake, ["a", "b"], null));
+      expect(error._tag === "CommandFailed" && error.stderr).toContain(
+        "2 attributes went unreported",
+      );
+    }),
+  );
 
   it.live("fails when the flake itself doesn't load", () =>
-    Effect.gen(function*() {
-      const fake = nix(() => true, { broken: true })
-      const error = yield* Effect.flip(evaluate(fake, ["a", "b"], null))
-      expect(error._tag === "CommandFailed" && error.stderr).toContain("cannot fetch input 'nixpkgs'")
-      expect(fake.evaluated).toHaveLength(1)
-    }))
+    Effect.gen(function* () {
+      const fake = nix(() => true, { broken: true });
+      const error = yield* Effect.flip(evaluate(fake, ["a", "b"], null));
+      expect(error._tag === "CommandFailed" && error.stderr).toContain(
+        "cannot fetch input 'nixpkgs'",
+      );
+      expect(fake.evaluated).toHaveLength(1);
+    }),
+  );
 
   it("reads the budget from the job's cgroup and its ancestors", () => {
-    const root = mkdtempSync(join(tmpdir(), "calder-cgroup-"))
-    const unit = join(root, "calder.slice", "calder-jobs.slice", "calder-job-pr@1.service")
-    mkdirSync(unit, { recursive: true })
-    writeFileSync(join(root, "calder.slice", "calder-jobs.slice", "memory.high"), String(8 * GiB))
-    writeFileSync(join(root, "calder.slice", "calder-jobs.slice", "memory.max"), "max\n")
-    writeFileSync(join(unit, "memory.high"), String(3.5 * GiB))
-    writeFileSync(join(unit, "memory.max"), String(4 * GiB))
-    const self = join(root, "self")
-    writeFileSync(self, "0::/calder.slice/calder-jobs.slice/calder-job-pr@1.service\n")
-    const { budget } = jobMemory(root, self)
+    const root = mkdtempSync(join(tmpdir(), "calder-cgroup-"));
+    const unit = join(root, "calder.slice", "calder-jobs.slice", "calder-job-pr@1.service");
+    mkdirSync(unit, { recursive: true });
+    writeFileSync(join(root, "calder.slice", "calder-jobs.slice", "memory.high"), String(8 * GiB));
+    writeFileSync(join(root, "calder.slice", "calder-jobs.slice", "memory.max"), "max\n");
+    writeFileSync(join(unit, "memory.high"), String(3.5 * GiB));
+    writeFileSync(join(unit, "memory.max"), String(4 * GiB));
+    const self = join(root, "self");
+    writeFileSync(self, "0::/calder.slice/calder-jobs.slice/calder-job-pr@1.service\n");
+    const { budget } = jobMemory(root, self);
     // 80% of 3.5 GiB, less what this process holds.
-    expect(budget).toBeLessThan(0.8 * 3.5 * GiB)
-    expect(budget).toBeGreaterThan(0.8 * (3.5 * GiB - process.memoryUsage().rss - GiB / 4))
+    expect(budget).toBeLessThan(0.8 * 3.5 * GiB);
+    expect(budget).toBeGreaterThan(0.8 * (3.5 * GiB - process.memoryUsage().rss - GiB / 4));
 
     // What the slice has room for: 80% of its 8 GiB less what its other units use. Its own total also
     // holds slab that finished jobs left behind and this job's own charge, which don't count.
-    const slice = join(root, "calder.slice", "calder-jobs.slice")
-    writeFileSync(join(slice, "memory.current"), String(7.5 * GiB))
-    writeFileSync(join(unit, "memory.current"), String(5 * GiB))
-    expect(jobMemory(root, self).room?.()).toBe(Math.floor(0.8 * 8 * GiB))
-    mkdirSync(join(slice, "calder-job-trusted@2.service"))
-    writeFileSync(join(slice, "calder-job-trusted@2.service", "memory.current"), String(2 * GiB))
-    expect(jobMemory(root, self).room?.()).toBe(Math.floor(0.8 * 6 * GiB))
+    const slice = join(root, "calder.slice", "calder-jobs.slice");
+    writeFileSync(join(slice, "memory.current"), String(7.5 * GiB));
+    writeFileSync(join(unit, "memory.current"), String(5 * GiB));
+    expect(jobMemory(root, self).room?.()).toBe(Math.floor(0.8 * 8 * GiB));
+    mkdirSync(join(slice, "calder-job-trusted@2.service"));
+    writeFileSync(join(slice, "calder-job-trusted@2.service", "memory.current"), String(2 * GiB));
+    expect(jobMemory(root, self).room?.()).toBe(Math.floor(0.8 * 6 * GiB));
 
-    writeFileSync(self, "0::/\n")
-    expect(jobMemory(root, self).budget).toBeNull()
-    expect(jobMemory(root, join(root, "missing")).budget).toBeNull()
-  })
-})
+    writeFileSync(self, "0::/\n");
+    expect(jobMemory(root, self).budget).toBeNull();
+    expect(jobMemory(root, join(root, "missing")).budget).toBeNull();
+  });
+});

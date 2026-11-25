@@ -2,15 +2,22 @@
   "name": "calder",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.27.0",
   "scripts": {
-    "check": "tsrs -p packages/core && tsrs -p packages/std && tsrs -p packages/api && tsrs -p packages/calder && tsrs -p packages/ui",
-    "test": "vitest run"
+    "prepare": "effect-tsgo patch --oxlint --tsrs --no-typescript",
+    "check": "vp check",
+    "test": "vp test run"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.73.4",
     "@effect/vitest": "4.0.0",
+    "@oxlint/plugins": "1.94.0",
+    "@schnau/tsconfig": "^0.1.0",
     "@types/bun": "1.4.2",
-    "tsrs": "7.1.0-beta.tsrs5",
-    "vitest": "5.0.3"
-  }
+    "tsrs": "7.1.0-beta.tsrs4",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "packageManager": "pnpm@12.9.0"
 }

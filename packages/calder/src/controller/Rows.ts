@@ -1,117 +1,132 @@
-import type { Domain } from "@calder-ci/api"
-import { Array as Arr, Effect } from "effect"
-import { SqlClient } from "effect/sql"
-import { Calder } from "@calder-ci/core"
-import { appAttr, type PlannedStep, type PlanSpec, type Records } from "../Protocol.ts"
-import * as Values from "../Values.ts"
+import type { Domain } from "@calder-ci/api";
+import { Array as Arr, Effect } from "effect";
+import { SqlClient } from "effect/sql";
+import { Calder } from "@calder-ci/core";
+import { appAttr, type PlannedStep, type PlanSpec, type Records } from "../Protocol.ts";
+import * as Values from "../Values.ts";
 
 /**
  * bun:sqlite blocks the event loop while a statement runs, and a worker drops its connection after five
  * seconds without a ping. Large writes go in pieces with this pause between them, so pings get through.
  */
-export const pause = Effect.sleep("50 millis")
+export const pause = Effect.sleep("50 millis");
 
 /** Writes `rows` a thousand at a time, pausing in between. */
-export const inChunks = <A, E, R>(rows: ReadonlyArray<A>, write: (chunk: ReadonlyArray<A>) => Effect.Effect<unknown, E, R>) =>
-  Effect.forEach(Arr.chunksOf(rows, 1000), (chunk, i) => Effect.andThen(i === 0 ? Effect.void : pause, write(chunk)), { discard: true })
+export const inChunks = <A, E, R>(
+  rows: ReadonlyArray<A>,
+  write: (chunk: ReadonlyArray<A>) => Effect.Effect<unknown, E, R>,
+) =>
+  Effect.forEach(
+    Arr.chunksOf(rows, 1000),
+    (chunk, i) => Effect.andThen(i === 0 ? Effect.void : pause, write(chunk)),
+    { discard: true },
+  );
 
 export interface RunRow {
-  readonly id: string
-  readonly project: string
-  readonly number: number
-  readonly event: string
-  readonly sha: string
-  readonly branch: string | null
-  readonly pr: number | null
-  readonly title: string | null
-  readonly commit_title: string
-  readonly author: string
-  readonly change_id: string | null
-  readonly commit_time: number
-  readonly trust: Domain.Trust
-  readonly status: Domain.RunStatus
-  readonly created_at: number
-  readonly started_at: number | null
-  readonly finished_at: number | null
-  readonly error: string | null
-  readonly trace_id: string
-  readonly span_id: string
-  readonly fork: number
+  readonly id: string;
+  readonly project: string;
+  readonly number: number;
+  readonly event: string;
+  readonly sha: string;
+  readonly branch: string | null;
+  readonly pr: number | null;
+  readonly title: string | null;
+  readonly commit_title: string;
+  readonly author: string;
+  readonly change_id: string | null;
+  readonly commit_time: number;
+  readonly trust: Domain.Trust;
+  readonly status: Domain.RunStatus;
+  readonly created_at: number;
+  readonly started_at: number | null;
+  readonly finished_at: number | null;
+  readonly error: string | null;
+  readonly trace_id: string;
+  readonly span_id: string;
+  readonly fork: number;
   /** Absent in rows read before migration 0016. */
-  readonly planned_at?: number | null
-  readonly tree?: string | null
+  readonly planned_at?: number | null;
+  readonly tree?: string | null;
   /** The run this one reruns, unless forced; absent in rows read before migration 0019. */
-  readonly rerun_of?: string | null
+  readonly rerun_of?: string | null;
   /** How often the run ran its failed steps again in place; absent in rows read before migration 0023. */
-  readonly retries?: number
+  readonly retries?: number;
 }
 
 /** A run with its plan, which lives in `run_plans`: kept out of `runs`, it can't slow a read of runs that don't need it. */
 export interface PlannedRunRow extends RunRow {
-  readonly plan: string | null
+  readonly plan: string | null;
 }
 
 export interface StepRow {
-  readonly run_id: string
-  readonly name: string
-  readonly kind: Domain.StepKind
-  readonly status: Domain.StepStatus
-  readonly spec: string
-  readonly position: number
-  readonly key: string | null
-  readonly reused_from: string | null
+  readonly run_id: string;
+  readonly name: string;
+  readonly kind: Domain.StepKind;
+  readonly status: Domain.StepStatus;
+  readonly spec: string;
+  readonly position: number;
+  readonly key: string | null;
+  readonly reused_from: string | null;
   /** A keyed digest of the secrets the step was granted (Runs.ts `secretsDigest`); absent before migration 0019. */
-  readonly secrets_digest?: string | null
-  readonly queued_at: number | null
-  readonly started_at: number | null
-  readonly finished_at: number | null
-  readonly attempts: number
-  readonly value: string | null
-  readonly outputs: string | null
-  readonly error_tag: string | null
-  readonly error_message: string | null
-  readonly error_json: string | null
-  readonly excerpt: string | null
-  readonly cpu_seconds: number | null
-  readonly memory_peak: number | null
-  readonly publish_error: string | null
-  readonly span_id: string
-  readonly tests_passed: number | null
-  readonly tests_failed: number | null
-  readonly tests_skipped: number | null
-  readonly tests_flaky: number | null
-  readonly contradicts: string | null
+  readonly secrets_digest?: string | null;
+  readonly queued_at: number | null;
+  readonly started_at: number | null;
+  readonly finished_at: number | null;
+  readonly attempts: number;
+  readonly value: string | null;
+  readonly outputs: string | null;
+  readonly error_tag: string | null;
+  readonly error_message: string | null;
+  readonly error_json: string | null;
+  readonly excerpt: string | null;
+  readonly cpu_seconds: number | null;
+  readonly memory_peak: number | null;
+  readonly publish_error: string | null;
+  readonly span_id: string;
+  readonly tests_passed: number | null;
+  readonly tests_failed: number | null;
+  readonly tests_skipped: number | null;
+  readonly tests_flaky: number | null;
+  readonly contradicts: string | null;
   /** Absent in rows read before migration 0008. */
-  readonly files_total?: number | null
-  readonly files_ran?: number | null
-  readonly files_flaky?: number | null
+  readonly files_total?: number | null;
+  readonly files_ran?: number | null;
+  readonly files_flaky?: number | null;
   /** Absent in rows read before migration 0016. */
-  readonly waiting?: string | null
+  readonly waiting?: string | null;
 }
 
 export const terminal = (status: Domain.StepStatus) =>
-  status === "passed" || status === "reused" || status === "failed" || status === "died" || status === "blocked" || status === "cancelled" ||
-  status === "skipped"
+  status === "passed" ||
+  status === "reused" ||
+  status === "failed" ||
+  status === "died" ||
+  status === "blocked" ||
+  status === "cancelled" ||
+  status === "skipped";
 
-export const succeeded = (status: Domain.StepStatus) => status === "passed" || status === "reused"
+export const succeeded = (status: Domain.StepStatus) => status === "passed" || status === "reused";
 
-type Task = NonNullable<PlannedStep["task"]>
-type Build = NonNullable<PlannedStep["build"]>
+type Task = NonNullable<PlannedStep["task"]>;
+
+type Build = NonNullable<PlannedStep["build"]>;
 
 /** Steps planned before setups or per-file tasks existed lack those fields. */
 export const spec = (row: StepRow): PlannedStep => {
   const planned = JSON.parse(row.spec) as Omit<PlannedStep, "setup" | "task" | "build"> & {
-    readonly setup?: PlannedStep["setup"]
-    readonly task: (Omit<Task, "each"> & { readonly each?: Task["each"] }) | null
-    readonly build: (Omit<Build, "system"> & { readonly system?: Build["system"] }) | null
-  }
+    readonly setup?: PlannedStep["setup"];
+    readonly task: (Omit<Task, "each"> & { readonly each?: Task["each"] }) | null;
+    readonly build: (Omit<Build, "system"> & { readonly system?: Build["system"] }) | null;
+  };
+
   return {
     ...planned,
     setup: planned.setup ?? null,
     task: planned.task === null ? null : { ...planned.task, each: planned.task.each ?? null },
-    build: planned.build === null ? null : { ...planned.build, system: planned.build.system ?? null },
-  }
-}
+    build:
+      planned.build === null ? null : { ...planned.build, system: planned.build.system ?? null },
+  };
+};
 
 /**
  * The setups a task starts from. A task asks for them only once it knows it runs, so the workflow
@@ -120,17 +135,21 @@ export const spec = (row: StepRow): PlannedStep => {
 export const setupsOf = (
   step: { readonly kind: Domain.StepKind; readonly needs: ReadonlyArray<string> },
   kindOf: (name: string) => Domain.StepKind | undefined,
-) => (step.kind === "task" ? step.needs.filter((name) => kindOf(name) === "setup") : [])
+) => (step.kind === "task" ? step.needs.filter((name) => kindOf(name) === "setup") : []);
 
 /**
  * Whether a task, or a file of a task with `each`, may take an earlier result with its key.
  * `reuse: "builds"` runs tasks without outputs again.
  */
 export const reusable = (
-  step: { readonly neverReuse: boolean; readonly task: { readonly outputs: ReadonlyArray<string> } | null },
+  step: {
+    readonly neverReuse: boolean;
+    readonly task: { readonly outputs: ReadonlyArray<string> } | null;
+  },
   reuse: PlanSpec["reuse"],
 ) =>
-  !step.neverReuse && (reuse === "all" || (reuse === "builds" && (step.task?.outputs.length ?? 0) > 0))
+  !step.neverReuse &&
+  (reuse === "all" || (reuse === "builds" && (step.task?.outputs.length ?? 0) > 0));
 
 export const run = (row: RunRow, counts: Record<string, number> = {}): Domain.Run => ({
   id: row.id,
@@ -154,36 +173,46 @@ export const run = (row: RunRow, counts: Record<string, number> = {}): Domain.Ru
   error: row.error,
   traceId: row.trace_id,
   counts,
-})
+});
 
 const value = (json: string | null): Domain.Value | null => {
-  if (json === null) return null
-  const parsed = JSON.parse(json) as unknown
-  if (parsed === null) return null
-  const id = typeof parsed === "object" && parsed !== null && "$calder" in parsed ? String((parsed as { $calder: unknown }).$calder) : null
-  const render = id === null ? undefined : Calder.registry.get(id)?.render
+  if (json === null) return null;
+  const parsed = JSON.parse(json) as unknown;
+
+  if (parsed === null) return null;
+
+  const id =
+    typeof parsed === "object" && parsed !== null && "$calder" in parsed
+      ? String((parsed as { $calder: unknown }).$calder)
+      : null;
+
+  const render = id === null ? undefined : Calder.registry.get(id)?.render;
+
   return {
     type: id,
     render: render?.render ?? null,
     label: render?.label ?? null,
     text: Values.describe(parsed),
     json: parsed,
-  }
-}
+  };
+};
 
 /** Run ids are `<project>-<number>`. */
-export const runNumber = (id: string) => Number(id.slice(id.lastIndexOf("-") + 1))
+export const runNumber = (id: string) => Number(id.slice(id.lastIndexOf("-") + 1));
 
 export const step = (row: StepRow, expectedMs: number | null = null): Domain.StepRun => {
-  const s = spec(row)
+  const s = spec(row);
+
   return {
     runId: row.run_id,
     name: row.name,
     kind: row.kind,
     status: row.status,
     key: row.key,
-    reusedFrom: row.reused_from === null ? null : { id: row.reused_from, number: runNumber(row.reused_from) },
-    contradicts: row.contradicts === null ? null : { id: row.contradicts, number: runNumber(row.contradicts) },
+    reusedFrom:
+      row.reused_from === null ? null : { id: row.reused_from, number: runNumber(row.reused_from) },
+    contradicts:
+      row.contradicts === null ? null : { id: row.contradicts, number: runNumber(row.contradicts) },
     needs: s.needs,
     exits: s.exits,
     after: s.after,
@@ -199,47 +228,74 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
     attempts: row.attempts,
     shards: s.task?.shards ?? null,
     value: value(row.value),
-    error: row.error_tag === null ? null : { tag: row.error_tag, message: row.error_message ?? "", excerpt: row.excerpt ?? "" },
+    error:
+      row.error_tag === null
+        ? null
+        : { tag: row.error_tag, message: row.error_message ?? "", excerpt: row.excerpt ?? "" },
     publishError: row.publish_error,
     cpuSeconds: row.cpu_seconds,
     memoryPeakBytes: row.memory_peak,
     spanId: row.span_id,
-    tests: row.tests_passed === null
-      ? null
-      : { passed: row.tests_passed, failed: row.tests_failed ?? 0, skipped: row.tests_skipped ?? 0, flaky: row.tests_flaky ?? 0 },
-    files: row.files_total == null ? null : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
-    outputs: Object.entries(JSON.parse(row.outputs ?? "{}") as Record<string, string>).map(([name, path]) => ({ name, path })),
-    waiting: terminal(row.status) ? null : row.waiting ?? null,
+    tests:
+      row.tests_passed === null
+        ? null
+        : {
+            passed: row.tests_passed,
+            failed: row.tests_failed ?? 0,
+            skipped: row.tests_skipped ?? 0,
+            flaky: row.tests_flaky ?? 0,
+          },
+    files:
+      row.files_total === null || row.files_total === undefined
+        ? null
+        : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
+    outputs: Object.entries(JSON.parse(row.outputs ?? "{}") as Record<string, string>).map(
+      ([name, path]) => ({ name, path }),
+    ),
+    waiting: terminal(row.status) ? null : (row.waiting ?? null),
     critical: s.critical ?? false,
-  }
-}
+  };
+};
 
 /**
  * Fills in what pending steps wait for, the steps they depend on that haven't settled, where the journal
  * holds no reason of its own: those it runs after whatever their outcome (`exits`) to end, the others to pass.
  */
-export const withReasons = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray<Domain.StepRun> => {
-  const byName = new Map(steps.map((s) => [s.name, s]))
+export const withReasons = (
+  steps: ReadonlyArray<Domain.StepRun>,
+): ReadonlyArray<Domain.StepRun> => {
+  const byName = new Map(steps.map((s) => [s.name, s]));
+
   const open = (names: ReadonlyArray<string>) =>
     names.filter((name) => {
-      const dep = byName.get(name)
-      return dep !== undefined && !terminal(dep.status) && dep.kind !== "setup"
-    })
+      const dep = byName.get(name);
+
+      return dep !== undefined && !terminal(dep.status) && dep.kind !== "setup";
+    });
+
   return steps.map((step) => {
-    if (step.status !== "pending" || (step.waiting ?? null) !== null) return step
-    const pass = open([...step.needs, ...step.after])
-    const end = open(step.exits).filter((name) => !pass.includes(name))
-    const reasons = [...(pass.length === 0 ? [] : [`${pass.join(", ")} to pass`]), ...(end.length === 0 ? [] : [`${end.join(", ")} to end`])]
-    return reasons.length === 0 ? step : { ...step, waiting: reasons.join("; ") }
-  })
-}
+    if (step.status !== "pending" || (step.waiting ?? null) !== null) return step;
+    const pass = open([...step.needs, ...step.after]);
+    const end = open(step.exits).filter((name) => !pass.includes(name));
+
+    const reasons = [
+      ...(pass.length === 0 ? [] : [`${pass.join(", ")} to pass`]),
+      ...(end.length === 0 ? [] : [`${end.join(", ")} to end`]),
+    ];
+
+    return reasons.length === 0 ? step : { ...step, waiting: reasons.join("; ") };
+  });
+};
 
 /** Whether a task holds a deploy lease: the project's (`true`), or one of the project's named leases. */
-export const leased = (task: PlannedStep["task"] | undefined) => (task?.lease ?? false) !== false
+export const leased = (task: PlannedStep["task"] | undefined) => (task?.lease ?? false) !== false;
 
 /** Whether a step deploys: holds a lease, has a deploy grant, or is a preview's. */
 export const deploys = (step: PlannedStep) =>
-  leased(step.task) || step.task?.preview === true || step.action?.deploy === true || step.action?.preview === true
+  leased(step.task) ||
+  step.task?.preview === true ||
+  step.action?.deploy === true ||
+  step.action?.preview === true;
 
 /**
  * Marks the steps that deploy, those whose values they read, and those they are gated on (a task's
@@ -247,25 +303,34 @@ export const deploys = (step: PlannedStep) =>
  * only waits for (`after`) are not, or a push's every check would be. The controller decides this
  * rather than taking the plan's word, and a fork's run has no critical steps.
  */
-export const criticalPath = (steps: ReadonlyArray<PlannedStep>, fork: boolean): ReadonlyArray<PlannedStep> => {
-  const byName = new Map(steps.map((s) => [s.name, s]))
-  const critical = new Set<string>()
+export const criticalPath = (
+  steps: ReadonlyArray<PlannedStep>,
+  fork: boolean,
+): ReadonlyArray<PlannedStep> => {
+  const byName = new Map(steps.map((s) => [s.name, s]));
+  const critical = new Set<string>();
+
   const visit = (name: string) => {
-    const step = byName.get(name)
-    if (step === undefined || critical.has(name)) return
-    critical.add(name)
-    for (const dep of [...step.needs, ...(step.gates ?? [])]) visit(dep)
-  }
-  if (!fork) for (const step of steps) if (deploys(step)) visit(step.name)
-  return steps.map((step) => ({ ...step, critical: critical.has(step.name) }))
-}
+    const step = byName.get(name);
+
+    if (step === undefined || critical.has(name)) return;
+    critical.add(name);
+
+    for (const dep of [...step.needs, ...(step.gates ?? [])]) visit(dep);
+  };
+
+  if (!fork) for (const step of steps) if (deploys(step)) visit(step.name);
+
+  return steps.map((step) => ({ ...step, critical: critical.has(step.name) }));
+};
 
 /**
  * Whether a run takes only trusted runs' records, and only plans a trusted run takes (`earlierPlan`). A
  * trusted run and a fork's do, since a pull request's ci.ts runs in the worker that plans and records and
  * could forge either. A same-repo pull request also takes those of same-repo pull requests.
  */
-const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) => run.trust === "trusted" || run.fork === 1
+const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) =>
+  run.trust === "trusted" || run.fork === 1;
 
 /**
  * The newest plan of another commit with the run's tree that the run trusts, with the attributes of it a
@@ -282,28 +347,55 @@ const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) => run.trust === "trus
  * run would take whole comes first, so a pull request's plan that reuses it stays one a trusted run takes.
  */
 export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
-  Effect.gen(function*() {
-    if (run.tree == null) return null
-    const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ id: string; sha: string; plan: string; event: string; trust: Domain.Trust; fork: number }>`select id, sha, plan, event,
+  Effect.gen(function* () {
+    if (run.tree === null || run.tree === undefined) return null;
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows = yield* sql<{
+      id: string;
+      sha: string;
+      plan: string;
+      event: string;
+      trust: Domain.Trust;
+      fork: number;
+    }>`select id, sha, plan, event,
         trust, fork
       from runs join run_plans on run_plans.run_id = runs.id where project = ${run.project} and tree = ${run.tree} and sha != ${run.sha}
         and not exists (select 1 from run_records r join audit_mismatches m on m.project = runs.project
           and json_extract(m.detail, '$.record') = r.evaluation where r.run_id = runs.id)
-      order by created_at desc limit 20`
-    const candidates = rows.filter((r) => writesRecords(r, defaultBranch)).flatMap((row) => {
-      const spec = JSON.parse(row.plan) as PlanSpec
-      if (spec.derivations === undefined) return []
-      const all = [...Object.keys(spec.derivations), appAttr]
-      const trusted = row.trust === "trusted" ? all : (JSON.parse(row.event) as Domain.Event)._tag === "PullRequest" ? spec.trusted ?? [] : []
-      const whole = all.every((attr) => trusted.includes(attr))
-      const plan = { run: row.id, revision: row.sha, trusted, whole }
-      if (!trustedOnly(run)) return [{ ...plan, derivations: spec.derivations, app: spec.app }]
-      const derivations = Object.fromEntries(Object.entries(spec.derivations).filter(([attr]) => trusted.includes(attr)))
-      return Object.keys(derivations).length === 0 ? [] : [{ ...plan, derivations, ...(trusted.includes(appAttr) ? { app: spec.app } : {}) }]
-    })
-    return candidates.find((c) => c.whole) ?? candidates[0] ?? null
-  }).pipe(Effect.orDie)
+      order by created_at desc limit 20`;
+
+    const candidates = rows
+      .filter((r) => writesRecords(r, defaultBranch))
+      .flatMap((row) => {
+        const spec = JSON.parse(row.plan) as PlanSpec;
+
+        if (spec.derivations === undefined) return [];
+        const all = [...Object.keys(spec.derivations), appAttr];
+
+        const trusted =
+          row.trust === "trusted"
+            ? all
+            : (JSON.parse(row.event) as Domain.Event)._tag === "PullRequest"
+              ? (spec.trusted ?? [])
+              : [];
+
+        const whole = all.every((attr) => trusted.includes(attr));
+        const plan = { run: row.id, revision: row.sha, trusted, whole };
+
+        if (!trustedOnly(run)) return [{ ...plan, derivations: spec.derivations, app: spec.app }];
+
+        const derivations = Object.fromEntries(
+          Object.entries(spec.derivations).filter(([attr]) => trusted.includes(attr)),
+        );
+
+        return Object.keys(derivations).length === 0
+          ? []
+          : [{ ...plan, derivations, ...(trusted.includes(appAttr) ? { app: spec.app } : {}) }];
+      });
+
+    return candidates.find((c) => c.whole) ?? candidates[0] ?? null;
+  }).pipe(Effect.orDie);
 
 /**
  * The attributes of a same-repo pull request's plan that a trusted run of its tree may take (`earlierPlan`),
@@ -316,47 +408,90 @@ export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
 export const trustedAttrs = (
   project: string,
   plan: Pick<PlanSpec, "app" | "derivations" | "fromRecords" | "reused">,
-  earlier: Pick<PlanSpec, "derivations"> & { readonly revision: string; readonly trusted: ReadonlyArray<string>; readonly app?: string | null } | null,
+  earlier:
+    | (Pick<PlanSpec, "derivations"> & {
+        readonly revision: string;
+        readonly trusted: ReadonlyArray<string>;
+        readonly app?: string | null;
+      })
+    | null,
 ) =>
-  Effect.gen(function*() {
-    const taken = plan.fromRecords ?? {}
-    const ids = [...new Set(Object.values(taken))]
-    const sql = yield* SqlClient.SqlClient
-    const trustedIds = new Set(ids.length === 0 ? [] : (yield* sql<{ id: number }>`select id from evaluations where project = ${project}
-      and trust = 'trusted' and ${sql.in("id", ids)}`).map((row) => row.id))
-    const { reused } = plan
-    const derivations = plan.derivations ?? {}
-    const earlierHas = (attr: string) =>
-      earlier !== null && (attr === appAttr
-        ? earlier.app !== undefined && earlier.app === plan.app
-        : earlier.derivations !== undefined && attr in earlier.derivations && sameDerivation(derivations[attr] ?? null, earlier.derivations[attr] ?? null))
-    const fromEarlier = (attr: string) =>
-      reused?.attrs.includes(attr) === true ? earlier !== null && reused.revision === earlier.revision && earlier.trusted.includes(attr)
-        : earlierHas(attr) ? earlier!.trusted.includes(attr)
-        : undefined
-    return [...new Set([...Object.keys(derivations), appAttr])].filter((attr) =>
-      attr in taken ? trustedIds.has(taken[attr]!) : fromEarlier(attr) ?? true
-    ).sort()
-  }).pipe(Effect.orDie)
+  Effect.gen(function* () {
+    const taken = plan.fromRecords ?? {};
+    const ids = [...new Set(Object.values(taken))];
+    const sql = yield* SqlClient.SqlClient;
 
-type Derivation = NonNullable<NonNullable<PlanSpec["derivations"]>[string]>
+    const trustedIds = new Set(
+      ids.length === 0
+        ? []
+        : (yield* sql<{ id: number }>`select id from evaluations where project = ${project}
+      and trust = 'trusted' and ${sql.in("id", ids)}`).map((row) => row.id),
+    );
+
+    const { reused } = plan;
+    const derivations = plan.derivations ?? {};
+
+    const earlierHas = (attr: string) =>
+      earlier !== null &&
+      (attr === appAttr
+        ? earlier.app !== undefined && earlier.app === plan.app
+        : earlier.derivations !== undefined &&
+          attr in earlier.derivations &&
+          sameDerivation(derivations[attr] ?? null, earlier.derivations[attr] ?? null));
+
+    const fromEarlier = (attr: string) =>
+      reused?.attrs.includes(attr) === true
+        ? earlier !== null && reused.revision === earlier.revision && earlier.trusted.includes(attr)
+        : earlierHas(attr)
+          ? earlier!.trusted.includes(attr)
+          : undefined;
+
+    return [...new Set([...Object.keys(derivations), appAttr])]
+      .filter((attr) =>
+        attr in taken ? trustedIds.has(taken[attr]!) : (fromEarlier(attr) ?? true),
+      )
+      .toSorted();
+  }).pipe(Effect.orDie);
+
+type Derivation = NonNullable<NonNullable<PlanSpec["derivations"]>[string]>;
+
 const sameDerivation = (a: Derivation | null, b: Derivation | null) =>
-  a === null || b === null ? a === b : a.drv === b.drv && a.out === b.out && a.system === b.system
+  a === null || b === null ? a === b : a.drv === b.drv && a.out === b.out && a.system === b.system;
 
 /** The footprint records a run may trust (`trustedOnly`), newest first, with their footprints. */
 export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ id: number; attr: string; footprint: number; count: number; digest: string; derivation: string | null; app: string | null }>`
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows = yield* sql<{
+      id: number;
+      attr: string;
+      footprint: number;
+      count: number;
+      digest: string;
+      derivation: string | null;
+      app: string | null;
+    }>`
       select id, attr, footprint, count, digest, derivation, app from evaluations
       where project = ${run.project} and (${trustedOnly(run) ? 1 : 0} = 0 or trust = 'trusted')
-      order by created_at desc, id desc`
-    if (rows.length === 0) return undefined
-    const ids = [...new Set(rows.map((r) => r.footprint))]
-    const footprints = yield* sql<{ id: number; revision: string; entries: string }>`select id, revision, entries from footprints
-      where ${sql.in("id", ids)}`
+      order by created_at desc, id desc`;
+
+    if (rows.length === 0) return undefined;
+    const ids = [...new Set(rows.map((r) => r.footprint))];
+
+    const footprints = yield* sql<{
+      id: number;
+      revision: string;
+      entries: string;
+    }>`select id, revision, entries from footprints
+      where ${sql.in("id", ids)}`;
+
     return {
-      footprints: footprints.map((f) => ({ id: String(f.id), revision: f.revision, entries: JSON.parse(f.entries) })),
+      footprints: footprints.map((f) => ({
+        id: String(f.id),
+        revision: f.revision,
+        entries: JSON.parse(f.entries),
+      })),
       evaluations: rows.map((r) => ({
         id: r.id,
         attr: r.attr,
@@ -366,8 +501,8 @@ export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
         derivation: r.derivation === null ? null : JSON.parse(r.derivation),
         ...(r.app === null ? {} : { app: JSON.parse(r.app) as string | null }),
       })),
-    } as Records
-  }).pipe(Effect.orDie)
+    } as Records;
+  }).pipe(Effect.orDie);
 
 /**
  * Whether a run is the default branch's: its pushes, schedules and manual runs, which run the ci.ts of the
@@ -376,17 +511,24 @@ export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
  */
 export const ofDefaultBranch = (event: Domain.Event, defaultBranch: string | undefined) =>
   event._tag === "Schedule" ||
-  ((event._tag === "Manual" || event._tag === "Push") && event.branch !== undefined && event.branch === defaultBranch)
+  ((event._tag === "Manual" || event._tag === "Push") &&
+    event.branch !== undefined &&
+    event.branch === defaultBranch);
 
 /**
  * Whether a run's records may be kept: a pull request's (same-repo only) as pull-request trust, and of
  * trusted runs only the default branch's (`ofDefaultBranch`), since another branch's ci.ts could forge one.
  */
-export const writesRecords = (run: Pick<RunRow, "fork" | "trust" | "event">, defaultBranch: string | undefined) => {
-  if (run.fork === 1) return false
-  if (run.trust === "pr") return true
-  return ofDefaultBranch(JSON.parse(run.event) as Domain.Event, defaultBranch)
-}
+export const writesRecords = (
+  run: Pick<RunRow, "fork" | "trust" | "event">,
+  defaultBranch: string | undefined,
+) => {
+  if (run.fork === 1) return false;
+
+  if (run.trust === "pr") return true;
+
+  return ofDefaultBranch(JSON.parse(run.event) as Domain.Event, defaultBranch);
+};
 
 /**
  * Keeps what a plan or build recorded, if its run may write records (`writesRecords`), except records an
@@ -402,55 +544,75 @@ export const keepRecords = (
    */
   trust: Domain.Trust = run.trust,
 ) =>
-  Effect.gen(function*() {
-    if (!writesRecords(run, defaultBranch) || recorded.evaluations.length === 0) return
-    const sql = yield* SqlClient.SqlClient
-    const blocked = new Set((yield* sql<{ attr: string; digest: string }>`select attr, digest from record_blocks
-      where project = ${run.project}`).map((b) => `${b.attr}\0${b.digest}`))
-    const now = Date.now()
-    yield* sql.withTransaction(Effect.gen(function*() {
-      const ids = new Map<string, number>()
-      for (const footprint of recorded.footprints) {
-        const [row] = yield* sql<{ id: number }>`insert into footprints (project, revision, entries, created_at)
-          values (${run.project}, ${footprint.revision}, ${JSON.stringify(footprint.entries)}, ${now}) returning id`
-        ids.set(footprint.id, row!.id)
-      }
-      for (const e of recorded.evaluations) {
-        const footprint = ids.get(e.footprint)
-        if (footprint === undefined || blocked.has(`${e.attr}\0${e.digest}`)) continue
-        yield* sql`insert into evaluations (project, attr, footprint, count, digest, derivation, app, trust, run_id, created_at)
+  Effect.gen(function* () {
+    if (!writesRecords(run, defaultBranch) || recorded.evaluations.length === 0) return;
+    const sql = yield* SqlClient.SqlClient;
+
+    const blocked = new Set(
+      (yield* sql<{ attr: string; digest: string }>`select attr, digest from record_blocks
+      where project = ${run.project}`).map((b) => `${b.attr}\0${b.digest}`),
+    );
+
+    const now = Date.now();
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const ids = new Map<string, number>();
+
+        for (const footprint of recorded.footprints) {
+          const [row] = yield* sql<{
+            id: number;
+          }>`insert into footprints (project, revision, entries, created_at)
+          values (${run.project}, ${footprint.revision}, ${JSON.stringify(footprint.entries)}, ${now}) returning id`;
+
+          ids.set(footprint.id, row!.id);
+        }
+
+        for (const e of recorded.evaluations) {
+          const footprint = ids.get(e.footprint);
+
+          if (footprint === undefined || blocked.has(`${e.attr}\0${e.digest}`)) continue;
+          yield* sql`insert into evaluations (project, attr, footprint, count, digest, derivation, app, trust, run_id, created_at)
           values (${run.project}, ${e.attr}, ${footprint}, ${e.count}, ${e.digest},
             ${e.derivation === null ? null : JSON.stringify(e.derivation)}, ${e.app === undefined ? null : JSON.stringify(e.app)},
-            ${trust}, ${run.id}, ${now})`
-      }
-      yield* sql`delete from evaluations where project = ${run.project} and id not in (select id from (
+            ${trust}, ${run.id}, ${now})`;
+        }
+
+        yield* sql`delete from evaluations where project = ${run.project} and id not in (select id from (
         select id, row_number() over (partition by attr order by created_at desc, id desc) as n from evaluations
-        where project = ${run.project}) where n <= 3)`
-      yield* sql`delete from footprints where project = ${run.project} and id not in (select footprint from evaluations
-        where project = ${run.project})`
-    }))
-  }).pipe(Effect.orDie)
+        where project = ${run.project}) where n <= 3)`;
+        yield* sql`delete from footprints where project = ${run.project} and id not in (select footprint from evaluations
+        where project = ${run.project})`;
+      }),
+    );
+  }).pipe(Effect.orDie);
 
 export const loadRun = (id: string) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<PlannedRunRow>`select runs.*, run_plans.plan from runs left join run_plans on run_plans.run_id = runs.id
-      where runs.id = ${id}`
-    return rows[0]
-  }).pipe(Effect.orDie)
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows =
+      yield* sql<PlannedRunRow>`select runs.*, run_plans.plan from runs left join run_plans on run_plans.run_id = runs.id
+      where runs.id = ${id}`;
+
+    return rows[0];
+  }).pipe(Effect.orDie);
 
 export const loadSteps = (runId: string) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    return yield* sql<StepRow>`select * from steps where run_id = ${runId} order by position`
-  }).pipe(Effect.orDie)
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    return yield* sql<StepRow>`select * from steps where run_id = ${runId} order by position`;
+  }).pipe(Effect.orDie);
 
 export const loadStep = (runId: string, name: string) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<StepRow>`select * from steps where run_id = ${runId} and name = ${name}`
-    return rows[0]
-  }).pipe(Effect.orDie)
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows =
+      yield* sql<StepRow>`select * from steps where run_id = ${runId} and name = ${name}`;
+
+    return rows[0];
+  }).pipe(Effect.orDie);
 
 /**
  * What the runs that go on build: the derivations of active runs' unsettled builds, of any project, and
@@ -458,17 +620,28 @@ export const loadStep = (runId: string, name: string) =>
  * to evaluate. A superseded run is cancelled and builds nothing.
  */
 export const liveBuilds = (project: string) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql<{ readonly project: string; readonly status: string; readonly kind: string | null; readonly drv: string | null }>`
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows = yield* sql<{
+      readonly project: string;
+      readonly status: string;
+      readonly kind: string | null;
+      readonly drv: string | null;
+    }>`
       select r.project, r.status, s.kind, json_extract(s.spec, '$.build.drv') as drv from runs r
       left join steps s on s.run_id = r.id and s.kind = 'build' and s.status in ('pending', 'queued', 'running')
-      where r.status in ('queued', 'planning', 'running')`
+      where r.status in ('queued', 'planning', 'running')`;
+
     return {
-      unknown: rows.some((r) => r.project === project && (r.status !== "running" || (r.kind === "build" && r.drv === null))),
+      unknown: rows.some(
+        (r) =>
+          r.project === project &&
+          (r.status !== "running" || (r.kind === "build" && r.drv === null)),
+      ),
       drvs: [...new Set(rows.flatMap((r) => (r.drv === null ? [] : [r.drv])))],
-    }
-  }).pipe(Effect.orDie)
+    };
+  }).pipe(Effect.orDie);
 
 /**
  * The active runs a new run of `sha` replaces, since a newer revision makes them pointless: runs of older
@@ -478,59 +651,68 @@ export const liveBuilds = (project: string) =>
  * revision is as old as its first run there, so a rerun or a trigger of an older one replaces nothing.
  */
 export const replaced = (run: {
-  readonly project: string
-  readonly event: Domain.Event
-  readonly branch: string | null
-  readonly pr: number | null
-  readonly sha: string
+  readonly project: string;
+  readonly event: Domain.Event;
+  readonly branch: string | null;
+  readonly pr: number | null;
+  readonly sha: string;
 }) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
-    const { project, event, branch, pr, sha } = run
-    const tag = (name: string) => sql`event like ${`{"_tag":"${name}"%`}`
-    const same = pr !== null
-      ? sql`pr = ${pr}`
-      : event._tag === "Push"
-      ? sql`branch = ${branch} and pr is null and (${tag("Push")} or ${tag("Schedule")})`
-      : event._tag === "Check"
-      ? sql`branch = ${branch} and pr is null and ${tag("Check")}`
-      : null
-    if (same === null) return []
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const { project, event, branch, pr, sha } = run;
+    const tag = (name: string) => sql`event like ${`{"_tag":"${name}"%`}`;
+
+    const same =
+      pr !== null
+        ? sql`pr = ${pr}`
+        : event._tag === "Push"
+          ? sql`branch = ${branch} and pr is null and (${tag("Push")} or ${tag("Schedule")})`
+          : event._tag === "Check"
+            ? sql`branch = ${branch} and pr is null and ${tag("Check")}`
+            : null;
+
+    if (same === null) return [];
+
     const older = yield* sql<{ readonly id: string }>`select id from runs
       where project = ${project} and ${same} and status in ('queued', 'planning', 'running') and sha in (
         select sha from runs where project = ${project} and ${same} and created_at < (
-          select min(created_at) from runs where project = ${project} and ${same} and sha = ${sha}))`
-    return older.map((r) => r.id)
-  }).pipe(Effect.orDie)
+          select min(created_at) from runs where project = ${project} and ${same} and sha = ${sha}))`;
+
+    return older.map((r) => r.id);
+  }).pipe(Effect.orDie);
 
 export const counts = (runIds: ReadonlyArray<string>) =>
-  Effect.gen(function*() {
-    if (runIds.length === 0) return new Map<string, Record<string, number>>()
-    const sql = yield* SqlClient.SqlClient
+  Effect.gen(function* () {
+    if (runIds.length === 0) return new Map<string, Record<string, number>>();
+    const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<{ run_id: string; status: string; n: number }>`select run_id,
         case when status = 'reused' and files_total = 0 then 'no-files' else status end as status, count(*) as n from steps
-      where ${sql.in("run_id", runIds)} and kind != 'output' group by 1, 2`
-    const out = new Map<string, Record<string, number>>()
+      where ${sql.in("run_id", runIds)} and kind != 'output' group by 1, 2`;
+
+    const out = new Map<string, Record<string, number>>();
+
     for (const r of rows) {
-      const c = out.get(r.run_id) ?? {}
-      c[r.status] = r.n
-      out.set(r.run_id, c)
+      const c = out.get(r.run_id) ?? {};
+      c[r.status] = r.n;
+      out.set(r.run_id, c);
     }
-    return out
-  }).pipe(Effect.orDie)
+
+    return out;
+  }).pipe(Effect.orDie);
 
 export const runsWithCounts = (rows: ReadonlyArray<RunRow>) =>
-  Effect.map(counts(rows.map((r) => r.id)), (c) => rows.map((r) => run(r, c.get(r.id) ?? {})))
+  Effect.map(counts(rows.map((r) => r.id)), (c) => rows.map((r) => run(r, c.get(r.id) ?? {})));
 
 export interface TestRow {
-  readonly run_id: string
-  readonly step: string
-  readonly suite: string
-  readonly name: string
-  readonly file: string | null
-  readonly status: Domain.TestResult["status"]
-  readonly duration_ms: number
-  readonly message: string | null
+  readonly run_id: string;
+  readonly step: string;
+  readonly suite: string;
+  readonly name: string;
+  readonly file: string | null;
+  readonly status: Domain.TestResult["status"];
+  readonly duration_ms: number;
+  readonly message: string | null;
 }
 
 export const testResult = (row: TestRow, flaky: boolean): Domain.TestResult => ({
@@ -543,25 +725,27 @@ export const testResult = (row: TestRow, flaky: boolean): Domain.TestResult => (
   durationMs: row.duration_ms,
   message: row.message,
   flaky,
-})
+});
 
 /** Failing tests of a step, without flakiness (that needs history; the run page computes it). */
 export const failingTests = (runId: string, step: string) =>
-  Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
     const rows = yield* sql<TestRow>`select * from tests where run_id = ${runId} and step = ${step}
-      and status in ('failed', 'timeout') and superseded = 0 limit 200`
-    return rows.map((r) => testResult(r, false))
-  }).pipe(Effect.orDie)
+      and status in ('failed', 'timeout') and superseded = 0 limit 200`;
+
+    return rows.map((r) => testResult(r, false));
+  }).pipe(Effect.orDie);
 
 export type DeploymentRow = {
-  readonly project: string
-  readonly host: string
-  readonly revision: string
-  readonly store_path: string
-  readonly run_id: string
-  readonly at: number
-}
+  readonly project: string;
+  readonly host: string;
+  readonly revision: string;
+  readonly store_path: string;
+  readonly run_id: string;
+  readonly at: number;
+};
 
 export const deployment = (row: DeploymentRow): Domain.DeploymentRecord => ({
   project: row.project,
@@ -571,4 +755,4 @@ export const deployment = (row: DeploymentRow): Domain.DeploymentRecord => ({
   runId: row.run_id,
   runNumber: runNumber(row.run_id),
   at: row.at,
-})
+});

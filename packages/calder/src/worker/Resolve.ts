@@ -1,186 +1,286 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
-import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
-import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core"
-import { Context, type Duration, Effect, Option, Schedule, Schema } from "effect"
-import { randomBytes } from "node:crypto"
-import * as Exec from "../Exec.ts"
-import { sha256 } from "../Keys.ts"
-import { nixSettings } from "../NixSettings.ts"
-import { malformed, only } from "../StorePaths.ts"
-import { appAttr, type Mismatch, type PlannedStep, type PlanSpec, type Records, type RunInfo } from "../Protocol.ts"
-import { Job } from "./Client.ts"
-import * as Footprint from "./Footprint.ts"
-import * as Heartbeat from "./Heartbeat.ts"
-import * as Imports from "./Imports.ts"
-import * as Repo from "./Repo.ts"
-import type { Repo as RepoAt } from "./Repo.ts"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core";
+import { Context, type Duration, Effect, Option, Schedule, Schema } from "effect";
+import { randomBytes } from "node:crypto";
+import * as Exec from "../Exec.ts";
+import { sha256 } from "../Keys.ts";
+import { nixSettings } from "../NixSettings.ts";
+import { malformed, only } from "../StorePaths.ts";
+import {
+  appAttr,
+  type Mismatch,
+  type PlannedStep,
+  type PlanSpec,
+  type Records,
+  type RunInfo,
+} from "../Protocol.ts";
+import { Job } from "./Client.ts";
+import * as Footprint from "./Footprint.ts";
+import * as Heartbeat from "./Heartbeat.ts";
+import * as Imports from "./Imports.ts";
+import * as Repo from "./Repo.ts";
+import type { Repo as RepoAt } from "./Repo.ts";
 
 /**
  * What every workspace package reads at the root: the files there except docs (manifests, lockfiles,
  * shared configs such as `tsconfig.base.json`) and the fleet's `.ci/` contract.
  */
-const rootFiles = (repo: RepoAt) => Effect.map(repo.files, (all) => [...all.filter((f) => !f.includes("/") && !/\.mdx?$/i.test(f)), ".ci"])
+const rootFiles = (repo: RepoAt) =>
+  Effect.map(repo.files, (all) => [
+    ...all.filter((f) => !f.includes("/") && !/\.mdx?$/i.test(f)),
+    ".ci",
+  ]);
 
 interface Manifest {
-  readonly dir: string
-  readonly name: string
-  readonly deps: ReadonlyArray<string>
+  readonly dir: string;
+  readonly name: string;
+  readonly deps: ReadonlyArray<string>;
 }
 
 const workspaceGlobs = (repo: RepoAt) =>
-  Effect.gen(function*() {
-    const yaml = yield* repo.show("pnpm-workspace.yaml")
+  Effect.gen(function* () {
+    const yaml = yield* repo.show("pnpm-workspace.yaml");
+
     if (yaml !== undefined) {
-      const globs: Array<string> = []
-      let inPackages = false
+      const globs: Array<string> = [];
+      let inPackages = false;
+
       for (const line of yaml.split("\n")) {
-        if (/^packages:\s*$/.test(line)) inPackages = true
-        else if (inPackages && /^\s+-\s+/.test(line)) globs.push(line.replace(/^\s+-\s+/, "").replace(/^["']|["']$/g, "").trim())
-        else if (inPackages && /^\S/.test(line)) inPackages = false
+        if (/^packages:\s*$/.test(line)) inPackages = true;
+        else if (inPackages && /^\s+-\s+/.test(line))
+          globs.push(
+            line
+              .replace(/^\s+-\s+/, "")
+              .replace(/^["']|["']$/g, "")
+              .trim(),
+          );
+        else if (inPackages && /^\S/.test(line)) inPackages = false;
       }
-      return globs
+
+      return globs;
     }
-    const pkg = yield* repo.show("package.json")
-    if (pkg === undefined) return []
-    const json = JSON.parse(pkg) as { workspaces?: ReadonlyArray<string> | { packages?: ReadonlyArray<string> } }
-    const ws = json.workspaces
-    return Array.isArray(ws) ? ws : (ws as { packages?: ReadonlyArray<string> } | undefined)?.packages ?? []
-  })
+
+    const pkg = yield* repo.show("package.json");
+
+    if (pkg === undefined) return [];
+
+    const json = JSON.parse(pkg) as {
+      workspaces?: ReadonlyArray<string> | { packages?: ReadonlyArray<string> };
+    };
+
+    const ws = json.workspaces;
+
+    return Array.isArray(ws)
+      ? ws
+      : ((ws as { packages?: ReadonlyArray<string> } | undefined)?.packages ?? []);
+  });
 
 const manifests = (repo: RepoAt) =>
-  Effect.gen(function*() {
-    const globs = (yield* workspaceGlobs(repo)).filter((g) => !g.startsWith("!"))
-    const files = yield* repo.files
-    const matchers = globs.map((g) => Files.globToRegExp(`${g.replace(/\/+$/, "")}/package.json`))
-    const paths = files.filter((f) => f.endsWith("package.json") && matchers.some((m) => m.test(f)))
-    const out: Array<Manifest> = []
-    for (const path of paths) {
-      const text = yield* repo.show(path)
-      if (text === undefined) continue
-      const json = JSON.parse(text) as Record<string, unknown>
-      const deps = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"].flatMap((k) =>
-        Object.keys((json[k] ?? {}) as Record<string, string>)
-      )
-      out.push({ dir: path.slice(0, -"/package.json".length), name: String(json.name ?? path), deps })
-    }
-    return out
-  })
+  Effect.gen(function* () {
+    const globs = (yield* workspaceGlobs(repo)).filter((g) => !g.startsWith("!"));
+    const files = yield* repo.files;
+    const matchers = globs.map((g) => Files.globToRegExp(`${g.replace(/\/+$/, "")}/package.json`));
 
-const graphs = new WeakMap<RepoAt, Imports.Graph>()
+    const paths = files.filter(
+      (f) => f.endsWith("package.json") && matchers.some((m) => m.test(f)),
+    );
+
+    const out: Array<Manifest> = [];
+
+    for (const path of paths) {
+      const text = yield* repo.show(path);
+
+      if (text === undefined) continue;
+      const json = JSON.parse(text) as Record<string, unknown>;
+
+      const deps = [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+      ].flatMap((k) => Object.keys((json[k] ?? {}) as Record<string, string>));
+
+      out.push({
+        dir: path.slice(0, -"/package.json".length),
+        name: String(json.name ?? path),
+        deps,
+      });
+    }
+
+    return out;
+  });
+
+const graphs = new WeakMap<RepoAt, Imports.Graph>();
+
 /** One import graph per revision, however many tasks ask. */
 const graphOf = (repo: RepoAt) =>
   Effect.suspend(() => {
-    const known = graphs.get(repo)
-    if (known !== undefined) return Effect.succeed(known)
+    const known = graphs.get(repo);
+
+    if (known !== undefined) return Effect.succeed(known);
+
     return manifests(repo).pipe(
-      Effect.flatMap((ws) => Imports.make(repo, ws.map((m) => m.dir))),
+      Effect.flatMap((ws) =>
+        Imports.make(
+          repo,
+          ws.map((m) => m.dir),
+        ),
+      ),
       Effect.tap((graph) => Effect.sync(() => graphs.set(repo, graph))),
-    )
-  })
+    );
+  });
 
 /** Concrete paths for a `Files` value at the revision. Directories stay directories. */
-export const paths = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
-  Effect.gen(function*() {
+export const paths = (
+  repo: RepoAt,
+  files: Files.Files,
+): Effect.Effect<ReadonlyArray<string>, Exec.ExecError, Exec.Spawner> =>
+  Effect.gen(function* () {
     switch (files._tag) {
       case "All":
-        return ["."]
+        return ["."];
       case "Of":
-        return files.paths
+        return files.paths;
       case "Glob":
-        return (yield* repo.files).filter(Files.matcher(files.patterns))
+        return (yield* repo.files).filter(Files.matcher(files.patterns));
       case "Imports": {
-        const graph = yield* graphOf(repo)
-        return [...(yield* graph.closure(graph.match(files.patterns), files))].sort()
+        const graph = yield* graphOf(repo);
+
+        return [...(yield* graph.closure(graph.match(files.patterns), files))].toSorted();
       }
+
       case "Union":
-        return (yield* Effect.forEach(files.members, (m) => paths(repo, m))).flat()
+        return (yield* Effect.forEach(files.members, (m) => paths(repo, m))).flat();
       case "Optional":
-        return yield* paths(repo, files.files)
+        return yield* paths(repo, files.files);
       case "Workspace": {
-        if (files.dirs.includes(".")) return ["."]
-        const all = yield* manifests(repo)
-        const byName = new Map(all.map((m) => [m.name, m]))
-        const byDir = new Map(all.map((m) => [m.dir, m]))
-        const seen = new Set<string>()
+        if (files.dirs.includes(".")) return ["."];
+        const all = yield* manifests(repo);
+        const byName = new Map(all.map((m) => [m.name, m]));
+        const byDir = new Map(all.map((m) => [m.dir, m]));
+        const seen = new Set<string>();
+
         const visit = (m: Manifest) => {
-          if (seen.has(m.dir)) return
-          seen.add(m.dir)
+          if (seen.has(m.dir)) return;
+          seen.add(m.dir);
+
           for (const dep of m.deps) {
-            const target = byName.get(dep)
-            if (target !== undefined) visit(target)
+            const target = byName.get(dep);
+
+            if (target !== undefined) visit(target);
           }
-        }
+        };
+
         for (const dir of files.dirs) {
-          const m = byDir.get(dir)
-          if (m !== undefined) visit(m)
-          else seen.add(dir)
+          const m = byDir.get(dir);
+
+          if (m !== undefined) visit(m);
+          else seen.add(dir);
         }
-        return [...(yield* rootFiles(repo)), ...[...seen].sort()]
+
+        return [...(yield* rootFiles(repo)), ...[...seen].toSorted()];
       }
     }
-  })
+  });
 
 /** The paths and patterns of `files` that match nothing at the revision, except `optional` ones. */
-const unmatched = (repo: RepoAt, files: Files.Files): Effect.Effect<ReadonlyArray<Files.Unmatched>, Exec.ExecError, Exec.Spawner> =>
-  Effect.gen(function*() {
+const unmatched = (
+  repo: RepoAt,
+  files: Files.Files,
+): Effect.Effect<ReadonlyArray<Files.Unmatched>, Exec.ExecError, Exec.Spawner> =>
+  Effect.gen(function* () {
     switch (files._tag) {
       case "All":
       case "Optional":
-        return []
+        return [];
       case "Of":
       case "Workspace": {
-        const all = yield* repo.files
-        return (files._tag === "Of" ? files.paths : files.dirs).filter((path) =>
-          path !== "." && !all.some((f) => f === path || f.startsWith(`${path}/`))
-        ).map((pattern) => ({ pattern, negated: false }))
+        const all = yield* repo.files;
+
+        return (files._tag === "Of" ? files.paths : files.dirs)
+          .filter(
+            (path) => path !== "." && !all.some((f) => f === path || f.startsWith(`${path}/`)),
+          )
+          .map((pattern) => ({ pattern, negated: false }));
       }
+
       case "Glob":
       case "Imports":
-        return Files.unmatched(files.patterns, yield* repo.files)
+        return Files.unmatched(files.patterns, yield* repo.files);
       case "Union":
-        return (yield* Effect.forEach(files.members, (m) => unmatched(repo, m))).flat()
+        return (yield* Effect.forEach(files.members, (m) => unmatched(repo, m))).flat();
     }
-  })
+  });
 
 /**
  * Fails the plan when a path or pattern the project wrote matches no file: its key would never change.
  * Every task's and setup's files count, also those of steps this event doesn't run.
  */
 export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
-  Effect.gen(function*() {
-    const universe = yield* Calder.universe(project)
+  Effect.gen(function* () {
+    const universe = yield* Calder.universe(project);
+
     const written = [
-      ...(project.shared === undefined ? [] : [["the project's shared files", project.shared] as const]),
+      ...(project.shared === undefined
+        ? []
+        : [["the project's shared files", project.shared] as const]),
       ...[...universe.values()].flatMap((step) => {
-        const def = step.def
-        if (def._tag === "Setup") return [[`${step.name}'s inputs`, def.inputs] as const]
-        if (def._tag !== "Task") return []
+        const def = step.def;
+
+        if (def._tag === "Setup") return [[`${step.name}'s inputs`, def.inputs] as const];
+
+        if (def._tag !== "Task") return [];
+
         return [
           [`${step.name}'s inputs`, def.inputs] as const,
           ...(def.each === undefined ? [] : [[`${step.name}'s each`, def.each] as const]),
-          ...(def.shards?.split === undefined ? [] : [[`${step.name}'s shards.split`, def.shards.split] as const]),
-        ]
+          ...(def.shards?.split === undefined
+            ? []
+            : [[`${step.name}'s shards.split`, def.shards.split] as const]),
+        ];
       }),
-    ]
+    ];
+
     const found = (yield* Effect.forEach(written, ([where, files]) =>
-      Effect.map(unmatched(repo, files), (patterns) => patterns.map((u) => ({ ...u, where })))
-    )).flat()
-    const listed = (negated: boolean) => found.filter((u) => u.negated === negated).map((u) => `${JSON.stringify(u.pattern)} (${u.where})`)
-    const [missing, removed] = [listed(false), listed(true)]
+      Effect.map(unmatched(repo, files), (patterns) => patterns.map((u) => ({ ...u, where }))),
+    )).flat();
+
+    const listed = (negated: boolean) =>
+      found
+        .filter((u) => u.negated === negated)
+        .map((u) => `${JSON.stringify(u.pattern)} (${u.where})`);
+
+    const [missing, removed] = [listed(false), listed(true)];
+
     if (found.length > 0) {
       const what = [
         ...(missing.length === 0 ? [] : [`No file matches ${missing.join(", ")}.`]),
-        ...(removed.length === 0 ? [] : [`${removed.join(", ")} ${removed.length === 1 ? "matches" : "match"} only files the negations leave out.`]),
-      ]
-      return yield* new Calder.PlanError({
+        ...(removed.length === 0
+          ? []
+          : [
+              `${removed.join(", ")} ${removed.length === 1 ? "matches" : "match"} only files the negations leave out.`,
+            ]),
+      ];
+
+      return yield* Calder.PlanError.make({
         message: `${what.join(" ")} Fix the path or pattern, or wrap files that may be missing in Files.optional(...).`,
-      })
+      });
     }
-  })
+  });
 
 /** The Linux systems whose agents take each other's portable tasks (Runs.ts `place`). */
-const linuxSystems: ReadonlyArray<string> = ["aarch64-linux", "x86_64-linux"]
+const linuxSystems: ReadonlyArray<string> = ["aarch64-linux", "x86_64-linux"];
 
 /**
  * Whether a task may run on an agent of another Linux system than the run's, in that system's dev shell: one
@@ -190,43 +290,70 @@ const linuxSystems: ReadonlyArray<string> = ["aarch64-linux", "x86_64-linux"]
  * output's store path holds binaries of the run's system.
  */
 const portable = (def: Extract<Step.Any["def"], { readonly _tag: "Task" }>, preview: boolean) =>
-  def.shell !== undefined && def.shell.output !== "attr" && def.platform === undefined && def.offload !== false && !preview &&
-  Object.keys(def.outputs).length === 0 && Object.keys(def.artifacts).length === 0 && def.lease === undefined &&
-  Step.taskSecrets(def).length === 0 && Step.taskCommand(def).steps.every((s) => s.def._tag === "Task") &&
+  def.shell !== undefined &&
+  def.shell.output !== "attr" &&
+  def.platform === undefined &&
+  def.offload !== false &&
+  !preview &&
+  Object.keys(def.outputs).length === 0 &&
+  Object.keys(def.artifacts).length === 0 &&
+  def.lease === undefined &&
+  Step.taskSecrets(def).length === 0 &&
+  Step.taskCommand(def).steps.every((s) => s.def._tag === "Task") &&
   (def.setup === undefined ||
-    (def.setup.def._tag === "Setup" && def.setup.def.platform === undefined && def.setup.def.shell?.output !== "attr"))
+    (def.setup.def._tag === "Setup" &&
+      def.setup.def.platform === undefined &&
+      def.setup.def.shell?.output !== "attr"));
 
 /**
  * A key for every file of a task's `each`: the task's own key base (with its setup's key), the file,
  * everything it imports and its package's data files.
  */
 const eachKeys = (repo: RepoAt, written: Files.Files, keyBase: string) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     // `optional` only lets the patterns match nothing.
-    const each = written._tag === "Optional" ? written.files : written
-    const graph = yield* graphOf(repo)
-    const entries = each._tag === "Imports" || each._tag === "Glob" ? graph.match(each.patterns) : [...new Set(yield* paths(repo, each))].sort()
-    const byEntry = each._tag === "Imports" ? yield* graph.closures(entries, each) : new Map(entries.map((e) => [e, [e]] as const))
-    const closures = entries.map((entry) => byEntry.get(entry) ?? [entry])
-    const blobs = new Map((yield* repo.entries).map((e) => [e.path, e.oid]))
-    const dirs = [...new Set(closures.flatMap((c) => c.filter((p) => !blobs.has(p))))]
-    const trees = yield* repo.objectIds(dirs)
-    const id = (path: string) => blobs.get(path) ?? trees.get(path) ?? null
-    const data = new Map<string, string>()
+    const each = written._tag === "Optional" ? written.files : written;
+    const graph = yield* graphOf(repo);
+
+    const entries =
+      each._tag === "Imports" || each._tag === "Glob"
+        ? graph.match(each.patterns)
+        : [...new Set(yield* paths(repo, each))].toSorted();
+
+    const byEntry =
+      each._tag === "Imports"
+        ? yield* graph.closures(entries, each)
+        : new Map(entries.map((e) => [e, [e]] as const));
+
+    const closures = entries.map((entry) => byEntry.get(entry) ?? [entry]);
+    const blobs = new Map((yield* repo.entries).map((e) => [e.path, e.oid]));
+    const dirs = [...new Set(closures.flatMap((c) => c.filter((p) => !blobs.has(p))))];
+    const trees = yield* repo.objectIds(dirs);
+    const id = (path: string) => blobs.get(path) ?? trees.get(path) ?? null;
+    const data = new Map<string, string>();
+
     const dataKey = (dir: string) => {
-      let key = data.get(dir)
+      let key = data.get(dir);
+
       if (key === undefined) {
-        key = sha256(graph.data(dir).map((p) => [p, id(p)]))
-        data.set(dir, key)
+        key = sha256(graph.data(dir).map((p) => [p, id(p)]));
+        data.set(dir, key);
       }
-      return key
-    }
+
+      return key;
+    };
+
     return entries.map((file, i) => ({
       file,
-      key: sha256({ keyBase, file, closure: [...closures[i]!].sort().map((p) => [p, id(p)]), data: dataKey(graph.packageOf(file)) }),
+      key: sha256({
+        keyBase,
+        file,
+        closure: [...closures[i]!].toSorted().map((p) => [p, id(p)]),
+        data: dataKey(graph.packageOf(file)),
+      }),
       always: graph.always(file),
-    }))
-  })
+    }));
+  });
 
 /** Files whose change means dependencies must be set up again. */
 const dependencyFiles = [
@@ -236,12 +363,12 @@ const dependencyFiles = [
   /^patches\//,
   /^\.ci\//,
   /^flake\.lock$/,
-]
+];
 
 export interface Derivation {
-  readonly drv: string
-  readonly out: string
-  readonly system: string
+  readonly drv: string;
+  readonly out: string;
+  readonly system: string;
 }
 
 /**
@@ -250,16 +377,17 @@ export interface Derivation {
  * chance, so `fromEarlier` looks for its name in the flake's sources instead.
  */
 export const marksOf = (revision: string, committed: number) => {
-  const date = new Date(committed * 1000).toISOString().replace(/[-:T]/g, "").slice(0, 14)
-  return [revision, revision.slice(0, 7), String(committed), date, date.slice(0, 8)]
-}
+  const date = new Date(committed * 1000).toISOString().replace(/[-:T]/g, "").slice(0, 14);
+
+  return [revision, revision.slice(0, 7), String(committed), date, date.slice(0, 8)];
+};
 
 /** The repository's cache file: the derivations of its last planned revision and the app its flake declares. */
 interface Cached {
-  readonly flake: string
-  readonly derivations: Record<string, Derivation | null>
+  readonly flake: string;
+  readonly derivations: Record<string, Derivation | null>;
   /** `lib.project.project`, once a plan of this revision read it. */
-  readonly app?: string | null
+  readonly app?: string | null;
 }
 
 /**
@@ -268,18 +396,24 @@ interface Cached {
  * or a closure that can't be read, only costs an evaluation.
  */
 const readsCommit = (drvs: ReadonlyArray<string>, marks: ReadonlyArray<string>) =>
-  Effect.gen(function*() {
-    if (drvs.length === 0) return false
+  Effect.gen(function* () {
+    if (drvs.length === 0) return false;
+
     // A path nix-store wasn't asked about can't be shown not to.
-    if (only(drvs).length !== drvs.length) return true
-    const closure = (yield* Exec.run(["nix-store", "--query", "--requisites", ...only(drvs)])).split("\n").filter((p) => p.endsWith(".drv"))
+    if (only(drvs).length !== drvs.length) return true;
+
+    const closure = (yield* Exec.run(["nix-store", "--query", "--requisites", ...only(drvs)]))
+      .split("\n")
+      .filter((p) => p.endsWith(".drv"));
+
     return yield* Effect.try(() =>
       closure.some((drv) => {
-        const text = readFileSync(drv, "utf8")
-        return marks.some((mark) => text.includes(mark))
-      })
-    )
-  }).pipe(Effect.orElseSucceed(() => true))
+        const text = readFileSync(drv, "utf8");
+
+        return marks.some((mark) => text.includes(mark));
+      }),
+    );
+  }).pipe(Effect.orElseSucceed(() => true));
 
 /**
  * The derivations an earlier commit with the same root tree evaluated to (`Earlier`, which the controller
@@ -293,50 +427,77 @@ export const fromEarlier = (
   attrs: ReadonlyArray<string>,
   revision: {
     /** When the earlier commit was committed, or None when that couldn't be read. */
-    readonly committed: Option.Option<number>
+    readonly committed: Option.Option<number>;
     /** The flake's Nix sources at this revision, by path. */
-    readonly nix: ReadonlyMap<string, string>
+    readonly nix: ReadonlyMap<string, string>;
   },
   log: Log = () => Effect.void,
 ) =>
-  Effect.gen(function*() {
-    const covered = attrs.filter((attr) => attr in earlier.derivations)
-    if (covered.length === 0 || Option.isNone(revision.committed)) return undefined
-    const counting = [...revision.nix].find(([, text]) => text.includes("revCount"))
+  Effect.gen(function* () {
+    const covered = attrs.filter((attr) => attr in earlier.derivations);
+
+    if (covered.length === 0 || Option.isNone(revision.committed)) return undefined;
+    const counting = [...revision.nix].find(([, text]) => text.includes("revCount"));
+
     if (counting !== undefined) {
-      yield* log(`${counting[0]} reads revCount, which differs for every commit, so the flake is evaluated again`)
-      return undefined
+      yield* log(
+        `${counting[0]} reads revCount, which differs for every commit, so the flake is evaluated again`,
+      );
+
+      return undefined;
     }
-    const committed = revision.committed.value
-    const drvs = covered.flatMap((attr) => (earlier.derivations[attr] ? [earlier.derivations[attr].drv] : []))
-    if (only(drvs).length !== drvs.length) return undefined
-    if (drvs.length > 0 && (yield* Exec.exec(["nix-store", "--check-validity", ...only(drvs)])).exitCode !== 0) return undefined
-    const short = earlier.revision.slice(0, 12)
+
+    const committed = revision.committed.value;
+
+    const drvs = covered.flatMap((attr) =>
+      earlier.derivations[attr] ? [earlier.derivations[attr].drv] : [],
+    );
+
+    if (only(drvs).length !== drvs.length) return undefined;
+
+    if (
+      drvs.length > 0 &&
+      (yield* Exec.exec(["nix-store", "--check-validity", ...only(drvs)])).exitCode !== 0
+    )
+      return undefined;
+    const short = earlier.revision.slice(0, 12);
+
     if (yield* readsCommit(drvs, marksOf(earlier.revision, committed))) {
-      yield* log(`${short} has the same tree, but its derivations mention that commit, so the flake is evaluated again`)
-      return undefined
+      yield* log(
+        `${short} has the same tree, but its derivations mention that commit, so the flake is evaluated again`,
+      );
+
+      return undefined;
     }
-    const which = covered.length === attrs.length ? "them" : `${covered.length} of the ${attrs.length} attributes`
-    yield* log(`${short} has the same tree, and its derivations don't mention that commit, so this plan reuses ${which}`)
-    return new Map(covered.map((attr) => [attr, earlier.derivations[attr] ?? null]))
-  })
+
+    const which =
+      covered.length === attrs.length
+        ? "them"
+        : `${covered.length} of the ${attrs.length} attributes`;
+
+    yield* log(
+      `${short} has the same tree, and its derivations don't mention that commit, so this plan reuses ${which}`,
+    );
+
+    return new Map(covered.map((attr) => [attr, earlier.derivations[attr] ?? null]));
+  });
 
 /** What an earlier plan of the same tree evaluated, from a run this one may reuse. */
 export interface Earlier {
-  readonly revision: string
-  readonly derivations: Readonly<Record<string, Derivation | null>>
+  readonly revision: string;
+  readonly derivations: Readonly<Record<string, Derivation | null>>;
   /** Absent when this run may not take it. */
-  readonly app?: string | null | undefined
+  readonly app?: string | null | undefined;
 }
 
 /** What a plan evaluated: each attribute's derivation, null for one that throws, and Nix's reason for those that failed. */
 export interface Evaluated {
-  readonly derivations: ReadonlyMap<string, Derivation | null>
-  readonly errors: ReadonlyMap<string, string>
+  readonly derivations: ReadonlyMap<string, Derivation | null>;
+  readonly errors: ReadonlyMap<string, string>;
   /** Attributes that outgrew the budget in an evaluator of their own, which their builds would swap as much for. */
-  readonly tooLarge: ReadonlyMap<string, TooLarge>
+  readonly tooLarge: ReadonlyMap<string, TooLarge>;
   /** The footprints its evaluators recorded, when it had a recorder. */
-  readonly recorded?: Records
+  readonly recorded?: Records;
 }
 
 /**
@@ -358,24 +519,38 @@ export const derivations = (
   memory: Memory = jobMemory(),
   options: {
     /** Records footprints of what it evaluates. */
-    readonly recorder?: Recorder | undefined
+    readonly recorder?: Recorder | undefined;
     /** Evaluates even what the cache holds, as an audit does. */
-    readonly fresh?: boolean
+    readonly fresh?: boolean;
     /** How often a running evaluator says what it does. */
-    readonly heartbeat?: Heartbeat.Cadence
+    readonly heartbeat?: Heartbeat.Cadence;
   } = {},
 ) =>
   Effect.suspend(() => {
     // An attribute path outside the grammar (Flake.components) never reaches Nix: it evaluates to nothing.
-    const refused = attrs.filter((attr) => Flake.components(attr) === null)
-    const valid = attrs.filter((attr) => !refused.includes(attr))
-    return Effect.map(derivationsOf(run, valid, cacheDir, log, memory, options), (result): Evaluated =>
-      refused.length === 0 ? result : {
-        ...result,
-        derivations: new Map([...result.derivations, ...refused.map((attr) => [attr, null] as const)]),
-        errors: new Map([...result.errors, ...refused.map((attr) => [attr, `${attr} is not an attribute path Calder evaluates`] as const)]),
-      })
-  })
+    const refused = attrs.filter((attr) => Flake.components(attr) === null);
+    const valid = attrs.filter((attr) => !refused.includes(attr));
+
+    return Effect.map(
+      derivationsOf(run, valid, cacheDir, log, memory, options),
+      (result): Evaluated =>
+        refused.length === 0
+          ? result
+          : {
+              ...result,
+              derivations: new Map([
+                ...result.derivations,
+                ...refused.map((attr) => [attr, null] as const),
+              ]),
+              errors: new Map([
+                ...result.errors,
+                ...refused.map(
+                  (attr) => [attr, `${attr} is not an attribute path Calder evaluates`] as const,
+                ),
+              ]),
+            },
+    );
+  });
 
 const derivationsOf = (
   run: RunInfo,
@@ -385,89 +560,186 @@ const derivationsOf = (
   memory: Memory,
   options: Parameters<typeof derivations>[5] & object,
 ) =>
-  attrs.length === 0 ? Effect.succeed<Evaluated>({ derivations: new Map(), errors: new Map(), tooLarge: new Map() }) : cached(run, cacheDir, (entry) =>
-    Effect.gen(function*() {
-      const known = entry?.derivations ?? {}
-      // What the cache holds and the store still has; entries cached before derivations carried their
-      // system don't count. Only the rest is evaluated, so an attribute that keeps failing costs its own
-      // evaluation, not every attribute's. An audit (`fresh`) evaluates everything.
-      const cachedHere = options.fresh === true
-        ? []
-        : attrs.filter((attr) => attr in known && (known[attr] === null || known[attr]?.system !== undefined))
-      const drvs = cachedHere.flatMap((attr) => (known[attr] ? [known[attr].drv] : []))
-      const invalid = drvs.length === 0 ? new Set<string>() : new Set([
-        ...drvs.filter((d) => only([d]).length === 0),
-        ...(yield* Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...only(drvs)])).stdout.split("\n").filter(Boolean),
-      ])
-      const hits = new Map(cachedHere.filter((attr) => !known[attr] || !invalid.has(known[attr].drv)).map((attr) => [attr, known[attr] ?? null]))
-      const missing = attrs.filter((attr) => !hits.has(attr))
-      if (missing.length === 0) return { result: { derivations: hits, errors: new Map(), tooLarge: new Map() } as Evaluated, entry: {} }
-      // Recording that fails, such as strace without ptrace, leaves the plan to evaluate as before.
-      const cadence = options.heartbeat ?? Heartbeat.cadence
-      const evaluated = yield* evaluate(run.flake, missing, memory, log, cadence, options.recorder).pipe(
-        Effect.catchTag("CommandFailed", (e) =>
-          options.recorder === undefined
-            ? Effect.fail(e)
-            : log(`recording what Nix read failed, so this plan records nothing: ${e.stderr.trim().split("\n").slice(-3).join(" ")}`).pipe(
-              Effect.andThen(evaluate(run.flake, missing, memory, log, cadence)),
-            )
-        ),
-      )
-      const result: Evaluated = {
-        derivations: new Map([...hits, ...evaluated.derivations]),
-        errors: evaluated.errors,
-        tooLarge: evaluated.tooLarge,
-        ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
-      }
-      return { result, entry: { derivations: { ...known, ...Object.fromEntries(evaluated.derivations) } } }
-    }))
+  attrs.length === 0
+    ? Effect.succeed<Evaluated>({ derivations: new Map(), errors: new Map(), tooLarge: new Map() })
+    : cached(run, cacheDir, (entry) =>
+        Effect.gen(function* () {
+          const known = entry?.derivations ?? {};
+
+          // What the cache holds and the store still has; entries cached before derivations carried their
+          // system don't count. Only the rest is evaluated, so an attribute that keeps failing costs its own
+          // evaluation, not every attribute's. An audit (`fresh`) evaluates everything.
+          const cachedHere =
+            options.fresh === true
+              ? []
+              : attrs.filter(
+                  (attr) =>
+                    attr in known && (known[attr] === null || known[attr]?.system !== undefined),
+                );
+
+          const drvs = cachedHere.flatMap((attr) => (known[attr] ? [known[attr].drv] : []));
+
+          const invalid =
+            drvs.length === 0
+              ? new Set<string>()
+              : new Set([
+                  ...drvs.filter((d) => only([d]).length === 0),
+                  ...(yield* Exec.exec([
+                    "nix-store",
+                    "--check-validity",
+                    "--print-invalid",
+                    ...only(drvs),
+                  ])).stdout
+                    .split("\n")
+                    .filter(Boolean),
+                ]);
+
+          const hits = new Map(
+            cachedHere
+              .filter((attr) => !known[attr] || !invalid.has(known[attr].drv))
+              .map((attr) => [attr, known[attr] ?? null]),
+          );
+
+          const missing = attrs.filter((attr) => !hits.has(attr));
+
+          if (missing.length === 0)
+            return {
+              result: { derivations: hits, errors: new Map(), tooLarge: new Map() } as Evaluated,
+              entry: {},
+            };
+          // Recording that fails, such as strace without ptrace, leaves the plan to evaluate as before.
+          const cadence = options.heartbeat ?? Heartbeat.cadence;
+
+          const evaluated = yield* evaluate(
+            run.flake,
+            missing,
+            memory,
+            log,
+            cadence,
+            options.recorder,
+          ).pipe(
+            Effect.catchTag("CommandFailed", (e) =>
+              options.recorder === undefined
+                ? Effect.fail(e)
+                : log(
+                    `recording what Nix read failed, so this plan records nothing: ${e.stderr.trim().split("\n").slice(-3).join(" ")}`,
+                  ).pipe(Effect.andThen(evaluate(run.flake, missing, memory, log, cadence))),
+            ),
+          );
+
+          const result: Evaluated = {
+            derivations: new Map([...hits, ...evaluated.derivations]),
+            errors: evaluated.errors,
+            tooLarge: evaluated.tooLarge,
+            ...(evaluated.recorded === undefined ? {} : { recorded: evaluated.recorded }),
+          };
+
+          return {
+            result,
+            entry: { derivations: { ...known, ...Object.fromEntries(evaluated.derivations) } },
+          };
+        }),
+      );
 
 /** Where the plan says what it reused or evaluated: the plan job's log. */
-type Log = (text: string) => Effect.Effect<void>
+type Log = (text: string) => Effect.Effect<void>;
 
 /** The app the flake's `lib.project` declares, or null; cached like the derivations. */
-export const appOf = (run: RunInfo, cacheDir: string | null = defaultCacheDir, recorder?: Recorder, fresh = false) =>
+export const appOf = (
+  run: RunInfo,
+  cacheDir: string | null = defaultCacheDir,
+  recorder?: Recorder,
+  fresh = false,
+) =>
   cached(run, cacheDir, (entry) =>
-    Effect.gen(function*() {
-      if (entry?.app !== undefined && !fresh) return { result: { app: entry.app, recorded: undefined }, entry: {} }
+    Effect.gen(function* () {
+      if (entry?.app !== undefined && !fresh)
+        return { result: { app: entry.app, recorded: undefined }, entry: {} };
+
       if (recorder === undefined) {
-        const app = yield* Exec.run(["nix", "eval", "--raw", `${run.flake}#lib.project.project`]).pipe(
+        const app = yield* Exec.run([
+          "nix",
+          "eval",
+          "--raw",
+          `${run.flake}#lib.project.project`,
+        ]).pipe(
           Effect.map((name) => name.trim() || null),
           Effect.orElseSucceed(() => null),
-        )
-        return { result: { app, recorded: undefined }, entry: { app } }
+        );
+
+        return { result: { app, recorded: undefined }, entry: { app } };
       }
-      const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
+
+      const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"));
       // Recorded like an attribute, so a plan whose footprint of it holds needs no Nix for it either.
-      const expr = `let p = (builtins.getFlake ${nixString(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`
-      const out = yield* Exec.exec([...straced(join(scratch, "trace")), "nix", "eval", "--json", "--expr", expr], {
-        env: { ...process.env, ...emptyCache(scratch) },
-      }).pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })))
+      const expr = `let p = (builtins.getFlake ${nixString(recorder.url)}).lib.project.project or null; in if builtins.isString p then p else null`;
+
+      const out = yield* Exec.exec(
+        [...straced(join(scratch, "trace")), "nix", "eval", "--json", "--expr", expr],
+        {
+          env: { ...process.env, ...emptyCache(scratch) },
+        },
+      ).pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })));
+
       const trace = yield* Effect.sync(() => {
         try {
-          return Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder.source, recorder.nonce)
+          return Footprint.parseTrace(
+            readFileSync(join(scratch, "trace"), "utf8"),
+            recorder.source,
+            recorder.nonce,
+          );
         } catch {
-          return undefined
+          return undefined;
         } finally {
-          rmSync(scratch, { recursive: true, force: true })
+          rmSync(scratch, { recursive: true, force: true });
         }
-      })
-      const app = out.exitCode === 0 ? (JSON.parse(out.stdout) as string | null) || null : null
-      const pass = out.exitCode === 0 && trace !== undefined
-        ? Footprint.footprints({ ...trace, marks: [trace.touches.length] }, recorder.at)
-        : undefined
-      const count = pass?.counts[0]
-      const kept = pass === undefined || count === undefined || count === null ? [] : yield* vetted(recorder, [
-        { attr: appAttr, index: 0, count, entries: pass.entries, derivation: null, outside: trace!.outside.map(([p]) => p) },
-      ])
-      const recorded: Records | undefined = pass === undefined || count === undefined || count === null || kept.length === 0 ? undefined : {
-        footprints: [{ id: "app", revision: recorder.revision, entries: pass.entries }],
-        evaluations: [{ attr: appAttr, footprint: "app", count, digest: Footprint.digest(recorder.at, pass.entries, count, recorder.context), derivation: null, app }],
-      }
-      return { result: { app, recorded }, entry: { app } }
-    }))
+      });
 
-const defaultCacheDir = join(homedir(), ".cache", "calder")
+      const app = out.exitCode === 0 ? (JSON.parse(out.stdout) as string | null) || null : null;
+
+      const pass =
+        out.exitCode === 0 && trace !== undefined
+          ? Footprint.footprints({ ...trace, marks: [trace.touches.length] }, recorder.at)
+          : undefined;
+
+      const count = pass?.counts[0];
+
+      const kept =
+        pass === undefined || count === undefined || count === null
+          ? []
+          : yield* vetted(recorder, [
+              {
+                attr: appAttr,
+                index: 0,
+                count,
+                entries: pass.entries,
+                derivation: null,
+                outside: trace!.outside.map(([p]) => p),
+              },
+            ]);
+
+      const recorded: Records | undefined =
+        pass === undefined || count === undefined || count === null || kept.length === 0
+          ? undefined
+          : {
+              footprints: [{ id: "app", revision: recorder.revision, entries: pass.entries }],
+              evaluations: [
+                {
+                  attr: appAttr,
+                  footprint: "app",
+                  count,
+                  digest: Footprint.digest(recorder.at, pass.entries, count, recorder.context),
+                  derivation: null,
+                  app,
+                },
+              ],
+            };
+
+      return { result: { app, recorded }, entry: { app } };
+    }),
+  );
+
+const defaultCacheDir = join(homedir(), ".cache", "calder");
 
 /**
  * Gives the job's process, and so every Nix command of it, Nix's caches, configuration (nix.conf, the flake
@@ -482,90 +754,111 @@ const defaultCacheDir = join(homedir(), ".cache", "calder")
  */
 export const ownNix = Effect.acquireRelease(
   Effect.sync(() => {
-    const dir = mkdtempSync(join(tmpdir(), "calder-nix-"))
+    const dir = mkdtempSync(join(tmpdir(), "calder-nix-"));
+
     const env: Record<string, string> = {
       NIX_USER_CONF_FILES: join(dir, "nix.conf"),
       GIT_CONFIG_GLOBAL: "/dev/null",
-    }
+    };
+
     for (const kind of ["cache", "config", "data", "state"]) {
-      env[`XDG_${kind.toUpperCase()}_HOME`] = join(dir, kind)
-      env[`NIX_${kind.toUpperCase()}_HOME`] = join(dir, kind, "nix")
+      env[`XDG_${kind.toUpperCase()}_HOME`] = join(dir, kind);
+      env[`NIX_${kind.toUpperCase()}_HOME`] = join(dir, kind, "nix");
     }
-    const before = Object.fromEntries(Object.keys(env).map((name) => [name, process.env[name]]))
-    Object.assign(process.env, env)
-    return { dir, before }
+
+    const before = Object.fromEntries(Object.keys(env).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, env);
+
+    return { dir, before };
   }),
   ({ before, dir }) =>
     Effect.sync(() => {
       for (const [name, value] of Object.entries(before)) {
-        if (value === undefined) delete process.env[name]
-        else process.env[name] = value
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
       }
-      rmSync(dir, { recursive: true, force: true })
+
+      rmSync(dir, { recursive: true, force: true });
     }),
-)
+);
 
 /** `effect` with its own Nix (`ownNix`). */
-export const withOwnNix = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.scoped(Effect.andThen(ownNix, effect))
+export const withOwnNix = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.scoped(Effect.andThen(ownNix, effect));
 
 /**
  * A recorded `nix eval`'s fetcher cache: an empty one, so a hash cached for a path an earlier command of
  * the job copied doesn't hide that this evaluation read its files. Nix 2.34 reads NIX_CACHE_HOME before
  * XDG_CACHE_HOME.
  */
-const emptyCache = (scratch: string) => ({ NIX_CACHE_HOME: join(scratch, "cache"), XDG_CACHE_HOME: join(scratch, "cache") })
+const emptyCache = (scratch: string) => ({
+  NIX_CACHE_HOME: join(scratch, "cache"),
+  XDG_CACHE_HOME: join(scratch, "cache"),
+});
 
 /**
  * The cache of a local worker's evaluations, or null for none: a pull request's pool's home is one every
  * same-repo pull request's ci.ts may write to, so a cached derivation could be one forged for a revision
  * its author knew would come, which this plan would report as its own and a merge then take.
  */
-export const localCache = (trust: RunInfo["trust"]) => (trust === "pr" ? null : defaultCacheDir)
+export const localCache = (trust: RunInfo["trust"]) => (trust === "pr" ? null : defaultCacheDir);
 
 /** Hands `use` what the repository's cache file holds for this revision, under the repository's lock, and writes back what it adds. */
 const cached = <A, E, R>(
   run: RunInfo,
   cacheDir: string | null,
-  use: (entry: Cached | undefined) => Effect.Effect<{ readonly result: A; readonly entry: Partial<Cached> }, E, R>,
+  use: (
+    entry: Cached | undefined,
+  ) => Effect.Effect<{ readonly result: A; readonly entry: Partial<Cached> }, E, R>,
 ) =>
-  Effect.gen(function*() {
-    if (cacheDir === null || !/[?&]rev=/.test(run.flake)) return (yield* use(undefined)).result
-    mkdirSync(cacheDir, { recursive: true })
-    const file = join(cacheDir, `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`)
+  Effect.gen(function* () {
+    if (cacheDir === null || !/[?&]rev=/.test(run.flake)) return (yield* use(undefined)).result;
+    mkdirSync(cacheDir, { recursive: true });
+
+    const file = join(
+      cacheDir,
+      `derivations-${sha256(run.flake.replace(/[?&]rev=[^&]*/, ""))}.json`,
+    );
+
     // Per revision: a second job of the revision waits and takes the first one's derivations, and one of
     // another revision, such as a push's plan beside an older run's evaluation, doesn't wait for minutes.
     return yield* Effect.acquireUseRelease(
       lock(`${file}.${sha256(run.flake).slice(0, 16)}.lock`),
       () =>
-        Effect.gen(function*() {
-          const stored = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as Cached : undefined
-          const entry = stored?.flake === run.flake ? stored : undefined
-          const { result, entry: added } = yield* use(entry)
+        Effect.gen(function* () {
+          const stored = existsSync(file)
+            ? (JSON.parse(readFileSync(file, "utf8")) as Cached)
+            : undefined;
+
+          const entry = stored?.flake === run.flake ? stored : undefined;
+          const { result, entry: added } = yield* use(entry);
+
           if (Object.keys(added).length > 0) {
-            const next: Cached = { ...(entry ?? { derivations: {} }), ...added, flake: run.flake }
-            const tmp = `${file}.${process.pid}.tmp`
-            writeFileSync(tmp, JSON.stringify(next))
-            renameSync(tmp, file)
+            const next: Cached = { ...(entry ?? { derivations: {} }), ...added, flake: run.flake };
+            const tmp = `${file}.${process.pid}.tmp`;
+            writeFileSync(tmp, JSON.stringify(next));
+            renameSync(tmp, file);
           }
-          return result
+
+          return result;
         }),
       (path) => Effect.sync(() => rmSync(path, { force: true })),
-    )
-  })
+    );
+  });
 
 /** How much memory an evaluator may hold, and how to read what one holds. */
 export interface Memory {
   /** Bytes, or null when nothing limits the job. */
-  readonly budget: number | null
+  readonly budget: number | null;
   /** The anonymous resident memory of a process, in bytes. */
-  readonly resident: (pid: number) => number
+  readonly resident: (pid: number) => number;
   /**
    * What an evaluator may hold given what else runs in the job's slice: 80% of the slice's limit less
    * what its other units use. Null where the slice has no limit.
    */
-  readonly room?: () => number | null
+  readonly room?: () => number | null;
   /** How often a running evaluator is checked against the budget. */
-  readonly every: Duration.Input
+  readonly every: Duration.Input;
 }
 
 /**
@@ -576,96 +869,129 @@ export interface Memory {
 export const jobMemory = (root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): Memory => {
   const read = (file: string) => {
     try {
-      return Number(readFileSync(file, "utf8").trim())
+      return Number(readFileSync(file, "utf8").trim());
     } catch {
-      return Number.NaN
+      return Number.NaN;
     }
-  }
+  };
+
   // "max" reads as NaN.
-  const limitOf = (dir: string) => Math.min(...[read(join(dir, "memory.high")), read(join(dir, "memory.max"))].filter(Number.isFinite))
-  let limit = Number.POSITIVE_INFINITY
-  let unit: string | undefined
+  const limitOf = (dir: string) =>
+    Math.min(
+      ...[read(join(dir, "memory.high")), read(join(dir, "memory.max"))].filter(Number.isFinite),
+    );
+
+  let limit = Number.POSITIVE_INFINITY;
+  let unit: string | undefined;
+
   try {
-    const path = /^0::(\/.*)$/m.exec(readFileSync(self, "utf8"))?.[1]
-    for (let dir = join(root, path ?? ""); path !== undefined && dir.startsWith(root); dir = dirname(dir)) {
-      limit = Math.min(limit, limitOf(dir))
-      if (dir === root) break
+    const path = /^0::(\/.*)$/m.exec(readFileSync(self, "utf8"))?.[1];
+
+    for (
+      let dir = join(root, path ?? "");
+      path !== undefined && dir.startsWith(root);
+      dir = dirname(dir)
+    ) {
+      limit = Math.min(limit, limitOf(dir));
+
+      if (dir === root) break;
     }
-    if (path !== undefined && path !== "/") unit = join(root, path)
+
+    if (path !== undefined && path !== "/") unit = join(root, path);
   } catch {
     // Not cgroup v2: nothing limits the job.
   }
+
   // The slice the job's unit runs in, which other jobs share.
-  const slice = unit === undefined ? undefined : dirname(unit)
+  const slice = unit === undefined ? undefined : dirname(unit);
+
   return {
     budget: Number.isFinite(limit) ? Math.floor((limit - process.memoryUsage().rss) * 0.8) : null,
-    ...(slice === undefined || slice === root ? {} : {
-      room: () => {
-        const sliceLimit = limitOf(slice)
-        if (!Number.isFinite(sliceLimit)) return null
-        // The other units' own charges: the slice's total also holds what finished jobs left behind,
-        // such as kernel slab, and this job's worker and page cache, which its own budget covers.
-        try {
-          const others = readdirSync(slice, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory() && join(slice, entry.name) !== unit)
-            .reduce((sum, entry) => sum + (read(join(slice, entry.name, "memory.current")) || 0), 0)
-          return Math.floor((sliceLimit - others) * 0.8)
-        } catch {
-          return null
-        }
-      },
-    }),
+    ...(slice === undefined || slice === root
+      ? {}
+      : {
+          room: () => {
+            const sliceLimit = limitOf(slice);
+
+            if (!Number.isFinite(sliceLimit)) return null;
+
+            // The other units' own charges: the slice's total also holds what finished jobs left behind,
+            // such as kernel slab, and this job's worker and page cache, which its own budget covers.
+            try {
+              const others = readdirSync(slice, { withFileTypes: true })
+                .filter((entry) => entry.isDirectory() && join(slice, entry.name) !== unit)
+                .reduce(
+                  (sum, entry) => sum + (read(join(slice, entry.name, "memory.current")) || 0),
+                  0,
+                );
+
+              return Math.floor((sliceLimit - others) * 0.8);
+            } catch {
+              return null;
+            }
+          },
+        }),
     // Anonymous memory only: what the evaluator allocated, not the files it has mapped.
     // The process and its children: under the recorder, nix runs below strace.
     resident: (pid) => {
       const tree = (id: number): ReadonlyArray<number> => {
         try {
-          const children = readFileSync(`/proc/${id}/task/${id}/children`, "utf8").trim().split(/\s+/).filter(Boolean)
-          return [id, ...children.flatMap((child) => tree(Number(child)))]
+          const children = readFileSync(`/proc/${id}/task/${id}/children`, "utf8")
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean);
+
+          return [id, ...children.flatMap((child) => tree(Number(child)))];
         } catch {
-          return [id]
+          return [id];
         }
-      }
+      };
+
       return tree(pid).reduce((sum, id) => {
         try {
-          const kb = /^RssAnon:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${id}/status`, "utf8"))?.[1]
-          return sum + (kb === undefined ? 0 : Number(kb) * 1024)
+          const kb = /^RssAnon:\s+(\d+) kB$/m.exec(readFileSync(`/proc/${id}/status`, "utf8"))?.[1];
+
+          return sum + (kb === undefined ? 0 : Number(kb) * 1024);
         } catch {
-          return sum
+          return sum;
         }
-      }, 0)
+      }, 0);
     },
     every: "1 second",
-  }
-}
+  };
+};
 
-const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`
+const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`;
 
 /** Stops an evaluator that holds more than the budget. */
 class Stopped extends Schema.TaggedError<Stopped>("calder/Stopped")("Stopped", {}) {}
 
 /** Where an evaluator's heartbeat goes, how often, and where its attributes stand in the whole evaluation. */
 interface Beat {
-  readonly log: Log
-  readonly cadence: Heartbeat.Cadence
+  readonly log: Log;
+  readonly cadence: Heartbeat.Cadence;
   /** How many attributes evaluators before this one got, and how many the evaluation has. */
-  readonly before: number
-  readonly total: number
+  readonly before: number;
+  readonly total: number;
 }
 
-const ansi = /\x1b\[[0-9;]*m/g
+const ansi = /\x1b\[[0-9;]*m/g;
+
 // Nix's result type for an activity's progress (src/libutil/logging.hh), with done and expected first.
-const resProgress = 105
+const resProgress = 105;
 
 /**
  * What Nix's fetches of the flake and its inputs get in their environment beside the worker's: on an
  * evaluator agent, the git configuration that fetches forge inputs from the controller with the job's
  * token (Client `evaluationEnv`). Only those Nix commands see the token.
  */
-export const FetchEnv = Context.Reference<Record<string, string>>("calder/worker/FetchEnv", { defaultValue: () => ({}) })
+export const FetchEnv = Context.Reference<Record<string, string>>("calder/worker/FetchEnv", {
+  defaultValue: () => ({}),
+});
 
 /** `text` as a Nix string literal: JSON's quoting leaves `${` to Nix's interpolation. */
-export const nixString = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$\{/g, "\\${")}"`
+export const nixString = (text: string) =>
+  `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$\{/g, "\\${")}"`;
 
 /**
  * One `nix eval` that evaluates `attrs` in order and reports each derivation on stderr as it gets it, so
@@ -676,20 +1002,40 @@ export const nixString = (text: string) => `"${text.replace(/\\/g, "\\\\").repla
  * Nix logs as JSON, which carries its activities, such as a copy to the store, whatever the verbosity:
  * the heartbeat says which one it is in. Its messages go on as the lines they print as.
  */
-const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, beat: Beat, recorder?: Recorder) =>
-  Effect.gen(function*() {
-    const unexpected = (what: string) => new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: 0, stderr: `nix eval gave ${what}` })
+const evaluator = (
+  flake: string,
+  attrs: ReadonlyArray<string>,
+  memory: Memory,
+  beat: Beat,
+  recorder?: Recorder,
+) =>
+  Effect.gen(function* () {
+    const unexpected = (what: string) =>
+      Exec.CommandFailed.make({
+        command: `nix eval of ${flake}`,
+        exitCode: 0,
+        stderr: `nix eval gave ${what}`,
+      });
+
     // The attribute paths go to Nix as data, a JSON string it parses and walks, never as code: a
     // pipeline's names must not be able to report a derivation for another attribute.
     // Only lines with this evaluator's tag report: the flake's own code can't know it, so can't forge one.
-    const tag = randomBytes(8).toString("hex")
+    const tag = randomBytes(8).toString("hex");
+
     const paths = attrs.map((attr) => {
-      const parts = Flake.components(attr)
-      if (parts === null) throw new Error(`${attr} is not an attribute path Calder evaluates`)
-      return parts
-    })
+      const parts = Flake.components(attr);
+
+      if (parts === null) throw new Error(`${attr} is not an attribute path Calder evaluates`);
+
+      return parts;
+    });
+
     // Under the recorder, a lookup of a marker that doesn't exist follows each attribute, after its value.
-    const mark = recorder === undefined ? "" : `builtins.seq (builtins.pathExists "\${f.outPath}/.calder-derivation-${recorder.nonce}-\${toString i}")`
+    const mark =
+      recorder === undefined
+        ? ""
+        : `builtins.seq (builtins.pathExists "\${f.outPath}/.calder-derivation-${recorder.nonce}-\${toString i}")`;
+
     const expr = `let f = builtins.getFlake ${nixString(recorder?.url ?? flake)};
       paths = builtins.fromJSON ${nixString(JSON.stringify(paths))};
       at = path: builtins.foldl' (x: name: builtins.getAttr name x) f path;
@@ -697,164 +1043,284 @@ const evaluator = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, 
         if t.success then { drv = t.value.drvPath; out = t.value.outPath; system = t.value.system; } else null;
       report = i: x: let v = builtins.toJSON [i (one x)]; in builtins.seq v (${mark} (builtins.trace "calder-derivation-${tag} \${v}" null));
       in builtins.seq (builtins.seq f (builtins.trace "calder-flake-${tag}" null))
-        (builtins.foldl' (_: x: x) null (builtins.genList (i: report i (at (builtins.elemAt paths i))) ${paths.length}))`
-    const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"))
-    const nix = ["nix", "eval", "--json", "--log-format", "internal-json", "--expr", expr]
-    const argv = recorder === undefined ? nix : [...straced(join(scratch, "trace")), ...nix]
-    const fetching = yield* FetchEnv
+        (builtins.foldl' (_: x: x) null (builtins.genList (i: report i (at (builtins.elemAt paths i))) ${paths.length}))`;
+
+    const scratch = mkdtempSync(join(tmpdir(), "calder-footprint-"));
+    const nix = ["nix", "eval", "--json", "--log-format", "internal-json", "--expr", expr];
+    const argv = recorder === undefined ? nix : [...straced(join(scratch, "trace")), ...nix];
+    const fetching = yield* FetchEnv;
+
     // The worker's environment, which strace needs to find nix, and only then what fetching adds.
-    const env = { env: { ...process.env, ...fetching, ...(recorder === undefined ? {} : emptyCache(scratch)) } }
-    const got: Array<Derivation | null> = []
+    const env = {
+      env: { ...process.env, ...fetching, ...(recorder === undefined ? {} : emptyCache(scratch)) },
+    };
+
+    const got: Array<Derivation | null> = [];
     /** Attributes whose report wasn't a derivation's paths, by index, with why. */
-    const refused = new Map<number, string>()
-    const stderr: Array<string> = []
-    let loaded = false
-    let pid = 0
-    let peak = 0
+    const refused = new Map<number, string>();
+    const stderr: Array<string> = [];
+    let loaded = false;
+    let pid = 0;
+    let peak = 0;
+
     const resident = () => {
-      const now = memory.resident(pid)
-      peak = Math.max(peak, now)
-      return now
-    }
+      const now = memory.resident(pid);
+      peak = Math.max(peak, now);
+
+      return now;
+    };
+
     // Over the job's budget; or, once it got an attribute, over what the slice has room for. A new
     // evaluator always gets its first attribute within the budget, so the slice only costs evaluators,
     // and an attribute is too large only for the job (`TooLarge`), never for a busy slice.
-    let forRoom = false
+    let forRoom = false;
+
     const full = () => {
-      const now = resident()
-      if (memory.budget !== null && now > memory.budget) return true
-      const room = got.length === 0 ? null : memory.room?.() ?? null
-      forRoom = room !== null && now > room
-      return forRoom
-    }
-    const started = Date.now()
+      const now = resident();
+
+      if (memory.budget !== null && now > memory.budget) return true;
+      const room = got.length === 0 ? null : (memory.room?.() ?? null);
+      forRoom = room !== null && now > room;
+
+      return forRoom;
+    };
+
+    const started = Date.now();
+
     /** Nix's activities that haven't ended, oldest first. */
-    const activities = new Map<number, { text: string; started: number; done?: number; expected?: number }>()
-    let said: { readonly text: string; readonly at: number } | undefined
+    const activities = new Map<
+      number,
+      { text: string; started: number; done?: number; expected?: number }
+    >();
+
+    let said: { readonly text: string; readonly at: number } | undefined;
+
     const text = (stream: "stdout" | "stderr", line: string) =>
-      Effect.gen(function*() {
-        const report = new RegExp(`^trace: calder-(flake|derivation)-${tag}(?: (.*))?$`).exec(line)
+      Effect.gen(function* () {
+        const report = new RegExp(`^trace: calder-(flake|derivation)-${tag}(?: (.*))?$`).exec(line);
+
         if (report === null) {
-          if (stream === "stderr") stderr.push(line)
-          if (stderr.length > 200) stderr.shift()
-          if (stream === "stderr" && line.trim() !== "") said = { text: line.trim(), at: Date.now() }
-          return
+          if (stream === "stderr") stderr.push(line);
+
+          if (stderr.length > 200) stderr.shift();
+
+          if (stream === "stderr" && line.trim() !== "")
+            said = { text: line.trim(), at: Date.now() };
+
+          return;
         }
+
         if (report[1] === "flake") {
-          loaded = true
-          return
+          loaded = true;
+
+          return;
         }
+
         const [index, derivation] = yield* Effect.try({
           try: () => JSON.parse(report[2]!) as [number, Derivation | null],
           catch: () => unexpected(`a report it can't read: ${line}`),
-        })
-        if (index !== got.length) return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`)
-        const bad = derivation === null ? null : malformed(derivation)
-        if (bad !== null) refused.set(index, bad)
-        got.push(bad === null ? derivation : null)
-        if (got.length < attrs.length && full()) return yield* new Stopped()
-      })
+        });
+
+        if (index !== got.length)
+          return yield* unexpected(`attribute ${index} reported where ${got.length} belonged`);
+        const bad = derivation === null ? null : malformed(derivation);
+
+        if (bad !== null) refused.set(index, bad);
+        got.push(bad === null ? derivation : null);
+
+        if (got.length < attrs.length && full()) return yield* Stopped.make();
+      });
+
     const logged = (line: string) => {
-      let entry: { readonly action?: string; readonly id?: number; readonly msg?: unknown; readonly text?: unknown; readonly type?: number; readonly fields?: ReadonlyArray<unknown> }
+      let entry: {
+        readonly action?: string;
+        readonly id?: number;
+        readonly msg?: unknown;
+        readonly text?: unknown;
+        readonly type?: number;
+        readonly fields?: ReadonlyArray<unknown>;
+      };
+
       try {
-        entry = JSON.parse(line.slice("@nix ".length))
+        entry = JSON.parse(line.slice("@nix ".length));
       } catch {
-        return text("stderr", line)
+        return text("stderr", line);
       }
-      const id = entry.id ?? 0
+
+      const id = entry.id ?? 0;
+
       switch (entry.action) {
         case "msg":
-          return Effect.forEach(String(entry.msg ?? "").replace(ansi, "").split("\n"), (l) => text("stderr", l), { discard: true })
+          return Effect.forEach(
+            String(entry.msg ?? "")
+              .replace(ansi, "")
+              .split("\n"),
+            (l) => text("stderr", l),
+            { discard: true },
+          );
         case "start":
-          if (typeof entry.text === "string" && entry.text !== "") activities.set(id, { text: entry.text.replace(ansi, ""), started: Date.now() })
-          return Effect.void
+          if (typeof entry.text === "string" && entry.text !== "")
+            activities.set(id, { text: entry.text.replace(ansi, ""), started: Date.now() });
+
+          return Effect.void;
         case "stop":
-          activities.delete(id)
-          return Effect.void
+          activities.delete(id);
+
+          return Effect.void;
         case "result": {
-          const activity = activities.get(id)
-          const [done, expected] = entry.fields ?? []
-          if (activity !== undefined && entry.type === resProgress && typeof done === "number" && typeof expected === "number") {
-            Object.assign(activity, { done, expected })
+          const activity = activities.get(id);
+          const [done, expected] = entry.fields ?? [];
+
+          if (
+            activity !== undefined &&
+            entry.type === resProgress &&
+            typeof done === "number" &&
+            typeof expected === "number"
+          ) {
+            Object.assign(activity, { done, expected });
           }
-          return Effect.void
+
+          return Effect.void;
         }
+
         default:
-          return Effect.void
+          return Effect.void;
       }
-    }
+    };
+
     const progress = (): Heartbeat.Progress => {
-      const activity = [...activities.values()].at(-1)
-      const name = attrs[got.length]
+      const activity = [...activities.values()].at(-1);
+      const name = attrs[got.length];
+
       return {
         started,
         loaded,
         budget: memory.budget,
-        ...(name === undefined ? {} : { attr: { index: beat.before + got.length + 1, total: beat.total, name } }),
+        ...(name === undefined
+          ? {}
+          : { attr: { index: beat.before + got.length + 1, total: beat.total, name } }),
         ...(activity === undefined ? {} : { activity }),
         ...(said === undefined ? {} : { said }),
-      }
-    }
+      };
+    };
+
     const heartbeat = (id: number) =>
-      Effect.gen(function*() {
-        const trace = recorder === undefined ? undefined : join(scratch, "trace")
-        const look = (daemon: string | null) => Heartbeat.sample(id, { resident: memory.resident, trace, daemon })
+      Effect.gen(function* () {
+        const trace = recorder === undefined ? undefined : join(scratch, "trace");
+
+        const look = (daemon: string | null) =>
+          Heartbeat.sample(id, { resident: memory.resident, trace, daemon });
+
         // Nix's CPU time counts from its start, before which only strace may run.
-        let before: Heartbeat.Sample = { ...look(null), cpu: 0 }
-        yield* Effect.sleep(beat.cadence.first)
-        const daemon = yield* Heartbeat.daemonCgroup
+        let before: Heartbeat.Sample = { ...look(null), cpu: 0 };
+        yield* Effect.sleep(beat.cadence.first);
+        const daemon = yield* Heartbeat.daemonCgroup;
+
         while (true) {
-          const now = look(daemon)
-          yield* beat.log(Heartbeat.describe(progress(), before, now))
-          before = now
-          yield* Effect.sleep(beat.cadence.every)
+          const now = look(daemon);
+          yield* beat.log(Heartbeat.describe(progress(), before, now));
+          before = now;
+          yield* Effect.sleep(beat.cadence.every);
         }
-      })
-    const exit = yield* Exec.stream(argv, env, (stream, line) =>
-      stream === "stderr" && line.startsWith("@nix ") ? logged(line) : text(stream, line), (id) => {
-      pid = id
-      const budget = Effect.gen(function*() {
-        while (memory.budget !== null) {
-          yield* Effect.sleep(memory.every)
-          if (full()) return yield* new Stopped()
-        }
-      })
-      return Effect.all([budget, heartbeat(id)], { concurrency: "unbounded", discard: true })
-    }).pipe(
-      Effect.catchTag("Stopped", () => Effect.succeed("over" as const)),
-      // A signal, such as the kernel's OOM killer's SIGKILL, fails the exit code rather than giving one.
-      Effect.catchTag("PlatformError", (e) => /receipt of signal/.test(String(e.cause ?? e.message)) ? Effect.succeed("killed" as const) : Effect.fail(e)),
-      Effect.ensuring(Effect.sync(() => rmSync(join(scratch, "cache"), { recursive: true, force: true }))),
-    )
+      });
+
+    const exit = yield* Exec.stream(
+      argv,
+      env,
+      (stream, line) =>
+        stream === "stderr" && line.startsWith("@nix ") ? logged(line) : text(stream, line),
+      (id) => {
+        pid = id;
+
+        const budget = Effect.gen(function* () {
+          while (memory.budget !== null) {
+            yield* Effect.sleep(memory.every);
+
+            if (full()) return yield* Stopped.make();
+          }
+        });
+
+        return Effect.all([budget, heartbeat(id)], { concurrency: "unbounded", discard: true });
+      },
+    ).pipe(
+      Effect.catchTags({
+        Stopped: () => Effect.succeed("over" as const),
+        // A signal, such as the kernel's OOM killer's SIGKILL, fails the exit code rather than giving one.
+        PlatformError: (e) =>
+          /receipt of signal/.test(String(e.cause ?? e.message))
+            ? Effect.succeed("killed" as const)
+            : Effect.fail(e),
+      }),
+      Effect.ensuring(
+        Effect.sync(() => rmSync(join(scratch, "cache"), { recursive: true, force: true })),
+      ),
+    );
+
     const trace = yield* Effect.sync(() => {
       try {
-        return recorder === undefined ? undefined : Footprint.parseTrace(readFileSync(join(scratch, "trace"), "utf8"), recorder.source, recorder.nonce)
+        return recorder === undefined
+          ? undefined
+          : Footprint.parseTrace(
+              readFileSync(join(scratch, "trace"), "utf8"),
+              recorder.source,
+              recorder.nonce,
+            );
       } catch {
-        return undefined
+        return undefined;
       } finally {
-        rmSync(scratch, { recursive: true, force: true })
+        rmSync(scratch, { recursive: true, force: true });
       }
-    })
+    });
+
     // Killed before the flake loaded under the recorder, such as strace by a signal: the recording failed,
     // and the plan evaluates without it. Without the recorder, loading the flake outgrew the memory.
     if (exit !== 0 && exit !== "over" && !loaded && (exit !== "killed" || recorder !== undefined)) {
-      return yield* new Exec.CommandFailed({ command: `nix eval of ${flake}`, exitCode: exit === "killed" ? -1 : exit, stderr: stderr.join("\n") })
+      return yield* Exec.CommandFailed.make({
+        command: `nix eval of ${flake}`,
+        exitCode: exit === "killed" ? -1 : exit,
+        stderr: stderr.join("\n"),
+      });
     }
-    if (exit === 0 && got.length < attrs.length) return yield* unexpected(`${attrs.length - got.length} attributes went unreported`)
+
+    if (exit === 0 && got.length < attrs.length)
+      return yield* unexpected(`${attrs.length - got.length} attributes went unreported`);
+
     // Killed by a signal, such as the kernel's OOM killer (which takes the whole job instead unless its
     // unit sets OOMPolicy=continue): the attribute in flight counts as outgrowing the budget.
-    const stop = exit === "over" ? exit : exit === "killed" && got.length < attrs.length ? "over" as const
-      : got.length === attrs.length ? "done" as const : "failed" as const
+    const stop =
+      exit === "over"
+        ? exit
+        : exit === "killed" && got.length < attrs.length
+          ? ("over" as const)
+          : got.length === attrs.length
+            ? ("done" as const)
+            : ("failed" as const);
+
     // Nix's innermost error comes last.
-    const error = stderr.map((line) => line.trim()).findLast((line) => line.startsWith("error:"))?.replace(/^error:\s*/, "") ?? ""
-    return { got, refused, stop, error, peak, loaded, trace, forRoom: stop === "over" && forRoom }
-  })
+    const error =
+      stderr
+        .map((line) => line.trim())
+        .findLast((line) => line.startsWith("error:"))
+        ?.replace(/^error:\s*/, "") ?? "";
+
+    return { got, refused, stop, error, peak, loaded, trace, forRoom: stop === "over" && forRoom };
+  });
 
 /** Runs a command under strace, writing the source accesses Footprint.parseTrace reads to `file`. */
 const straced = (file: string) => [
-  "strace", "-f", "-qq", "--seccomp-bpf", "-s", "4096", "-e", "signal=none", "-o", file,
-  "-e", "trace=?open,openat,?openat2,?stat,?lstat,?newfstatat,?statx,?access,?faccessat,?faccessat2,?readlinkat,?readlink",
-]
+  "strace",
+  "-f",
+  "-qq",
+  "--seccomp-bpf",
+  "-s",
+  "4096",
+  "-e",
+  "signal=none",
+  "-o",
+  file,
+  "-e",
+  "trace=?open,openat,?openat2,?stat,?lstat,?newfstatat,?statx,?access,?faccessat,?faccessat2,?readlinkat,?readlink",
+];
 
 /** An attribute needs more memory to evaluate than its job may use, even in an evaluator of its own. */
 export class TooLarge extends Schema.TaggedError<TooLarge>("calder/TooLarge")("TooLarge", {
@@ -862,14 +1328,18 @@ export class TooLarge extends Schema.TaggedError<TooLarge>("calder/TooLarge")("T
   budget: Schema.Number,
 }) {
   override get message() {
-    const what = this.attr === loadingTheFlake ? "Loading the flake" : `Evaluating ${this.attr} alone`
-    return `${what} took more than ${gib(this.budget)}, 80% of what its job may use, ` +
+    const what =
+      this.attr === loadingTheFlake ? "Loading the flake" : `Evaluating ${this.attr} alone`;
+
+    return (
+      `${what} took more than ${gib(this.budget)}, 80% of what its job may use, ` +
       "so Calder stopped it instead of swapping. Make the attribute cheaper to evaluate or give the pool's jobs more memory."
+    );
   }
 }
 
 /** What outgrew the budget when the evaluator hadn't loaded the flake yet. */
-const loadingTheFlake = "loading the flake"
+const loadingTheFlake = "loading the flake";
 
 /**
  * Evaluates the attributes in order, sharing an evaluator between them, so what they have in common,
@@ -887,81 +1357,121 @@ const loadingTheFlake = "loading the flake"
  * `errors` has Nix's reason. One that throws, which `tryEval` catches, is null.
  */
 /** How long a failed attribute waits before its second try. */
-const retryAfter = "2 seconds"
+const retryAfter = "2 seconds";
 
-const evaluate = (flake: string, attrs: ReadonlyArray<string>, memory: Memory, log: Log, cadence: Heartbeat.Cadence, recorder?: Recorder) =>
-  Effect.gen(function*() {
-    const started = Date.now()
-    const passes: Array<{ readonly attrs: ReadonlyArray<string>; readonly trace: Footprint.Trace | undefined }> = []
-    const derivations = new Map<string, Derivation | null>()
-    const errors = new Map<string, string>()
-    const tooLarge = new Map<string, TooLarge>()
-    const retried = new Set<string>()
+const evaluate = (
+  flake: string,
+  attrs: ReadonlyArray<string>,
+  memory: Memory,
+  log: Log,
+  cadence: Heartbeat.Cadence,
+  recorder?: Recorder,
+) =>
+  Effect.gen(function* () {
+    const started = Date.now();
+
+    const passes: Array<{
+      readonly attrs: ReadonlyArray<string>;
+      readonly trace: Footprint.Trace | undefined;
+    }> = [];
+
+    const derivations = new Map<string, Derivation | null>();
+    const errors = new Map<string, string>();
+    const tooLarge = new Map<string, TooLarge>();
+    const retried = new Set<string>();
     /** How many attributes failed for good with each error: one many share, such as an unreachable input, isn't retried. */
-    const failedWith = new Map<string, number>()
-    let done = 0
-    let evaluators = 0
-    let forRoom = 0
-    let peak = 0
+    const failedWith = new Map<string, number>();
+    let done = 0;
+    let evaluators = 0;
+    let forRoom = 0;
+    let peak = 0;
+
     while (done < attrs.length) {
-      const rest = attrs.slice(done)
-      const pass = yield* evaluator(flake, rest, memory, { log, cadence, before: done, total: attrs.length }, recorder)
-      if (recorder !== undefined) passes.push({ attrs: rest.slice(0, pass.got.length), trace: pass.trace })
-      evaluators++
-      if (pass.forRoom) forRoom++
-      peak = Math.max(peak, pass.peak)
-      pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation))
+      const rest = attrs.slice(done);
+
+      const pass = yield* evaluator(
+        flake,
+        rest,
+        memory,
+        { log, cadence, before: done, total: attrs.length },
+        recorder,
+      );
+
+      if (recorder !== undefined)
+        passes.push({ attrs: rest.slice(0, pass.got.length), trace: pass.trace });
+      evaluators++;
+
+      if (pass.forRoom) forRoom++;
+      peak = Math.max(peak, pass.peak);
+      pass.got.forEach((derivation, i) => derivations.set(rest[i]!, derivation));
+
       for (const [i, why] of pass.refused) {
-        errors.set(rest[i]!, why)
-        yield* log(`${rest[i]} did not evaluate: ${why}`)
+        errors.set(rest[i]!, why);
+        yield* log(`${rest[i]} did not evaluate: ${why}`);
       }
-      done += pass.got.length
-      const next = rest[pass.got.length]
-      if (next === undefined || (pass.stop === "over" && pass.got.length > 0)) continue
-      if (pass.stop === "over" && !pass.loaded) return yield* new TooLarge({ attr: loadingTheFlake, budget: memory.budget ?? 0 })
+
+      done += pass.got.length;
+      const next = rest[pass.got.length];
+
+      if (next === undefined || (pass.stop === "over" && pass.got.length > 0)) continue;
+
+      if (pass.stop === "over" && !pass.loaded)
+        return yield* TooLarge.make({ attr: loadingTheFlake, budget: memory.budget ?? 0 });
+
       if (pass.stop === "over") {
-        tooLarge.set(next, new TooLarge({ attr: next, budget: memory.budget ?? 0 }))
-        done++
-        yield* log(tooLarge.get(next)!.message)
-        continue
+        tooLarge.set(next, TooLarge.make({ attr: next, budget: memory.budget ?? 0 }));
+        done++;
+        yield* log(tooLarge.get(next)!.message);
+        continue;
       }
+
       if (!retried.has(next) && (failedWith.get(pass.error) ?? 0) < 2) {
-        retried.add(next)
+        retried.add(next);
         // A fetch or the daemon may fail for a moment.
-        yield* Effect.sleep(retryAfter)
-        continue
+        yield* Effect.sleep(retryAfter);
+        continue;
       }
-      errors.set(next, pass.error)
-      failedWith.set(pass.error, (failedWith.get(pass.error) ?? 0) + 1)
-      done++
-      yield* log(`${next} did not evaluate: ${pass.error}`)
+
+      errors.set(next, pass.error);
+      failedWith.set(pass.error, (failedWith.get(pass.error) ?? 0) + 1);
+      done++;
+      yield* log(`${next} did not evaluate: ${pass.error}`);
     }
-    const budget = memory.budget === null ? "" : ` of ${gib(memory.budget)}`
-    const slice = forRoom === 0 ? "" : `, ${forRoom} of them for want of room in the jobs slice`
-    yield* log(`evaluated ${derivations.size} attributes of the flake in ${Date.now() - started} ms with ${evaluators} evaluators${slice}, holding at most ${gib(peak)}${budget}`)
-    if (recorder === undefined) return { derivations, errors, tooLarge } as Evaluated
-    const recorded = yield* records(recorder, passes, derivations)
-    yield* log(`recorded footprints of ${recorded.evaluations.length} of ${attrs.length} attributes`)
-    return { derivations, errors, tooLarge, recorded } as Evaluated
-  })
+
+    const budget = memory.budget === null ? "" : ` of ${gib(memory.budget)}`;
+    const slice = forRoom === 0 ? "" : `, ${forRoom} of them for want of room in the jobs slice`;
+    yield* log(
+      `evaluated ${derivations.size} attributes of the flake in ${Date.now() - started} ms with ${evaluators} evaluators${slice}, holding at most ${gib(peak)}${budget}`,
+    );
+
+    if (recorder === undefined) return { derivations, errors, tooLarge } as Evaluated;
+    const recorded = yield* records(recorder, passes, derivations);
+    yield* log(
+      `recorded footprints of ${recorded.evaluations.length} of ${attrs.length} attributes`,
+    );
+
+    return { derivations, errors, tooLarge, recorded } as Evaluated;
+  });
 
 /** What a plan records footprints with: the source in the store, the `path:` URL that reads it there, and its git tree. */
 export interface Recorder {
-  readonly source: string
-  readonly url: string
-  readonly revision: string
-  readonly at: Footprint.Tree
+  readonly source: string;
+  readonly url: string;
+  readonly revision: string;
+  readonly at: Footprint.Tree;
   /** What a derivation that depends on this commit or on the whole source contains (see `marksOf`). */
-  readonly marks: ReadonlyArray<string>
+  readonly marks: ReadonlyArray<string>;
   /** The source's NAR hash: a store path with it is the source under another name. */
-  readonly narHash: string
+  readonly narHash: string;
   /** Store paths a read of which `flake.lock` pins or that are Nix's own: the inputs and Nix's closure. */
-  readonly pinned: ReadonlySet<string>
+  readonly pinned: ReadonlySet<string>;
   /** What else decides an evaluation's result (`evaluationContext`), which every digest covers. */
-  readonly context: string
+  readonly context: string;
   /** In each marker's name, so flake code can't forge one. */
-  readonly nonce: string
-  readonly read: (paths: ReadonlyArray<string>) => Effect.Effect<ReadonlyMap<string, string>, Error>
+  readonly nonce: string;
+  readonly read: (
+    paths: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyMap<string, string>, Error>;
 }
 
 /**
@@ -970,10 +1480,11 @@ export interface Recorder {
  * sets). A record made under another counts nowhere.
  */
 export const evaluationContext = (system: string) =>
-  Effect.gen(function*() {
-    const { nix: version, ifd } = yield* nixSettings
-    return sha256({ version, system, ifd, config: process.env.NIX_CONFIG ?? "" })
-  }).pipe(Effect.orElseSucceed(() => undefined))
+  Effect.gen(function* () {
+    const { nix: version, ifd } = yield* nixSettings;
+
+    return sha256({ version, system, ifd, config: process.env.NIX_CONFIG ?? "" });
+  }).pipe(Effect.orElseSucceed(() => undefined));
 
 /**
  * A recorder for the run's revision, or none where Calder can't record: not Linux, no strace, or a flake
@@ -982,30 +1493,69 @@ export const evaluationContext = (system: string) =>
  * `git+file:` URL, but Nix reads its files from the store, where strace sees them.
  */
 export const recorder = (run: RunInfo, repo: RepoAt) =>
-  Effect.gen(function*() {
-    if (process.platform !== "linux" || !/[?&]rev=/.test(run.flake)) return undefined
-    if ((yield* Exec.exec(["strace", "-V"])).exitCode !== 0) return undefined
-    const fetching = { env: { ...process.env, ...(yield* FetchEnv) } }
-    const { path, locked } = JSON.parse(yield* Exec.run(["nix", "flake", "metadata", "--json", run.flake], fetching)) as {
-      readonly path?: string
-      readonly locked?: { readonly rev?: string; readonly revCount?: number; readonly lastModified?: number; readonly narHash?: string }
-    }
-    if (path === undefined || locked?.rev === undefined || locked.lastModified === undefined || locked.narHash === undefined) return undefined
-    const context = yield* evaluationContext(run.system)
-    if (context === undefined) return undefined
+  Effect.gen(function* () {
+    if (process.platform !== "linux" || !/[?&]rev=/.test(run.flake)) return undefined;
+
+    if ((yield* Exec.exec(["strace", "-V"])).exitCode !== 0) return undefined;
+    const fetching = { env: { ...process.env, ...(yield* FetchEnv) } };
+
+    const { path, locked } = JSON.parse(
+      yield* Exec.run(["nix", "flake", "metadata", "--json", run.flake], fetching),
+    ) as {
+      readonly path?: string;
+      readonly locked?: {
+        readonly rev?: string;
+        readonly revCount?: number;
+        readonly lastModified?: number;
+        readonly narHash?: string;
+      };
+    };
+
+    if (
+      path === undefined ||
+      locked?.rev === undefined ||
+      locked.lastModified === undefined ||
+      locked.narHash === undefined
+    )
+      return undefined;
+    const context = yield* evaluationContext(run.system);
+
+    if (context === undefined) return undefined;
+
     // The inputs flake.lock pins, and Nix's own closure (its libraries and data).
-    const archive = JSON.parse(yield* Exec.run(["nix", "flake", "archive", "--json", "--dry-run", run.flake], fetching)) as unknown
+    const archive = JSON.parse(
+      yield* Exec.run(["nix", "flake", "archive", "--json", "--dry-run", run.flake], fetching),
+    ) as unknown;
+
     const inputs = (node: unknown): ReadonlyArray<string> => {
-      const n = node as { readonly path?: string; readonly inputs?: Record<string, unknown> } | null
-      return n === null || typeof n !== "object" ? [] : [...(n.path === undefined ? [] : [n.path]), ...Object.values(n.inputs ?? {}).flatMap(inputs)]
-    }
-    const own = (yield* Exec.run(["sh", "-c", "nix-store --query --requisites \"$(readlink -f \"$(command -v nix)\")\""])).split("\n").filter(Boolean)
+      const n = node as {
+        readonly path?: string;
+        readonly inputs?: Record<string, unknown>;
+      } | null;
+
+      return n === null || typeof n !== "object"
+        ? []
+        : [
+            ...(n.path === undefined ? [] : [n.path]),
+            ...Object.values(n.inputs ?? {}).flatMap(inputs),
+          ];
+    };
+
+    const own = (yield* Exec.run([
+      "sh",
+      "-c",
+      'nix-store --query --requisites "$(readlink -f "$(command -v nix)")"',
+    ]))
+      .split("\n")
+      .filter(Boolean);
+
     const query = [
       `rev=${locked.rev}`,
       ...(locked.revCount === undefined ? [] : [`revCount=${locked.revCount}`]),
       `lastModified=${locked.lastModified}`,
       `narHash=${encodeURIComponent(locked.narHash)}`,
-    ].join("&")
+    ].join("&");
+
     return {
       source: path,
       url: `path:${path}?${query}`,
@@ -1017,17 +1567,17 @@ export const recorder = (run: RunInfo, repo: RepoAt) =>
       context,
       nonce: randomBytes(8).toString("hex"),
       read: repo.read,
-    } satisfies Recorder
-  }).pipe(Effect.orElseSucceed(() => undefined))
+    } satisfies Recorder;
+  }).pipe(Effect.orElseSucceed(() => undefined));
 
 /** A footprint that might become a record: an attribute of an evaluator, with what it read of the store. */
 export interface Candidate {
-  readonly attr: string
-  readonly index: number
-  readonly count: number
-  readonly entries: ReadonlyArray<readonly [string, Footprint.Access]>
-  readonly outside: ReadonlyArray<string>
-  readonly derivation: Derivation | null
+  readonly attr: string;
+  readonly index: number;
+  readonly count: number;
+  readonly entries: ReadonlyArray<readonly [string, Footprint.Access]>;
+  readonly outside: ReadonlyArray<string>;
+  readonly derivation: Derivation | null;
 }
 
 /**
@@ -1038,61 +1588,107 @@ export interface Candidate {
  * something else then.
  */
 export const vetted = (recorder: Recorder, candidates: ReadonlyArray<Candidate>) =>
-  Effect.gen(function*() {
-    const nix = [...new Set(candidates.flatMap((c) => c.entries.slice(0, c.count).filter(([p, a]) => a === "read" && p.endsWith(".nix")).map(([p]) => p)))]
-    const sources = yield* recorder.read(nix).pipe(Effect.orElseSucceed(() => undefined))
-    const counting = sources === undefined ? new Set(nix) : new Set([...sources].filter(([, text]) => text.includes("revCount")).map(([p]) => p))
-    const foreign = [...new Set(candidates.flatMap((c) => c.outside))].filter((p) => !recorder.pinned.has(p))
-    const derivers = yield* derivers_(foreign)
+  Effect.gen(function* () {
+    const nix = [
+      ...new Set(
+        candidates.flatMap((c) =>
+          c.entries
+            .slice(0, c.count)
+            .filter(([p, a]) => a === "read" && p.endsWith(".nix"))
+            .map(([p]) => p),
+        ),
+      ),
+    ];
+
+    const sources = yield* recorder.read(nix).pipe(Effect.orElseSucceed(() => undefined));
+
+    const counting =
+      sources === undefined
+        ? new Set(nix)
+        : new Set([...sources].filter(([, text]) => text.includes("revCount")).map(([p]) => p));
+
+    const foreign = [...new Set(candidates.flatMap((c) => c.outside))].filter(
+      (p) => !recorder.pinned.has(p),
+    );
+
+    const derivers = yield* derivers_(foreign);
     // Without a deriver, a path the evaluation itself wrote by content (`builtins.toFile`, a fixed-output
     // fetch) is a function of what it read, unless it refers to the source or mentions the commit.
-    const unknown = foreign.filter((p) => derivers.get(p) === null)
-    const byContent = yield* contentAddressed(unknown, recorder)
+    const unknown = foreign.filter((p) => derivers.get(p) === null);
+    const byContent = yield* contentAddressed(unknown, recorder);
+
     const roots = (c: Candidate) => [
       ...(c.derivation === null ? [] : [c.derivation.drv]),
-      ...c.outside.filter((p) => !recorder.pinned.has(p) && !byContent.has(p)).map((p) => derivers.get(p) ?? null),
-    ]
-    const all = [...new Set(candidates.flatMap(roots).filter((d): d is string => d !== null))]
-    const marked = yield* commitBound(all, recorder)
-    return candidates.filter((c) =>
-      roots(c).every((root) => root !== null && !marked.has(root)) &&
-      !c.entries.slice(0, c.count).some(([p, a]) => a === "read" && counting.has(p))
-    )
-  })
+      ...c.outside
+        .filter((p) => !recorder.pinned.has(p) && !byContent.has(p))
+        .map((p) => derivers.get(p) ?? null),
+    ];
+
+    const all = [...new Set(candidates.flatMap(roots).filter((d): d is string => d !== null))];
+    const marked = yield* commitBound(all, recorder);
+
+    return candidates.filter(
+      (c) =>
+        roots(c).every((root) => root !== null && !marked.has(root)) &&
+        !c.entries.slice(0, c.count).some(([p, a]) => a === "read" && counting.has(p)),
+    );
+  });
 
 /**
  * Of `paths`, those that are content-addressed (`ca` text or fixed), aren't a copy of the source (its NAR
  * hash), refer to nothing but other store paths than the source, and whose text doesn't mention the commit.
  */
 const contentAddressed = (paths: ReadonlyArray<string>, recorder: Recorder) =>
-  Effect.gen(function*() {
-    const infos = yield* pathInfo(paths)
-    return new Set([...infos].filter(([path, info]) => {
-      if (!info.ca?.startsWith("text:") && !info.ca?.startsWith("fixed:")) return false
-      // A copy of the whole source under another name is the source.
-      if (info.narHash === recorder.narHash || (info.references ?? []).includes(recorder.source)) return false
-      if (!info.ca.startsWith("text:")) return true
-      try {
-        const text = readFileSync(path, "utf8")
-        return !recorder.marks.some((mark) => text.includes(mark))
-      } catch {
-        return false
-      }
-    }).map(([path]) => path))
-  })
+  Effect.gen(function* () {
+    const infos = yield* pathInfo(paths);
+
+    return new Set(
+      [...infos]
+        .filter(([path, info]) => {
+          if (!info.ca?.startsWith("text:") && !info.ca?.startsWith("fixed:")) return false;
+
+          // A copy of the whole source under another name is the source.
+          if (
+            info.narHash === recorder.narHash ||
+            (info.references ?? []).includes(recorder.source)
+          )
+            return false;
+
+          if (!info.ca.startsWith("text:")) return true;
+
+          try {
+            const text = readFileSync(path, "utf8");
+
+            return !recorder.marks.some((mark) => text.includes(mark));
+          } catch {
+            return false;
+          }
+        })
+        .map(([path]) => path),
+    );
+  });
 
 /** The derivation each store path came from: itself for a derivation, null where Nix doesn't know one. */
 const derivers_ = (paths: ReadonlyArray<string>) =>
-  Effect.gen(function*() {
-    const out = new Map<string, string | null>(paths.filter((p) => p.endsWith(".drv")).map((p) => [p, p]))
+  Effect.gen(function* () {
+    const out = new Map<string, string | null>(
+      paths.filter((p) => p.endsWith(".drv")).map((p) => [p, p]),
+    );
+
     // Nix answers a line per path it is asked about, so a path it isn't asked about can't shift the others.
-    for (const p of paths) if (!out.has(p) && only([p]).length === 0) out.set(p, null)
-    const rest = paths.filter((p) => !out.has(p))
-    if (rest.length === 0) return out
-    const lines = (yield* Exec.run(["nix-store", "--query", "--deriver", ...rest]).pipe(Effect.orElseSucceed(() => ""))).split("\n")
-    rest.forEach((p, i) => out.set(p, lines[i]?.endsWith(".drv") ? lines[i]! : null))
-    return out
-  })
+    for (const p of paths) if (!out.has(p) && only([p]).length === 0) out.set(p, null);
+    const rest = paths.filter((p) => !out.has(p));
+
+    if (rest.length === 0) return out;
+
+    const lines = (yield* Exec.run(["nix-store", "--query", "--deriver", ...rest]).pipe(
+      Effect.orElseSucceed(() => ""),
+    )).split("\n");
+
+    rest.forEach((p, i) => out.set(p, lines[i]?.endsWith(".drv") ? lines[i]! : null));
+
+    return out;
+  });
 
 /**
  * The records an evaluation leaves: a footprint per evaluator, and for each attribute it got that one
@@ -1100,25 +1696,46 @@ const derivers_ = (paths: ReadonlyArray<string>) =>
  */
 const records = (
   recorder: Recorder,
-  passes: ReadonlyArray<{ readonly attrs: ReadonlyArray<string>; readonly trace: Footprint.Trace | undefined }>,
+  passes: ReadonlyArray<{
+    readonly attrs: ReadonlyArray<string>;
+    readonly trace: Footprint.Trace | undefined;
+  }>,
   derivations: ReadonlyMap<string, Derivation | null>,
 ) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const candidates = passes.flatMap((pass, index): ReadonlyArray<Candidate> => {
-      if (pass.trace === undefined) return []
-      const trace = pass.trace
-      const { entries, counts } = Footprint.footprints(trace, recorder.at)
+      if (pass.trace === undefined) return [];
+      const trace = pass.trace;
+      const { entries, counts } = Footprint.footprints(trace, recorder.at);
+
       return pass.attrs.flatMap((attr, i) => {
-        const count = counts[i]
-        const derivation = derivations.get(attr)
-        if (count === undefined || count === null || derivation === undefined) return []
-        return [{ attr, index, count, entries, derivation, outside: trace.outside.filter(([, before]) => before <= i).map(([p]) => p) }]
-      })
-    })
-    const kept = yield* vetted(recorder, candidates)
-    const used = [...new Set(kept.map((c) => c.index))]
+        const count = counts[i];
+        const derivation = derivations.get(attr);
+
+        if (count === undefined || count === null || derivation === undefined) return [];
+
+        return [
+          {
+            attr,
+            index,
+            count,
+            entries,
+            derivation,
+            outside: trace.outside.filter(([, before]) => before <= i).map(([p]) => p),
+          },
+        ];
+      });
+    });
+
+    const kept = yield* vetted(recorder, candidates);
+    const used = [...new Set(kept.map((c) => c.index))];
+
     return {
-      footprints: used.map((index) => ({ id: String(index), revision: recorder.revision, entries: kept.find((c) => c.index === index)!.entries })),
+      footprints: used.map((index) => ({
+        id: String(index),
+        revision: recorder.revision,
+        entries: kept.find((c) => c.index === index)!.entries,
+      })),
       evaluations: kept.map((c) => ({
         attr: c.attr,
         footprint: String(c.index),
@@ -1126,8 +1743,8 @@ const records = (
         digest: Footprint.digest(recorder.at, c.entries, c.count, recorder.context),
         derivation: c.derivation,
       })),
-    } satisfies Records
-  })
+    } satisfies Records;
+  });
 
 /**
  * Of `drvs`, those whose closure depends on the commit or the whole source: a derivation in it mentions one
@@ -1136,70 +1753,134 @@ const records = (
  * the source's). A closure that can't be read counts as bound, which only costs an evaluation later.
  */
 const commitBound = (drvs: ReadonlyArray<string>, recorder: Pick<Recorder, "marks" | "narHash">) =>
-  Effect.gen(function*() {
-    const closures = yield* Effect.forEach(drvs, (drv) =>
-      only([drv]).length === 0 ? Effect.succeed([drv, null] as const) : Exec.run(["nix-store", "--query", "--requisites", ...only([drv])]).pipe(
-        Effect.map((out) => [drv, out.split("\n").filter(Boolean)] as const),
-        Effect.orElseSucceed(() => [drv, null] as const),
-      ), { concurrency: 4 })
+  Effect.gen(function* () {
+    const closures = yield* Effect.forEach(
+      drvs,
+      (drv) =>
+        only([drv]).length === 0
+          ? Effect.succeed([drv, null] as const)
+          : Exec.run(["nix-store", "--query", "--requisites", ...only([drv])]).pipe(
+              Effect.map((out) => [drv, out.split("\n").filter(Boolean)] as const),
+              Effect.orElseSucceed(() => [drv, null] as const),
+            ),
+      { concurrency: 4 },
+    );
+
     const mentions = (path: string) => {
       try {
-        const text = readFileSync(path, "utf8")
-        return recorder.marks.some((mark) => text.includes(mark))
+        const text = readFileSync(path, "utf8");
+
+        return recorder.marks.some((mark) => text.includes(mark));
       } catch {
-        return true
+        return true;
       }
-    }
-    const sources = [...new Set(closures.flatMap(([, closure]) => (closure ?? []).filter((p) => !p.endsWith(".drv"))))]
-    const infos = yield* pathInfo(sources)
-    const bound = new Map<string, boolean>()
+    };
+
+    const sources = [
+      ...new Set(
+        closures.flatMap(([, closure]) => (closure ?? []).filter((p) => !p.endsWith(".drv"))),
+      ),
+    ];
+
+    const infos = yield* pathInfo(sources);
+    const bound = new Map<string, boolean>();
+
     const check = (path: string) => {
-      let known = bound.get(path)
+      let known = bound.get(path);
+
       if (known === undefined) {
-        if (path.endsWith(".drv")) known = mentions(path)
+        if (path.endsWith(".drv")) known = mentions(path);
         else {
-          const info = infos.get(path)
-          known = info === undefined || info.narHash === recorder.narHash || (info.ca?.startsWith("text:") === true && mentions(path))
+          const info = infos.get(path);
+          known =
+            info === undefined ||
+            info.narHash === recorder.narHash ||
+            (info.ca?.startsWith("text:") === true && mentions(path));
         }
-        bound.set(path, known)
+
+        bound.set(path, known);
       }
-      return known
-    }
-    return new Set(closures.filter(([, closure]) => closure === null || closure.some(check)).map(([drv]) => drv))
-  })
+
+      return known;
+    };
+
+    return new Set(
+      closures.filter(([, closure]) => closure === null || closure.some(check)).map(([drv]) => drv),
+    );
+  });
 
 /** `nix path-info` of store paths: how each is addressed, its NAR hash and references. */
 const pathInfo = (paths: ReadonlyArray<string>) =>
-  Effect.gen(function*() {
-    const infos = new Map<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> }>()
+  Effect.gen(function* () {
+    const infos = new Map<
+      string,
+      {
+        readonly ca?: string | null;
+        readonly narHash?: string;
+        readonly references?: ReadonlyArray<string>;
+      }
+    >();
+
     for (let i = 0; i < paths.length; i += 500) {
       // Format 1 is keyed by full store path. `--json-format` needs Nix 2.33; 2.34 warns that `--json` without it will fail.
-      const out = yield* Exec.run(["nix", "path-info", "--json", "--json-format", "1", "--", ...only(paths.slice(i, i + 500))]).pipe(Effect.orElseSucceed(() => "{}"))
-      const parsed = JSON.parse(out) as Record<string, { readonly ca?: string | null; readonly narHash?: string; readonly references?: ReadonlyArray<string> } | null>
+      const out = yield* Exec.run([
+        "nix",
+        "path-info",
+        "--json",
+        "--json-format",
+        "1",
+        "--",
+        ...only(paths.slice(i, i + 500)),
+      ]).pipe(Effect.orElseSucceed(() => "{}"));
+
+      const parsed = JSON.parse(out) as Record<
+        string,
+        {
+          readonly ca?: string | null;
+          readonly narHash?: string;
+          readonly references?: ReadonlyArray<string>;
+        } | null
+      >;
+
       for (const [path, info] of Object.entries(parsed)) {
-        if (info !== null) infos.set(path, info)
+        if (info !== null) infos.set(path, info);
       }
     }
-    return infos
-  })
+
+    return infos;
+  });
 
 /**
  * Attributes whose recorded footprint holds at the revision `at` describes, under the evaluation context
  * `context`, with the derivation they evaluated to and the record's id. Records come newest first; the
  * first that holds counts.
  */
-export const fromRecords = (records: Records, attrs: ReadonlyArray<string>, at: Footprint.Tree, context: string) => {
-  const footprints = new Map(records.footprints.map((f) => [f.id, f]))
-  const held = new Map<string, { readonly derivation: Derivation | null; readonly id: number | undefined }>()
+export const fromRecords = (
+  records: Records,
+  attrs: ReadonlyArray<string>,
+  at: Footprint.Tree,
+  context: string,
+) => {
+  const footprints = new Map(records.footprints.map((f) => [f.id, f]));
+
+  const held = new Map<
+    string,
+    { readonly derivation: Derivation | null; readonly id: number | undefined }
+  >();
+
   for (const evaluation of records.evaluations) {
-    const footprint = footprints.get(evaluation.footprint)
-    if (held.has(evaluation.attr) || !attrs.includes(evaluation.attr) || footprint === undefined) continue
+    const footprint = footprints.get(evaluation.footprint);
+
+    if (held.has(evaluation.attr) || !attrs.includes(evaluation.attr) || footprint === undefined)
+      continue;
+
     if (Footprint.digest(at, footprint.entries, evaluation.count, context) === evaluation.digest) {
-      held.set(evaluation.attr, { derivation: evaluation.derivation, id: evaluation.id })
+      held.set(evaluation.attr, { derivation: evaluation.derivation, id: evaluation.id });
     }
   }
-  return held
-}
+
+  return held;
+};
 
 /**
  * Orders attributes so that each comes after those its last derivation depends on (`closures`, by
@@ -1213,119 +1894,189 @@ export const byDependencies = (
   closures: ReadonlyMap<string, { readonly drv: string; readonly closure: ReadonlySet<string> }>,
   own: ReadonlyMap<string, number> = new Map(),
 ) => {
-  const placed: Array<string> = []
-  const remaining = attrs.filter((attr) => closures.has(attr))
+  const placed: Array<string> = [];
+  const remaining = attrs.filter((attr) => closures.has(attr));
+
   while (remaining.length > 0) {
     // Of those whose closure contains no other remaining attribute's derivation, the one that read least itself.
-    const ready = remaining.filter((attr) =>
-      !remaining.some((other) => other !== attr && closures.get(attr)!.closure.has(closures.get(other)!.drv))
-    )
-    const next = (ready.length > 0 ? ready : remaining).reduce((a, b) => ((own.get(b) ?? 0) < (own.get(a) ?? 0) ? b : a))
-    placed.push(...remaining.splice(remaining.indexOf(next), 1))
+    const ready = remaining.filter(
+      (attr) =>
+        !remaining.some(
+          (other) => other !== attr && closures.get(attr)!.closure.has(closures.get(other)!.drv),
+        ),
+    );
+
+    const next = (ready.length > 0 ? ready : remaining).reduce((a, b) =>
+      (own.get(b) ?? 0) < (own.get(a) ?? 0) ? b : a,
+    );
+
+    placed.push(...remaining.splice(remaining.indexOf(next), 1));
   }
-  return [...placed, ...attrs.filter((attr) => !closures.has(attr))]
-}
+
+  return [...placed, ...attrs.filter((attr) => !closures.has(attr))];
+};
 
 /**
  * How much each attribute's last evaluation read beyond the attributes before it in its evaluator: its own
  * part of the footprint.
  */
 export const ownReads = (records: Records | undefined) => {
-  const own = new Map<string, number>()
-  const byFootprint = new Map<string, Array<Records["evaluations"][number]>>()
-  for (const e of records?.evaluations ?? []) byFootprint.set(e.footprint, [...(byFootprint.get(e.footprint) ?? []), e])
+  const own = new Map<string, number>();
+  const byFootprint = new Map<string, Array<Records["evaluations"][number]>>();
+
+  for (const e of records?.evaluations ?? [])
+    byFootprint.set(e.footprint, [...(byFootprint.get(e.footprint) ?? []), e]);
+
   for (const evaluations of byFootprint.values()) {
-    let before = 0
-    for (const e of [...evaluations].sort((a, b) => a.count - b.count)) {
-      own.set(e.attr, e.count - before)
-      before = e.count
+    let before = 0;
+
+    for (const e of [...evaluations].toSorted((a, b) => a.count - b.count)) {
+      own.set(e.attr, e.count - before);
+      before = e.count;
     }
   }
-  return own
-}
 
+  return own;
+};
 
 /** The closures of the derivations `records` say `attrs` evaluated to last, for `byDependencies`. */
 const lastClosures = (attrs: ReadonlyArray<string>, records: Records | undefined) =>
-  Effect.gen(function*() {
-    const last = new Map<string, string>()
+  Effect.gen(function* () {
+    const last = new Map<string, string>();
+
     for (const e of records?.evaluations ?? []) {
-      if (e.derivation !== null && attrs.includes(e.attr) && !last.has(e.attr)) last.set(e.attr, e.derivation.drv)
+      if (e.derivation !== null && attrs.includes(e.attr) && !last.has(e.attr))
+        last.set(e.attr, e.derivation.drv);
     }
-    const closures = yield* Effect.forEach([...last], ([attr, drv]) =>
-      Exec.run(["nix-store", "--query", "--requisites", ...only([drv])]).pipe(
-        Effect.map((out) => [[attr, { drv, closure: new Set(out.split("\n").filter(Boolean)) }] as const]),
-        Effect.orElseSucceed(() => []),
-      ), { concurrency: 4 })
-    return new Map(closures.flat())
-  })
+
+    const closures = yield* Effect.forEach(
+      [...last],
+      ([attr, drv]) =>
+        Exec.run(["nix-store", "--query", "--requisites", ...only([drv])]).pipe(
+          Effect.map((out) => [
+            [attr, { drv, closure: new Set(out.split("\n").filter(Boolean)) }] as const,
+          ]),
+          Effect.orElseSucceed(() => []),
+        ),
+      { concurrency: 4 },
+    );
+
+    return new Map(closures.flat());
+  });
 
 /** The app's name from a record whose footprint holds, if one does. */
 const appFromRecords = (records: Records, at: Footprint.Tree, context: string) => {
-  const footprints = new Map(records.footprints.map((f) => [f.id, f]))
+  const footprints = new Map(records.footprints.map((f) => [f.id, f]));
+
   const evaluation = records.evaluations.find((e) => {
-    const footprint = footprints.get(e.footprint)
-    return e.attr === appAttr && e.app !== undefined && footprint !== undefined && Footprint.digest(at, footprint.entries, e.count, context) === e.digest
-  })
-  return evaluation === undefined ? undefined : { app: evaluation.app ?? null, id: evaluation.id }
-}
+    const footprint = footprints.get(e.footprint);
+
+    return (
+      e.attr === appAttr &&
+      e.app !== undefined &&
+      footprint !== undefined &&
+      Footprint.digest(at, footprint.entries, e.count, context) === e.digest
+    );
+  });
+
+  return evaluation === undefined ? undefined : { app: evaluation.app ?? null, id: evaluation.id };
+};
 
 /** Of the held derivations, those still in the store: a collected one has to be instantiated again. */
-const inStore = <A extends { readonly derivation: Derivation | null }>(held: ReadonlyMap<string, A>) =>
-  Effect.gen(function*() {
-    const drvs = [...held.values()].flatMap((h) => (h.derivation === null ? [] : [h.derivation.drv]))
-    if (drvs.length === 0) return held
-    const out = yield* Exec.exec(["nix-store", "--check-validity", "--print-invalid", ...only(drvs)])
-    if (out.exitCode !== 0) return new Map<string, A>()
-    const invalid = new Set(out.stdout.split("\n").filter(Boolean))
-    // A record whose paths aren't a derivation's never counts.
-    return new Map([...held].filter(([, h]) => h.derivation === null || (malformed(h.derivation) === null && !invalid.has(h.derivation.drv))))
-  })
+const inStore = <A extends { readonly derivation: Derivation | null }>(
+  held: ReadonlyMap<string, A>,
+) =>
+  Effect.gen(function* () {
+    const drvs = [...held.values()].flatMap((h) =>
+      h.derivation === null ? [] : [h.derivation.drv],
+    );
 
-const sameDerivation = (a: Derivation | null, b: Derivation | null) => a?.drv === b?.drv && a?.out === b?.out
+    if (drvs.length === 0) return held;
+
+    const out = yield* Exec.exec([
+      "nix-store",
+      "--check-validity",
+      "--print-invalid",
+      ...only(drvs),
+    ]);
+
+    if (out.exitCode !== 0) return new Map<string, A>();
+    const invalid = new Set(out.stdout.split("\n").filter(Boolean));
+
+    // A record whose paths aren't a derivation's never counts.
+    return new Map(
+      [...held].filter(
+        ([, h]) =>
+          h.derivation === null ||
+          (malformed(h.derivation) === null && !invalid.has(h.derivation.drv)),
+      ),
+    );
+  });
+
+const sameDerivation = (a: Derivation | null, b: Derivation | null) =>
+  a?.drv === b?.drv && a?.out === b?.out;
 
 /** Two sets of records as one, with footprint ids kept apart. */
 const merge = (a: Records | undefined, b: Records | undefined): Records | undefined =>
-  a === undefined ? b : b === undefined ? a : { footprints: [...a.footprints, ...b.footprints], evaluations: [...a.evaluations, ...b.evaluations] }
+  a === undefined
+    ? b
+    : b === undefined
+      ? a
+      : {
+          footprints: [...a.footprints, ...b.footprints],
+          evaluations: [...a.evaluations, ...b.evaluations],
+        };
 
 /** What the fresh evaluation of `attr` read that its record's footprint didn't, for the audit's log. */
 const missedBy = (records: Records, fresh: Records | undefined, attr: string) => {
   const entries = (set: Records | undefined) => {
-    const evaluation = set?.evaluations.find((e) => e.attr === attr)
-    const footprint = set?.footprints.find((f) => f.id === evaluation?.footprint)
-    return evaluation === undefined || footprint === undefined ? [] : footprint.entries.slice(0, evaluation.count)
-  }
-  return fresh === undefined ? ["(the fresh evaluation recorded no footprint)"] : Footprint.missed(entries(records), entries(fresh)).slice(0, 50)
-}
+    const evaluation = set?.evaluations.find((e) => e.attr === attr);
+    const footprint = set?.footprints.find((f) => f.id === evaluation?.footprint);
+
+    return evaluation === undefined || footprint === undefined
+      ? []
+      : footprint.entries.slice(0, evaluation.count);
+  };
+
+  return fresh === undefined
+    ? ["(the fresh evaluation recorded no footprint)"]
+    : Footprint.missed(entries(records), entries(fresh)).slice(0, 50);
+};
 
 const alive = (pid: number) => {
   try {
-    process.kill(pid, 0)
-    return true
+    process.kill(pid, 0);
+
+    return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM"
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
-}
+};
 
 /** Creates `path` holding this process's id, waiting while a live process holds it. A dead holder's lock is taken over. */
 export const lock = (path: string) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     while (true) {
       try {
-        writeFileSync(path, String(process.pid), { flag: "wx" })
-        return path
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      }
-      // The holder can release between our create and this read.
-      const holder = existsSync(path) ? Number(readFileSync(path, "utf8")) : 0
-      if (holder > 0 && !alive(holder)) rmSync(path, { force: true })
-      else if (holder > 0) yield* Effect.sleep("2 seconds")
-    }
-  })
+        writeFileSync(path, String(process.pid), { flag: "wx" });
 
-const describeCmd = (run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unknown>), count: number) =>
-  Cmd.show(typeof run === "function" ? run({ index: 1, count, files: ["<files>"] }) : run)
+        return path;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+
+      // The holder can release between our create and this read.
+      const holder = existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
+
+      if (holder > 0 && !alive(holder)) rmSync(path, { force: true });
+      else if (holder > 0) yield* Effect.sleep("2 seconds");
+    }
+  });
+
+const describeCmd = (
+  run: Cmd.Cmd<unknown> | ((shard: Step.Shard) => Cmd.Cmd<unknown>),
+  count: number,
+) => Cmd.show(typeof run === "function" ? run({ index: 1, count, files: ["<files>"] }) : run);
 
 /**
  * Which planned builds each build uses: a build needs another when the other's derivation is in its
@@ -1336,23 +2087,40 @@ export const directUses = (
   builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>,
   closures: ReadonlyMap<string, ReadonlySet<string>>,
 ) => {
-  const uses = (a: (typeof builds)[number], b: (typeof builds)[number]) => a.drv !== b.drv && (closures.get(b.name)?.has(a.drv) ?? false)
-  const edges = new Map<string, Array<string>>()
-  for (const b of builds) {
-    const direct = builds.filter((a) => uses(a, b) && !builds.some((c) => c !== a && uses(a, c) && uses(c, b)))
-    if (direct.length > 0) edges.set(b.name, direct.map((a) => a.name))
-  }
-  return edges
-}
+  const uses = (a: (typeof builds)[number], b: (typeof builds)[number]) =>
+    a.drv !== b.drv && (closures.get(b.name)?.has(a.drv) ?? false);
 
-export const buildEdges = (builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>) =>
+  const edges = new Map<string, Array<string>>();
+
+  for (const b of builds) {
+    const direct = builds.filter(
+      (a) => uses(a, b) && !builds.some((c) => c !== a && uses(a, c) && uses(c, b)),
+    );
+
+    if (direct.length > 0)
+      edges.set(
+        b.name,
+        direct.map((a) => a.name),
+      );
+  }
+
+  return edges;
+};
+
+export const buildEdges = (
+  builds: ReadonlyArray<{ readonly name: string; readonly drv: string }>,
+) =>
   builds.length < 2
     ? Effect.succeed(new Map<string, Array<string>>())
-    : Effect.forEach(builds, (b) =>
-      Exec.run(["nix-store", "--query", "--requisites", ...only([b.drv])]).pipe(
-        Effect.map((out) => [b.name, new Set(out.split("\n").filter(Boolean))] as const),
-        Effect.orElseSucceed(() => [b.name, new Set<string>()] as const),
-      ), { concurrency: 4 }).pipe(Effect.map((closures) => directUses(builds, new Map(closures))))
+    : Effect.forEach(
+        builds,
+        (b) =>
+          Exec.run(["nix-store", "--query", "--requisites", ...only([b.drv])]).pipe(
+            Effect.map((out) => [b.name, new Set(out.split("\n").filter(Boolean))] as const),
+            Effect.orElseSucceed(() => [b.name, new Set<string>()] as const),
+          ),
+        { concurrency: 4 },
+      ).pipe(Effect.map((closures) => directUses(builds, new Map(closures))));
 
 /** Turns a plan into the wire format, resolving tree ids, dev shells and task keys at the revision. */
 export const resolve = (
@@ -1363,262 +2131,497 @@ export const resolve = (
   earlier?: Earlier,
   options: {
     /** Footprint records this run may trust. */
-    readonly records?: Records | undefined
+    readonly records?: Records | undefined;
     /** Evaluates everything afresh and reports the records it contradicts. */
-    readonly audit?: boolean | undefined
+    readonly audit?: boolean | undefined;
   } = {},
 ) =>
-  Effect.gen(function*() {
-    yield* checkFiles(project, repo)
-    const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared)
-    const builds = plan.steps.flatMap((p) => (p.step.def._tag === "Build" ? [Flake.attrPath(p.step.def.ref, run.system)] : []))
-    const shells = [...new Set(plan.steps.flatMap((p) => {
-      const def = p.step.def
-      return (def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined ? [Flake.attrPath(def.shell, run.system)] : []
-    }))]
+  Effect.gen(function* () {
+    yield* checkFiles(project, repo);
+    const shared = project.shared === undefined ? [] : yield* paths(repo, project.shared);
+
+    const builds = plan.steps.flatMap((p) =>
+      p.step.def._tag === "Build" ? [Flake.attrPath(p.step.def.ref, run.system)] : [],
+    );
+
+    const shells = [
+      ...new Set(
+        plan.steps.flatMap((p) => {
+          const def = p.step.def;
+
+          return (def._tag === "Task" || def._tag === "Setup") && def.shell !== undefined
+            ? [Flake.attrPath(def.shell, run.system)]
+            : [];
+        }),
+      ),
+    ];
+
     // The dev shells a portable task and its setup would enter on agents of the other Linux systems. They
     // evaluate with the plan's, and one that doesn't keeps the task off that system instead of failing the plan.
-    const others = linuxSystems.includes(run.system) ? linuxSystems.filter((s) => s !== run.system) : []
+    const others = linuxSystems.includes(run.system)
+      ? linuxSystems.filter((s) => s !== run.system)
+      : [];
+
     const portableShells = (p: (typeof plan.steps)[number]) => {
-      const def = p.step.def
-      if (def._tag !== "Task" || !portable(def, p.preview)) return []
-      const setupShell = def.setup === undefined || def.setup.def._tag !== "Setup" ? undefined : def.setup.def.shell
-      return [def.shell!, ...(setupShell === undefined ? [] : [setupShell])]
-    }
-    const spares = [...new Set(plan.steps.flatMap((p) => portableShells(p).flatMap((shell) => others.map((s) => Flake.attrPath(shell, s)))))]
-      .filter((attr) => !shells.includes(attr))
-    const job = Option.getOrUndefined(yield* Effect.serviceOption(Job))
-    const log: Log = (text) => job === undefined ? Effect.void : job.log("calder", text)
+      const def = p.step.def;
+
+      if (def._tag !== "Task" || !portable(def, p.preview)) return [];
+
+      const setupShell =
+        def.setup === undefined || def.setup.def._tag !== "Setup" ? undefined : def.setup.def.shell;
+
+      return [def.shell!, ...(setupShell === undefined ? [] : [setupShell])];
+    };
+
+    const spares = [
+      ...new Set(
+        plan.steps.flatMap((p) =>
+          portableShells(p).flatMap((shell) => others.map((s) => Flake.attrPath(shell, s))),
+        ),
+      ),
+    ].filter((attr) => !shells.includes(attr));
+
+    const job = Option.getOrUndefined(yield* Effect.serviceOption(Job));
+    const log: Log = (text) => (job === undefined ? Effect.void : job.log("calder", text));
     // Dev shells first: an evaluator's later attributes' footprints include what earlier ones read, and a
     // shell, which reads little more than the flake's Nix files, then keeps its record when sources change.
-    const attrs = [...new Set([...shells, ...spares, ...builds])]
-    const refused = attrs.filter((attr) => Flake.components(attr) === null)
+    const attrs = [...new Set([...shells, ...spares, ...builds])];
+    const refused = attrs.filter((attr) => Flake.components(attr) === null);
+
     if (refused.length > 0) {
-      return yield* new Calder.PlanError({
+      return yield* Calder.PlanError.make({
         message: `${refused.join(", ")}: not an attribute path Calder evaluates (letters, digits and _'+- per name, or those and . in double quotes)`,
-      })
+      });
     }
-    const audit = options.audit === true
-    const reused = earlier === undefined || audit ? undefined : yield* fromEarlier(earlier, attrs, {
-      committed: yield* Repo.make(run.mirror, earlier.revision).pipe(Effect.flatMap((at) => at.committed), Effect.option),
-      nix: yield* Effect.flatMap(repo.files, (files) => repo.read(files.filter((f) => f.endsWith(".nix")))),
-    }, log)
+
+    const audit = options.audit === true;
+
+    const reused =
+      earlier === undefined || audit
+        ? undefined
+        : yield* fromEarlier(
+            earlier,
+            attrs,
+            {
+              committed: yield* Repo.make(run.mirror, earlier.revision).pipe(
+                Effect.flatMap((at) => at.committed),
+                Effect.option,
+              ),
+              nix: yield* Effect.flatMap(repo.files, (files) =>
+                repo.read(files.filter((f) => f.endsWith(".nix"))),
+              ),
+            },
+            log,
+          );
+
     // Attributes whose recorded footprint holds here need no evaluation, nor does the app's name.
-    const at = Footprint.tree(yield* repo.entries)
-    const context = options.records === undefined ? undefined : yield* evaluationContext(run.system)
-    const records = context === undefined ? undefined : options.records
-    const unreused = attrs.filter((attr) => reused?.has(attr) !== true)
-    const taken = records === undefined || unreused.length === 0
-      ? new Map<string, { readonly derivation: Derivation | null; readonly id: number | undefined }>()
-      : yield* inStore(fromRecords(records, unreused, at, context!))
-    const held = new Map([...taken].map(([attr, h]) => [attr, h.derivation]))
-    const heldApp = records === undefined ? undefined : appFromRecords(records, at, context!)
-    const known = audit ? new Map<string, Derivation | null>() : new Map([...(reused ?? []), ...held])
+    const at = Footprint.tree(yield* repo.entries);
+
+    const context =
+      options.records === undefined ? undefined : yield* evaluationContext(run.system);
+
+    const records = context === undefined ? undefined : options.records;
+    const unreused = attrs.filter((attr) => reused?.has(attr) !== true);
+
+    const taken =
+      records === undefined || unreused.length === 0
+        ? new Map<
+            string,
+            { readonly derivation: Derivation | null; readonly id: number | undefined }
+          >()
+        : yield* inStore(fromRecords(records, unreused, at, context!));
+
+    const held = new Map([...taken].map(([attr, h]) => [attr, h.derivation]));
+    const heldApp = records === undefined ? undefined : appFromRecords(records, at, context!);
+
+    const known = audit
+      ? new Map<string, Derivation | null>()
+      : new Map([...(reused ?? []), ...held]);
+
     // Builds whose footprints changed are evaluated together once the run's first of them runs, which
     // records their footprints (see Runs.ts `evaluation`). The plan evaluates only dev shells, which task
     // keys need now, and an audit everything.
-    const unknown = attrs.filter((attr) => !known.has(attr) && (audit || shells.includes(attr) || spares.includes(attr)))
-    const deferred = attrs.filter((attr) => !known.has(attr) && !unknown.includes(attr))
-    if (deferred.length > 0) yield* log(`left ${deferred.length} builds to evaluate when the first of them runs`)
+    const unknown = attrs.filter(
+      (attr) => !known.has(attr) && (audit || shells.includes(attr) || spares.includes(attr)),
+    );
+
+    const deferred = attrs.filter((attr) => !known.has(attr) && !unknown.includes(attr));
+
+    if (deferred.length > 0)
+      yield* log(`left ${deferred.length} builds to evaluate when the first of them runs`);
+
     // Until then, a deferred build waits for a build slot of the system its last record built for.
-    const lastSystem = new Map((records?.evaluations ?? []).toReversed().flatMap((e) => (e.derivation === null ? [] : [[e.attr, e.derivation.system] as const])))
-    const ordered = (some: ReadonlyArray<string>) => Effect.map(lastClosures(some, records), (closures) => byDependencies(some, closures, ownReads(records)))
-    const rest = yield* ordered(unknown)
-    const appEarlier = reused !== undefined && earlier?.app !== undefined
-    const needsApp = !appEarlier && (audit || heldApp === undefined)
+    const lastSystem = new Map(
+      (records?.evaluations ?? [])
+        .toReversed()
+        .flatMap((e) => (e.derivation === null ? [] : [[e.attr, e.derivation.system] as const])),
+    );
+
+    const ordered = (some: ReadonlyArray<string>) =>
+      Effect.map(lastClosures(some, records), (closures) =>
+        byDependencies(some, closures, ownReads(records)),
+      );
+
+    const rest = yield* ordered(unknown);
+    const appEarlier = reused !== undefined && earlier?.app !== undefined;
+    const needsApp = !appEarlier && (audit || heldApp === undefined);
+
     // An audit evaluates exactly as plans did before footprints, through the mirror and without the
     // recorder, so a record and its check never share a way of evaluating.
-    const recording = !audit && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined
-    if (held.size > 0 && !audit) yield* log(`took ${held.size} of ${attrs.length} attributes from footprints that hold at this commit`)
+    const recording =
+      !audit && (rest.length > 0 || needsApp) ? yield* recorder(run, repo) : undefined;
+
+    if (held.size > 0 && !audit)
+      yield* log(
+        `took ${held.size} of ${attrs.length} attributes from footprints that hold at this commit`,
+      );
+
     // When the flake fails to load, builds evaluate on their own when they run, but keys need the dev
     // shells now. An attribute too large to evaluate would swap as much in its build.
-    const result = reused !== undefined && rest.length === 0
-      ? { derivations: new Map<string, Derivation | null>(), errors: new Map<string, string>(), tooLarge: new Map<string, TooLarge>(), recorded: undefined }
-      : yield* derivations(run, rest, localCache(run.trust), log, undefined, { recorder: recording, fresh: audit }).pipe(
-      Effect.catchIf(
-        (e) => e._tag !== "TooLarge",
-        (e) =>
-          log(`the flake did not load, so only the dev shells are evaluated: ${
-            e._tag === "CommandFailed" ? e.stderr.trim().split("\n").slice(-3).join(" ") : e.message
-          }`).pipe(Effect.andThen(derivations(run, shells.filter((shell) => rest.includes(shell)), localCache(run.trust), log))).pipe(
-            Effect.retry({ times: 2, schedule: Schedule.exponential("2 seconds"), while: (e) => e._tag !== "TooLarge" }),
-          ),
-      ),
-      Effect.mapError((e) =>
-        new Calder.PlanError({
-          message: e._tag === "TooLarge" ? e.message : `Nix could not evaluate the dev shells ${shells.join(", ")}, which task keys include: ${
-            e._tag === "CommandFailed" ? e.stderr.trim().split("\n").slice(-10).join("\n") : e.message
-          }`,
-        })
-      ),
-    )
+    const result =
+      reused !== undefined && rest.length === 0
+        ? {
+            derivations: new Map<string, Derivation | null>(),
+            errors: new Map<string, string>(),
+            tooLarge: new Map<string, TooLarge>(),
+            recorded: undefined,
+          }
+        : yield* derivations(run, rest, localCache(run.trust), log, undefined, {
+            recorder: recording,
+            fresh: audit,
+          }).pipe(
+            Effect.catchIf(
+              (e) => e._tag !== "TooLarge",
+              (e) =>
+                log(
+                  `the flake did not load, so only the dev shells are evaluated: ${
+                    e._tag === "CommandFailed"
+                      ? e.stderr.trim().split("\n").slice(-3).join(" ")
+                      : e.message
+                  }`,
+                )
+                  .pipe(
+                    Effect.andThen(
+                      derivations(
+                        run,
+                        shells.filter((shell) => rest.includes(shell)),
+                        localCache(run.trust),
+                        log,
+                      ),
+                    ),
+                  )
+                  .pipe(
+                    Effect.retry({
+                      times: 2,
+                      schedule: Schedule.exponential("2 seconds"),
+                      while: (e) => e._tag !== "TooLarge",
+                    }),
+                  ),
+            ),
+            Effect.mapError((e) =>
+              Calder.PlanError.make({
+                message:
+                  e._tag === "TooLarge"
+                    ? e.message
+                    : `Nix could not evaluate the dev shells ${shells.join(", ")}, which task keys include: ${
+                        e._tag === "CommandFailed"
+                          ? e.stderr.trim().split("\n").slice(-10).join("\n")
+                          : e.message
+                      }`,
+              }),
+            ),
+          );
+
     // A spare shell too large to evaluate only keeps its tasks off that system.
-    const large = [...result.tooLarge].find(([attr]) => !spares.includes(attr))
-    if (large !== undefined) return yield* new Calder.PlanError({ message: large[1].message })
-    const evaluated = new Map([...known, ...result.derivations])
+    const large = [...result.tooLarge].find(([attr]) => !spares.includes(attr));
+
+    if (large !== undefined) return yield* Calder.PlanError.make({ message: large[1].message });
+    const evaluated = new Map([...known, ...result.derivations]);
     // Evaluated in the order a plan evaluates, so their footprints keep as much as the plan's would.
-    const left = deferred.filter((attr) => !evaluated.has(attr))
-    const order = left.length === 0 ? [] : yield* ordered(left)
-    const broken = shells.filter((shell) => !evaluated.get(shell))
+    const left = deferred.filter((attr) => !evaluated.has(attr));
+    const order = left.length === 0 ? [] : yield* ordered(left);
+    const broken = shells.filter((shell) => !evaluated.get(shell));
+
     if (broken.length > 0) {
-      const why = broken.map((shell) => `${shell}: ${result.errors.get(shell) || "it threw"}`).join("; ")
-      return yield* new Calder.PlanError({ message: `A dev shell did not evaluate, and task keys include it. ${why}` })
+      const why = broken
+        .map((shell) => `${shell}: ${result.errors.get(shell) || "it threw"}`)
+        .join("; ");
+
+      return yield* Calder.PlanError.make({
+        message: `A dev shell did not evaluate, and task keys include it. ${why}`,
+      });
     }
-    const toolchainOf = (shell: string | null) => (shell === null ? null : evaluated.get(shell)!.drv)
-    const dependencies = (yield* repo.entries).filter((e) => dependencyFiles.some((re) => re.test(e.path)))
-    const uses = yield* buildEdges(plan.steps.flatMap((p) => {
-      const def = p.step.def
-      const derivation = def._tag === "Build" ? evaluated.get(Flake.attrPath(def.ref, run.system)) : undefined
-      return derivation ? [{ name: p.name, drv: derivation.drv }] : []
-    }))
+
+    const toolchainOf = (shell: string | null) =>
+      shell === null ? null : evaluated.get(shell)!.drv;
+
+    const dependencies = (yield* repo.entries).filter((e) =>
+      dependencyFiles.some((re) => re.test(e.path)),
+    );
+
+    const uses = yield* buildEdges(
+      plan.steps.flatMap((p) => {
+        const def = p.step.def;
+
+        const derivation =
+          def._tag === "Build" ? evaluated.get(Flake.attrPath(def.ref, run.system)) : undefined;
+
+        return derivation ? [{ name: p.name, drv: derivation.drv }] : [];
+      }),
+    );
 
     // A setup's key covers what its prepared workspace depends on; its tasks start from it.
-    const setupKeys = new Map(yield* Effect.forEach(plan.steps.filter((p) => p.step.def._tag === "Setup"), (p) =>
-      Effect.gen(function*() {
-        const def = p.step.def
-        if (def._tag !== "Setup") return [p.name, ""] as const
-        const inputs = (yield* paths(repo, def.inputs)).slice().sort()
-        const ids = yield* repo.objectIds(inputs)
-        const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system)
-        return [p.name, sha256({
-          kind: "setup",
-          inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
-          toolchain: toolchainOf(shell),
-          command: Cmd.show(def.run),
-          keep: def.keep,
-          path: def.path,
-          env: Object.entries(def.env).sort(),
-          platform: def.platform ?? null,
-        })] as const
-      })))
+    const setupKeys = new Map(
+      yield* Effect.forEach(
+        plan.steps.filter((p) => p.step.def._tag === "Setup"),
+        (p) =>
+          Effect.gen(function* () {
+            const def = p.step.def;
 
-    const steps = yield* Effect.forEach(plan.steps, (p) =>
-      Effect.gen(function*() {
-        const def = p.step.def
-        const base = {
-          name: p.name,
-          kind: p.kind,
-          needs: [...p.needs, ...(uses.get(p.name) ?? []).filter((n) => !p.needs.includes(n))],
-          exits: p.exits,
-          after: p.after,
-          required: p.required,
-          ...(p.gates.length === 0 ? {} : { gates: p.gates }),
-          target: p.target,
-          neverReuse: p.neverReuse || (def._tag === "Task" && def.reuse === "never"),
-          build: null,
-          setup: null,
-          task: null,
-          action: null,
-          output: null,
-        } satisfies Partial<PlannedStep>
-        switch (def._tag) {
-          case "Build": {
-            const attr = Flake.attrPath(def.ref, run.system)
-            const derivation = evaluated.get(attr) ?? null
-            const system = derivation?.system ?? lastSystem.get(attr) ?? null
-            return { ...base, detail: attr, build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null, system } }
-          }
-          case "Setup":
-            return {
-              ...base,
-              detail: Cmd.show(def.run),
-              setup: { deps: setupKeys.get(p.name)!, platform: def.platform ?? null },
-            }
-          case "Output":
-            return {
-              ...base,
-              detail: `${def.task.name}.outputs.${def.output}`,
-              output: { task: def.task.name, output: def.output },
-            }
-          case "Action":
-            return {
-              ...base,
-              detail: p.name,
-              action: { deploy: def.grants.deploy === true, secrets: [...(def.grants.secrets ?? [])], preview: p.preview },
-            }
-          case "Task": {
-            const inputs = [...new Set([...(yield* paths(repo, def.inputs)), ...shared])].sort()
-            const ids = yield* repo.objectIds(inputs)
-            const split = def.shards?.split === undefined ? [] : yield* paths(repo, def.shards.split)
-            const splitIds = split.length === 0 ? new Map<string, string>() : yield* repo.objectIds(split)
-            const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system)
-            const toolchain = toolchainOf(shell)
-            const count = def.shards?.count ?? 1
-            const command = typeof def.run === "function" ? def.run({ index: 1, count, files: [] }) : def.run
-            const setup = def.setup === undefined ? null : setupKeys.get(def.setup.name)!
-            const keyBase = sha256({
-              kind: "task",
-              inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
-              split: split.map((path) => [path, splitIds.get(path) ?? null]),
-              toolchain,
-              setup,
-              command: describeCmd(def.run, count),
-              env: Object.entries(def.env).sort(),
-              secrets: Object.entries(def.secrets).map(([env, ref]) => [env, ref.name]).sort(),
-              // Two pull requests with the same trees must not share a preview's result. Absent otherwise,
-              // so the keys of tasks that don't read it stay what they were.
-              ...(command.pullRequest ? { pullRequest: Event.pullRequestNumber(run.event) ?? null } : {}),
-              // Absent without artifacts, so the keys of tasks without them stay what they were.
-              ...(Object.keys(def.artifacts).length === 0 ? {} : { artifacts: Object.entries(def.artifacts).map(([env, s]) => [env, s.name]).sort() }),
-              report: def.report ?? null,
-              outputs: Object.entries(def.outputs).sort(),
-              shards: def.shards?.count ?? null,
-              platform: def.platform ?? null,
-            })
-            return {
-              ...base,
-              detail: describeCmd(def.run, count),
-              task: {
-                shell,
-                keyBase,
-                inputs,
-                interpolates: [...new Set([...command.steps, ...Object.values(def.artifacts)].map((s) => s.name))],
-                shards: def.shards?.count ?? null,
-                each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
-                deps: setup ?? sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
-                outputs: Object.keys(def.outputs),
-                secrets: [...Step.taskSecrets(def)],
+            if (def._tag !== "Setup") return [p.name, ""] as const;
+            const inputs = (yield* paths(repo, def.inputs)).slice().toSorted();
+            const ids = yield* repo.objectIds(inputs);
+            const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system);
+
+            return [
+              p.name,
+              sha256({
+                kind: "setup",
+                inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
+                toolchain: toolchainOf(shell),
+                command: Cmd.show(def.run),
+                keep: def.keep,
+                path: def.path,
+                env: Object.entries(def.env).toSorted(),
                 platform: def.platform ?? null,
-                offload: def.offload !== false,
-                ...(others.length === 0 || portableShells(p).length === 0 ? {} : {
-                  // A shell of another system's attribute may still build for the run's, which that system can't enter.
-                  systems: others.filter((s) => portableShells(p).every((shell) => evaluated.get(Flake.attrPath(shell, s))?.system === s)),
-                }),
-                preview: p.preview,
-                lease: def.lease ?? false,
-              },
+              }),
+            ] as const;
+          }),
+      ),
+    );
+
+    const steps = yield* Effect.forEach(
+      plan.steps,
+      (p) =>
+        Effect.gen(function* () {
+          const def = p.step.def;
+
+          const base = {
+            name: p.name,
+            kind: p.kind,
+            needs: [...p.needs, ...(uses.get(p.name) ?? []).filter((n) => !p.needs.includes(n))],
+            exits: p.exits,
+            after: p.after,
+            required: p.required,
+            ...(p.gates.length === 0 ? {} : { gates: p.gates }),
+            target: p.target,
+            neverReuse: p.neverReuse || (def._tag === "Task" && def.reuse === "never"),
+            build: null,
+            setup: null,
+            task: null,
+            action: null,
+            output: null,
+          } satisfies Partial<PlannedStep>;
+
+          switch (def._tag) {
+            case "Build": {
+              const attr = Flake.attrPath(def.ref, run.system);
+              const derivation = evaluated.get(attr) ?? null;
+              const system = derivation?.system ?? lastSystem.get(attr) ?? null;
+
+              return {
+                ...base,
+                detail: attr,
+                build: { attr, drv: derivation?.drv ?? null, out: derivation?.out ?? null, system },
+              };
+            }
+
+            case "Setup":
+              return {
+                ...base,
+                detail: Cmd.show(def.run),
+                setup: { deps: setupKeys.get(p.name)!, platform: def.platform ?? null },
+              };
+            case "Output":
+              return {
+                ...base,
+                detail: `${def.task.name}.outputs.${def.output}`,
+                output: { task: def.task.name, output: def.output },
+              };
+            case "Action":
+              return {
+                ...base,
+                detail: p.name,
+                action: {
+                  deploy: def.grants.deploy === true,
+                  secrets: [...(def.grants.secrets ?? [])],
+                  preview: p.preview,
+                },
+              };
+            case "Task": {
+              const inputs = [
+                ...new Set([...(yield* paths(repo, def.inputs)), ...shared]),
+              ].toSorted();
+
+              const ids = yield* repo.objectIds(inputs);
+
+              const split =
+                def.shards?.split === undefined ? [] : yield* paths(repo, def.shards.split);
+
+              const splitIds =
+                split.length === 0 ? new Map<string, string>() : yield* repo.objectIds(split);
+
+              const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system);
+              const toolchain = toolchainOf(shell);
+              const count = def.shards?.count ?? 1;
+
+              const command =
+                typeof def.run === "function" ? def.run({ index: 1, count, files: [] }) : def.run;
+
+              const setup = def.setup === undefined ? null : setupKeys.get(def.setup.name)!;
+
+              const keyBase = sha256({
+                kind: "task",
+                inputs: inputs.map((path) => [path, ids.get(path) ?? null]),
+                split: split.map((path) => [path, splitIds.get(path) ?? null]),
+                toolchain,
+                setup,
+                command: describeCmd(def.run, count),
+                env: Object.entries(def.env).toSorted(),
+                secrets: Object.entries(def.secrets)
+                  .map(([env, ref]) => [env, ref.name])
+                  .toSorted(),
+                // Two pull requests with the same trees must not share a preview's result. Absent otherwise,
+                // so the keys of tasks that don't read it stay what they were.
+                ...(command.pullRequest
+                  ? { pullRequest: Event.pullRequestNumber(run.event) ?? null }
+                  : {}),
+                // Absent without artifacts, so the keys of tasks without them stay what they were.
+                ...(Object.keys(def.artifacts).length === 0
+                  ? {}
+                  : {
+                      artifacts: Object.entries(def.artifacts)
+                        .map(([env, s]) => [env, s.name])
+                        .toSorted(),
+                    }),
+                report: def.report ?? null,
+                outputs: Object.entries(def.outputs).toSorted(),
+                shards: def.shards?.count ?? null,
+                platform: def.platform ?? null,
+              });
+
+              return {
+                ...base,
+                detail: describeCmd(def.run, count),
+                task: {
+                  shell,
+                  keyBase,
+                  inputs,
+                  interpolates: [
+                    ...new Set(
+                      [...command.steps, ...Object.values(def.artifacts)].map((s) => s.name),
+                    ),
+                  ],
+                  shards: def.shards?.count ?? null,
+                  each: def.each === undefined ? null : yield* eachKeys(repo, def.each, keyBase),
+                  deps:
+                    setup ??
+                    sha256({ dependencies: dependencies.map((e) => [e.path, e.oid]), toolchain }),
+                  outputs: Object.keys(def.outputs),
+                  secrets: [...Step.taskSecrets(def)],
+                  platform: def.platform ?? null,
+                  offload: def.offload !== false,
+                  ...(others.length === 0 || portableShells(p).length === 0
+                    ? {}
+                    : {
+                        // A shell of another system's attribute may still build for the run's, which that system can't enter.
+                        systems: others.filter((s) =>
+                          portableShells(p).every(
+                            (shell) => evaluated.get(Flake.attrPath(shell, s))?.system === s,
+                          ),
+                        ),
+                      }),
+                  preview: p.preview,
+                  lease: def.lease ?? false,
+                },
+              };
             }
           }
-        }
-      }), { concurrency: 4 })
+        }),
+      { concurrency: 4 },
+    );
 
-    const appTaken = !appEarlier && heldApp !== undefined && !audit
+    const appTaken = !appEarlier && heldApp !== undefined && !audit;
+
     const named = appEarlier
       ? { app: earlier!.app!, recorded: undefined }
       : appTaken
-      ? { app: heldApp.app, recorded: undefined }
-      : yield* appOf(run, localCache(run.trust), recording, audit)
-    const recorded = merge(result.recorded, named.recorded)
-    const wrong = !audit ? [] : [...taken].flatMap(([attr, { derivation, id }]) => {
-      const fresh = result.derivations.get(attr)
-      return fresh === undefined || sameDerivation(fresh, derivation) ? [] : [{ attr, recorded: derivation, evaluated: fresh, id }]
-    })
-    const appWrong = audit && heldApp !== undefined && heldApp.app !== named.app
+        ? { app: heldApp.app, recorded: undefined }
+        : yield* appOf(run, localCache(run.trust), recording, audit);
+
+    const recorded = merge(result.recorded, named.recorded);
+
+    const wrong = !audit
+      ? []
+      : [...taken].flatMap(([attr, { derivation, id }]) => {
+          const fresh = result.derivations.get(attr);
+
+          return fresh === undefined || sameDerivation(fresh, derivation)
+            ? []
+            : [{ attr, recorded: derivation, evaluated: fresh, id }];
+        });
+
+    const appWrong = audit && heldApp !== undefined && heldApp.app !== named.app;
+
     // What the fresh evaluation read that the wrong records didn't: recorded again, for the log only.
-    const again = wrong.length === 0 && !appWrong ? undefined : yield* Effect.gen(function*() {
-      const r = yield* recorder(run, repo)
-      if (r === undefined) return undefined
-      const out = yield* derivations(run, wrong.map((w) => w.attr), undefined, log, undefined, { recorder: r, fresh: true }).pipe(Effect.option)
-      return Option.getOrUndefined(out)?.recorded
-    })
+    const again =
+      wrong.length === 0 && !appWrong
+        ? undefined
+        : yield* Effect.gen(function* () {
+            const r = yield* recorder(run, repo);
+
+            if (r === undefined) return undefined;
+
+            const out = yield* derivations(
+              run,
+              wrong.map((w) => w.attr),
+              undefined,
+              log,
+              undefined,
+              { recorder: r, fresh: true },
+            ).pipe(Effect.option);
+
+            return Option.getOrUndefined(out)?.recorded;
+          });
+
     const mismatches: Array<Mismatch> = [
-      ...wrong.map((w) => ({ attr: w.attr, recorded: w.recorded, evaluated: w.evaluated, missed: missedBy(records!, again, w.attr), ...(w.id === undefined ? {} : { record: w.id }) })),
-      ...(appWrong ? [{ attr: appAttr, recorded: null, evaluated: null, missed: [], ...(heldApp.id === undefined ? {} : { record: heldApp.id }) }] : []),
-    ]
-    const fromRecordIds = audit ? [] : [
-      ...[...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id] as const])),
-      ...(appTaken && heldApp.id !== undefined ? [[appAttr, heldApp.id] as const] : []),
-    ]
+      ...wrong.map((w) => ({
+        attr: w.attr,
+        recorded: w.recorded,
+        evaluated: w.evaluated,
+        missed: missedBy(records!, again, w.attr),
+        ...(w.id === undefined ? {} : { record: w.id }),
+      })),
+      ...(appWrong
+        ? [
+            {
+              attr: appAttr,
+              recorded: null,
+              evaluated: null,
+              missed: [],
+              ...(heldApp.id === undefined ? {} : { record: heldApp.id }),
+            },
+          ]
+        : []),
+    ];
+
+    const fromRecordIds = audit
+      ? []
+      : [
+          ...[...taken].flatMap(([attr, h]) => (h.id === undefined ? [] : [[attr, h.id] as const])),
+          ...(appTaken && heldApp.id !== undefined ? [[appAttr, heldApp.id] as const] : []),
+        ];
+
     const spec: PlanSpec = {
       version: 1,
       app: named.app,
@@ -1631,10 +2634,18 @@ export const resolve = (
       ...(recorded === undefined ? {} : { recorded }),
       ...(audit ? { mismatches } : {}),
       ...(order.length === 0 ? {} : { deferred: order }),
-      ...(reused === undefined ? {} : { reused: { revision: earlier!.revision, attrs: [...reused.keys(), ...(appEarlier ? [appAttr] : [])] } }),
+      ...(reused === undefined
+        ? {}
+        : {
+            reused: {
+              revision: earlier!.revision,
+              attrs: [...reused.keys(), ...(appEarlier ? [appAttr] : [])],
+            },
+          }),
       // Which record gave each attribute this plan took, the app's name included, so a wrong record's
       // deploys can be listed and the controller knows whose records the plan trusted.
       ...(fromRecordIds.length === 0 ? {} : { fromRecords: Object.fromEntries(fromRecordIds) }),
-    }
-    return spec
-  })
+    };
+
+    return spec;
+  });

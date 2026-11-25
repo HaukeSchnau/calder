@@ -1,13 +1,13 @@
-import { describe, expect, it } from "@effect/vitest"
-import { Deferred, Effect } from "effect"
-import { SqlClient } from "effect/sql"
-import { vi } from "vitest"
-import { RunsCore } from "../src/controller/Runs.ts"
-import type { PlannedStep } from "../src/Protocol.ts"
-import { drive, step } from "./drive.ts"
-import { insertRun } from "./sqlite.ts"
+import { describe, expect, it } from "@effect/vitest";
+import { Deferred, Effect } from "effect";
+import { SqlClient } from "effect/sql";
+import { vi } from "vite-plus/test";
+import { RunsCore } from "../src/controller/Runs.ts";
+import type { PlannedStep } from "../src/Protocol.ts";
+import { drive, step } from "./drive.ts";
+import { insertRun } from "./sqlite.ts";
 
-vi.mock("@effect/sql-sqlite-bun", () => ({}))
+vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
 const build = (name: string, system: string): PlannedStep => ({
   ...step,
@@ -15,149 +15,290 @@ const build = (name: string, system: string): PlannedStep => ({
   kind: "build",
   needs: [],
   detail: `checks.${system}.${name}`,
-  build: { attr: `checks.${system}.${name}`, drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system },
-})
+  build: {
+    attr: `checks.${system}.${name}`,
+    drv: `/nix/store/00000000000000000000000000000000-${name}.drv`,
+    out: `/nix/store/00000000000000000000000000000000-${name}`,
+    system,
+  },
+});
 
 describe("builds", () => {
   it.live("a build for another system doesn't hold the slot this host's builds need", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // The test config has one build slot. The darwin build waits for its remote builder until the linux one ran.
-      const linuxRan = yield* Deferred.make<void>()
+      const linuxRan = yield* Deferred.make<void>();
+
       const { status, jobs } = yield* drive({
         steps: [build("darwin", "aarch64-darwin"), build("linux", "x86_64-linux")],
-        work: (name) => (name === "darwin" ? Deferred.await(linuxRan) : Deferred.succeed(linuxRan, undefined)),
-      })
-      expect(status).toBe("passed")
-      expect(jobs).toEqual(["darwin", "linux"])
-    }))
+        work: (name) =>
+          name === "darwin" ? Deferred.await(linuxRan) : Deferred.succeed(linuxRan, undefined),
+      });
 
-  it.live("evaluates the builds its plan left unevaluated once, then builds each where its system builds and reuses what exists", () =>
-    Effect.gen(function*() {
-      // Each other build of the run waits for the first one's evaluation; none evaluates the flake itself.
-      const deferred = (name: string, system: string | null = null): PlannedStep => ({
-        ...build(name, "x86_64-linux"),
-        build: { attr: `checks.x86_64-linux.${name}`, drv: null, out: null, system },
-      })
-      const derivation = (name: string, system = "x86_64-linux") => ({ drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system })
-      const asked: Array<unknown> = []
-      const { status, jobs, steps, plan } = yield* drive({
-        steps: [
-          deferred("lib"), deferred("app"), deferred("docs"), deferred("huge"), deferred("mac", "aarch64-darwin"), build("planned", "x86_64-linux"),
-          { ...step, name: "ship", kind: "action", needs: ["app"], detail: "ship", action: { deploy: false, secrets: [], preview: true } },
-        ],
-        // The order the plan would have evaluated them in.
-        plan: { deferred: ["mac", "lib", "app", "docs", "huge"].map((name) => `checks.x86_64-linux.${name}`) },
-        cache: { has: (out) => Effect.succeed(out === "/nix/store/00000000000000000000000000000000-docs"), publish: () => Effect.void },
-        value: (name) => `/nix/store/00000000000000000000000000000000-${name}`,
-        result: (_step, job) => {
-          if (job.evaluate === undefined) return undefined
-          asked.push(job.evaluate)
-          return {
-            _tag: "Evaluated",
-            derivations: { lib: derivation("lib"), app: derivation("app"), docs: derivation("docs"), huge: null, mac: derivation("mac", "aarch64-darwin") },
-            tooLarge: { huge: "Evaluating huge alone took more than 3.0 GiB" },
-            // `planned` using `app`, which uses it, would close a cycle.
-            uses: { app: ["lib", "planned"], planned: ["app"] },
-          }
-        },
-      })
-      expect(status).toBe("failed")
-      expect(asked).toEqual([{
-        builds: ["mac", "lib", "app", "docs", "huge"].map((name) => ({ name, attr: `checks.x86_64-linux.${name}` })),
-        planned: [{ name: "planned", drv: "/nix/store/00000000000000000000000000000000-planned.drv" }],
-      }])
-      expect(jobs.filter((j) => j.endsWith("evaluates"))).toHaveLength(1)
-      // The output that exists is reused, the build too large to evaluate fails without a job, and a build
-      // waits for the builds it uses.
-      expect(steps.get("docs")).toMatchObject({ status: "reused" })
-      expect(steps.get("huge")).toMatchObject({ status: "failed", error: { tag: "TooLarge" } })
-      expect(jobs).not.toContain("huge")
-      expect(jobs.indexOf("app")).toBeGreaterThan(Math.max(jobs.indexOf("lib"), jobs.indexOf("planned")))
-      expect(steps.get("app")?.needs).toEqual(["lib", "planned"])
-      expect(steps.get("planned")?.needs).toEqual([])
-      // What the deploy now waits for through `app` is on its critical path.
-      expect(steps.get("lib")?.critical).toBe(true)
-      expect(steps.get("docs")?.critical).toBe(false)
-      // Later plans of the same tree find every build's derivation.
-      expect(plan.derivations).toMatchObject({ "checks.x86_64-linux.mac": derivation("mac", "aarch64-darwin") })
-    }))
+      expect(status).toBe("passed");
+      expect(jobs).toEqual(["darwin", "linux"]);
+    }),
+  );
+
+  it.live(
+    "evaluates the builds its plan left unevaluated once, then builds each where its system builds and reuses what exists",
+    () =>
+      Effect.gen(function* () {
+        // Each other build of the run waits for the first one's evaluation; none evaluates the flake itself.
+        const deferred = (name: string, system: string | null = null): PlannedStep => ({
+          ...build(name, "x86_64-linux"),
+          build: { attr: `checks.x86_64-linux.${name}`, drv: null, out: null, system },
+        });
+
+        const derivation = (name: string, system = "x86_64-linux") => ({
+          drv: `/nix/store/00000000000000000000000000000000-${name}.drv`,
+          out: `/nix/store/00000000000000000000000000000000-${name}`,
+          system,
+        });
+
+        const asked: Array<unknown> = [];
+
+        const { status, jobs, steps, plan } = yield* drive({
+          steps: [
+            deferred("lib"),
+            deferred("app"),
+            deferred("docs"),
+            deferred("huge"),
+            deferred("mac", "aarch64-darwin"),
+            build("planned", "x86_64-linux"),
+            {
+              ...step,
+              name: "ship",
+              kind: "action",
+              needs: ["app"],
+              detail: "ship",
+              action: { deploy: false, secrets: [], preview: true },
+            },
+          ],
+          // The order the plan would have evaluated them in.
+          plan: {
+            deferred: ["mac", "lib", "app", "docs", "huge"].map(
+              (name) => `checks.x86_64-linux.${name}`,
+            ),
+          },
+          cache: {
+            has: (out) =>
+              Effect.succeed(out === "/nix/store/00000000000000000000000000000000-docs"),
+            publish: () => Effect.void,
+          },
+          value: (name) => `/nix/store/00000000000000000000000000000000-${name}`,
+          result: (_step, job) => {
+            if (job.evaluate === undefined) return undefined;
+            asked.push(job.evaluate);
+
+            return {
+              _tag: "Evaluated",
+              derivations: {
+                lib: derivation("lib"),
+                app: derivation("app"),
+                docs: derivation("docs"),
+                huge: null,
+                mac: derivation("mac", "aarch64-darwin"),
+              },
+              tooLarge: { huge: "Evaluating huge alone took more than 3.0 GiB" },
+              // `planned` using `app`, which uses it, would close a cycle.
+              uses: { app: ["lib", "planned"], planned: ["app"] },
+            };
+          },
+        });
+
+        expect(status).toBe("failed");
+        expect(asked).toEqual([
+          {
+            builds: ["mac", "lib", "app", "docs", "huge"].map((name) => ({
+              name,
+              attr: `checks.x86_64-linux.${name}`,
+            })),
+            planned: [
+              { name: "planned", drv: "/nix/store/00000000000000000000000000000000-planned.drv" },
+            ],
+          },
+        ]);
+        expect(jobs.filter((j) => j.endsWith("evaluates"))).toHaveLength(1);
+        // The output that exists is reused, the build too large to evaluate fails without a job, and a build
+        // waits for the builds it uses.
+        expect(steps.get("docs")).toMatchObject({ status: "reused" });
+        expect(steps.get("huge")).toMatchObject({ status: "failed", error: { tag: "TooLarge" } });
+        expect(jobs).not.toContain("huge");
+        expect(jobs.indexOf("app")).toBeGreaterThan(
+          Math.max(jobs.indexOf("lib"), jobs.indexOf("planned")),
+        );
+        expect(steps.get("app")?.needs).toEqual(["lib", "planned"]);
+        expect(steps.get("planned")?.needs).toEqual([]);
+        // What the deploy now waits for through `app` is on its critical path.
+        expect(steps.get("lib")?.critical).toBe(true);
+        expect(steps.get("docs")?.critical).toBe(false);
+        // Later plans of the same tree find every build's derivation.
+        expect(plan.derivations).toMatchObject({
+          "checks.x86_64-linux.mac": derivation("mac", "aarch64-darwin"),
+        });
+      }),
+  );
 
   it.live("plans another run of the project while the builds evaluate, in its one plan slot", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // infra-1350's plan took 21 s, after 150 minutes behind infra-1332's evaluation of its builds.
-      const evaluating = yield* Deferred.make<void>()
-      const planned = yield* Deferred.make<void>()
+      const evaluating = yield* Deferred.make<void>();
+      const planned = yield* Deferred.make<void>();
+
       const { status, jobs } = yield* drive({
-        steps: [{ ...build("a", "x86_64-linux"), build: { attr: "a", drv: null, out: null, system: null } }],
-        work: (name) => (name === "a" && !Deferred.isDoneUnsafe(planned) ? Deferred.succeed(evaluating, undefined).pipe(Effect.andThen(Deferred.await(planned))) : Effect.void),
-        result: (_step, job) =>
-          job.evaluate === undefined ? undefined : {
-            _tag: "Evaluated",
-            derivations: { a: { drv: "/nix/store/00000000000000000000000000000000-a.drv", out: "/nix/store/00000000000000000000000000000000-a", system: "x86_64-linux" } },
-            tooLarge: {},
-            uses: {},
-            errors: {},
+        steps: [
+          {
+            ...build("a", "x86_64-linux"),
+            build: { attr: "a", drv: null, out: null, system: null },
           },
-        meanwhile: Effect.gen(function*() {
-          yield* Deferred.await(evaluating)
-          const sql = yield* SqlClient.SqlClient
-          yield* insertRun("app-3", { at: 3, status: "queued", trust: "pr", event: '{"_tag":"PullRequest","number":7,"base":"main","head":"f","fork":false}' })
-          yield* sql`delete from run_plans where run_id = 'app-3'`
-          yield* sql`update runs set finished_at = null where id = 'app-3'`
-          yield* (yield* RunsCore).plan("app-3")
-          yield* Deferred.succeed(planned, undefined)
+        ],
+        work: (name) =>
+          name === "a" && !Deferred.isDoneUnsafe(planned)
+            ? Deferred.succeed(evaluating, undefined).pipe(Effect.andThen(Deferred.await(planned)))
+            : Effect.void,
+        result: (_step, job) =>
+          job.evaluate === undefined
+            ? undefined
+            : {
+                _tag: "Evaluated",
+                derivations: {
+                  a: {
+                    drv: "/nix/store/00000000000000000000000000000000-a.drv",
+                    out: "/nix/store/00000000000000000000000000000000-a",
+                    system: "x86_64-linux",
+                  },
+                },
+                tooLarge: {},
+                uses: {},
+                errors: {},
+              },
+        meanwhile: Effect.gen(function* () {
+          yield* Deferred.await(evaluating);
+          const sql = yield* SqlClient.SqlClient;
+          yield* insertRun("app-3", {
+            at: 3,
+            status: "queued",
+            trust: "pr",
+            event: '{"_tag":"PullRequest","number":7,"base":"main","head":"f","fork":false}',
+          });
+          yield* sql`delete from run_plans where run_id = 'app-3'`;
+          yield* sql`update runs set finished_at = null where id = 'app-3'`;
+          yield* (yield* RunsCore).plan("app-3");
+          yield* Deferred.succeed(planned, undefined);
         }).pipe(Effect.orDie),
-      })
-      expect(status).toBe("passed")
-      expect(jobs).toEqual(["a evaluates", "plan", "a"])
-    }))
+      });
 
-  it.live("tries evaluating the builds together once more, then evaluates each build's attribute alone, in evaluation slots", () =>
-    Effect.gen(function*() {
-      const derivations: Array<string | null> = []
-      const { status, jobs, steps } = yield* drive({
-        steps: ["a", "b", "c"].map((name) => ({ ...build(name, "x86_64-linux"), build: { attr: name, drv: null, out: null, system: null } })),
-        result: (_step, job) => {
-          if (job.evaluate === undefined) {
-            derivations.push(job.derivation)
-            return undefined
-          }
-          // Together they fail, as when the host is short of memory; alone, c throws.
-          if (job.evaluate.builds.length > 1) return { _tag: "Died", message: "could not start the worker: timed out" }
-          const name = job.evaluate.builds[0]!.name
-          return {
-            _tag: "Evaluated",
-            derivations: { [name]: name === "c" ? null : { drv: `/nix/store/00000000000000000000000000000000-${name}.drv`, out: `/nix/store/00000000000000000000000000000000-${name}`, system: "x86_64-linux" } },
-            tooLarge: {},
-            uses: {},
-            errors: name === "c" ? { c: "assertion 'false' failed" } : {},
-          }
-        },
-      })
-      expect(status).toBe("failed")
-      expect(jobs.filter((j) => j.endsWith("evaluates")).toSorted()).toEqual(["a evaluates", "a evaluates", "a evaluates", "b evaluates", "c evaluates"])
-      expect(derivations.toSorted()).toEqual(["/nix/store/00000000000000000000000000000000-a.drv", "/nix/store/00000000000000000000000000000000-b.drv"])
-      expect(steps.get("c")).toMatchObject({ status: "failed", error: { tag: "EvaluationFailed", message: "c did not evaluate: assertion 'false' failed" } })
-    }))
+      expect(status).toBe("passed");
+      expect(jobs).toEqual(["a evaluates", "plan", "a"]);
+    }),
+  );
 
-  it.live("evaluates a pull request's builds in the larger unit where the project's flake needs it, and builds them in the usual one", () =>
-    Effect.gen(function*() {
-      const { status, large } = yield* drive({
-        event: { _tag: "PullRequest", number: 5, base: "main", head: "feature", fork: false },
-        project: { largeEvaluations: true },
-        steps: ["a", "b"].map((name) => ({ ...build(name, "x86_64-linux"), build: { attr: name, drv: null, out: null, system: null } })),
-        // Together they fail; each build then evaluates alone, also in the larger unit.
-        result: (_step, job) =>
-          job.evaluate === undefined ? undefined
-          : job.evaluate.builds.length > 1 ? { _tag: "Died", message: "out of memory" }
-          : {
-            _tag: "Evaluated",
-            derivations: Object.fromEntries(job.evaluate.builds.map(({ name: n }) => [n, { drv: `/nix/store/00000000000000000000000000000000-${n}.drv`, out: `/nix/store/00000000000000000000000000000000-${n}`, system: "x86_64-linux" }])),
-            tooLarge: {},
-            uses: {},
+  it.live(
+    "tries evaluating the builds together once more, then evaluates each build's attribute alone, in evaluation slots",
+    () =>
+      Effect.gen(function* () {
+        const derivations: Array<string | null> = [];
+
+        const { status, jobs, steps } = yield* drive({
+          steps: ["a", "b", "c"].map((name) => ({
+            ...build(name, "x86_64-linux"),
+            build: { attr: name, drv: null, out: null, system: null },
+          })),
+          result: (_step, job) => {
+            if (job.evaluate === undefined) {
+              derivations.push(job.derivation);
+
+              return undefined;
+            }
+
+            // Together they fail, as when the host is short of memory; alone, c throws.
+            if (job.evaluate.builds.length > 1)
+              return { _tag: "Died", message: "could not start the worker: timed out" };
+            const name = job.evaluate.builds[0]!.name;
+
+            return {
+              _tag: "Evaluated",
+              derivations: {
+                [name]:
+                  name === "c"
+                    ? null
+                    : {
+                        drv: `/nix/store/00000000000000000000000000000000-${name}.drv`,
+                        out: `/nix/store/00000000000000000000000000000000-${name}`,
+                        system: "x86_64-linux",
+                      },
+              },
+              tooLarge: {},
+              uses: {},
+              errors: name === "c" ? { c: "assertion 'false' failed" } : {},
+            };
           },
-      })
-      expect(status).toBe("passed")
-      expect(large.toSorted()).toEqual(["a evaluates", "a evaluates", "a evaluates", "b evaluates"])
-    }))
-})
+        });
+
+        expect(status).toBe("failed");
+        expect(jobs.filter((j) => j.endsWith("evaluates")).toSorted()).toEqual([
+          "a evaluates",
+          "a evaluates",
+          "a evaluates",
+          "b evaluates",
+          "c evaluates",
+        ]);
+        expect(derivations.toSorted()).toEqual([
+          "/nix/store/00000000000000000000000000000000-a.drv",
+          "/nix/store/00000000000000000000000000000000-b.drv",
+        ]);
+        expect(steps.get("c")).toMatchObject({
+          status: "failed",
+          error: {
+            tag: "EvaluationFailed",
+            message: "c did not evaluate: assertion 'false' failed",
+          },
+        });
+      }),
+  );
+
+  it.live(
+    "evaluates a pull request's builds in the larger unit where the project's flake needs it, and builds them in the usual one",
+    () =>
+      Effect.gen(function* () {
+        const { status, large } = yield* drive({
+          event: { _tag: "PullRequest", number: 5, base: "main", head: "feature", fork: false },
+          project: { largeEvaluations: true },
+          steps: ["a", "b"].map((name) => ({
+            ...build(name, "x86_64-linux"),
+            build: { attr: name, drv: null, out: null, system: null },
+          })),
+          // Together they fail; each build then evaluates alone, also in the larger unit.
+          result: (_step, job) =>
+            job.evaluate === undefined
+              ? undefined
+              : job.evaluate.builds.length > 1
+                ? { _tag: "Died", message: "out of memory" }
+                : {
+                    _tag: "Evaluated",
+                    derivations: Object.fromEntries(
+                      job.evaluate.builds.map(({ name: n }) => [
+                        n,
+                        {
+                          drv: `/nix/store/00000000000000000000000000000000-${n}.drv`,
+                          out: `/nix/store/00000000000000000000000000000000-${n}`,
+                          system: "x86_64-linux",
+                        },
+                      ]),
+                    ),
+                    tooLarge: {},
+                    uses: {},
+                  },
+        });
+
+        expect(status).toBe("passed");
+        expect(large.toSorted()).toEqual([
+          "a evaluates",
+          "a evaluates",
+          "a evaluates",
+          "b evaluates",
+        ]);
+      }),
+  );
+});

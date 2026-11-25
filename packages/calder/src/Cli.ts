@@ -1,102 +1,168 @@
-import { Domain } from "@calder-ci/api"
-import { Event } from "@calder-ci/core"
-import { Console, Effect, Option, Schema, Stream } from "effect"
+import { Domain } from "@calder-ci/api";
+import { Event } from "@calder-ci/core";
+import { Console, Effect, Option, Schema, Stream } from "effect";
 
 /** Manual inputs as a JSON object, such as `{"release":"testflight"}`. */
-const manualInputs = Schema.decodeUnknownOption(Schema.fromJsonString(Event.Manual.fields.inputs))
+const manualInputs = Schema.decodeUnknownOption(Schema.fromJsonString(Event.Manual.fields.inputs));
 
 const readEvent = (kind: string, arg: string | undefined): Event.Event | undefined => {
   switch (kind) {
     case "push":
-      return arg === "" ? undefined : Event.push(arg ?? "main")
+      return arg === "" ? undefined : Event.push(arg ?? "main");
     case "pr":
     case "closed": {
-      const number = Number(arg ?? 1)
-      if (!Number.isSafeInteger(number) || number <= 0) return undefined
-      return kind === "pr" ? Event.pullRequest({ number }) : Event.pullRequestClosed({ number })
+      const number = Number(arg ?? 1);
+
+      if (!Number.isSafeInteger(number) || number <= 0) return undefined;
+
+      return kind === "pr" ? Event.pullRequest({ number }) : Event.pullRequestClosed({ number });
     }
+
     case "check":
-      return arg === "" ? undefined : Event.check({ ref: arg ?? "calder/check/local" })
+      return arg === "" ? undefined : Event.check({ ref: arg ?? "calder/check/local" });
     case "schedule":
-      return arg === undefined || arg === "" ? undefined : Event.schedule(arg)
+      return arg === undefined || arg === "" ? undefined : Event.schedule(arg);
     case "manual":
-      return arg === undefined ? Event.manual() : Option.getOrUndefined(Option.map(manualInputs(arg), Event.manual))
+      return arg === undefined
+        ? Event.manual()
+        : Option.getOrUndefined(Option.map(manualInputs(arg), Event.manual));
+    default:
+      return undefined;
   }
-}
+};
 
 /** Reads `calder plan --event`. */
 export const parseEvent = (text: string): Effect.Effect<Event.Event, Error> => {
-  const colon = text.indexOf(":")
-  const event = colon === -1 ? readEvent(text, undefined) : readEvent(text.slice(0, colon), text.slice(colon + 1))
+  const colon = text.indexOf(":");
+
+  const event =
+    colon === -1
+      ? readEvent(text, undefined)
+      : readEvent(text.slice(0, colon), text.slice(colon + 1));
+
   return event === undefined
-    ? Effect.fail(new Error(`--event ${text} is not an event; use push[:<branch>], pr[:<number>], closed[:<number>], check[:<ref>], schedule:<cron> or manual[:<json object>]`))
-    : Effect.succeed(event)
-}
+    ? Effect.fail(
+        new Error(
+          `--event ${text} is not an event; use push[:<branch>], pr[:<number>], closed[:<number>], check[:<ref>], schedule:<cron> or manual[:<json object>]`,
+        ),
+      )
+    : Effect.succeed(event);
+};
 
 const distance = (a: string, b: string) => {
-  let previous = Array.from({ length: b.length + 1 }, (_, j) => j)
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+
   for (let i = 1; i <= a.length; i++) {
-    const row = [i]
+    const row = [i];
+
     for (let j = 1; j <= b.length; j++) {
-      row.push(Math.min(previous[j]! + 1, row[j - 1]! + 1, previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)))
+      row.push(
+        Math.min(
+          previous[j]! + 1,
+          row[j - 1]! + 1,
+          previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+        ),
+      );
     }
-    previous = row
+
+    previous = row;
   }
-  return previous[b.length]!
-}
+
+  return previous[b.length]!;
+};
 
 /** `names` ordered by how close they are to what was typed, closest first. */
 export const closest = (typed: string, names: ReadonlyArray<string>) =>
-  names.map((name) => ({ name, d: distance(typed, name) })).sort((x, y) => x.d - y.d).map((x) => x.name)
+  names
+    .map((name) => ({ name, d: distance(typed, name) }))
+    .toSorted((x, y) => x.d - y.d)
+    .map((x) => x.name);
 
 /** A coarse span of time: `40s`, `12m`, `5h`, `3d`. */
 export const span = (ms: number) => {
-  const s = Math.max(0, Math.round(ms / 1000))
-  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 48 * 3600 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`
-}
+  const s = Math.max(0, Math.round(ms / 1000));
 
-export const ago = (ms: number) => `${span(ms)} ago`
+  return s < 60
+    ? `${s}s`
+    : s < 3600
+      ? `${Math.floor(s / 60)}m`
+      : s < 48 * 3600
+        ? `${Math.floor(s / 3600)}h`
+        : `${Math.floor(s / 86400)}d`;
+};
+
+export const ago = (ms: number) => `${span(ms)} ago`;
 
 /** Where a project's deploys stand, for people: `deployed`, or how far behind and when Calder retries. */
 export const delivery = (d: Domain.Delivery | null | undefined, now: number) => {
-  if (d == null) return ""
-  if (d.revision === d.head) return "deployed"
-  const from = d.revision === null ? "nothing deployed in retention" : `deployed ${d.revision.slice(0, 12)}`
-  const behind = d.behind === null ? from : `${from}: ${d.behind.commits} commit${d.behind.commits === 1 ? "" : "s"} / ${span(now - d.behind.since)} behind`
-  if (!d.stalled) return `${behind}, deploying`
-  return d.retry === null ? `${behind}, stalled` : `${behind}, retry ${d.retry.attempt} in ${span(d.retry.at - now)}`
-}
+  if (d === null || d === undefined) return "";
+
+  if (d.revision === d.head) return "deployed";
+
+  const from =
+    d.revision === null ? "nothing deployed in retention" : `deployed ${d.revision.slice(0, 12)}`;
+
+  const behind =
+    d.behind === null
+      ? from
+      : `${from}: ${d.behind.commits} commit${d.behind.commits === 1 ? "" : "s"} / ${span(now - d.behind.since)} behind`;
+
+  if (!d.stalled) return `${behind}, deploying`;
+
+  return d.retry === null
+    ? `${behind}, stalled`
+    : `${behind}, retry ${d.retry.attempt} in ${span(d.retry.at - now)}`;
+};
 
 /** A duration for people: `12 s`, `1m 52s`. */
 export const took = (ms: number) => {
-  const s = Math.max(0, Math.round(ms / 1000))
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`
-}
+  const s = Math.max(0, Math.round(ms / 1000));
+
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
 
 /**
  * A run's steps as rows of a table: status, name, how long it waited for a slot and how long it ran, and
  * what it waits for or why it failed. `·` marks steps on a deploy's or a preview's critical path.
  */
 export const timings = (steps: ReadonlyArray<Domain.StepRun>, now: number) =>
-  steps.filter((s) => s.kind !== "output").map((s) => [
-    s.status,
-    `${s.name}${s.critical === true ? " ·" : ""}`,
-    s.queuedAt !== null && s.startedAt !== null ? `waited ${took(s.startedAt - s.queuedAt)}` : "",
-    s.startedAt === null ? "" : s.finishedAt === null ? `running ${took(now - s.startedAt)}` : `took ${took(s.finishedAt - s.startedAt)}`,
-    s.status === "pending" || s.status === "queued"
-      ? s.waiting == null ? "" : `waits for ${s.waiting}`
-      : s.error !== null && s.status !== "passed" ? s.error.message.split("\n")[0]! : "",
-  ])
+  steps
+    .filter((s) => s.kind !== "output")
+    .map((s) => [
+      s.status,
+      `${s.name}${s.critical === true ? " ·" : ""}`,
+      s.queuedAt !== null && s.startedAt !== null ? `waited ${took(s.startedAt - s.queuedAt)}` : "",
+      s.startedAt === null
+        ? ""
+        : s.finishedAt === null
+          ? `running ${took(now - s.startedAt)}`
+          : `took ${took(s.finishedAt - s.startedAt)}`,
+      s.status === "pending" || s.status === "queued"
+        ? s.waiting === null || s.waiting === undefined
+          ? ""
+          : `waits for ${s.waiting}`
+        : s.error !== null && s.status !== "passed"
+          ? s.error.message.split("\n")[0]!
+          : "",
+    ]);
 
 /** The steps that made a run fail: those that failed or died, not those blocked behind them. */
 export const failedSteps = (steps: ReadonlyArray<Domain.StepRun>): ReadonlyArray<string> =>
-  steps.filter((s) => s.kind !== "output" && (s.status === "failed" || s.status === "died")).map((s) => s.name)
+  steps
+    .filter((s) => s.kind !== "output" && (s.status === "failed" || s.status === "died"))
+    .map((s) => s.name);
 
 /** Rows as lines with their columns padded to line up. */
 export const table = (rows: ReadonlyArray<ReadonlyArray<string>>) => {
-  const widths = rows.reduce<Array<number>>((w, row) => row.map((cell, i) => Math.max(w[i] ?? 0, cell.length)), [])
-  return rows.map((row) => row.map((cell, i) => (i === row.length - 1 ? cell : cell.padEnd(widths[i]!))).join("  "))
-}
+  const widths = rows.reduce<Array<number>>(
+    (w, row) => row.map((cell, i) => Math.max(w[i] ?? 0, cell.length)),
+    [],
+  );
+
+  return rows.map((row) =>
+    row.map((cell, i) => (i === row.length - 1 ? cell : cell.padEnd(widths[i]!))).join("  "),
+  );
+};
 
 export const stepLine = (step: Domain.StepRun) =>
   `  ${step.status.padEnd(9)} ${step.name}${step.error ? `: ${step.error.message.split("\n")[0]}` : ""}${
@@ -105,34 +171,55 @@ export const stepLine = (step: Domain.StepRun) =>
     step.contradicts === null
       ? ""
       : ` (${step.status === "passed" ? "failed" : "passed"} with the same key in ${step.contradicts.id}: the key misses an input, or the step is flaky)`
-  }`
+  }`;
 
 /** Prints a run's status and steps as they change until it ends; returns the run as it ended. */
 export const follow = <E>(
   client: {
-    readonly changes: () => Stream.Stream<Domain.Change, E>
-    readonly run: (input: { readonly id: string }) => Effect.Effect<Domain.RunDetail, E>
+    readonly changes: () => Stream.Stream<Domain.Change, E>;
+    readonly run: (input: { readonly id: string }) => Effect.Effect<Domain.RunDetail, E>;
   },
   run: Domain.Run,
 ) =>
-  Effect.gen(function*() {
-    let last = run
+  Effect.gen(function* () {
+    let last = run;
+
     const report = (r: Domain.Run) =>
-      Effect.sync(() => (last = r)).pipe(Effect.andThen(Console.log(`${r.status}${r.error ? `: ${r.error}` : ""}`)))
-    yield* Console.log(`${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`)
-    yield* report(run)
+      Effect.sync(() => (last = r)).pipe(
+        Effect.andThen(Console.log(`${r.status}${r.error ? `: ${r.error}` : ""}`)),
+      );
+
+    yield* Console.log(
+      `${run.project} #${run.number} ${run.commit.sha.slice(0, 12)} ${run.commit.title}`,
+    );
+    yield* report(run);
+
     // The run may end before the change feed starts, so its current state joins the feed.
     const current = Stream.fromEffect(client.run({ id: run.id })).pipe(
-      Stream.map((detail): Domain.Change => ({ _tag: "RunChanged", seq: detail.seq, run: detail.run })),
-    )
+      Stream.map((detail): Domain.Change => ({
+        _tag: "RunChanged",
+        seq: detail.seq,
+        run: detail.run,
+      })),
+    );
+
     yield* client.changes().pipe(
       Stream.merge(current),
-      Stream.filter((c) => (c._tag === "StepChanged" ? c.step.runId === run.id : c._tag === "RunChanged" && c.run.id === run.id)),
+      Stream.filter((c) =>
+        c._tag === "StepChanged"
+          ? c.step.runId === run.id
+          : c._tag === "RunChanged" && c.run.id === run.id,
+      ),
       Stream.tap((c) =>
-        c._tag === "StepChanged" ? Console.log(stepLine(c.step)) : c._tag === "RunChanged" && c.run.status !== last.status ? report(c.run) : Effect.void
+        c._tag === "StepChanged"
+          ? Console.log(stepLine(c.step))
+          : c._tag === "RunChanged" && c.run.status !== last.status
+            ? report(c.run)
+            : Effect.void,
       ),
       Stream.takeUntil((c) => c._tag === "RunChanged" && Domain.ended.has(c.run.status)),
       Stream.runDrain,
-    )
-    return last
-  })
+    );
+
+    return last;
+  });

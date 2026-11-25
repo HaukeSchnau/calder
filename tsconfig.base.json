@@ -1,19 +1,13 @@
 {
+  "extends": "@schnau/tsconfig/effect",
   "compilerOptions": {
-    "target": "ES2024",
-    "module": "preserve",
-    "moduleResolution": "bundler",
-    "lib": ["ES2024"],
+    // Calder and every ci.ts run on Bun.
     "types": ["bun"],
-    "strict": true,
+    // Every project's ci.ts compiles against these types with it (sdk/tsconfig), and the API's
+    // `Schema.optionalKey` fields reject an explicit `undefined`.
     "exactOptionalPropertyTypes": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "verbatimModuleSyntax": true,
-    "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": false,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "isolatedModules": true
+    // The lint's effecttsgo rules report Effect's diagnostics. The patched tsrs would report each a
+    // second time. Delete this list once @schnau/tsconfig 0.1.1, which turns them off, is out.
+    "plugins": [{ "name": "@effect/language-service", "diagnostics": false }]
   }
 }

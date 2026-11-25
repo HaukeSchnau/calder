@@ -38,7 +38,7 @@ export const CI_TS = [
   '    On.push("main", [deploy]),',
   "  ],",
   "})",
-]
+];
 
 export const DEPLOY_TS = [
   'import { Secret, type StorePath } from "@calder-ci/core"',
@@ -57,7 +57,7 @@ export const DEPLOY_TS = [
   "      ),",
   "    )",
   "  })",
-]
+];
 
 export const TEST_TS = [
   'import { expect, it } from "@effect/vitest"',
@@ -70,7 +70,7 @@ export const TEST_TS = [
   "    const plan = yield* Calder.plan(project, Event.pullRequest({ number: 7 }))",
   '    expect(plan.steps.map((step) => step.name)).not.toContain("deploy")',
   "  }))",
-]
+];
 
 // Inferred types (declaration emit of example/.calder/ci.ts).
 export const TYPES = {
@@ -79,7 +79,7 @@ export const TYPES = {
   test: ["void", "TaskFailed", "never", "{}", "never"],
   site: ["StorePath", "BuildFailed", "never", "{}", "never"],
   deploy: ["void", "never", "HttpClient", "{}", '{ readonly secrets: readonly ["deploy-token"] }'],
-}
+};
 
 export const TSC = {
   deployInPr: (line34, col) => [
@@ -105,45 +105,69 @@ export const TSC = {
   typo: [
     ".calder/ci.ts(22,39): error TS2551: Property 'sit' does not exist on type '{ readonly site: FlakeRef<\"packages\">; }'. Did you mean 'site'?",
   ],
-}
+};
 
-export const REFUSAL = 'calder: pull-request runs don\'t run steps with grants or secrets, but "deploy" has them'
+export const REFUSAL =
+  'calder: pull-request runs don\'t run steps with grants or secrets, but "deploy" has them';
 
-const KEYWORDS = new Set(["import", "from", "const", "export", "default", "function", "yield", "as", "type"])
-export const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+const KEYWORDS = new Set([
+  "import",
+  "from",
+  "const",
+  "export",
+  "default",
+  "function",
+  "yield",
+  "as",
+  "type",
+]);
+
+export const esc = (t) =>
+  String(t)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
 /**
  * Highlights a line. Only meaning is coloured: `marks` maps an identifier to a class (the value
  * `site`, a service, a grant); `def` is the name a line declares.
  */
 export function highlight(text, { def, marks = {}, quiet = false } = {}) {
-  const re = /(\/\*.*?\*\/|\/\/.*$)|("(?:[^"\\]|\\.)*")|(`[^`]*`)|(\b\d+\b)|([A-Za-z_$][\w$]*)|(\s+)|([{}()[\],.:;=*<>|])|(.)/g
-  let html = ""
-  let prev = ""
-  let defDone = false
+  const re =
+    /(\/\*.*?\*\/|\/\/.*$)|("(?:[^"\\]|\\.)*")|(`[^`]*`)|(\b\d+\b)|([A-Za-z_$][\w$]*)|(\s+)|([{}()[\],.:;=*<>|])|(.)/g;
+
+  let html = "";
+  let prev = "";
+  let defDone = false;
+
   for (const m of text.matchAll(re)) {
-    const [t, com, str, tpl, num, id, ws, pun] = m
-    if (com) html += `<span class="t-com">${esc(t)}</span>`
-    else if (str || tpl) html += `<span class="t-str">${esc(t)}</span>`
-    else if (num) html += `<span class="t-num">${t}</span>`
+    const [t, com, str, tpl, num, id, ws, pun] = m;
+
+    if (com) html += `<span class="t-com">${esc(t)}</span>`;
+    else if (str || tpl) html += `<span class="t-str">${esc(t)}</span>`;
+    else if (num) html += `<span class="t-num">${t}</span>`;
     else if (id) {
-      const property = prev === "."
-      if (KEYWORDS.has(id) && !property) html += `<span class="t-kw">${id}</span>`
+      const property = prev === ".";
+
+      if (KEYWORDS.has(id) && !property) html += `<span class="t-kw">${id}</span>`;
       else if (def === id && !defDone && !property) {
-        html += `<span class="t-def">${id}</span>`
-        defDone = true
-      } else if (marks[id] && !property) html += `<span class="${marks[id]}">${id}</span>`
-      else html += esc(id)
-    } else if (ws) html += t
+        html += `<span class="t-def">${id}</span>`;
+        defDone = true;
+      } else if (marks[id] && !property) html += `<span class="${marks[id]}">${id}</span>`;
+      else html += esc(id);
+    } else if (ws) html += t;
     // Lines may break between tokens, never inside one: before a member access, after an opening
     // bracket or a comma (and at spaces, which pre-wrap allows).
-    else if (pun === ".") html += `<wbr><span class="t-pun">.</span>`
-    else if (pun && "([{,".includes(pun)) html += `<span class="t-pun">${esc(t)}</span><wbr>`
-    else if (pun) html += `<span class="t-pun">${esc(t)}</span>`
-    else html += esc(t)
-    if (!ws) prev = t
+    else if (pun === ".") html += `<wbr><span class="t-pun">.</span>`;
+    else if (pun && "([{,".includes(pun)) html += `<span class="t-pun">${esc(t)}</span><wbr>`;
+    else if (pun) html += `<span class="t-pun">${esc(t)}</span>`;
+    else html += esc(t);
+
+    if (!ws) prev = t;
   }
-  return quiet ? html.replace(/class="t-(def)"/g, "") : html
+
+  return quiet ? html.replace(/class="t-(def)"/g, "") : html;
 }
 
 // What each line of ci.ts declares in the drawing. Keys: part:<name>, f:<feature>, rail:<rule>.
@@ -159,7 +183,7 @@ export const CI_LINKS = {
   29: "f:socket",
   34: "rail:pr",
   35: "rail:push",
-}
+};
 
 export const CI_BLOCKS = [
   [7, 7, "part:install", "install, line 7"],
@@ -169,41 +193,53 @@ export const CI_BLOCKS = [
   [24, 30, "part:deploy", "deploy, lines 24 to 30"],
   [34, 34, "rail:pr", "the pull-request rule, line 34"],
   [35, 35, "rail:push", "the push rule, line 35"],
-]
+];
 
-export const CI_DEFS = { 6: "shell", 7: "install", 9: "typecheck", 16: "test", 22: "site", 24: "deploy" }
+export const CI_DEFS = {
+  6: "shell",
+  7: "install",
+  9: "typecheck",
+  16: "test",
+  22: "site",
+  24: "deploy",
+};
 
 // Meaning colours in ci.ts: the value `site` where deploy receives it, the grant line.
 export const CI_MARKS = {
   25: { site: "t-val" },
   28: { site: "t-val" },
   29: { site: "t-val" },
-}
+};
+
 export const CHILDREN = {
   "part:install": ["f:plate"],
   "part:site": ["f:tenon"],
   "part:deploy": ["f:socket", "f:after", "f:bit", "f:pin"],
-}
+};
 
 /**
  * A line's leading spaces become its indent, so a wrapped line hangs 4ch inside its own
  * indentation instead of at the left edge.
  */
 export const indentOf = (html) => {
-  const n = (html ?? "").match(/^ */)[0].length
-  return { n, rest: (html ?? "").slice(n), style: n ? ` style="--ind:${n}ch"` : "" }
-}
+  const n = (html ?? "").match(/^ */)[0].length;
+
+  return { n, rest: (html ?? "").slice(n), style: n ? ` style="--ind:${n}ch"` : "" };
+};
 
 /** One numbered line. `html` is already highlighted. */
 export function lineEl(no, html, { link, owner, cls } = {}) {
-  const ln = document.createElement("div")
-  ln.className = `ln${cls ? " " + cls : ""}`
-  ln.dataset.line = no
-  if (link) ln.dataset.link = link
-  if (owner) ln.dataset.owner = owner
-  const { rest, style } = indentOf(html)
-  ln.innerHTML = `<span class="no">${no}</span><span class="src"${style}>${rest || " "}</span>`
-  return ln
+  const ln = document.createElement("div");
+  ln.className = `ln${cls ? " " + cls : ""}`;
+  ln.dataset.line = no;
+
+  if (link) ln.dataset.link = link;
+
+  if (owner) ln.dataset.owner = owner;
+  const { rest, style } = indentOf(html);
+  ln.innerHTML = `<span class="no">${no}</span><span class="src"${style}>${rest || " "}</span>`;
+
+  return ln;
 }
 
 /**
@@ -214,54 +250,82 @@ export const keepWords = (text) =>
   text
     .split(/("[^"]*")/)
     .map((part, i) => {
-      if (i % 2) return `<span class="nowrap">${esc(part)}</span>`
+      if (i % 2) return `<span class="nowrap">${esc(part)}</span>`;
+
       return part
         .split(/(\s+)/)
-        .map((w) => (/^\s*$/.test(w) ? w : w.includes("-") ? `<span class="nowrap">${esc(w)}</span>` : esc(w).replace(/(&lt;|[([{,])/g, "$1<wbr>")))
-        .join("")
+        .map((w) =>
+          /^\s*$/.test(w)
+            ? w
+            : w.includes("-")
+              ? `<span class="nowrap">${esc(w)}</span>`
+              : esc(w).replace(/(&lt;|[([{,])/g, "$1<wbr>"),
+        )
+        .join("");
     })
-    .join("")
+    .join("");
 
 /** One line of tool output, indented by its own leading spaces. */
 export const oline = (text, { cls = "", attrs = "", html = null } = {}) => {
-  const { n, style } = indentOf(text)
-  return `<span class="oline${cls ? ` ${cls}` : ""}"${attrs}${style}>${html ?? keepWords(text.slice(n))}</span>`
-}
+  const { n, style } = indentOf(text);
+
+  return `<span class="oline${cls ? ` ${cls}` : ""}"${attrs}${style}>${html ?? keepWords(text.slice(n))}</span>`;
+};
 
 /** Renders lines `from`..`to` into `container`, grouped into focusable blocks where given. */
 export function renderCode(container, lines, opts = {}) {
-  const { from = 1, to = lines.length, links = {}, defs = {}, blocks = [], marks = {}, custom = {}, after = {}, cls = {} } = opts
-  container.replaceChildren()
-  container.classList.add("code")
-  let block = null
+  const {
+    from = 1,
+    to = lines.length,
+    links = {},
+    defs = {},
+    blocks = [],
+    marks = {},
+    custom = {},
+    after = {},
+    cls = {},
+  } = opts;
+
+  container.replaceChildren();
+  container.classList.add("code");
+  let block = null;
+
   for (let no = from; no <= to; no++) {
-    const b = blocks.find(([a, z]) => no >= a && no <= z)
+    const b = blocks.find(([a, z]) => no >= a && no <= z);
+
     if (b && no === b[0]) {
-      block = document.createElement("div")
-      block.className = "blk"
-      block.tabIndex = 0
-      block.dataset.link = b[2]
-      block.setAttribute("role", "group")
-      block.setAttribute("aria-label", b[3])
-      container.append(block)
+      block = document.createElement("div");
+      block.className = "blk";
+      block.tabIndex = 0;
+      block.dataset.link = b[2];
+      block.setAttribute("role", "group");
+      block.setAttribute("aria-label", b[3]);
+      container.append(block);
     }
-    const html = custom[no] ?? highlight(lines[no - 1], { def: defs[no], marks: marks[no] })
-    const ln = lineEl(no, html, { link: links[no], owner: b ? b[2] : undefined, cls: cls[no] })
-    ;(b ? block : container).append(ln)
-    if (after[no]) (b ? block : container).append(after[no])
-    if (b && no === b[1]) block = null
+
+    const html = custom[no] ?? highlight(lines[no - 1], { def: defs[no], marks: marks[no] });
+    const ln = lineEl(no, html, { link: links[no], owner: b ? b[2] : undefined, cls: cls[no] });
+    (b ? block : container).append(ln);
+
+    if (after[no]) (b ? block : container).append(after[no]);
+
+    if (b && no === b[1]) block = null;
   }
 }
 
 /** Parses `calder plan` output into planned names and which were pulled in. */
 export function parsePlan(out) {
-  const planned = new Set()
-  const pulled = new Set()
+  const planned = new Set();
+  const pulled = new Set();
+
   for (const line of out.split("\n").slice(1)) {
-    const m = line.match(/^\s+(setup|task|build|action)\s+(\S+)(\s+\(pulled in\))?/)
-    if (!m) continue
-    planned.add(m[2])
-    if (m[3]) pulled.add(m[2])
+    const m = line.match(/^\s+(setup|task|build|action)\s+(\S+)(\s+\(pulled in\))?/);
+
+    if (!m) continue;
+    planned.add(m[2]);
+
+    if (m[3]) pulled.add(m[2]);
   }
-  return { planned, pulled }
+
+  return { planned, pulled };
 }

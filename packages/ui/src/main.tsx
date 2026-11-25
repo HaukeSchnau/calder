@@ -1,12 +1,13 @@
-import "@fontsource-variable/instrument-sans/wght.css"
-import "@fontsource-variable/jetbrains-mono/wght.css"
-import "./app.css"
-import { RegistryProvider } from "@effect/atom-react"
-import { StrictMode } from "react"
-import { createRoot } from "react-dom/client"
-import { App } from "./app.tsx"
+import "@fontsource-variable/instrument-sans/wght.css";
+import "@fontsource-variable/jetbrains-mono/wght.css";
+import "./app.css";
+import { RegistryProvider } from "@effect/atom-react";
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { App } from "./app.tsx";
 
-const root = document.getElementById("root")
+const root = document.getElementById("root");
+
 if (root) {
   createRoot(root).render(
     <StrictMode>
@@ -14,5 +15,5 @@ if (root) {
         <App />
       </RegistryProvider>
     </StrictMode>,
-  )
+  );
 }

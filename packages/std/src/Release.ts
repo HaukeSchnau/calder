@@ -1,6 +1,15 @@
-import { Cache, CurrentRun, Fleet, Git, Calder, type Rejected, type StorePath, type Target } from "@calder-ci/core"
-import { Effect, Schedule, Schema, type Duration } from "effect"
-import { HttpClient, HttpClientResponse } from "effect/http"
+import {
+  Cache,
+  CurrentRun,
+  Fleet,
+  Git,
+  Calder,
+  type Rejected,
+  type StorePath,
+  type Target,
+} from "@calder-ci/core";
+import { Effect, Schedule, Schema, type Duration } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
 export class Live extends Calder.Result<Live>("@calder-ci/std/Release")("Live", {
   revision: Schema.String,
@@ -17,22 +26,27 @@ export class NotReady extends Calder.Failure<NotReady>("@calder-ci/std/Release")
   seen: Schema.NullOr(Schema.String),
 }) {
   override get message() {
-    return `${this.url} did not report ${this.revision.slice(0, 12)} in time (last seen ${this.seen ?? "nothing"})`
+    return `${this.url} did not report ${this.revision.slice(0, 12)} in time (last seen ${this.seen ?? "nothing"})`;
   }
 }
 
-export class NoHosts extends Calder.Failure<NoHosts>("@calder-ci/std/Release")("NoHosts", { project: Schema.String }) {
-  override get message() {
-    return `no host runs ${this.project}: no promotion endpoint's /health lists its app, or none answered`
-  }
-}
-
-export class Unreachable extends Calder.Failure<Unreachable>("@calder-ci/std/Release")("Unreachable", {
+export class NoHosts extends Calder.Failure<NoHosts>("@calder-ci/std/Release")("NoHosts", {
   project: Schema.String,
-  hosts: Schema.Array(Schema.String),
 }) {
   override get message() {
-    return `${this.hosts.join(", ")} didn't answer /health, so Calder can't tell whether ${this.project} runs there; nothing was deployed`
+    return `no host runs ${this.project}: no promotion endpoint's /health lists its app, or none answered`;
+  }
+}
+
+export class Unreachable extends Calder.Failure<Unreachable>("@calder-ci/std/Release")(
+  "Unreachable",
+  {
+    project: Schema.String,
+    hosts: Schema.Array(Schema.String),
+  },
+) {
+  override get message() {
+    return `${this.hosts.join(", ")} didn't answer /health, so Calder can't tell whether ${this.project} runs there; nothing was deployed`;
   }
 }
 
@@ -43,15 +57,15 @@ export class NoRelease extends Calder.Failure<NoRelease>("@calder-ci/std/Release
   built: Schema.Array(Schema.String),
 }) {
   override get message() {
-    return `${this.host} runs ${this.system}, but ${this.project} has no release built for it (only for ${this.built.join(", ")}); nothing was deployed`
+    return `${this.host} runs ${this.system}, but ${this.project} has no release built for it (only for ${this.built.join(", ")}); nothing was deployed`;
   }
 }
 
 /** A project's release per Nix system, such as `{ "x86_64-linux": path, "aarch64-darwin": path }`. */
-export type Releases = { readonly [system: string]: StorePath }
+export type Releases = { readonly [system: string]: StorePath };
 
 const every = (interval: Duration.Input, deadline: Duration.Input) =>
-  Schedule.spaced(interval).pipe(Schedule.upTo({ duration: deadline }))
+  Schedule.spaced(interval).pipe(Schedule.upTo({ duration: deadline }));
 
 /**
  * Whether a host refuses the release only because its compiled configuration doesn't have the
@@ -59,28 +73,39 @@ const every = (interval: Duration.Input, deadline: Duration.Input) =>
  */
 const awaitsSwitch = (e: Rejected) =>
   e.status === 409 &&
-  e.reason.split("; ").every((reason) =>
-    reason === "Release topology differs from the host-compatible contract" ||
-    reason.startsWith("host-managed maintenance job is not declared by the candidate")
-  )
+  e.reason
+    .split("; ")
+    .every(
+      (reason) =>
+        reason === "Release topology differs from the host-compatible contract" ||
+        reason.startsWith("host-managed maintenance job is not declared by the candidate"),
+    );
 
-const Readiness = Schema.Struct({ revision: Schema.optional(Schema.String) })
+const Readiness = Schema.Struct({ revision: Schema.optional(Schema.String) });
 
 /** Polls a readiness URL until its JSON reports `revision`. */
-export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function*(url: string, revision: string) {
-  const client = yield* HttpClient.HttpClient
-  let seen: string | null = null
+export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function* (
+  url: string,
+  revision: string,
+) {
+  const client = yield* HttpClient.HttpClient;
+  let seen: string | null = null;
+
   const check = client.get(url).pipe(
     Effect.flatMap(HttpClientResponse.schemaBodyJson(Readiness)),
     Effect.timeout("5 seconds"),
-    Effect.catch(() => Effect.succeed({ revision: undefined })),
+    Effect.orElseSucceed(() => ({ revision: undefined })),
     Effect.flatMap((body) => {
-      seen = body.revision ?? seen
-      return body.revision === revision ? Effect.void : Effect.fail(new NotReady({ url, revision, seen }))
+      seen = body.revision ?? seen;
+
+      return body.revision === revision
+        ? Effect.void
+        : Effect.fail(NotReady.make({ url, revision, seen }));
     }),
-  )
-  yield* check.pipe(Effect.retry({ schedule: every("5 seconds", "5 minutes") }))
-})
+  );
+
+  yield* check.pipe(Effect.retry({ schedule: every("5 seconds", "5 minutes") }));
+});
 
 /**
  * Promotes a release to the project's hosts. Takes the project's deploy lease (latest wins, so an
@@ -93,45 +118,70 @@ export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function*(url:
  * A host that refuses the release only for its topology is waiting for infra's lock bump, so the
  * promotion asks again every 30 seconds for an hour, until a newer push supersedes it.
  */
-export const promote = Effect.fn("Release.promote")(
-  function*(releases: StorePath | Releases, options: { readonly readiness?: string } = {}) {
-    const run = yield* CurrentRun
-    const bySystem: Releases = typeof releases === "string" ? { [run.system]: releases } : releases
-    const branch = run.branch
-    if (branch === undefined) return yield* Effect.die(new Error("Release.promote needs a branch to check the head against"))
+export const promote = Effect.fn("Release.promote")(function* (
+  releases: StorePath | Releases,
+  options: { readonly readiness?: string } = {},
+) {
+  const run = yield* CurrentRun;
+  const bySystem: Releases = typeof releases === "string" ? { [run.system]: releases } : releases;
+  const branch = run.branch;
 
-    const lease = yield* Fleet.deploying(run.project, { queue: "latest-wins" })
-    if (lease._tag === "Replaced") return new Skipped({ reason: "Superseded" })
-    if (lease.unreachable.length > 0) return yield* new Unreachable({ project: run.project, hosts: lease.unreachable })
-    if (lease.targets.length === 0) return yield* new NoHosts({ project: run.project })
-    const missing = lease.targets.find((t) => bySystem[t.system] === undefined)
-    if (missing !== undefined) {
-      return yield* new NoRelease({ project: run.project, host: missing.host, system: missing.system, built: Object.keys(bySystem) })
-    }
+  if (branch === undefined)
+    return yield* Effect.die(new Error("Release.promote needs a branch to check the head against"));
 
-    const descriptor = yield* run.descriptor
-    const current = Effect.map(Git.head(branch), (head) => head === run.revision)
-    const preflight = (target: Target) =>
-      Effect.gen(function*() {
-        if (!(yield* current)) return false
-        yield* target.preflight(descriptor)
-        return true
-      }).pipe(Effect.retry({ while: awaitsSwitch, schedule: every("30 seconds", "1 hour") }))
-    const preflighted = yield* Effect.forEach(lease.targets, preflight, { concurrency: "unbounded" })
-    if (preflighted.includes(false)) return new Skipped({ reason: "Superseded" })
-    const systems = new Set(lease.targets.map((t) => t.system))
-    yield* Effect.forEach(systems, (system) => Cache.publish(bySystem[system]!, system === run.system ? {} : { system }), { discard: true })
+  const lease = yield* Fleet.deploying(run.project, { queue: "latest-wins" });
 
-    for (const target of lease.targets) {
-      const head = yield* Git.head(branch)
-      if (head !== run.revision) return new Skipped({ reason: "Superseded" })
-      yield* target
-        .deploy({ revision: run.revision, storePath: bySystem[target.system]! })
-        .pipe(Effect.retry({ while: (e) => e._tag === "Busy", schedule: every("10 seconds", "5 minutes") }))
-    }
+  if (lease._tag === "Replaced") return Skipped.make({ reason: "Superseded" });
 
-    if (options.readiness !== undefined) yield* awaitReadiness(options.readiness, run.revision)
-    return new Live({ revision: run.revision, hosts: lease.targets.map((t) => t.host) })
-  },
-  Effect.scoped,
-)
+  if (lease.unreachable.length > 0)
+    return yield* Unreachable.make({ project: run.project, hosts: lease.unreachable });
+
+  if (lease.targets.length === 0) return yield* NoHosts.make({ project: run.project });
+  const missing = lease.targets.find((t) => bySystem[t.system] === undefined);
+
+  if (missing !== undefined) {
+    return yield* NoRelease.make({
+      project: run.project,
+      host: missing.host,
+      system: missing.system,
+      built: Object.keys(bySystem),
+    });
+  }
+
+  const descriptor = yield* run.descriptor;
+  const current = Effect.map(Git.head(branch), (head) => head === run.revision);
+
+  const preflight = (target: Target) =>
+    Effect.gen(function* () {
+      if (!(yield* current)) return false;
+      yield* target.preflight(descriptor);
+
+      return true;
+    }).pipe(Effect.retry({ while: awaitsSwitch, schedule: every("30 seconds", "1 hour") }));
+
+  const preflighted = yield* Effect.forEach(lease.targets, preflight, { concurrency: "unbounded" });
+
+  if (preflighted.includes(false)) return Skipped.make({ reason: "Superseded" });
+  const systems = new Set(lease.targets.map((t) => t.system));
+  yield* Effect.forEach(
+    systems,
+    (system) => Cache.publish(bySystem[system]!, system === run.system ? {} : { system }),
+    { discard: true },
+  );
+
+  for (const target of lease.targets) {
+    const head = yield* Git.head(branch);
+
+    if (head !== run.revision) return Skipped.make({ reason: "Superseded" });
+    yield* target.deploy({ revision: run.revision, storePath: bySystem[target.system]! }).pipe(
+      Effect.retry({
+        while: (e) => e._tag === "Busy",
+        schedule: every("10 seconds", "5 minutes"),
+      }),
+    );
+  }
+
+  if (options.readiness !== undefined) yield* awaitReadiness(options.readiness, run.revision);
+
+  return Live.make({ revision: run.revision, hosts: lease.targets.map((t) => t.host) });
+}, Effect.scoped);

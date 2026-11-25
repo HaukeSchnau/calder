@@ -1,4 +1,4 @@
-import type { NixActivity } from "../Protocol.ts"
+import type { NixActivity } from "../Protocol.ts";
 
 // Nix's internal-json activity and result types (src/libutil/logging.hh).
 const activityTypes: Record<number, string> = {
@@ -13,67 +13,108 @@ const activityTypes: Record<number, string> = {
   110: "post-build-hook",
   111: "waiting",
   112: "fetch",
-}
-const resBuildLogLine = 101
+};
+
+const resBuildLogLine = 101;
 
 export type NixMessage =
   | { readonly _tag: "Activity"; readonly activity: NixActivity }
   | {
-    readonly _tag: "Log"
-    readonly text: string
-    readonly error: boolean
-    /** A line of a derivation's own build log, which the builder printed rather than Nix. */
-    readonly buildLog?: boolean
-  }
+      readonly _tag: "Log";
+      readonly text: string;
+      readonly error: boolean;
+      /** A line of a derivation's own build log, which the builder printed rather than Nix. */
+      readonly buildLog?: boolean;
+    };
+
+/** A line of Nix's `--log-format internal-json`, with the fields the parser reads. */
+interface NixJson {
+  readonly action?: string;
+  readonly id: number;
+  readonly parent?: number;
+  readonly type?: number;
+  readonly text?: string;
+  readonly fields?: ReadonlyArray<string | number>;
+  readonly level?: number;
+  readonly msg?: unknown;
+}
 
 /** Parses Nix's `--log-format internal-json` stderr, keeping the state of open activities. */
 export const parser = () => {
-  const open = new Map<number, NixActivity>()
+  const open = new Map<number, NixActivity>();
+
   return (line: string, now: number): ReadonlyArray<NixMessage> => {
-    if (!line.startsWith("@nix ")) return line.trim() === "" ? [] : [{ _tag: "Log", text: line, error: false }]
-    let msg: Record<string, any>
+    if (!line.startsWith("@nix "))
+      return line.trim() === "" ? [] : [{ _tag: "Log", text: line, error: false }];
+    let msg: NixJson;
+
     try {
-      msg = JSON.parse(line.slice(5))
+      msg = JSON.parse(line.slice(5));
     } catch {
-      return [{ _tag: "Log", text: line, error: false }]
+      return [{ _tag: "Log", text: line, error: false }];
     }
+
     switch (msg.action) {
       case "start": {
-        const type = activityTypes[msg.type as number]
-        if (type === undefined) return []
-        const fields = (msg.fields ?? []) as Array<unknown>
+        const type = activityTypes[msg.type as number];
+
+        if (type === undefined) return [];
+        const fields = (msg.fields ?? []) as Array<unknown>;
+
         const activity: NixActivity = {
           id: msg.id,
           parent: msg.parent ?? 0,
           type,
           text: msg.text ?? "",
-          drv: type === "build" ? String(fields[0] ?? "") : type === "substitute" ? String(fields[0] ?? "") : null,
+          drv:
+            type === "build"
+              ? String(fields[0] ?? "")
+              : type === "substitute"
+                ? String(fields[0] ?? "")
+                : null,
           start: now,
           end: null,
           failed: false,
-        }
-        open.set(activity.id, activity)
-        return type === "build" || type === "substitute" || type === "fetch" ? [{ _tag: "Activity", activity }] : []
+        };
+
+        open.set(activity.id, activity);
+
+        return type === "build" || type === "substitute" || type === "fetch"
+          ? [{ _tag: "Activity", activity }]
+          : [];
       }
+
       case "stop": {
-        const activity = open.get(msg.id)
-        if (activity === undefined) return []
-        open.delete(msg.id)
-        const done = { ...activity, end: now }
-        return activity.type === "build" || activity.type === "substitute" || activity.type === "fetch"
+        const activity = open.get(msg.id);
+
+        if (activity === undefined) return [];
+        open.delete(msg.id);
+        const done = { ...activity, end: now };
+
+        return activity.type === "build" ||
+          activity.type === "substitute" ||
+          activity.type === "fetch"
           ? [{ _tag: "Activity", activity: done }]
-          : []
+          : [];
       }
+
       case "result":
-        if (msg.type === resBuildLogLine) return [{ _tag: "Log", text: String(msg.fields?.[0] ?? ""), error: false, buildLog: true }]
-        return []
+        if (msg.type === resBuildLogLine)
+          return [
+            { _tag: "Log", text: String(msg.fields?.[0] ?? ""), error: false, buildLog: true },
+          ];
+
+        return [];
       case "msg": {
-        const text = String(msg.msg ?? "").replace(/\x1b\[[0-9;]*m/g, "")
-        if (text === "") return []
-        return [{ _tag: "Log", text, error: (msg.level ?? 3) <= 1 }]
+        const text = String(msg.msg ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+
+        if (text === "") return [];
+
+        return [{ _tag: "Log", text, error: (msg.level ?? 3) <= 1 }];
       }
+
       default:
-        return []
+        return [];
     }
-  }
-}
+  };
+};

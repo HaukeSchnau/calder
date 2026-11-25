@@ -1,30 +1,40 @@
-import { Action, type Base, CurrentRun, type Files, Flake, Calder, Nix, On, type Step } from "@calder-ci/core"
-import * as Alchemy from "./Alchemy.ts"
-import * as Environments from "./Environments.ts"
-import * as Release from "./Release.ts"
-import * as Vp from "./Vp.ts"
+import {
+  Action,
+  type Base,
+  CurrentRun,
+  type Files,
+  Flake,
+  Calder,
+  Nix,
+  On,
+  type Step,
+} from "@calder-ci/core";
+import * as Alchemy from "./Alchemy.ts";
+import * as Environments from "./Environments.ts";
+import * as Release from "./Release.ts";
+import * as Vp from "./Vp.ts";
 
 /** The parts of `.calder/flake.ts` the standard pipeline reads. */
 export interface StandardFlake {
-  readonly checks: { readonly [name: string]: Flake.FlakeRef<"checks"> }
+  readonly checks: { readonly [name: string]: Flake.FlakeRef<"checks"> };
   /** Without `projectRelease` there is nothing to deploy, and the default branch only runs the checks. */
   readonly packages: {
-    readonly projectRelease?: Flake.FlakeRef<"packages">
-    readonly [name: string]: Flake.FlakeRef<"packages"> | undefined
-  }
+    readonly projectRelease?: Flake.FlakeRef<"packages">;
+    readonly [name: string]: Flake.FlakeRef<"packages"> | undefined;
+  };
 }
 
 export interface StandardOptions {
-  readonly flake: StandardFlake
+  readonly flake: StandardFlake;
   /** Checks beyond the flake's own, such as tasks running the repository's QA. They run on both events. */
-  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
+  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any>>;
   /**
    * Vite+'s checks besides `checks` (`Vp.tasks`): `check` runs `vp check` and `test` runs `vp test`. Off
    * unless given, since a repository may run the same in tasks of its own.
    */
-  readonly vp?: Vp.TasksOptions
+  readonly vp?: Vp.TasksOptions;
   /** A URL whose JSON `revision` must report the deployed commit before the deploy counts. */
-  readonly readiness?: string
+  readonly readiness?: string;
   /**
    * Systems whose hosts run the release besides the controller's. Each gets a build of
    * `packages.<system>.projectRelease`, `release-<system>`, which Nix sends to a remote builder of it;
@@ -32,26 +42,28 @@ export interface StandardOptions {
    * always builds the controller's system, and the promotion deploys it there; listing that system too is
    * allowed but only adds a step that builds the same derivation again.
    */
-  readonly releaseSystems?: ReadonlyArray<Step.Platform>
+  readonly releaseSystems?: ReadonlyArray<Step.Platform>;
   /**
    * The Alchemy stack with the release's `Fleet.Placement`: its hostname, secrets and limits on its
    * host. The default branch deploys it before the promotion, so a release starts with them.
    */
-  readonly placement?: Alchemy.Stack<unknown>
+  readonly placement?: Alchemy.Stack<unknown>;
   /**
    * Same-repo pull requests also plan the placement (`placement-plan`, `alchemy plan`), so one whose deploy
    * can't work fails before it merges. On unless set to false.
    */
-  readonly planDeploys?: boolean
+  readonly planDeploys?: boolean;
   /** Steps that run on the default branch after the release is live, such as app store builds. */
-  readonly afterDeploy?: (promote: Step.Step<unknown, unknown, Base, {}, { readonly deploy: true }>) => ReadonlyArray<Step.Any>
-  readonly defaultBranch?: string
-  readonly shared?: Files.Files
+  readonly afterDeploy?: (
+    promote: Step.Step<unknown, unknown, Base, {}, { readonly deploy: true }>,
+  ) => ReadonlyArray<Step.Any>;
+  readonly defaultBranch?: string;
+  readonly shared?: Files.Files;
   /**
    * A cron schedule that runs every check on the default branch without reusing anything, for tasks
    * with `each` the check that their keys still cover what their files depend on.
    */
-  readonly nightly?: string
+  readonly nightly?: string;
 }
 
 /**
@@ -60,63 +72,87 @@ export interface StandardOptions {
  * same-repo pull requests) and promotes the release once every check passed.
  */
 export const standard = (options: StandardOptions): Calder.Project => {
-  const checks = checksOf(options)
-  const branch = options.defaultBranch ?? "main"
-  const shared = options.shared === undefined ? {} : { shared: options.shared }
-  const nightly = options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)]
-  const ref = options.flake.packages.projectRelease
+  const checks = checksOf(options);
+  const branch = options.defaultBranch ?? "main";
+  const shared = options.shared === undefined ? {} : { shared: options.shared };
+
+  const nightly =
+    options.nightly === undefined ? [] : [On.schedule(options.nightly, { reuse: "none" }, checks)];
+
+  const ref = options.flake.packages.projectRelease;
+
   if (ref === undefined) {
-    return Calder.project({ ...shared, rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly] })
+    return Calder.project({
+      ...shared,
+      rules: [On.pullRequest(checks), On.push(branch, checks), ...nightly],
+    });
   }
-  const release = Nix.build(ref, { name: "release" })
-  const systems = [...new Set(options.releaseSystems ?? [])]
+
+  const release = Nix.build(ref, { name: "release" });
+  const systems = [...new Set(options.releaseSystems ?? [])];
+
   const releases = Object.fromEntries(
-    systems.map((system) => [system, Nix.build(Flake.attr(Flake.attrPath(ref, system)), { name: `release-${system}` })]),
-  )
-  const place = options.placement === undefined
-    ? []
-    : [Alchemy.deploy(options.placement, { stage: "prod", name: "placement", after: checks })]
+    systems.map((system) => [
+      system,
+      Nix.build(Flake.attr(Flake.attrPath(ref, system)), { name: `release-${system}` }),
+    ]),
+  );
+
+  const place =
+    options.placement === undefined
+      ? []
+      : [Alchemy.deploy(options.placement, { stage: "prod", name: "placement", after: checks })];
+
   const promote = Action.make(
     "promote",
     { needs: { release, ...releases }, after: [...checks, ...place], grants: { deploy: true } },
-    function*({ release, ...others }) {
-      const run = yield* CurrentRun
-      return yield* Release.promote({ ...others, [run.system]: release }, options.readiness === undefined ? {} : { readiness: options.readiness })
+    function* ({ release, ...others }) {
+      const run = yield* CurrentRun;
+
+      return yield* Release.promote(
+        { ...others, [run.system]: release },
+        options.readiness === undefined ? {} : { readiness: options.readiness },
+      );
     },
-  )
+  );
+
   return Calder.project({
     ...shared,
     rules: [
       On.pullRequest([...checks, release, ...Object.values(releases)]),
       ...(options.placement === undefined || options.planDeploys === false
         ? []
-        : [On.preview([Alchemy.plan(options.placement, { stage: "prod", name: "placement-plan" })])]),
+        : [
+            On.preview([
+              Alchemy.plan(options.placement, { stage: "prod", name: "placement-plan" }),
+            ]),
+          ]),
       On.push(branch, [promote, ...(options.afterDeploy?.(promote) ?? [])]),
       ...nightly,
     ],
-  })
-}
+  });
+};
 
 export interface AlchemyOptions<A = void> {
-  readonly flake: Pick<StandardFlake, "checks">
-  readonly stack: Alchemy.Stack<A>
+  readonly flake: Pick<StandardFlake, "checks">;
+  readonly stack: Alchemy.Stack<A>;
   /** Checks beyond the flake's own. They run on pull requests and pushes, and gate every deploy. */
-  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>
+  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any>>;
   /** As in `standard`: Vite+'s checks, which gate every deploy like `checks`. */
-  readonly vp?: Vp.TasksOptions
+  readonly vp?: Vp.TasksOptions;
   /** The stage the default branch deploys, `prod` by default. */
-  readonly production?: string
+  readonly production?: string;
   /**
    * Previews of same-repo pull requests at the URL `url` gives from the pull request's number and the
    * stack's `outputs`, removed when the pull request closes.
    */
-  readonly previews?: { readonly url: (pr: number, outputs: A) => string }
-  readonly defaultBranch?: string
-  readonly shared?: Files.Files
+  readonly previews?: { readonly url: (pr: number, outputs: A) => string };
+  readonly defaultBranch?: string;
+  readonly shared?: Files.Files;
   /** As in `standard`: a cron schedule that runs every check without reusing anything. */
-  readonly nightly?: string
+  readonly nightly?: string;
   /** As in `standard`: same-repo pull requests plan the production stage. */
-  readonly planDeploys?: boolean
+  readonly planDeploys?: boolean;
 }
 
 /**
@@ -126,8 +162,9 @@ export interface AlchemyOptions<A = void> {
  * `Environments.project`, which composes environments, previews before checks and readiness.
  */
 export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project => {
-  const checks = checksOf(options)
-  const branch = options.defaultBranch ?? "main"
+  const checks = checksOf(options);
+  const branch = options.defaultBranch ?? "main";
+
   return Environments.project({
     stack: options.stack,
     checks,
@@ -137,13 +174,15 @@ export const alchemy = <A = void>(options: AlchemyOptions<A>): Calder.Project =>
     ...(options.nightly === undefined ? {} : { nightly: options.nightly }),
     ...(options.planDeploys === undefined ? {} : { planDeploys: options.planDeploys }),
     // Previews wait for every check in its usual turn, unlike `previews.after`, which gates them.
-    ...(options.previews === undefined ? {} : { rules: Environments.preview(options, { url: options.previews.url, after: checks }) }),
-  })
-}
+    ...(options.previews === undefined
+      ? {}
+      : { rules: Environments.preview(options, { url: options.previews.url, after: checks }) }),
+  });
+};
 
 /** Each flake check as a build, then `checks`, then Vite+'s. */
 const checksOf = (options: Pick<AlchemyOptions<unknown>, "flake" | "checks" | "vp">) => [
   ...Object.entries(options.flake.checks).map(([name, ref]) => Nix.build(ref, { name })),
   ...(options.checks ?? []),
   ...(options.vp === undefined ? [] : Vp.tasks(options.vp)),
-]
+];

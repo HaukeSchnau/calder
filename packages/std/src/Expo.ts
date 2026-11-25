@@ -1,5 +1,5 @@
-import { cmd, Files, type Flake, Secret, type Setup, type Step, Task } from "@calder-ci/core"
-import { Schema } from "effect"
+import { cmd, Files, type Flake, Secret, type Setup, type Step, Task } from "@calder-ci/core";
+import { Schema } from "effect";
 
 /**
  * Releases of an Expo app: its runtime versions, over-the-air updates through EAS Update, TestFlight
@@ -40,43 +40,43 @@ import { Schema } from "effect"
 
 /** Where a step runs: an agent of `platform`, the controller's by default, in the dev shell `shell`. */
 export interface Host {
-  readonly platform?: Step.Platform
+  readonly platform?: Step.Platform;
   /** The dev shell with node and pnpm. Without one the step runs with the host's PATH. */
-  readonly shell?: Flake.FlakeRef<"devShells">
+  readonly shell?: Flake.FlakeRef<"devShells">;
 }
 
 export interface AppOptions extends Host {
   /** The app's directory, relative to the repository root. The root by default. */
-  readonly dir?: string
+  readonly dir?: string;
   /** The step's name. Each function has its own default. */
-  readonly name?: string
+  readonly name?: string;
   /** Steps that must pass first, such as the checks. */
-  readonly after?: ReadonlyArray<Step.Any>
+  readonly after?: ReadonlyArray<Step.Any>;
   /**
    * Plain environment variables the app config or the JavaScript reads, such as `EXPO_PUBLIC_API_URL`.
    * The same for every step of the app, since each of them evaluates the app config.
    */
-  readonly env?: { readonly [name: string]: string }
+  readonly env?: { readonly [name: string]: string };
 }
 
 export interface InstalledOptions extends AppOptions {
   /** The app's dependencies, installed on the step's platform: `Pnpm.install` with the same `platform`. */
-  readonly setup: Setup.Setup
+  readonly setup: Setup.Setup;
 }
 
 /** A runtime version: the value of `runtimeVersion`, which the release steps interpolate. */
-export type Runtime = Step.Step<string, unknown, never, unknown, unknown>
+export type Runtime = Step.Step<string, unknown, never, unknown, unknown>;
 
 const hostOf = (options: Host) => ({
   ...(options.platform === undefined ? {} : { platform: options.platform }),
   ...(options.shell === undefined ? {} : { shell: options.shell }),
-})
+});
 
-const inDir = (dir: string, path: string) => (dir === "." ? path : `${dir}/${path}`)
+const inDir = (dir: string, path: string) => (dir === "." ? path : `${dir}/${path}`);
 
 /** Enters the app's directory `$1` with the app's own binaries first on PATH, as in a package script. */
 const enter = `cd "$1"
-PATH="$PWD/node_modules/.bin:$PATH"`
+PATH="$PWD/node_modules/.bin:$PATH"`;
 
 /** `runtime <platform>` prints the app's runtime version, as expo-updates resolves it. */
 const runtimeFunction = `runtime() {
@@ -87,7 +87,7 @@ const runtimeFunction = `runtime() {
       process.exit(1)
     }
     console.log(runtimeVersion)' "$1"
-}`
+}`;
 
 /** `field <path>` prints a field of the app's public Expo config, such as `ios.appleTeamId`. */
 const fieldFunction = `config=$(expo config --json --type public)
@@ -99,7 +99,7 @@ field() {
       process.exit(1)
     }
     console.log(value)' "$1"
-}`
+}`;
 
 /** `same_runtime <what> <found> <expected>` fails unless a build or host has the runtime version CI computed. */
 const sameRuntimeFunction = `same_runtime() {
@@ -107,11 +107,11 @@ const sameRuntimeFunction = `same_runtime() {
     echo "$1 has the runtime version $2, but CI computed $3 for this commit" >&2
     exit 1
   fi
-}`
+}`;
 
 // ----------------------------------------------------------------------------------- runtime version
 
-const runtimeFile = ".calder-expo-runtime.json"
+const runtimeFile = ".calder-expo-runtime.json";
 
 /** `$1` is the app's directory, `$2` the platform, `$3` the value's file relative to the repository. */
 const runtimeScript = `set -euo pipefail
@@ -120,7 +120,7 @@ ${enter}
 ${runtimeFunction}
 version=$(runtime "$2")
 echo "$2 runtime version $version"
-node -e 'console.log(JSON.stringify(process.argv[1]))' "$version" >"$value"`
+node -e 'console.log(JSON.stringify(process.argv[1]))' "$version" >"$value"`;
 
 /**
  * The app's runtime version on `platform`, named `runtime-<platform>`: Expo's fingerprint of the native
@@ -128,7 +128,8 @@ node -e 'console.log(JSON.stringify(process.argv[1]))' "$version" >"$value"`
  * store builds, are reused until then.
  */
 export const runtimeVersion = (platform: "ios" | "android", options: InstalledOptions) => {
-  const dir = options.dir ?? "."
+  const dir = options.dir ?? ".";
+
   return Task.make(options.name ?? `runtime-${platform}`, {
     ...hostOf(options),
     setup: options.setup,
@@ -136,12 +137,12 @@ export const runtimeVersion = (platform: "ios" | "android", options: InstalledOp
     ...(options.env === undefined ? {} : { env: options.env }),
     run: cmd`bash -c ${runtimeScript} calder-expo ${dir} ${platform} ${runtimeFile}`,
     value: { path: runtimeFile, schema: Schema.String },
-  })
-}
+  });
+};
 
 // ------------------------------------------------------------------------------------ update export
 
-const updateDir = ".calder-expo-update"
+const updateDir = ".calder-expo-update";
 
 /**
  * `$1` is the app's directory, `$2` where the export goes, relative to it. With source maps hermesc
@@ -152,7 +153,7 @@ const exportScript = `set -euo pipefail
 ${enter}
 rm -rf "$2"
 expo export --platform ios --platform android --output-dir "$2" --dump-assetmap --source-maps
-find "$2" -name '*.map' -delete`
+find "$2" -name '*.map' -delete`;
 
 /**
  * This commit's JavaScript and assets for both platforms, as `eas update` would export them, named
@@ -162,7 +163,8 @@ find "$2" -name '*.map' -delete`
  * a tree it exported before, such as after a revert.
  */
 export const exportUpdate = (options: InstalledOptions) => {
-  const dir = options.dir ?? "."
+  const dir = options.dir ?? ".";
+
   return Task.make(options.name ?? "ota-export", {
     platform: "x86_64-linux",
     ...hostOf(options),
@@ -171,8 +173,8 @@ export const exportUpdate = (options: InstalledOptions) => {
     ...(options.env === undefined ? {} : { env: options.env }),
     run: cmd`bash -c ${exportScript} calder-expo ${dir} ${updateDir}`,
     outputs: { update: inDir(dir, updateDir) },
-  })
-}
+  });
+};
 
 // ----------------------------------------------------------------------------------- update publish
 
@@ -182,21 +184,22 @@ export const Update = Schema.Struct({
   group: Schema.String,
   platform: Schema.String,
   runtimeVersion: Schema.String,
-})
-export type Update = typeof Update.Type
+});
+
+export type Update = typeof Update.Type;
 
 export interface PublishOptions extends InstalledOptions {
   /** An `exportUpdate` step: its export is what goes out. */
-  readonly update: Step.Step<unknown, unknown, never, { readonly update: string }, unknown>
+  readonly update: Step.Step<unknown, unknown, never, { readonly update: string }, unknown>;
   /** The EAS Update channel, such as `production`. The step's name is `ota-<channel>` by default. */
-  readonly channel: string
+  readonly channel: string;
   /** The project's secret with an Expo access token that may publish updates, such as a robot's. */
-  readonly token: string
+  readonly token: string;
   /** The runtime versions the store builds were keyed by. The step fails when eas would publish to others. */
-  readonly runtimes: { readonly ios: Runtime; readonly android: Runtime }
+  readonly runtimes: { readonly ios: Runtime; readonly android: Runtime };
 }
 
-const updatesFile = ".calder-expo-updates.json"
+const updatesFile = ".calder-expo-updates.json";
 
 /**
  * `node -e <script> <platform> <runtime> <branch>`, which bash quotes in single quotes, so it has none.
@@ -212,7 +215,7 @@ if (newest !== undefined && newest !== runtime && groups.some((group) => group.r
   console.log("warning: this " + platform + " update goes to runtime version " + runtime + ", which " + branch +
     " had updates for before, but its newest update went to " + newest + ". A native change was reverted, and builds of " +
     newest + " keep their JavaScript until store builds of " + runtime + " replace them.")
-}`
+}`;
 
 /**
  * `$1` is the app's directory, `$2` the export, `$3` the channel, `$4` and `$5` the iOS and Android
@@ -248,7 +251,7 @@ published=$(mktemp)
 EXPO_TOKEN=$token eas update --skip-bundler --input-dir "$2" --channel "$3" --platform all \\
   --message "$(git log -1 --format=%s)" --non-interactive --json >"$published"
 cat "$published"
-mv "$published" "$value"`
+mv "$published" "$value"`;
 
 /**
  * Publishes an exported update to the EAS Update channel `channel`, named `ota-<channel>`, for the
@@ -260,7 +263,8 @@ mv "$published" "$value"`
  * of each platform.
  */
 export const publishUpdate = (options: PublishOptions) => {
-  const dir = options.dir ?? "."
+  const dir = options.dir ?? ".";
+
   return Task.make(options.name ?? `ota-${options.channel}`, {
     ...hostOf(options),
     setup: options.setup,
@@ -272,8 +276,8 @@ export const publishUpdate = (options: PublishOptions) => {
     secrets: { EXPO_TOKEN_FILE: Secret.file(options.token) },
     run: cmd`bash -c ${publishScript} calder-expo ${dir} ${options.update.outputs.update} ${options.channel} ${options.runtimes.ios} ${options.runtimes.android} ${updatesFile}`,
     value: { path: updatesFile, schema: Schema.Array(Update) },
-  })
-}
+  });
+};
 
 // ------------------------------------------------------------------------------------- store builds
 
@@ -282,7 +286,7 @@ export interface StoreBuildOptions extends AppOptions {
    * Files the build reads that the runtime version doesn't cover, such as a store listing it uploads.
    * None by default, so the build runs again only when the runtime version or the command changes.
    */
-  readonly inputs?: Files.Files
+  readonly inputs?: Files.Files;
 }
 
 /**
@@ -293,23 +297,23 @@ const storeBuild = (options: StoreBuildOptions) => ({
   ...hostOf(options),
   after: options.after ?? [],
   inputs: options.inputs ?? Files.of(),
-})
+});
 
 export interface AppStoreConnectKey {
   /** The project's secret with the API key's `.p8` file. */
-  readonly key: string
-  readonly keyId: string
-  readonly issuerId: string
+  readonly key: string;
+  readonly keyId: string;
+  readonly issuerId: string;
 }
 
 /** TestFlight builds run on a Mac agent, the only platform with Xcode. */
 export interface TestflightOptions extends Omit<StoreBuildOptions, "platform"> {
   /** The iOS runtime version: `runtimeVersion("ios", ...)`. */
-  readonly runtime: Runtime
+  readonly runtime: Runtime;
   /** The app's Apple ID in App Store Connect. */
-  readonly appId: string
+  readonly appId: string;
   /** An API key that may sign and upload, for xcodebuild and `asc`. Only this step receives it. */
-  readonly appStoreConnect: AppStoreConnectKey
+  readonly appStoreConnect: AppStoreConnectKey;
 }
 
 /**
@@ -393,7 +397,7 @@ cat >"$options" <<PLIST
 </plist>
 PLIST
 xcodebuild -exportArchive -quiet -archivePath "$archive" -exportPath ios/build/upload -exportOptionsPlist "$options" "\${auth[@]}"
-asc builds wait --app "$app" --version "$version" --build-number "$IOS_BUILD_NUMBER" --platform IOS --timeout 45m --fail-on-invalid`
+asc builds wait --app "$app" --version "$version" --build-number "$IOS_BUILD_NUMBER" --platform IOS --timeout 45m --fail-on-invalid`;
 
 /**
  * Archives a Release build with a fresh build number, uploads it to App Store Connect and waits until
@@ -417,17 +421,17 @@ export const testflight = (options: TestflightOptions) =>
     },
     secrets: { ASC_PRIVATE_KEY_PATH: Secret.file(options.appStoreConnect.key) },
     run: cmd`bash -c ${testflightScript} calder-expo ${options.dir ?? "."} ${options.runtime} ${options.appId}`,
-  })
+  });
 
 export interface PlayOptions extends StoreBuildOptions {
   /** The Android runtime version: `runtimeVersion("android", ...)`. */
-  readonly runtime: Runtime
+  readonly runtime: Runtime;
   /** The project's secret with the upload key: a PKCS12 keystore in base64, alias `upload`. */
-  readonly keystore: string
+  readonly keystore: string;
   /** The project's secret with the keystore's password, which is also the key's. */
-  readonly password: string
+  readonly password: string;
   /** The project's secret with the JSON key of a Play Console service account that may release. */
-  readonly serviceAccount: string
+  readonly serviceAccount: string;
 }
 
 /**
@@ -442,7 +446,7 @@ const sdkInit = `allprojects {
       android.buildToolsVersion = rootProject.ext.buildToolsVersion
     }
   }
-}`
+}`;
 
 /**
  * `$1` is the app's directory and `$2` the runtime version CI computed. The package comes from the
@@ -489,7 +493,7 @@ aab=android/app/build/outputs/bundle/release/app-release.aab
 # Updates for this commit go to the runtime version CI computed, so the build must report the same one.
 embedded=$(unzip -p "$aab" base/assets/fingerprint)
 same_runtime "the build" "$embedded" "$expected"
-gplay release --package "$package" --track internal --bundle "$aab" --wait`
+gplay release --package "$package" --track internal --bundle "$aab" --wait`;
 
 /**
  * Builds a release bundle with a fresh versionCode, signed with the Play upload key, and releases it to
@@ -510,4 +514,4 @@ export const playInternal = (options: PlayOptions) =>
       GPLAY_SERVICE_ACCOUNT_JSON: Secret.file(options.serviceAccount),
     },
     run: cmd`bash -c ${playScript} calder-expo ${options.dir ?? "."} ${options.runtime}`,
-  })
+  });

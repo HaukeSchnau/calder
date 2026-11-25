@@ -1,6 +1,6 @@
-import type { FlakeRef } from "./Flake.ts"
-import type { BuildFailed, Infrastructure, StorePath } from "./Calder.ts"
-import { make, type Step } from "./Step.ts"
+import type { FlakeRef } from "./Flake.ts";
+import type { BuildFailed, Infrastructure, StorePath } from "./Calder.ts";
+import { make, type Step } from "./Step.ts";
 
 /**
  * A derivation of the repository's flake. Nix decides whether anything needs building, and the value
@@ -10,4 +10,7 @@ export const build = (
   ref: FlakeRef<"packages" | "checks" | "attr">,
   options: { readonly name?: string } = {},
 ): Step<StorePath, BuildFailed | Infrastructure> =>
-  make("build", options.name ?? [ref.name, ...(ref.path ?? [])].join("."), { _tag: "Build", ref }) as Step<StorePath, BuildFailed | Infrastructure>
+  make("build", options.name ?? [ref.name, ...(ref.path ?? [])].join("."), {
+    _tag: "Build",
+    ref,
+  }) as Step<StorePath, BuildFailed | Infrastructure>;

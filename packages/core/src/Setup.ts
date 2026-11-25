@@ -1,31 +1,31 @@
-import type { Cmd } from "./Cmd.ts"
-import * as Files from "./Files.ts"
-import type { FlakeRef } from "./Flake.ts"
-import type { TaskFailed } from "./Calder.ts"
-import { make as makeStep, type Platform, type Step } from "./Step.ts"
+import type { Cmd } from "./Cmd.ts";
+import type * as Files from "./Files.ts";
+import type { FlakeRef } from "./Flake.ts";
+import type { TaskFailed } from "./Calder.ts";
+import { make as makeStep, type Platform, type Step } from "./Step.ts";
 
 /** A step that prepares a workspace for tasks. */
 export interface Setup extends Step<void, TaskFailed> {
-  readonly kind: "setup"
+  readonly kind: "setup";
 }
 
 export interface Options {
   /** The toolchain, as for a task. Without it the setup runs with the host's PATH. */
-  readonly shell?: FlakeRef<"devShells">
+  readonly shell?: FlakeRef<"devShells">;
   /** The files that decide whether a prepared workspace is still current: manifests, lockfiles, patches. */
-  readonly inputs: Files.Files
-  readonly run: Cmd<never>
+  readonly inputs: Files.Files;
+  readonly run: Cmd;
   /**
    * What the setup creates that a task's `git clean` keeps, as gitignore patterns (`node_modules`).
    * Kept files carry over to tasks of other revisions without entering their keys, so keep only caches
    * that tools check against the sources themselves (`node_modules`, `*.tsbuildinfo`, `.vite`). Build
    * output such as `dist` doesn't belong here: a task would read what another revision built.
    */
-  readonly keep?: ReadonlyArray<string>
+  readonly keep?: ReadonlyArray<string>;
   /** Directories of the checkout put in front of the tasks' PATH, such as `node_modules/.bin`. */
-  readonly path?: ReadonlyArray<string>
-  readonly env?: { readonly [env: string]: string }
-  readonly platform?: Platform
+  readonly path?: ReadonlyArray<string>;
+  readonly env?: { readonly [env: string]: string };
+  readonly platform?: Platform;
 }
 
 /**
@@ -43,4 +43,4 @@ export const make = (name: string, options: Options): Setup =>
     path: options.path ?? [],
     env: options.env ?? {},
     platform: options.platform,
-  }) as Setup
+  }) as Setup;

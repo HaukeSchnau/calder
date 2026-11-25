@@ -4,11 +4,11 @@
  * authenticate every call with their job's token. Agents on other hosts (`calder agent`) start workers
  * for their platform, and those call the same RPCs over a WebSocket.
  */
-import { Domain } from "@calder-ci/api"
-import { Effect, Schema } from "effect"
-import { Rpc, RpcGroup } from "effect/rpc"
+import { Domain } from "@calder-ci/api";
+import { Effect, Schema } from "effect";
+import { Rpc, RpcGroup } from "effect/rpc";
 
-export const Reuse = Schema.Literals(["all", "builds", "none"])
+export const Reuse = Schema.Literals(["all", "builds", "none"]);
 
 export const PlannedStep = Schema.Struct({
   name: Schema.String,
@@ -32,56 +32,69 @@ export const PlannedStep = Schema.Struct({
   /** What it runs, for people: the attribute, the command or the action. */
   detail: Schema.String,
   /** The derivation, its output and the system it builds for, when the plan could evaluate them. */
-  build: Schema.NullOr(Schema.Struct({
-    attr: Schema.String,
-    drv: Schema.NullOr(Schema.String),
-    out: Schema.NullOr(Schema.String),
-    system: Schema.NullOr(Schema.String),
-  })),
+  build: Schema.NullOr(
+    Schema.Struct({
+      attr: Schema.String,
+      drv: Schema.NullOr(Schema.String),
+      out: Schema.NullOr(Schema.String),
+      system: Schema.NullOr(Schema.String),
+    }),
+  ),
   /** A setup: the key its prepared workspace is kept under, and where it runs. */
-  setup: Schema.NullOr(Schema.Struct({ deps: Schema.String, platform: Schema.NullOr(Schema.String) })),
-  task: Schema.NullOr(Schema.Struct({
-    /** The dev shell's attribute path, or null for the host's PATH. */
-    shell: Schema.NullOr(Schema.String),
-    /** Hash of everything but the values the command interpolates. */
-    keyBase: Schema.String,
-    inputs: Schema.Array(Schema.String),
-    interpolates: Schema.Array(Schema.String),
-    shards: Schema.NullOr(Schema.Number),
-    /** For a task with `each`: every file with its own key, and whether it runs even when that key passed. */
-    each: Schema.NullOr(Schema.Array(Schema.Struct({ file: Schema.String, key: Schema.String, always: Schema.Boolean }))),
-    /** The key of the prepared workspace the task starts from: its setup's, or (without one) a hash of manifests, lockfiles, patches, `.ci/`, `flake.lock` and the dev shell. */
-    deps: Schema.String,
-    outputs: Schema.Array(Schema.String),
-    secrets: Schema.Array(Schema.String),
-    platform: Schema.NullOr(Schema.String),
-    /** False when the task must run on the controller's host; plans from before it was added lack it. */
-    offload: Schema.optional(Schema.Boolean),
-    /**
-     * Other systems whose agents may run the task when it offloads: the Linux systems whose dev shells of
-     * the task and its setup evaluated. Its result counts under its key, as if it ran on the run's system.
-     * Older plans lack it.
-     */
-    systems: Schema.optional(Schema.Array(Schema.String)),
-    /** A preview rule's task that reads secrets; same-repo pull requests grant them. Older plans lack it. */
-    preview: Schema.optional(Schema.Boolean),
-    /**
-     * Holds a deploy lease while it runs: `true` the project's, a name the project's lease of that name.
-     * Older plans lack it.
-     */
-    lease: Schema.optional(Schema.Union([Schema.Boolean, Schema.String])),
-  })),
-  action: Schema.NullOr(Schema.Struct({
-    deploy: Schema.Boolean,
-    secrets: Schema.Array(Schema.String),
-    /** A preview rule's action, which same-repo pull requests run as a trusted job. Older plans lack it. */
-    preview: Schema.optional(Schema.Boolean),
-  })),
+  setup: Schema.NullOr(
+    Schema.Struct({ deps: Schema.String, platform: Schema.NullOr(Schema.String) }),
+  ),
+  task: Schema.NullOr(
+    Schema.Struct({
+      /** The dev shell's attribute path, or null for the host's PATH. */
+      shell: Schema.NullOr(Schema.String),
+      /** Hash of everything but the values the command interpolates. */
+      keyBase: Schema.String,
+      inputs: Schema.Array(Schema.String),
+      interpolates: Schema.Array(Schema.String),
+      shards: Schema.NullOr(Schema.Number),
+      /** For a task with `each`: every file with its own key, and whether it runs even when that key passed. */
+      each: Schema.NullOr(
+        Schema.Array(
+          Schema.Struct({ file: Schema.String, key: Schema.String, always: Schema.Boolean }),
+        ),
+      ),
+      /** The key of the prepared workspace the task starts from: its setup's, or (without one) a hash of manifests, lockfiles, patches, `.ci/`, `flake.lock` and the dev shell. */
+      deps: Schema.String,
+      outputs: Schema.Array(Schema.String),
+      secrets: Schema.Array(Schema.String),
+      platform: Schema.NullOr(Schema.String),
+      /** False when the task must run on the controller's host; plans from before it was added lack it. */
+      offload: Schema.optional(Schema.Boolean),
+      /**
+       * Other systems whose agents may run the task when it offloads: the Linux systems whose dev shells of
+       * the task and its setup evaluated. Its result counts under its key, as if it ran on the run's system.
+       * Older plans lack it.
+       */
+      systems: Schema.optional(Schema.Array(Schema.String)),
+      /** A preview rule's task that reads secrets; same-repo pull requests grant them. Older plans lack it. */
+      preview: Schema.optional(Schema.Boolean),
+      /**
+       * Holds a deploy lease while it runs: `true` the project's, a name the project's lease of that name.
+       * Older plans lack it.
+       */
+      lease: Schema.optional(Schema.Union([Schema.Boolean, Schema.String])),
+    }),
+  ),
+  action: Schema.NullOr(
+    Schema.Struct({
+      deploy: Schema.Boolean,
+      secrets: Schema.Array(Schema.String),
+      /** A preview rule's action, which same-repo pull requests run as a trusted job. Older plans lack it. */
+      preview: Schema.optional(Schema.Boolean),
+    }),
+  ),
   output: Schema.NullOr(Schema.Struct({ task: Schema.String, output: Schema.String })),
-})
-export type PlannedStep = typeof PlannedStep.Type
+});
 
-const Derivation = Schema.Struct({ drv: Schema.String, out: Schema.String, system: Schema.String })
+export type PlannedStep = typeof PlannedStep.Type;
+
+const Derivation = Schema.Struct({ drv: Schema.String, out: Schema.String, system: Schema.String });
 
 /**
  * Footprint records (worker/Footprint.ts): what evaluations read of the source, and the derivation each
@@ -89,24 +102,31 @@ const Derivation = Schema.Struct({ drv: Schema.String, out: Schema.String, syste
  * prefix of them, and `digest` covers their identities at the revision it was recorded at.
  */
 export const Records = Schema.Struct({
-  footprints: Schema.Array(Schema.Struct({
-    id: Schema.String,
-    revision: Schema.String,
-    entries: Schema.Array(Schema.Tuple([Schema.String, Schema.Literals(["read", "list", "lookup"])])),
-  })),
-  evaluations: Schema.Array(Schema.Struct({
-    attr: Schema.String,
-    footprint: Schema.String,
-    count: Schema.Number,
-    digest: Schema.String,
-    derivation: Schema.NullOr(Derivation),
-    /** The app's name, for the record of `lib.project.project`. */
-    app: Schema.optional(Schema.NullOr(Schema.String)),
-    /** The journal's id of the record, when the controller hands it to a plan. */
-    id: Schema.optional(Schema.Number),
-  })),
-})
-export type Records = typeof Records.Type
+  footprints: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      revision: Schema.String,
+      entries: Schema.Array(
+        Schema.Tuple([Schema.String, Schema.Literals(["read", "list", "lookup"])]),
+      ),
+    }),
+  ),
+  evaluations: Schema.Array(
+    Schema.Struct({
+      attr: Schema.String,
+      footprint: Schema.String,
+      count: Schema.Number,
+      digest: Schema.String,
+      derivation: Schema.NullOr(Derivation),
+      /** The app's name, for the record of `lib.project.project`. */
+      app: Schema.optional(Schema.NullOr(Schema.String)),
+      /** The journal's id of the record, when the controller hands it to a plan. */
+      id: Schema.optional(Schema.Number),
+    }),
+  ),
+});
+
+export type Records = typeof Records.Type;
 
 /** An attribute whose record held at the audited revision but whose fresh evaluation differs. */
 export const Mismatch = Schema.Struct({
@@ -117,11 +137,12 @@ export const Mismatch = Schema.Struct({
   missed: Schema.Array(Schema.String),
   /** The record's id in the journal. */
   record: Schema.optional(Schema.Number),
-})
-export type Mismatch = typeof Mismatch.Type
+});
+
+export type Mismatch = typeof Mismatch.Type;
 
 /** The attribute a plan reads the app's name from, which records and reused plans name like a derivation's. */
-export const appAttr = "lib.project.project"
+export const appAttr = "lib.project.project";
 
 export const PlanSpec = Schema.Struct({
   version: Schema.Literal(1),
@@ -150,14 +171,17 @@ export const PlanSpec = Schema.Struct({
    * The earlier plan of the same tree the plan took derivations from: its revision and the attributes it
    * took, `appAttr` among them when it took the app's name too.
    */
-  reused: Schema.optional(Schema.Struct({ revision: Schema.String, attrs: Schema.Array(Schema.String) })),
+  reused: Schema.optional(
+    Schema.Struct({ revision: Schema.String, attrs: Schema.Array(Schema.String) }),
+  ),
   /**
    * Set by the controller on a same-repo pull request's plan: the attributes a trusted run of its tree may
    * take from it, `appAttr` among them when it may take the app's name (Rows.ts `trustedAttrs`).
    */
   trusted: Schema.optional(Schema.Array(Schema.String)),
-})
-export type PlanSpec = typeof PlanSpec.Type
+});
+
+export type PlanSpec = typeof PlanSpec.Type;
 
 export const RunInfo = Schema.Struct({
   id: Schema.String,
@@ -180,8 +204,9 @@ export const RunInfo = Schema.Struct({
   /** The revision's `.calder/` directory, extracted, with `node_modules` linked to Calder's SDK. Empty for agents' workers. */
   pipelineDir: Schema.String,
   system: Schema.String,
-})
-export type RunInfo = typeof RunInfo.Type
+});
+
+export type RunInfo = typeof RunInfo.Type;
 
 /** An earlier step's outcome as JSON. Values of `Calder.Result` classes carry their class id in `$calder`. */
 export const Outcome = Schema.Union([
@@ -189,8 +214,9 @@ export const Outcome = Schema.Union([
   Schema.TaggedStruct("Failed", { error: Schema.Unknown }),
   Schema.TaggedStruct("Died", { message: Schema.String }),
   Schema.TaggedStruct("Blocked", {}),
-])
-export type Outcome = typeof Outcome.Type
+]);
+
+export type Outcome = typeof Outcome.Type;
 
 export const PlanJob = Schema.TaggedStruct("Plan", {
   run: RunInfo,
@@ -199,12 +225,16 @@ export const PlanJob = Schema.TaggedStruct("Plan", {
    * The newest plan of another commit with the same root tree, from a run this one may reuse (Rows.ts
    * `earlierPlan`), whose derivations the plan takes unless they mention that commit.
    */
-  earlier: Schema.optional(Schema.NullOr(Schema.Struct({
-    revision: Schema.String,
-    derivations: Schema.Record(Schema.String, Schema.NullOr(Derivation)),
-    /** Absent when the run may not take that plan's app name, which the plan then evaluates. */
-    app: Schema.optional(Schema.NullOr(Schema.String)),
-  }))),
+  earlier: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        revision: Schema.String,
+        derivations: Schema.Record(Schema.String, Schema.NullOr(Derivation)),
+        /** Absent when the run may not take that plan's app name, which the plan then evaluates. */
+        app: Schema.optional(Schema.NullOr(Schema.String)),
+      }),
+    ),
+  ),
   /** The newest footprint records per attribute this run may trust. Older controllers send none. */
   records: Schema.optional(Records),
   /** Evaluates every attribute afresh and reports the records that a fresh evaluation contradicts. */
@@ -214,7 +244,7 @@ export const PlanJob = Schema.TaggedStruct("Plan", {
    * evaluating nothing, so the controller runs it without a plan slot.
    */
   rules: Schema.optional(Schema.Boolean),
-})
+});
 
 export const StepJob = Schema.TaggedStruct("Step", {
   run: RunInfo,
@@ -242,20 +272,25 @@ export const StepJob = Schema.TaggedStruct("Step", {
    * For the first build the plan left unevaluated: instead of building, evaluates every such build of the
    * run together, and finds which builds use which, among them and the `planned` ones.
    */
-  evaluate: Schema.optional(Schema.Struct({
-    builds: Schema.Array(Schema.Struct({ name: Schema.String, attr: Schema.String })),
-    planned: Schema.Array(Schema.Struct({ name: Schema.String, drv: Schema.String })),
-    /**
-     * For an evaluator agent: the controller's Nix version, import-from-derivation setting and hash of
-     * `NIX_CONFIG` (`nixSettings`), which its
-     * plans' footprint records count under. An agent whose own differ says so.
-     */
-    controller: Schema.optional(Schema.Struct({ nix: Schema.String, ifd: Schema.String, config: Schema.String })),
-  })),
-})
+  evaluate: Schema.optional(
+    Schema.Struct({
+      builds: Schema.Array(Schema.Struct({ name: Schema.String, attr: Schema.String })),
+      planned: Schema.Array(Schema.Struct({ name: Schema.String, drv: Schema.String })),
+      /**
+       * For an evaluator agent: the controller's Nix version, import-from-derivation setting and hash of
+       * `NIX_CONFIG` (`nixSettings`), which its
+       * plans' footprint records count under. An agent whose own differ says so.
+       */
+      controller: Schema.optional(
+        Schema.Struct({ nix: Schema.String, ifd: Schema.String, config: Schema.String }),
+      ),
+    }),
+  ),
+});
 
-export const Job = Schema.Union([PlanJob, StepJob])
-export type Job = typeof Job.Type
+export const Job = Schema.Union([PlanJob, StepJob]);
+
+export type Job = typeof Job.Type;
 
 export const NixActivity = Schema.Struct({
   id: Schema.Number,
@@ -267,8 +302,9 @@ export const NixActivity = Schema.Struct({
   start: Schema.Number,
   end: Schema.NullOr(Schema.Number),
   failed: Schema.Boolean,
-})
-export type NixActivity = typeof NixActivity.Type
+});
+
+export type NixActivity = typeof NixActivity.Type;
 
 export const TestResult = Schema.Struct({
   suite: Schema.String,
@@ -277,7 +313,7 @@ export const TestResult = Schema.Struct({
   status: Schema.Literals(["passed", "failed", "skipped", "timeout"]),
   durationMs: Schema.Number,
   message: Schema.NullOr(Schema.String),
-})
+});
 
 export const JobEvent = Schema.Union([
   Schema.TaggedStruct("Log", {
@@ -290,8 +326,9 @@ export const JobEvent = Schema.Union([
   /** The task's final key, once interpolated values are known. */
   Schema.TaggedStruct("Key", { key: Schema.String }),
   Schema.TaggedStruct("Attempt", { attempt: Schema.Number, reason: Schema.String }),
-])
-export type JobEvent = typeof JobEvent.Type
+]);
+
+export type JobEvent = typeof JobEvent.Type;
 
 export const JobResult = Schema.Union([
   Schema.TaggedStruct("Planned", { plan: PlanSpec }),
@@ -330,22 +367,31 @@ export const JobResult = Schema.Union([
   Schema.TaggedStruct("Skipped", { reason: Schema.String }),
   /** The controller's own: an agent lost the job or none took it, so it may run again elsewhere. */
   Schema.TaggedStruct("Lost", { message: Schema.String }),
-])
-export type JobResult = typeof JobResult.Type
+]);
 
-export class Unauthorized extends Schema.TaggedError<Unauthorized>("calder/Unauthorized")("Unauthorized", {
-  reason: Schema.String,
-}) {}
+export type JobResult = typeof JobResult.Type;
 
-export class FleetBusy extends Schema.TaggedError<FleetBusy>("calder/FleetBusy")("FleetBusy", { target: Schema.String }) {}
+export class Unauthorized extends Schema.TaggedError<Unauthorized>("calder/Unauthorized")(
+  "Unauthorized",
+  {
+    reason: Schema.String,
+  },
+) {}
 
-export class FleetRejected extends Schema.TaggedError<FleetRejected>("calder/FleetRejected")("FleetRejected", {
+export class FleetBusy extends Schema.TaggedError<FleetBusy>("calder/FleetBusy")("FleetBusy", {
   target: Schema.String,
-  status: Schema.Number,
-  reason: Schema.String,
 }) {}
 
-const auth = { job: Schema.String, token: Schema.String }
+export class FleetRejected extends Schema.TaggedError<FleetRejected>("calder/FleetRejected")(
+  "FleetRejected",
+  {
+    target: Schema.String,
+    status: Schema.Number,
+    reason: Schema.String,
+  },
+) {}
+
+const auth = { job: Schema.String, token: Schema.String };
 
 export class WorkerRpcs extends RpcGroup.make(
   Rpc.make("job", { payload: auth, success: Job, error: Unauthorized }),
@@ -355,7 +401,11 @@ export class WorkerRpcs extends RpcGroup.make(
     error: Unauthorized,
   }),
   Rpc.make("finish", { payload: { ...auth, result: JobResult }, error: Unauthorized }),
-  Rpc.make("gitHead", { payload: { ...auth, branch: Schema.String }, success: Schema.String, error: Unauthorized }),
+  Rpc.make("gitHead", {
+    payload: { ...auth, branch: Schema.String },
+    success: Schema.String,
+    error: Unauthorized,
+  }),
   Rpc.make("giteaDispatch", {
     payload: {
       ...auth,
@@ -376,7 +426,10 @@ export class WorkerRpcs extends RpcGroup.make(
     },
     error: Unauthorized,
   }),
-  Rpc.make("pullRequestComment", { payload: { ...auth, markdown: Schema.String }, error: Unauthorized }),
+  Rpc.make("pullRequestComment", {
+    payload: { ...auth, markdown: Schema.String },
+    error: Unauthorized,
+  }),
   Rpc.make("fleetAcquire", {
     payload: { ...auth, project: Schema.String },
     success: Schema.Union([
@@ -411,20 +464,25 @@ export class WorkerRpcs extends RpcGroup.make(
  * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
  * newer SDK, need no bump: failed steps are not reused.
  */
-export const compatibility = 7
+export const compatibility = 7;
 
 /**
  * Who a job runs as. Forks' pull requests get a pool of their own, so nothing a fork's job leaves in its
  * home or workspaces reaches a same-repo pull request's job, whose plan the default branch may take.
  */
-export const Pool = Schema.Literals(["pr", "fork", "trusted"])
-export type Pool = typeof Pool.Type
+export const Pool = Schema.Literals(["pr", "fork", "trusted"]);
+
+export type Pool = typeof Pool.Type;
 
 /** Pools whose workers reach the network only through an egress proxy with this allowlist (`Egress.admit`). */
-export const sandboxed = (pool: Pool) => pool !== "trusted"
+export const sandboxed = (pool: Pool) => pool !== "trusted";
 
-export const EgressPolicy = Schema.Struct({ allow: Schema.Array(Schema.String), allowPrivate: Schema.Array(Schema.String) })
-export type EgressPolicy = typeof EgressPolicy.Type
+export const EgressPolicy = Schema.Struct({
+  allow: Schema.Array(Schema.String),
+  allowPrivate: Schema.Array(Schema.String),
+});
+
+export type EgressPolicy = typeof EgressPolicy.Type;
 
 /**
  * What the controller tells an agent: start a worker for a job, or stop one. A job's `pool` is who runs
@@ -439,10 +497,11 @@ export const AgentOrder = Schema.Union([
     egress: Schema.optional(EgressPolicy),
   }),
   Schema.TaggedStruct("Stop", { job: Schema.String }),
-])
-export type AgentOrder = typeof AgentOrder.Type
+]);
 
-const agentAuth = { token: Schema.String, name: Schema.String }
+export type AgentOrder = typeof AgentOrder.Type;
+
+const agentAuth = { token: Schema.String, name: Schema.String };
 
 export class AgentRpcs extends RpcGroup.make(
   /**
@@ -470,13 +529,18 @@ export class AgentRpcs extends RpcGroup.make(
        * Whose jobs it runs: an agent that starts each job in its host's sandboxed unit of the job's pool
        * (`calder agent --units`) runs every pool's. Older agents send none and run trusted jobs only.
        */
-      pools: Schema.Array(Pool).pipe(Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<Pool>>(["trusted"]))),
+      pools: Schema.Array(Pool).pipe(
+        Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<Pool>>(["trusted"])),
+      ),
     },
     success: AgentOrder,
     error: Unauthorized,
     stream: true,
   }),
-  Rpc.make("exited", { payload: { ...agentAuth, job: Schema.String, code: Schema.Number }, error: Unauthorized }),
+  Rpc.make("exited", {
+    payload: { ...agentAuth, job: Schema.String, code: Schema.Number },
+    error: Unauthorized,
+  }),
   /** How many jobs the agent takes from now on; workers already running go on. */
   Rpc.make("offer", { payload: { ...agentAuth, slots: Schema.Number }, error: Unauthorized }),
 ) {}

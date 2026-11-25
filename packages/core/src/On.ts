@@ -1,7 +1,7 @@
-import type { Schema } from "effect"
-import type { Step } from "./Step.ts"
+import type { Schema } from "effect";
+import type { Step } from "./Step.ts";
 
-export const TypeId = "~@calder-ci/core/Rule" as const
+export const TypeId = "~@calder-ci/core/Rule" as const;
 
 /** How much of an earlier run a run may reuse. Builds are always reused by Nix. */
 export type Reuse =
@@ -10,7 +10,7 @@ export type Reuse =
   /** Only tasks with outputs; other tasks run again. */
   | "builds"
   /** Every task runs again. */
-  | "none"
+  | "none";
 
 export type Trigger =
   | { readonly _tag: "PullRequest" }
@@ -18,29 +18,29 @@ export type Trigger =
   | { readonly _tag: "PullRequestClosed" }
   | { readonly _tag: "Push"; readonly branch: string }
   | { readonly _tag: "Schedule"; readonly cron: string }
-  | { readonly _tag: "Manual"; readonly inputs: Schema.Struct.Fields }
+  | { readonly _tag: "Manual"; readonly inputs: Schema.Struct.Fields };
 
 export interface Rule<out T extends "pr" | "trusted", out R> {
-  readonly [TypeId]: { readonly _R: (_: never) => R }
-  readonly trust: T
-  readonly trigger: Trigger
-  readonly reuse: Reuse
-  readonly targets: ReadonlyArray<Step.Any>
+  readonly [TypeId]: { readonly _R: (_: never) => R };
+  readonly trust: T;
+  readonly trigger: Trigger;
+  readonly reuse: Reuse;
+  readonly targets: ReadonlyArray<Step.Any>;
 }
 
-const variance = { _R: (_: never) => _ }
+const variance = { _R: (_: never) => _ };
 
 const make = <T extends "pr" | "trusted", R>(
   trust: T,
   trigger: Trigger,
   reuse: Reuse,
   targets: ReadonlyArray<Step.Any>,
-): Rule<T, R> => ({ [TypeId]: variance, trust, trigger, reuse, targets })
+): Rule<T, R> => ({ [TypeId]: variance, trust, trigger, reuse, targets });
 
 /** Runs on every pull request. Steps with grants are refused, and the run gets `PrBase`. */
-export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, any, never>>>(
+export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, any>>>(
   targets: T,
-): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "PullRequest" }, "all", targets)
+): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "PullRequest" }, "all", targets);
 
 /**
  * Runs on pull requests from a branch of the same repository, next to the `pullRequest` rules. Its
@@ -48,9 +48,9 @@ export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, an
  * are the ones a trusted run trusts. Fork pull requests and `calder check` don't run it. Actions with
  * grants and tasks that hold the deploy lease are still refused, and the run gets `PrBase`.
  */
-export const preview = <const T extends ReadonlyArray<Step<any, any, any, any, never>>>(
+export const preview = <const T extends ReadonlyArray<Step<any, any, any, any>>>(
   targets: T,
-): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "Preview" }, "all", targets)
+): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "Preview" }, "all", targets);
 
 /**
  * Runs when a pull request is merged or closed, on the base branch's head: a trusted run, with the
@@ -58,7 +58,8 @@ export const preview = <const T extends ReadonlyArray<Step<any, any, any, any, n
  */
 export const pullRequestClosed = <const T extends ReadonlyArray<Step.Any>>(
   targets: T,
-): Rule<"trusted", Step.Services<T[number]>> => make("trusted", { _tag: "PullRequestClosed" }, "builds", targets)
+): Rule<"trusted", Step.Services<T[number]>> =>
+  make("trusted", { _tag: "PullRequestClosed" }, "builds", targets);
 
 /**
  * Runs on pushes to `branch` (`*` matches within a segment). A push reuses results with the same key,
@@ -66,47 +67,70 @@ export const pullRequestClosed = <const T extends ReadonlyArray<Step.Any>>(
  * on the branch reruns nothing; `reuse: "builds"` runs tasks without outputs again.
  */
 export const push: {
-  <const T extends ReadonlyArray<Step.Any>>(branch: string, targets: T): Rule<"trusted", Step.Services<T[number]>>
+  <const T extends ReadonlyArray<Step.Any>>(
+    branch: string,
+    targets: T,
+  ): Rule<"trusted", Step.Services<T[number]>>;
   <const T extends ReadonlyArray<Step.Any>>(
     branch: string,
     options: { readonly reuse?: Reuse },
     targets: T,
-  ): Rule<"trusted", Step.Services<T[number]>>
+  ): Rule<"trusted", Step.Services<T[number]>>;
 } = (branch: string, ...args: ReadonlyArray<unknown>) => {
-  const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [{ readonly reuse?: Reuse }, ReadonlyArray<Step.Any>]
-  return make("trusted", { _tag: "Push", branch }, options.reuse ?? "all", targets)
-}
+  const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [
+    { readonly reuse?: Reuse },
+    ReadonlyArray<Step.Any>,
+  ];
+
+  return make("trusted", { _tag: "Push", branch }, options.reuse ?? "all", targets);
+};
 
 /** Runs the default branch's head on a cron schedule. */
 export const schedule: {
-  <const T extends ReadonlyArray<Step.Any>>(cron: string, targets: T): Rule<"trusted", Step.Services<T[number]>>
+  <const T extends ReadonlyArray<Step.Any>>(
+    cron: string,
+    targets: T,
+  ): Rule<"trusted", Step.Services<T[number]>>;
   <const T extends ReadonlyArray<Step.Any>>(
     cron: string,
     options: { readonly reuse?: Reuse },
     targets: T,
-  ): Rule<"trusted", Step.Services<T[number]>>
+  ): Rule<"trusted", Step.Services<T[number]>>;
 } = (cron: string, ...args: ReadonlyArray<unknown>) => {
-  const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [{ readonly reuse?: Reuse }, ReadonlyArray<Step.Any>]
-  return make("trusted", { _tag: "Schedule", cron }, options.reuse ?? "builds", targets)
-}
+  const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [
+    { readonly reuse?: Reuse },
+    ReadonlyArray<Step.Any>,
+  ];
+
+  return make("trusted", { _tag: "Schedule", cron }, options.reuse ?? "builds", targets);
+};
 
 /**
  * Runs when started with `calder trigger --inputs` and the inputs match. A manual run starts every
  * manual rule whose inputs match, so rules that take different inputs start separately.
  */
 export const manual: {
-  <const T extends ReadonlyArray<Step.Any>>(targets: T): Rule<"trusted", Step.Services<T[number]>>
+  <const T extends ReadonlyArray<Step.Any>>(targets: T): Rule<"trusted", Step.Services<T[number]>>;
   <const I extends Schema.Struct.Fields, const T extends ReadonlyArray<Step.Any>>(
     options: { readonly inputs?: I; readonly reuse?: Reuse },
     targets: T,
-  ): Rule<"trusted", Step.Services<T[number]>>
+  ): Rule<"trusted", Step.Services<T[number]>>;
 } = (...args: ReadonlyArray<unknown>) => {
   const [options, targets] = (args.length === 1 ? [{}, args[0]] : args) as [
     { readonly inputs?: Schema.Struct.Fields; readonly reuse?: Reuse },
     ReadonlyArray<Step.Any>,
-  ]
-  return make("trusted", { _tag: "Manual", inputs: options.inputs ?? {} }, options.reuse ?? "builds", targets)
-}
+  ];
+
+  return make(
+    "trusted",
+    { _tag: "Manual", inputs: options.inputs ?? {} },
+    options.reuse ?? "builds",
+    targets,
+  );
+};
 
 export const matchesBranch = (pattern: string, branch: string) =>
-  pattern === branch || new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`).test(branch)
+  pattern === branch ||
+  new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`).test(
+    branch,
+  );

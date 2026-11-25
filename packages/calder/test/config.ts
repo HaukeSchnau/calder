@@ -1,5 +1,5 @@
-import { Layer } from "effect"
-import { Config } from "../src/controller/Config.ts"
+import { Layer } from "effect";
+import { Config } from "../src/controller/Config.ts";
 
 /** A controller configuration in which nothing a test doesn't set is reachable. */
 export const config = (overrides: Partial<Config["Service"]> = {}) =>
@@ -31,4 +31,4 @@ export const config = (overrides: Partial<Config["Service"]> = {}) =>
     promotionToken: "",
     placementKey: null,
     ...overrides,
-  })
+  });

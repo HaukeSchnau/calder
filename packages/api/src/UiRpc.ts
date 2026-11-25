@@ -1,12 +1,25 @@
-import { Schema } from "effect"
-import { Rpc, RpcGroup } from "effect/rpc"
-import { AuditMismatch, Change, DeploymentRecord, LogEntry, MergeRequest, Metrics, Overview, Run, RunDetail, Span, StepStats, TestResult } from "./Domain.ts"
+import { Schema } from "effect";
+import { Rpc, RpcGroup } from "effect/rpc";
+import {
+  AuditMismatch,
+  Change,
+  DeploymentRecord,
+  LogEntry,
+  MergeRequest,
+  Metrics,
+  Overview,
+  Run,
+  RunDetail,
+  Span,
+  StepStats,
+  TestResult,
+} from "./Domain.ts";
 
 export class NotFound extends Schema.TaggedError<NotFound>("@calder-ci/api/NotFound")("NotFound", {
   what: Schema.String,
 }) {
   override get message() {
-    return `Calder has no record of ${this.what}`
+    return `Calder has no record of ${this.what}`;
   }
 }
 
@@ -14,7 +27,7 @@ export class Refused extends Schema.TaggedError<Refused>("@calder-ci/api/Refused
   reason: Schema.String,
 }) {
   override get message() {
-    return this.reason
+    return this.reason;
   }
 }
 
@@ -53,14 +66,29 @@ export class UiRpcs extends RpcGroup.make(
     stream: true,
   }),
   /** The run's trace from Tempo: steps, Nix builds, HTTP calls of deploys. */
-  Rpc.make("trace", { payload: { runId: Schema.String }, success: Schema.Array(Span), error: NotFound }),
-  Rpc.make("stepStats", { payload: { project: Schema.String, step: Schema.String }, success: StepStats }),
+  Rpc.make("trace", {
+    payload: { runId: Schema.String },
+    success: Schema.Array(Span),
+    error: NotFound,
+  }),
+  Rpc.make("stepStats", {
+    payload: { project: Schema.String, step: Schema.String },
+    success: StepStats,
+  }),
   /** Deploys Calder made, newest first. */
   Rpc.make("deployments", {
-    payload: { project: Schema.String, host: Schema.optional(Schema.String), limit: Schema.optional(Schema.Number) },
+    payload: {
+      project: Schema.String,
+      host: Schema.optional(Schema.String),
+      limit: Schema.optional(Schema.Number),
+    },
     success: Schema.Array(DeploymentRecord),
   }),
-  Rpc.make("stepMetrics", { payload: { runId: Schema.String, step: Schema.String }, success: Metrics, error: NotFound }),
+  Rpc.make("stepMetrics", {
+    payload: { runId: Schema.String, step: Schema.String },
+    success: Metrics,
+    error: NotFound,
+  }),
   Rpc.make("testHistory", {
     payload: { project: Schema.String, suite: Schema.String, name: Schema.String },
     success: Schema.Array(TestResult),
@@ -83,22 +111,42 @@ export class UiRpcs extends RpcGroup.make(
    * Evaluates the project's default branch head afresh and drops the footprint records that disagree,
    * as the nightly audit does.
    */
-  Rpc.make("audit", { payload: { project: Schema.String }, success: Schema.Array(AuditMismatch), error: NotFound }),
+  Rpc.make("audit", {
+    payload: { project: Schema.String },
+    success: Schema.Array(AuditMismatch),
+    error: NotFound,
+  }),
   /**
    * Runs a working copy that `calder check` pushed as `ref` (under `calder/check/`) the way a pull request
    * would. A newer check of the same ref replaces an older one; a background check only takes slots
    * nothing else wants.
    */
   Rpc.make("check", {
-    payload: { repo: Schema.String, ref: Schema.String, sha: Schema.String, background: Schema.optional(Schema.Boolean) },
+    payload: {
+      repo: Schema.String,
+      ref: Schema.String,
+      sha: Schema.String,
+      background: Schema.optional(Schema.Boolean),
+    },
     success: Run,
     error: Schema.Union([NotFound, Refused]),
   }),
-  Rpc.make("cancel", { payload: { runId: Schema.String }, error: Schema.Union([NotFound, Refused]) }),
+  Rpc.make("cancel", {
+    payload: { runId: Schema.String },
+    error: Schema.Union([NotFound, Refused]),
+  }),
   /** Merges a pull request once it is green, bringing it up to date with its base first when it falls behind. */
-  Rpc.make("merge", { payload: { project: Schema.String, pr: Schema.Number }, success: MergeRequest, error: Refused }),
+  Rpc.make("merge", {
+    payload: { project: Schema.String, pr: Schema.Number },
+    success: MergeRequest,
+    error: Refused,
+  }),
   Rpc.make("merges", { payload: { project: Schema.String }, success: Schema.Array(MergeRequest) }),
   /** Runs the same revision and event again. */
   /** Runs a run's revision and event again, taking the steps that passed in it unless `force`. */
-  Rpc.make("rerun", { payload: { runId: Schema.String, force: Schema.optional(Schema.Boolean) }, success: Run, error: Schema.Union([NotFound, Refused]) }),
+  Rpc.make("rerun", {
+    payload: { runId: Schema.String, force: Schema.optional(Schema.Boolean) },
+    success: Run,
+    error: Schema.Union([NotFound, Refused]),
+  }),
 ) {}

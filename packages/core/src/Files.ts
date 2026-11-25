@@ -10,32 +10,38 @@ export type Files =
   | { readonly _tag: "Workspace"; readonly dirs: ReadonlyArray<string> }
   | { readonly _tag: "Glob"; readonly patterns: ReadonlyArray<string> }
   | {
-    readonly _tag: "Imports"
-    readonly patterns: ReadonlyArray<string>
-    readonly aliases: { readonly [prefix: string]: string }
-    readonly types: boolean
-  }
+      readonly _tag: "Imports";
+      readonly patterns: ReadonlyArray<string>;
+      readonly aliases: { readonly [prefix: string]: string };
+      readonly types: boolean;
+    }
   | { readonly _tag: "Union"; readonly members: ReadonlyArray<Files> }
-  | { readonly _tag: "Optional"; readonly files: Files }
+  | { readonly _tag: "Optional"; readonly files: Files };
 
 /** The whole repository. */
-export const all = (): Files => ({ _tag: "All" })
+export const all = (): Files => ({ _tag: "All" });
 
 /** Exact files or directories. */
-export const of = (...paths: ReadonlyArray<string>): Files => ({ _tag: "Of", paths: paths.map(normalize) })
+export const of = (...paths: ReadonlyArray<string>): Files => ({
+  _tag: "Of",
+  paths: paths.map(normalize),
+});
 
 /**
  * Workspace packages (pnpm or npm workspaces), every workspace package they depend on, and the files
  * at the repository's root except docs, such as manifests, lockfiles and `tsconfig.base.json`. `"."`
  * means the whole repository.
  */
-export const workspace = (...dirs: ReadonlyArray<string>): Files => ({ _tag: "Workspace", dirs: dirs.map(normalize) })
+export const workspace = (...dirs: ReadonlyArray<string>): Files => ({
+  _tag: "Workspace",
+  dirs: dirs.map(normalize),
+});
 
 /**
  * Files matching globs. `*` stays within a directory, `**` crosses directories. A pattern starting
  * with `!` leaves out what it matches, wherever it stands: `glob("src/*.ts", "!src/*.test.ts")`.
  */
-export const glob = (...patterns: ReadonlyArray<string>): Files => ({ _tag: "Glob", patterns })
+export const glob = (...patterns: ReadonlyArray<string>): Files => ({ _tag: "Glob", patterns });
 
 /**
  * Files matching the globs and every repository file they import, transitively: relative paths,
@@ -49,71 +55,87 @@ export const glob = (...patterns: ReadonlyArray<string>): Files => ({ _tag: "Glo
  */
 export const imports = (
   patterns: string | ReadonlyArray<string>,
-  options: { readonly aliases?: { readonly [prefix: string]: string }; readonly types?: boolean } = {},
+  options: {
+    readonly aliases?: { readonly [prefix: string]: string };
+    readonly types?: boolean;
+  } = {},
 ): Files => ({
   _tag: "Imports",
   patterns: typeof patterns === "string" ? [patterns] : patterns,
   aliases: options.aliases ?? {},
   types: options.types ?? false,
-})
+});
 
-export const union = (...members: ReadonlyArray<Files>): Files => ({ _tag: "Union", members })
+export const union = (...members: ReadonlyArray<Files>): Files => ({ _tag: "Union", members });
 
 /**
  * Files that may be missing at a revision, such as optional configuration. As a task's `each`, its
  * patterns may match no file, such as in a package before its first test; the task then has none to run.
  */
-export const optional = (files: Files): Files => ({ _tag: "Optional", files })
+export const optional = (files: Files): Files => ({ _tag: "Optional", files });
 
-const normalize = (path: string) => path.replace(/^\.\//, "").replace(/\/+$/, "") || "."
+const normalize = (path: string) => path.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
 
 /** Whether a path matches one of the patterns that don't start with `!` and none of those that do. */
 export const matcher = (patterns: ReadonlyArray<string>): ((path: string) => boolean) => {
-  const include = patterns.filter((p) => !p.startsWith("!")).map(globToRegExp)
-  const exclude = patterns.filter((p) => p.startsWith("!")).map((p) => globToRegExp(p.slice(1)))
-  return (path) => include.some((re) => re.test(path)) && !exclude.some((re) => re.test(path))
-}
+  const include = patterns.filter((p) => !p.startsWith("!")).map(globToRegExp);
+  const exclude = patterns.filter((p) => p.startsWith("!")).map((p) => globToRegExp(p.slice(1)));
+
+  return (path) => include.some((re) => re.test(path)) && !exclude.some((re) => re.test(path));
+};
 
 /** A path or pattern that selects nothing: `negated` when it matches files, but only ones the negations leave out. */
 export interface Unmatched {
-  readonly pattern: string
-  readonly negated: boolean
+  readonly pattern: string;
+  readonly negated: boolean;
 }
 
 /**
  * The patterns of a list that select nothing among `paths`: an include that matches no file a negation
  * leaves, and a negation that removes no file an include matched.
  */
-export const unmatched = (patterns: ReadonlyArray<string>, paths: ReadonlyArray<string>): ReadonlyArray<Unmatched> => {
-  const included = matcher(patterns.filter((p) => !p.startsWith("!")))
-  const removed = matcher(patterns.filter((p) => p.startsWith("!")).map((p) => p.slice(1)))
+export const unmatched = (
+  patterns: ReadonlyArray<string>,
+  paths: ReadonlyArray<string>,
+): ReadonlyArray<Unmatched> => {
+  const included = matcher(patterns.filter((p) => !p.startsWith("!")));
+  const removed = matcher(patterns.filter((p) => p.startsWith("!")).map((p) => p.slice(1)));
+
   return patterns.flatMap((pattern) => {
-    const re = globToRegExp(pattern.replace(/^!/, ""))
-    if (pattern.startsWith("!")) return paths.some((path) => re.test(path) && included(path)) ? [] : [{ pattern, negated: false }]
-    const matching = paths.filter((path) => re.test(path))
-    return matching.some((path) => !removed(path)) ? [] : [{ pattern, negated: matching.length > 0 }]
-  })
-}
+    const re = globToRegExp(pattern.replace(/^!/, ""));
+
+    if (pattern.startsWith("!"))
+      return paths.some((path) => re.test(path) && included(path))
+        ? []
+        : [{ pattern, negated: false }];
+    const matching = paths.filter((path) => re.test(path));
+
+    return matching.some((path) => !removed(path))
+      ? []
+      : [{ pattern, negated: matching.length > 0 }];
+  });
+};
 
 /** The pattern lists in `files` without a pattern that includes files, which select nothing at any revision. */
 export const includeless = (files: Files): ReadonlyArray<ReadonlyArray<string>> => {
   switch (files._tag) {
     case "Glob":
     case "Imports":
-      return files.patterns.some((p) => !p.startsWith("!")) ? [] : [files.patterns]
+      return files.patterns.some((p) => !p.startsWith("!")) ? [] : [files.patterns];
     case "Union":
-      return files.members.flatMap(includeless)
+      return files.members.flatMap(includeless);
     case "Optional":
-      return includeless(files.files)
+      return includeless(files.files);
     default:
-      return []
+      return [];
   }
-}
+};
 
-const globCache = new Map<string, RegExp>()
+const globCache = new Map<string, RegExp>();
 
 export const globToRegExp = (pattern: string): RegExp => {
-  let re = globCache.get(pattern)
+  let re = globCache.get(pattern);
+
   if (re === undefined) {
     const source = pattern
       .replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -123,9 +145,11 @@ export const globToRegExp = (pattern: string): RegExp => {
       .replace(/\*/g, "[^/]*")
       .replace(/\?/g, "[^/]")
       .replace(/\u0000/g, "(?:.*/)?")
-      .replace(/\u0001/g, ".*")
-    re = new RegExp(`^${source}$`)
-    globCache.set(pattern, re)
+      .replace(/\u0001/g, ".*");
+
+    re = new RegExp(`^${source}$`);
+    globCache.set(pattern, re);
   }
-  return re
-}
+
+  return re;
+};

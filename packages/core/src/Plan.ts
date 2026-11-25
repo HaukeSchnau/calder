@@ -1,222 +1,309 @@
-import { Effect, Schema } from "effect"
-import type { Event } from "./Event.ts"
-import type { Project } from "./Calder.ts"
-import * as Files from "./Files.ts"
-import { matchesBranch, type Reuse, type Rule } from "./On.ts"
-import { dependencies, isStep, type Kind, type Step, taskSecrets } from "./Step.ts"
+import { Effect, Schema } from "effect";
+import type { Event } from "./Event.ts";
+import type { Project } from "./Calder.ts";
+import * as Files from "./Files.ts";
+import { matchesBranch, type Reuse, type Rule } from "./On.ts";
+import { dependencies, isStep, type Kind, type Step, taskSecrets } from "./Step.ts";
 
-export class PlanError extends Schema.TaggedError<PlanError>("@calder-ci/core/PlanError")("PlanError", {
-  message: Schema.String,
-}) {}
+export class PlanError extends Schema.TaggedError<PlanError>("@calder-ci/core/PlanError")(
+  "PlanError",
+  {
+    message: Schema.String,
+  },
+) {}
 
 export interface PlannedStep {
-  readonly step: Step.Any
-  readonly name: string
-  readonly kind: Kind
+  readonly step: Step.Any;
+  readonly name: string;
+  readonly kind: Kind;
   /** Steps whose values this one reads. */
-  readonly needs: ReadonlyArray<string>
+  readonly needs: ReadonlyArray<string>;
   /**
    * Steps this one runs after whatever their outcome: those an action reads through `Step.exit`, and a
    * task's `afterEnded`.
    */
-  readonly exits: ReadonlyArray<string>
+  readonly exits: ReadonlyArray<string>;
   /** Steps that must pass first, including the implicit required checks. */
-  readonly after: ReadonlyArray<string>
+  readonly after: ReadonlyArray<string>;
   /** The required checks among `after`, added because the step has grants. */
-  readonly required: ReadonlyArray<string>
+  readonly required: ReadonlyArray<string>;
   /** The steps among `after` on this one's critical path: a task's `gate`. */
-  readonly gates: ReadonlyArray<string>
+  readonly gates: ReadonlyArray<string>;
   /** Requested by a rule rather than pulled in by another step. */
-  readonly target: boolean
+  readonly target: boolean;
   /** Downstream of an action, so its result is never reused. */
-  readonly neverReuse: boolean
+  readonly neverReuse: boolean;
   /**
    * A step only a preview rule reaches that a same-repo pull request runs as a trusted job: a task that
    * reads secrets, which the run grants, or an action, such as one that waits for the preview's readiness
    * on the private network.
    */
-  readonly preview: boolean
+  readonly preview: boolean;
 }
 
 export interface Plan {
-  readonly trust: "pr" | "trusted"
-  readonly reuse: Reuse
-  readonly event: Event
+  readonly trust: "pr" | "trusted";
+  readonly reuse: Reuse;
+  readonly event: Event;
   /** Topologically ordered: every step comes after what it depends on. */
-  readonly steps: ReadonlyArray<PlannedStep>
+  readonly steps: ReadonlyArray<PlannedStep>;
   /** Every step the project's rules can reach, by name. */
-  readonly universe: ReadonlyMap<string, Step.Any>
+  readonly universe: ReadonlyMap<string, Step.Any>;
   /** The project's schedules, so the controller knows when to plan the default branch. */
-  readonly schedules: ReadonlyArray<string>
+  readonly schedules: ReadonlyArray<string>;
   /** The branches the project's push rules name, so the controller can drop a push to another branch without planning it. */
-  readonly pushes: ReadonlyArray<string>
-  readonly get: (step: Step.Any | string) => PlannedStep | undefined
-  readonly runs: (step: Step.Any) => boolean
-  readonly needs: (step: Step.Any) => ReadonlyArray<Step.Any>
-  readonly waitsFor: (step: Step.Any) => ReadonlyArray<Step.Any>
+  readonly pushes: ReadonlyArray<string>;
+  readonly get: (step: Step.Any | string) => PlannedStep | undefined;
+  readonly runs: (step: Step.Any) => boolean;
+  readonly needs: (step: Step.Any) => ReadonlyArray<Step.Any>;
+  readonly waitsFor: (step: Step.Any) => ReadonlyArray<Step.Any>;
 }
 
 export interface Options {
   /** Status contexts that branch protection requires, such as `calder/qa`. */
-  readonly requiredChecks?: ReadonlyArray<string>
+  readonly requiredChecks?: ReadonlyArray<string>;
 }
 
-const fail = (message: string) => new PlanError({ message })
+const fail = (message: string) => PlanError.make({ message });
 
 const matches = (rule: Rule<any, any>, event: Event): boolean => {
-  const t = rule.trigger
+  const t = rule.trigger;
+
   switch (event._tag) {
     case "PullRequest":
-      return t._tag === "PullRequest" || (t._tag === "Preview" && event.fork === false)
+      return t._tag === "PullRequest" || (t._tag === "Preview" && event.fork === false);
     case "Check":
-      return t._tag === "PullRequest"
+      return t._tag === "PullRequest";
     case "PullRequestClosed":
-      return t._tag === "PullRequestClosed"
+      return t._tag === "PullRequestClosed";
     case "Push":
-      return t._tag === "Push" && matchesBranch(t.branch, event.branch)
+      return t._tag === "Push" && matchesBranch(t.branch, event.branch);
     case "Schedule":
-      return t._tag === "Schedule" && t.cron === event.cron
+      return t._tag === "Schedule" && t.cron === event.cron;
     case "Manual":
-      return t._tag === "Manual" && Schema.is(Schema.Struct(t.inputs))(event.inputs)
+      return t._tag === "Manual" && Schema.is(Schema.Struct(t.inputs))(event.inputs);
   }
-}
+};
 
 const hasGrants = (step: Step.Any) =>
-  (step.def._tag === "Action" && (step.def.grants.deploy === true || (step.def.grants.secrets?.length ?? 0) > 0)) ||
-  (step.def._tag === "Task" && (taskSecrets(step.def).length > 0 || step.def.lease !== undefined))
+  (step.def._tag === "Action" &&
+    (step.def.grants.deploy === true || (step.def.grants.secrets?.length ?? 0) > 0)) ||
+  (step.def._tag === "Task" && (taskSecrets(step.def).length > 0 || step.def.lease !== undefined));
 
 /** What a preview may hold: a task's secrets, and the pull request's own deploy lease. */
-const previewable = (step: Step.Any) => step.def._tag === "Task"
+const previewable = (step: Step.Any) => step.def._tag === "Task";
 
 const sameBuild = (a: Step.Any, b: Step.Any) =>
-  a.def._tag === "Build" && b.def._tag === "Build" && a.def.ref.output === b.def.ref.output &&
-  a.def.ref.name === b.def.ref.name && a.policies.length === 0 && b.policies.length === 0
+  a.def._tag === "Build" &&
+  b.def._tag === "Build" &&
+  a.def.ref.output === b.def.ref.output &&
+  a.def.ref.name === b.def.ref.name &&
+  a.policies.length === 0 &&
+  b.policies.length === 0;
 
 /** Every step reachable from the project's rules, by name. Two different steps with one name are an error. */
 export const universe = (project: Project): Effect.Effect<Map<string, Step.Any>, PlanError> =>
-  Effect.gen(function*() {
-    const byName = new Map<string, Step.Any>()
-    const seen = new Set<Step.Any>()
+  Effect.gen(function* () {
+    const byName = new Map<string, Step.Any>();
+    const seen = new Set<Step.Any>();
+
     const visit = (step: Step.Any): PlanError | undefined => {
-      if (seen.has(step)) return
-      seen.add(step)
-      const existing = byName.get(step.name)
+      if (seen.has(step)) return undefined;
+      seen.add(step);
+      const existing = byName.get(step.name);
+
       if (existing !== undefined && existing !== step && !sameBuild(existing, step)) {
-        return fail(`two different steps are named "${step.name}"`)
+        return fail(`two different steps are named "${step.name}"`);
       }
-      if (existing === undefined) byName.set(step.name, step)
+
+      if (existing === undefined) byName.set(step.name, step);
+
       for (const dep of dependencies(step)) {
-        const error = visit(dep.step)
-        if (error) return error
+        const error = visit(dep.step);
+
+        if (error) return error;
       }
-    }
+
+      return undefined;
+    };
+
     for (const rule of project.rules) {
       for (const target of rule.targets) {
-        if (!isStep(target)) return yield* fail(`a rule lists something that isn't a step: ${String(target)}`)
-        const error = visit(target)
-        if (error) return yield* error
+        if (!isStep(target))
+          return yield* fail(`a rule lists something that isn't a step: ${String(target)}`);
+        const error = visit(target);
+
+        if (error) return yield* error;
       }
     }
-    return byName
-  })
+
+    return byName;
+  });
 
 /**
  * Resolves which steps an event runs and how they depend on each other. Pure: it never runs user code
  * and reads nothing but the project, so pipelines can be tested with `Calder.plan`.
  */
-export const plan = (project: Project, event: Event, options: Options = {}): Effect.Effect<Plan, PlanError> =>
-  Effect.gen(function*() {
-    const all = yield* universe(project)
-    const canonical = (step: Step.Any) => all.get(step.name) ?? step
+export const plan = (
+  project: Project,
+  event: Event,
+  options: Options = {},
+): Effect.Effect<Plan, PlanError> =>
+  Effect.gen(function* () {
+    const all = yield* universe(project);
+    const canonical = (step: Step.Any) => all.get(step.name) ?? step;
 
-    const rules = project.rules.filter((rule) => matches(rule, event))
-    const trust: "pr" | "trusted" = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted"
-    const reuse: Reuse = rules.some((r) => r.reuse === "none") ? "none"
-      : rules.some((r) => r.reuse === "builds") ? "builds"
-      : rules[0]?.reuse ?? (trust === "pr" ? "all" : "builds")
+    const rules = project.rules.filter((rule) => matches(rule, event));
+
+    const trust: "pr" | "trusted" =
+      event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
+
+    const reuse: Reuse = rules.some((r) => r.reuse === "none")
+      ? "none"
+      : rules.some((r) => r.reuse === "builds")
+        ? "builds"
+        : (rules[0]?.reuse ?? (trust === "pr" ? "all" : "builds"));
 
     if (event._tag === "Manual" && rules.length === 0) {
-      return yield* fail(`no manual rule takes the inputs ${JSON.stringify(event.inputs)}`)
+      return yield* fail(`no manual rule takes the inputs ${JSON.stringify(event.inputs)}`);
     }
 
     const required = (options.requiredChecks ?? []).map((context) => {
-      const name = context.startsWith("calder/") ? context.slice("calder/".length) : undefined
-      return { context, name }
-    })
+      const name = context.startsWith("calder/") ? context.slice("calder/".length) : undefined;
 
-    const planned = new Map<string, PlannedStep>()
-    const order: Array<string> = []
+      return { context, name };
+    });
+
+    const planned = new Map<string, PlannedStep>();
+    const order: Array<string> = [];
+
     const names = (keep: (rule: Rule<any, any>) => boolean) =>
-      new Set(rules.filter(keep).flatMap((r) => r.targets.map((t) => canonical(t).name)))
-    const previews = names((r) => r.trigger._tag === "Preview")
-    const plain = names((r) => r.trigger._tag !== "Preview")
-    const targets = new Set([...plain, ...previews])
-    const state = new Map<string, "visiting" | "done">()
+      new Set(rules.filter(keep).flatMap((r) => r.targets.map((t) => canonical(t).name)));
+
+    const previews = names((r) => r.trigger._tag === "Preview");
+    const plain = names((r) => r.trigger._tag !== "Preview");
+    const targets = new Set([...plain, ...previews]);
+    const state = new Map<string, "visiting" | "done">();
 
     // A step reached from a plain rule is visited as one first, so a preview never vouches for it.
-    const visit = (input: Step.Any, path: ReadonlyArray<string>, preview: boolean): PlanError | undefined => {
-      const step = canonical(input)
-      const mark = state.get(step.name)
-      if (mark === "done") return
-      if (mark === "visiting") return fail(`steps depend on each other in a cycle: ${[...path, step.name].join(" → ")}`)
-      state.set(step.name, "visiting")
+    const visit = (
+      input: Step.Any,
+      path: ReadonlyArray<string>,
+      preview: boolean,
+    ): PlanError | undefined => {
+      const step = canonical(input);
+      const mark = state.get(step.name);
+
+      if (mark === "done") return undefined;
+
+      if (mark === "visiting")
+        return fail(`steps depend on each other in a cycle: ${[...path, step.name].join(" → ")}`);
+      state.set(step.name, "visiting");
 
       if (trust === "pr" && hasGrants(step) && !(preview && previewable(step))) {
-        const secrets = step.def._tag === "Action" ? step.def.grants.secrets ?? [] : step.def._tag === "Task" ? taskSecrets(step.def) : []
-        const named = secrets.length === 0 ? "" : `: the secret${secrets.length === 1 ? "" : "s"} ${secrets.map((n) => `"${n}"`).join(", ")}`
+        const secrets =
+          step.def._tag === "Action"
+            ? (step.def.grants.secrets ?? [])
+            : step.def._tag === "Task"
+              ? taskSecrets(step.def)
+              : [];
+
+        const named =
+          secrets.length === 0
+            ? ""
+            : `: the secret${secrets.length === 1 ? "" : "s"} ${secrets.map((n) => `"${n}"`).join(", ")}`;
+
         return fail(
           preview
             ? `previews don't run actions with grants, but "${step.name}" is one${named}`
             : `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them${named}`,
-        )
+        );
       }
 
-      const def = step.def
+      const def = step.def;
+
       if (def._tag === "Setup" && def.run.steps.length > 0) {
-        return fail(`setup "${step.name}" interpolates other steps; its command can only depend on its inputs`)
+        return fail(
+          `setup "${step.name}" interpolates other steps; its command can only depend on its inputs`,
+        );
       }
-      if (def._tag === "Task" && def.each !== undefined && (typeof def.run !== "function" || def.report === undefined)) {
-        return fail(`"${step.name}" checks files one by one, so its run must take the shard's files and it needs a report`)
+
+      if (
+        def._tag === "Task" &&
+        def.each !== undefined &&
+        (typeof def.run !== "function" || def.report === undefined)
+      ) {
+        return fail(
+          `"${step.name}" checks files one by one, so its run must take the shard's files and it needs a report`,
+        );
       }
+
       if (def._tag === "Task" || def._tag === "Setup") {
-        const written = def._tag === "Setup" ? [def.inputs] : [def.inputs, def.each, def.shards?.split]
-        const lists = written.flatMap((files) => (files === undefined ? [] : Files.includeless(files)))
+        const written =
+          def._tag === "Setup" ? [def.inputs] : [def.inputs, def.each, def.shards?.split];
+
+        const lists = written.flatMap((files) =>
+          files === undefined ? [] : Files.includeless(files),
+        );
+
         if (lists.length > 0) {
-          return fail(`"${step.name}" has globs that only leave files out, ${lists.map((l) => JSON.stringify(l)).join(", ")}: add one that includes files`)
+          return fail(
+            `"${step.name}" has globs that only leave files out, ${lists.map((l) => JSON.stringify(l)).join(", ")}: add one that includes files`,
+          );
         }
       }
-      if (def._tag === "Task" && def.setup !== undefined && def.setup.def._tag === "Setup" && def.setup.def.platform !== def.platform) {
-        return fail(`"${step.name}" runs on ${def.platform ?? "the controller's platform"} but its setup "${def.setup.name}" on ${def.setup.def.platform ?? "the controller's platform"}`)
-      }
-      const deps = dependencies(step).map((d) => ({ ...d, step: canonical(d.step) }))
-      const needs = deps.filter((d) => d.via === "needs").map((d) => d.step.name)
-      const exits = deps.filter((d) => d.via === "exit").map((d) => d.step.name)
-      const after = deps.filter((d) => d.via === "after").map((d) => d.step.name)
 
-      const conflict = after.find((name) => exits.includes(name))
+      if (
+        def._tag === "Task" &&
+        def.setup !== undefined &&
+        def.setup.def._tag === "Setup" &&
+        def.setup.def.platform !== def.platform
+      ) {
+        return fail(
+          `"${step.name}" runs on ${def.platform ?? "the controller's platform"} but its setup "${def.setup.name}" on ${def.setup.def.platform ?? "the controller's platform"}`,
+        );
+      }
+
+      const deps = dependencies(step).map((d) => ({ ...d, step: canonical(d.step) }));
+      const needs = deps.filter((d) => d.via === "needs").map((d) => d.step.name);
+      const exits = deps.filter((d) => d.via === "exit").map((d) => d.step.name);
+      const after = deps.filter((d) => d.via === "after").map((d) => d.step.name);
+
+      const conflict = after.find((name) => exits.includes(name));
+
       if (conflict !== undefined) {
-        return fail(`"${step.name}" waits for "${conflict}" to pass and runs whatever its outcome, which contradict each other`)
+        return fail(
+          `"${step.name}" waits for "${conflict}" to pass and runs whatever its outcome, which contradict each other`,
+        );
       }
 
-      const implicit: Array<string> = []
+      const implicit: Array<string> = [];
+
       if (trust === "trusted" && step.kind === "action" && hasGrants(step)) {
         for (const r of required) {
           if (r.name === undefined) {
-            return fail(`branch protection requires "${r.context}", which Calder doesn't report; required checks must be calder/<step>`)
+            return fail(
+              `branch protection requires "${r.context}", which Calder doesn't report; required checks must be calder/<step>`,
+            );
           }
+
           if (!all.has(r.name)) {
-            return fail(`branch protection requires "${r.context}", but no step is named "${r.name}"`)
+            return fail(
+              `branch protection requires "${r.context}", but no step is named "${r.name}"`,
+            );
           }
-          if (r.name !== step.name && !after.includes(r.name)) implicit.push(r.name)
+
+          if (r.name !== step.name && !after.includes(r.name)) implicit.push(r.name);
         }
       }
 
       for (const name of [...needs, ...exits, ...after, ...implicit]) {
-        const error = visit(all.get(name)!, [...path, step.name], preview)
-        if (error) return error
+        const error = visit(all.get(name)!, [...path, step.name], preview);
+
+        if (error) return error;
       }
 
-      const upstream = [...needs, ...exits, ...after, ...implicit].map((n) => planned.get(n)!)
+      const upstream = [...needs, ...exits, ...after, ...implicit].map((n) => planned.get(n)!);
       planned.set(step.name, {
         step,
         name: step.name,
@@ -227,35 +314,49 @@ export const plan = (project: Project, event: Event, options: Options = {}): Eff
         required: unique(implicit),
         gates: def._tag === "Task" ? unique(def.gate.map((s) => canonical(s).name)) : [],
         target: targets.has(step.name),
-        neverReuse: step.kind === "action" || upstream.some((p) => p.kind === "action" || p.neverReuse),
+        neverReuse:
+          step.kind === "action" || upstream.some((p) => p.kind === "action" || p.neverReuse),
         preview: trust === "pr" && preview && (hasGrants(step) || step.kind === "action"),
-      })
-      state.set(step.name, "done")
-      order.push(step.name)
-    }
+      });
+      state.set(step.name, "done");
+      order.push(step.name);
 
-    for (const [preview, group] of [[false, plain], [true, previews]] as const) {
+      return undefined;
+    };
+
+    for (const [preview, group] of [
+      [false, plain],
+      [true, previews],
+    ] as const) {
       for (const name of group) {
-        const error = visit(all.get(name)!, [], preview)
-        if (error) return yield* error
+        const error = visit(all.get(name)!, [], preview);
+
+        if (error) return yield* error;
       }
     }
 
-    const steps = order.map((name) => planned.get(name)!)
-    const get = (step: Step.Any | string) => planned.get(typeof step === "string" ? step : step.name)
+    const steps = order.map((name) => planned.get(name)!);
+
+    const get = (step: Step.Any | string) =>
+      planned.get(typeof step === "string" ? step : step.name);
+
     return {
       trust,
       reuse,
       event,
       steps,
       universe: all,
-      schedules: unique(project.rules.flatMap((r) => (r.trigger._tag === "Schedule" ? [r.trigger.cron] : []))),
-      pushes: unique(project.rules.flatMap((r) => (r.trigger._tag === "Push" ? [r.trigger.branch] : []))),
+      schedules: unique(
+        project.rules.flatMap((r) => (r.trigger._tag === "Schedule" ? [r.trigger.cron] : [])),
+      ),
+      pushes: unique(
+        project.rules.flatMap((r) => (r.trigger._tag === "Push" ? [r.trigger.branch] : [])),
+      ),
       get,
       runs: (step) => planned.has(step.name),
       needs: (step) => (get(step)?.needs ?? []).map((n) => all.get(n)!),
       waitsFor: (step) => (get(step)?.after ?? []).map((n) => all.get(n)!),
-    }
-  })
+    };
+  });
 
-const unique = <A>(xs: ReadonlyArray<A>): ReadonlyArray<A> => [...new Set(xs)]
+const unique = <A>(xs: ReadonlyArray<A>): ReadonlyArray<A> => [...new Set(xs)];

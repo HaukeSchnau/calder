@@ -1,12 +1,23 @@
-import { cmd, Event, Files, Flake, Calder, On, Report, Secret, type Step, Task } from "@calder-ci/core"
-import { describe, expect, it } from "@effect/vitest"
-import { Pnpm } from "@calder-ci/std"
-import { Effect, Fiber, PlatformError } from "effect"
-import { ChildProcessSpawner } from "effect/process"
-import { TestClock } from "effect/testing"
-import type { PlanSpec, RunInfo } from "../src/Protocol.ts"
-import { paths, resolve } from "../src/worker/Resolve.ts"
-import { memoryRepo } from "./memoryRepo.ts"
+import {
+  cmd,
+  Event,
+  Files,
+  Flake,
+  Calder,
+  On,
+  Report,
+  Secret,
+  type Step,
+  Task,
+} from "@calder-ci/core";
+import { describe, expect, it } from "@effect/vitest";
+import { Pnpm } from "@calder-ci/std";
+import { Effect, Fiber, PlatformError } from "effect";
+import { ChildProcessSpawner } from "effect/process";
+import { TestClock } from "effect/testing";
+import type { PlanSpec, RunInfo } from "../src/Protocol.ts";
+import { paths, resolve } from "../src/worker/Resolve.ts";
+import { memoryRepo } from "./memoryRepo.ts";
 
 const run = {
   id: "app-1",
@@ -21,29 +32,32 @@ const run = {
   mirrors: {},
   pipelineDir: "",
   system: "x86_64-linux",
-} satisfies RunInfo
+} satisfies RunInfo;
 
 // The repository is in memory, and no command runs: `nix eval` fails like a missing nix.
-const noProcesses = ChildProcessSpawner.make(() => Effect.fail(PlatformError.systemError({ _tag: "NotFound", module: "test", method: "spawn" })))
+const noProcesses = ChildProcessSpawner.make(() =>
+  Effect.fail(PlatformError.systemError({ _tag: "NotFound", module: "test", method: "spawn" })),
+);
 
 const plan = (tree: Record<string, string>, steps: ReadonlyArray<Step.Any>) =>
-  Effect.gen(function*() {
-    const project = Calder.project({ rules: [On.push("main", steps)] })
-    return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo(tree))
-  }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses))
+  Effect.gen(function* () {
+    const project = Calder.project({ rules: [On.push("main", steps)] });
 
-const task = (spec: PlanSpec, name: string) => spec.steps.find((s) => s.name === name)!.task!
+    return yield* resolve(yield* Calder.plan(project, run.event), project, run, memoryRepo(tree));
+  }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses));
+
+const task = (spec: PlanSpec, name: string) => spec.steps.find((s) => s.name === name)!.task!;
 
 const app = {
   "package.json": JSON.stringify({ name: "app" }),
   "pnpm-lock.yaml": "lockfileVersion: '9.0'",
   "src/a.ts": "export const a = 1",
   "src/a.test.ts": `import { a } from "./a"`,
-}
+};
 
 describe("resolve", () => {
   it.effect("a task's key and its files' keys cover its setup", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const test = (args: ReadonlyArray<string>) =>
         Task.make("test", {
           setup: Pnpm.install({ args }),
@@ -51,108 +65,199 @@ describe("resolve", () => {
           inputs: Files.of("package.json"),
           run: ({ files }) => cmd`vitest run ${files}`,
           report: Report.junit("junit.xml"),
-        })
-      const before = task(yield* plan(app, [test([])]), "test")
-      const npmrc = task(yield* plan({ ...app, ".npmrc": "node-linker=hoisted" }, [test([])]), "test")
-      const args = task(yield* plan(app, [test(["--trust-lockfile"])]), "test")
+        });
+
+      const before = task(yield* plan(app, [test([])]), "test");
+
+      const npmrc = task(
+        yield* plan({ ...app, ".npmrc": "node-linker=hoisted" }, [test([])]),
+        "test",
+      );
+
+      const args = task(yield* plan(app, [test(["--trust-lockfile"])]), "test");
+
       for (const changed of [npmrc, args]) {
-        expect(changed.inputs).toEqual(["package.json"])
-        expect(changed.keyBase).not.toBe(before.keyBase)
-        expect(changed.each![0]!.key).not.toBe(before.each![0]!.key)
+        expect(changed.inputs).toEqual(["package.json"]);
+        expect(changed.keyBase).not.toBe(before.keyBase);
+        expect(changed.each![0]!.key).not.toBe(before.each![0]!.key);
       }
-    }))
+    }),
+  );
 
   it.effect("a task's key covers the names of its secrets", () =>
-    Effect.gen(function*() {
-      const publish = (secret: string) => Task.make("publish", { secrets: { TOKEN: Secret.file(secret) }, run: cmd`publish` })
-      const staging = task(yield* plan(app, [publish("staging-token")]), "publish")
-      const production = task(yield* plan(app, [publish("production-token")]), "publish")
-      expect(production.keyBase).not.toBe(staging.keyBase)
-    }))
+    Effect.gen(function* () {
+      const publish = (secret: string) =>
+        Task.make("publish", { secrets: { TOKEN: Secret.file(secret) }, run: cmd`publish` });
 
-  it.effect("a task that needs the controller's host is planned not to be offloaded, without changing its key", () =>
-    Effect.gen(function*() {
-      const publish = (offload: false | undefined) => Task.make("publish", { run: cmd`publish`, ...(offload === undefined ? {} : { offload }) })
-      const anywhere = task(yield* plan(app, [publish(undefined)]), "publish")
-      const here = task(yield* plan(app, [publish(false)]), "publish")
-      expect([anywhere.offload, here.offload]).toEqual([true, false])
-      expect(here.keyBase).toBe(anywhere.keyBase)
-    }))
+      const staging = task(yield* plan(app, [publish("staging-token")]), "publish");
+      const production = task(yield* plan(app, [publish("production-token")]), "publish");
+      expect(production.keyBase).not.toBe(staging.keyBase);
+    }),
+  );
 
-  it.effect("a task's gates reach the controller as the part of its after on its critical path", () =>
-    Effect.gen(function*() {
-      const smoke = Task.make("smoke", { run: cmd`smoke` })
-      const lint = Task.make("lint", { run: cmd`lint` })
-      const spec = yield* plan(app, [Task.make("deploy", { run: cmd`deploy`, after: [lint], gate: [smoke] })])
-      expect(spec.steps.find((s) => s.name === "deploy")).toMatchObject({ after: ["lint", "smoke"], gates: ["smoke"] })
-      expect(spec.steps.find((s) => s.name === "lint")).not.toHaveProperty("gates")
-    }))
+  it.effect(
+    "a task that needs the controller's host is planned not to be offloaded, without changing its key",
+    () =>
+      Effect.gen(function* () {
+        const publish = (offload: false | undefined) =>
+          Task.make("publish", {
+            run: cmd`publish`,
+            ...(offload === undefined ? {} : { offload }),
+          });
+
+        const anywhere = task(yield* plan(app, [publish(undefined)]), "publish");
+        const here = task(yield* plan(app, [publish(false)]), "publish");
+        expect([anywhere.offload, here.offload]).toEqual([true, false]);
+        expect(here.keyBase).toBe(anywhere.keyBase);
+      }),
+  );
+
+  it.effect(
+    "a task's gates reach the controller as the part of its after on its critical path",
+    () =>
+      Effect.gen(function* () {
+        const smoke = Task.make("smoke", { run: cmd`smoke` });
+        const lint = Task.make("lint", { run: cmd`lint` });
+
+        const spec = yield* plan(app, [
+          Task.make("deploy", { run: cmd`deploy`, after: [lint], gate: [smoke] }),
+        ]);
+
+        expect(spec.steps.find((s) => s.name === "deploy")).toMatchObject({
+          after: ["lint", "smoke"],
+          gates: ["smoke"],
+        });
+        expect(spec.steps.find((s) => s.name === "lint")).not.toHaveProperty("gates");
+      }),
+  );
 
   it.effect("a dev shell that doesn't evaluate fails the plan, after retries", () =>
-    Effect.gen(function*() {
-      const flake = Flake.make({ devShells: ["ci"] })
-      const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` })
-      const planning = yield* plan(app, [qa]).pipe(Effect.flip, Effect.forkChild)
-      yield* TestClock.adjust("1 minute")
-      const error = yield* Fiber.join(planning)
-      expect(error._tag).toBe("PlanError")
-      expect(error.message).toContain("devShells.x86_64-linux.ci")
-    }))
+    Effect.gen(function* () {
+      const flake = Flake.make({ devShells: ["ci"] });
+      const qa = Task.make("qa", { shell: flake.devShells.ci, run: cmd`just qa` });
+      const planning = yield* plan(app, [qa]).pipe(Effect.flip, Effect.forkChild);
+      yield* TestClock.adjust("1 minute");
+      const error = yield* Fiber.join(planning);
+      expect(error._tag).toBe("PlanError");
+      expect(error.message).toContain("devShells.x86_64-linux.ci");
+    }),
+  );
 
   it.effect("a path or pattern that matches no file fails the plan, unless it is optional", () =>
-    Effect.gen(function*() {
-      const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` })
-      const inputs = Files.union(Files.glob("src/**", "!dist/**"), Files.of("static"), Files.imports("src/**/*.tsx"))
-      const error = yield* plan(app, [build(inputs)]).pipe(Effect.flip)
-      expect(error.message).toContain(`No file matches "!dist/**" (build's inputs), "static" (build's inputs), "src/**/*.tsx" (build's inputs).`)
-      yield* plan(app, [build(Files.union(Files.glob("src/**"), Files.optional(Files.of("static"))))])
-    }))
+    Effect.gen(function* () {
+      const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` });
 
-  it.effect("an include must keep a file the negations leave, a negation must remove one an include matched", () =>
-    Effect.gen(function*() {
-      const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` })
-      const error = yield* plan(app, [build(Files.union(Files.glob("src/*.test.ts", "!src/**"), Files.glob("src/**", "!package.json")))]).pipe(Effect.flip)
+      const inputs = Files.union(
+        Files.glob("src/**", "!dist/**"),
+        Files.of("static"),
+        Files.imports("src/**/*.tsx"),
+      );
+
+      const error = yield* plan(app, [build(inputs)]).pipe(Effect.flip);
       expect(error.message).toContain(
-        `No file matches "!package.json" (build's inputs). "src/*.test.ts" (build's inputs) matches only files the negations leave out.`,
-      )
-      const negated = yield* plan(app, [build(Files.optional(Files.glob("!src/**")))]).pipe(Effect.flip)
-      expect(negated.message).toBe(`"build" has globs that only leave files out, ["!src/**"]: add one that includes files`)
-    }))
+        `No file matches "!dist/**" (build's inputs), "static" (build's inputs), "src/**/*.tsx" (build's inputs).`,
+      );
+      yield* plan(app, [
+        build(Files.union(Files.glob("src/**"), Files.optional(Files.of("static")))),
+      ]);
+    }),
+  );
+
+  it.effect(
+    "an include must keep a file the negations leave, a negation must remove one an include matched",
+    () =>
+      Effect.gen(function* () {
+        const build = (inputs: Files.Files) => Task.make("build", { inputs, run: cmd`make` });
+
+        const error = yield* plan(app, [
+          build(
+            Files.union(
+              Files.glob("src/*.test.ts", "!src/**"),
+              Files.glob("src/**", "!package.json"),
+            ),
+          ),
+        ]).pipe(Effect.flip);
+
+        expect(error.message).toContain(
+          `No file matches "!package.json" (build's inputs). "src/*.test.ts" (build's inputs) matches only files the negations leave out.`,
+        );
+
+        const negated = yield* plan(app, [build(Files.optional(Files.glob("!src/**")))]).pipe(
+          Effect.flip,
+        );
+
+        expect(negated.message).toBe(
+          `"build" has globs that only leave files out, ["!src/**"]: add one that includes files`,
+        );
+      }),
+  );
 
   it.effect("a pattern starting with ! leaves files out of a task's inputs and its each", () =>
-    Effect.gen(function*() {
-      const repo = { ...app, "src/b.test.ts": `import { a } from "./a"`, "legacy/c.test.ts": "" }
+    Effect.gen(function* () {
+      const repo = { ...app, "src/b.test.ts": `import { a } from "./a"`, "legacy/c.test.ts": "" };
+
       const test = Task.make("test", {
         inputs: Files.glob("src/**", "!src/*.test.ts"),
         each: Files.imports(["**/*.test.ts", "!legacy/**"]),
         run: ({ files }) => cmd`vitest run ${files}`,
         report: Report.junit("junit.xml"),
-      })
-      const planned = task(yield* plan(repo, [test]), "test")
-      expect(planned.inputs).toEqual(["src/a.ts"])
-      expect(planned.each!.map((e) => e.file)).toEqual(["src/a.test.ts", "src/b.test.ts"])
-    }))
+      });
+
+      const planned = task(yield* plan(repo, [test]), "test");
+      expect(planned.inputs).toEqual(["src/a.ts"]);
+      expect(planned.each!.map((e) => e.file)).toEqual(["src/a.test.ts", "src/b.test.ts"]);
+    }),
+  );
 
   it.effect("a task's each may match no file once it is optional, and then has none to run", () =>
-    Effect.gen(function*() {
-      const test = (each: Files.Files) => Task.make("test", { each, run: ({ files }) => cmd`vitest run ${files}`, report: Report.junit("junit.xml") })
-      const error = yield* plan(app, [test(Files.imports("test/**/*.test.ts"))]).pipe(Effect.flip)
-      expect(error.message).toContain(`No file matches "test/**/*.test.ts" (test's each)`)
-      expect(task(yield* plan(app, [test(Files.optional(Files.imports("test/**/*.test.ts")))]), "test").each).toEqual([])
-      expect(task(yield* plan(app, [test(Files.optional(Files.imports("src/*.test.ts")))]), "test").each!.map((e) => e.file)).toEqual(["src/a.test.ts"])
-    }))
+    Effect.gen(function* () {
+      const test = (each: Files.Files) =>
+        Task.make("test", {
+          each,
+          run: ({ files }) => cmd`vitest run ${files}`,
+          report: Report.junit("junit.xml"),
+        });
+
+      const error = yield* plan(app, [test(Files.imports("test/**/*.test.ts"))]).pipe(Effect.flip);
+      expect(error.message).toContain(`No file matches "test/**/*.test.ts" (test's each)`);
+      expect(
+        task(yield* plan(app, [test(Files.optional(Files.imports("test/**/*.test.ts")))]), "test")
+          .each,
+      ).toEqual([]);
+      expect(
+        task(
+          yield* plan(app, [test(Files.optional(Files.imports("src/*.test.ts")))]),
+          "test",
+        ).each!.map((e) => e.file),
+      ).toEqual(["src/a.test.ts"]);
+    }),
+  );
 
   it.effect("a workspace package's files include the root configs it builds with", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const repo = memoryRepo({
         "package.json": JSON.stringify({ name: "monorepo", workspaces: ["packages/*"] }),
         "tsconfig.base.json": "{}",
         "README.md": "docs",
-        "packages/web/package.json": JSON.stringify({ name: "web", dependencies: { ui: "workspace:*" } }),
+        "packages/web/package.json": JSON.stringify({
+          name: "web",
+          dependencies: { ui: "workspace:*" },
+        }),
         "packages/ui/package.json": JSON.stringify({ name: "ui" }),
         "packages/api/package.json": JSON.stringify({ name: "api" }),
-      })
-      const files = yield* paths(repo, Files.workspace("packages/web")).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses))
-      expect(files).toEqual(["package.json", "tsconfig.base.json", ".ci", "packages/ui", "packages/web"])
-    }))
-})
+      });
+
+      const files = yield* paths(repo, Files.workspace("packages/web")).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses),
+      );
+
+      expect(files).toEqual([
+        "package.json",
+        "tsconfig.base.json",
+        ".ci",
+        "packages/ui",
+        "packages/web",
+      ]);
+    }),
+  );
+});

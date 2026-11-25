@@ -2,16 +2,16 @@
   "name": "@calder-ci/calder",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "bin": {
     "calder": "./src/main.ts"
   },
+  "type": "module",
   "dependencies": {
-    "@effect/platform-bun": "4.0.0",
-    "@effect/sql-sqlite-bun": "4.0.0",
     "@calder-ci/api": "workspace:*",
     "@calder-ci/core": "workspace:*",
     "@calder-ci/std": "workspace:*",
+    "@effect/platform-bun": "4.0.0",
+    "@effect/sql-sqlite-bun": "4.0.0",
     "effect": "4.0.0"
   }
 }
