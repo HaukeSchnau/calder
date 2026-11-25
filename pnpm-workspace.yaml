@@ -17,15 +17,3 @@ overrides:
 
 minimumReleaseAgeExclude:
   - "@schnau/tsconfig"
-  # Vite+ 1.8.0 came out between 02:15 and 03:15 UTC on 2026-11-24, and pnpm 12 also checks the
-  # lockfile against minimumReleaseAge. Delete these entries after 2026-11-25 03:16 UTC.
-  - "@voidzero-dev/vite-plus-core@8.3.8001"
-  - "@voidzero-dev/vite-plus-darwin-arm64@1.8.0"
-  - "@voidzero-dev/vite-plus-darwin-x64@1.8.0"
-  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.8.0"
-  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.8.0"
-  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.8.0"
-  - "@voidzero-dev/vite-plus-linux-x64-musl@1.8.0"
-  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.8.0"
-  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.8.0"
-  - vite-plus@1.8.0
