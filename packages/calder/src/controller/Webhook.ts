@@ -1,19 +1,33 @@
 import { Effect } from "effect";
 import type { HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
+import { SqlClient } from "effect/sql";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Closes } from "./Closes.ts";
 import { Config } from "./Config.ts";
+import { Gitea } from "./Gitea.ts";
 import { Mirror } from "./Mirror.ts";
 import { Projects } from "./Projects.ts";
+import * as Rows from "./Rows.ts";
+import * as Trust from "./Trust.ts";
 import { Runs } from "./Workflow.ts";
+
+interface User {
+  readonly login?: string;
+}
 
 interface Payload {
   readonly ref?: string;
+  /** The revision a push, or one to a pull request's branch (`synchronized`), moved the branch from and to. */
+  readonly before?: string;
   readonly after?: string;
   readonly action?: string;
   readonly number?: number;
   readonly repository?: { readonly full_name?: string; readonly default_branch?: string };
+  /** Who pushed, of a push. */
+  readonly pusher?: User | null;
+  /** Who did what the webhook says, such as push `after` to a pull request's branch (`synchronized`). */
+  readonly sender?: User | null;
   readonly pull_request?: {
     readonly closed_at?: string | null;
     readonly head?: {
@@ -46,6 +60,12 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     const runs = yield* Runs;
     const projects = yield* Projects;
     const closes = yield* Closes;
+    const gitea = yield* Gitea;
+    const sql = yield* SqlClient.SqlClient;
+
+    const db = <A>(effect: Effect.Effect<A, never, SqlClient.SqlClient>) =>
+      Effect.provideService(effect, SqlClient.SqlClient, sql);
+
     const body = yield* request.text;
 
     if (!verified(config.webhookSecret, body, request.headers["x-gitea-signature"])) {
@@ -97,7 +117,13 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
 
       // `calder check` pushes its working copies here and starts their runs itself.
       if (branch.startsWith("calder/check/")) return HttpServerResponse.text("ignored");
-      yield* start(sha, runs.ensure({ project, event: { _tag: "Push", branch }, sha }));
+      const trusted = { pushers: config.trustedPushers, bot: yield* gitea.self };
+      const pusher = payload.pusher?.login;
+      yield* db(Rows.pushed(project, sha, Trust.push(trusted, enrolled, branch, pusher)));
+      yield* start(
+        sha,
+        runs.ensure({ project, event: { _tag: "Push", branch }, sha }, { overrule: "any" }),
+      );
 
       return HttpServerResponse.text("accepted", { status: 202 });
     }
@@ -127,25 +153,50 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
       const sha = pr.head?.sha;
 
       if (sha === undefined) return HttpServerResponse.text("ignored");
+      const synchronized = payload.action === "synchronized";
+
+      // Gitea reads the head from the branch when it sends the webhook, which another push may have moved
+      // on since `after`. That push's own webhook brings the head, with whoever pushed it.
+      if (synchronized && payload.after !== undefined && payload.after !== sha)
+        return HttpServerResponse.text("ignored");
 
       const fork =
         pr.head?.repo?.full_name !== undefined &&
         pr.head.repo.full_name !== pr.base?.repo?.full_name;
 
+      // `sender` pushed `after`. Calder merging the default branch, which only the trusted push, into a
+      // revision someone trusted pushed (Merges.ts `update`) keeps it trusted.
+      if (!fork && synchronized && payload.after !== undefined) {
+        const sender = payload.sender?.login;
+        const trusted = { pushers: config.trustedPushers, bot: yield* gitea.self };
+
+        const vouched =
+          Trust.person(trusted, enrolled, sender) ||
+          (Trust.bot(trusted, sender) &&
+            pr.base?.ref === enrolled.defaultBranch &&
+            payload.before !== undefined &&
+            (yield* db(Rows.pushedTrusted(project, payload.before))) === true);
+
+        yield* db(Rows.pushed(project, sha, vouched));
+      }
+
       yield* start(
         sha,
-        runs.ensure({
-          project,
-          event: {
-            _tag: "PullRequest",
-            number,
-            base: pr.base?.ref ?? "main",
-            head: pr.head?.ref ?? `pr-${number}`,
+        runs.ensure(
+          {
+            project,
+            event: {
+              _tag: "PullRequest",
+              number,
+              base: pr.base?.ref ?? "main",
+              head: pr.head?.ref ?? `pr-${number}`,
+              fork,
+            },
+            sha,
             fork,
           },
-          sha,
-          fork,
-        }),
+          { overrule: "any" },
+        ),
       );
 
       return HttpServerResponse.text("accepted", { status: 202 });

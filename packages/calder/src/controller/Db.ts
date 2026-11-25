@@ -340,6 +340,11 @@ export const migrations = {
     yield* sql`insert into pull_closes (project, pr, settled)
       select distinct project, pr, (select max(created_at) from runs) from runs where pr is not null`;
   }),
+  "0029_pushed": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // Per revision, whether someone Calder trusts pushed it (Rows.ts `pushed`).
+    yield* sql`create table pushed (project text not null, sha text not null, trusted integer not null, primary key (project, sha))`;
+  }),
 };
 
 /**

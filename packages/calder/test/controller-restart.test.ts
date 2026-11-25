@@ -197,6 +197,7 @@ const restarted = Effect.gen(function* () {
               } as unknown as Fleet.Fleet["Service"]),
               Layer.succeed(Live)({} as unknown as Live["Service"]),
               Layer.succeed(Gitea)({
+                self: Effect.succeed("calder"),
                 head: () => Effect.succeed("rev-10"),
               } as unknown as Gitea["Service"]),
               Layer.succeed(Projects)({

@@ -1,4 +1,5 @@
 import { Domain } from "@calder-ci/api";
+import { Event } from "@calder-ci/core";
 import { Context, Deferred, Effect, FiberMap, FiberSet, Layer, Schema, Semaphore } from "effect";
 import { SqlClient } from "effect/sql";
 import * as Counters from "./Counters.ts";
@@ -18,7 +19,10 @@ export interface RunInput {
   readonly project: string;
   readonly event: Domain.Event;
   readonly sha: string;
-  /** A pull request whose head lives in another repository. */
+  /**
+   * A pull request whose head lives in another repository, or code that runs like one: `create` adds the
+   * revisions nobody Calder trusts pushed (`untrusted`).
+   */
   readonly fork?: boolean;
   /** The run this one reruns, whose passed steps it takes instead of running them again. */
   readonly rerunOf?: string;
@@ -41,13 +45,51 @@ export class Runs extends Context.Service<
     ) => Effect.Effect<Domain.Run, RunError>;
     /**
      * `create`, unless a run of the same project, revision and event exists: what the webhook and the
-     * catch-up after a restart use, so one push never starts two runs.
+     * catch-up after a restart use, so one push never starts two runs. With `overrule`, a run that trusts
+     * the code otherwise than a new one would (`untrusted`) is cancelled and replaced: `any`, as the
+     * webhook passes, or only one that ran like a fork's (`upward`), as the catch-up does, which can't
+     * tell who pushed.
      */
-    readonly ensure: (input: RunInput) => Effect.Effect<Domain.Run, RunError>;
+    readonly ensure: (
+      input: RunInput,
+      options?: { readonly overrule?: "any" | "upward" },
+    ) => Effect.Effect<Domain.Run, RunError>;
     /** Audits a project's footprint records (RunsCore's `audit`). */
     readonly audit: (project: string) => Effect.Effect<ReadonlyArray<Domain.AuditMismatch>>;
   }
 >()("calder/controller/Runs") {}
+
+/**
+ * Whether `input`'s code runs like a fork's pull request (Trust.ts): a fork's pull request's, and a
+ * revision of a branch unless a webhook said someone trusted pushed it (Rows.ts `pushed`), but the default
+ * branch's head unless one said someone else did, since only the trusted push it. Manual runs and checks
+ * run what someone who may start them chose.
+ */
+export const untrusted = (input: RunInput, defaultBranch: string) =>
+  Effect.gen(function* () {
+    const event = input.event;
+
+    if (input.fork === true) return true;
+
+    if (event._tag === "Manual" || event._tag === "Check") return false;
+
+    const branch =
+      event._tag === "Push"
+        ? event.branch
+        : event._tag === "PullRequestClosed"
+          ? event.base
+          : event._tag === "Schedule"
+            ? defaultBranch
+            : null;
+
+    const pushed = yield* Rows.pushedTrusted(input.project, input.sha);
+
+    return branch === defaultBranch ? pushed === false : pushed !== true;
+  });
+
+/** A run of a pull request, a check or code Calder doesn't trust (`RunInput.fork`) is a pull request's. */
+export const trustOf = (event: Domain.Event, fork: boolean): Domain.Trust =>
+  event._tag === "PullRequest" || event._tag === "Check" || fork ? "pr" : "trusted";
 
 /**
  * The branch a run is of, which its deploy lease checks the revision against (WorkerServer `leaseOf`): a
@@ -252,10 +294,14 @@ export const layer = Layer.effect(Runs)(
         );
 
         const event = input.event;
+        const fork = yield* db(untrusted(input, project.defaultBranch));
 
-        const trust: Domain.Trust =
-          event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
+        if (fork && input.fork !== true)
+          yield* Effect.logInfo(
+            `${Event.describe(event)} of ${input.project} at ${input.sha.slice(0, 12)} runs like a fork's pull request: no webhook said someone Calder trusts pushed it`,
+          );
 
+        const trust = trustOf(event, fork);
         const branch = branchOf(event, project.defaultBranch);
 
         const pr =
@@ -269,7 +315,7 @@ export const layer = Layer.effect(Runs)(
           trust, status, created_at, trace_id, span_id, fork, tree, rerun_of)
         values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
           ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
-          ${input.fork === true ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`);
+          ${fork ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`);
 
         const older = yield* db(
           Rows.replaced({ project: input.project, event, branch, pr, sha: input.sha }),
@@ -287,25 +333,45 @@ export const layer = Layer.effect(Runs)(
         return run;
       });
 
-    const ensuring = new Set<string>();
+    // One at a time, so the catch-up's run and a webhook's that overrules it never start side by side.
+    const ensuring = Semaphore.makeUnsafe(1);
 
-    const ensure: Runs["Service"]["ensure"] = (input) =>
-      Effect.gen(function* () {
-        const event = JSON.stringify(input.event);
-        const key = `${input.project}|${input.sha}|${event}`;
+    const ensure: Runs["Service"]["ensure"] = (input, options = {}) =>
+      ensuring.withPermits(1)(
+        Effect.gen(function* () {
+          const event = JSON.stringify(input.event);
 
-        const existing =
-          yield* db(sql<Rows.RunRow>`select * from runs where project = ${input.project} and sha = ${input.sha}
-        and event = ${event} order by created_at desc limit 1`);
+          const existing =
+            yield* db(sql<Rows.RunRow>`select * from runs where project = ${input.project} and sha = ${input.sha}
+          and event = ${event} order by created_at desc limit 1`);
 
-        if (existing[0] !== undefined) return Rows.run(existing[0]);
+          const found = existing[0];
+          const defaultBranch = projects.get(input.project)?.defaultBranch;
 
-        if (ensuring.has(key))
-          return yield* RunError.make({ message: `a run of ${key} is starting` });
-        ensuring.add(key);
+          // Decided here, after the webhook that told Calder who pushed wrote it down.
+          const fork =
+            found !== undefined &&
+            options.overrule !== undefined &&
+            defaultBranch !== undefined &&
+            (yield* db(untrusted(input, defaultBranch)));
 
-        return yield* create(input).pipe(Effect.ensuring(Effect.sync(() => ensuring.delete(key))));
-      });
+          const overruled =
+            found !== undefined &&
+            (options.overrule === "any"
+              ? found.fork !== (fork ? 1 : 0)
+              : options.overrule === "upward" && found.fork === 1 && !fork);
+
+          if (found !== undefined && !overruled) return Rows.run(found);
+
+          if (overruled)
+            yield* core.cancel(
+              found.id,
+              `a webhook said who pushed ${input.sha.slice(0, 12)}, so it runs again ${fork ? "like a fork's pull request" : "as trusted"}`,
+            );
+
+          return yield* create(input);
+        }),
+      );
 
     return {
       create,

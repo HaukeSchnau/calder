@@ -94,6 +94,7 @@ const world = (pulls: ReadonlyArray<Pull>, headDelay: Duration.Input = 0) =>
             audit: unused,
           }),
           Layer.succeed(Gitea)({
+            self: Effect.succeed("calder"),
             head: () => Effect.succeed("main-sha").pipe(Effect.delay(headDelay)),
             openPulls: () =>
               Effect.succeed(

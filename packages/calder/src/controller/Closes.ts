@@ -64,7 +64,8 @@ export const layer = Layer.effect(Closes)(
         yield* Effect.forEach(active, (r) => runs.cancel(r.id, "pull request closed"), {
           discard: true,
         });
-        // `On.pullRequestClosed` rules run the base branch's head, which the repository's owners pushed.
+        // `On.pullRequestClosed` rules run the base branch's head, as trusted when someone trusted pushed it
+        // (Workflow.ts `untrusted`).
         const sha = yield* gitea.head(project.repo, closing.base);
         yield* mirror.fetch(project.name);
 

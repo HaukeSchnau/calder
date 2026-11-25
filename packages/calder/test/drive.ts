@@ -67,6 +67,8 @@ export interface Drive {
   readonly settled?: (steps: ReadonlyMap<string, Domain.StepRun>) => boolean;
   /** The run's event, a push to main by default. */
   readonly event?: Domain.Event;
+  /** The run's code is someone's Calder doesn't trust (`RunInput.fork`), such as a push by renovate. */
+  readonly untrusted?: boolean;
   /** `app-2`'s run number, 2 by default; a higher one stands for a later run. */
   readonly number?: number;
   /** What the run's plan says besides its steps. */
@@ -142,6 +144,7 @@ export const drive = ({
   result = () => undefined,
   settled = () => true,
   event = { _tag: "Push", branch: "main" },
+  untrusted = false,
   number = 2,
   plan: extra = {},
   unplanned = false,
@@ -165,7 +168,8 @@ export const drive = ({
 }: Drive) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const trust = event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
+    const fork = (event._tag === "PullRequest" && event.fork === true) || untrusted ? 1 : 0;
+    const trust = Workflow.trustOf(event, fork === 1);
     const pr = event._tag === "PullRequest" ? event.number : null;
 
     const plan: PlanSpec = {
@@ -198,7 +202,6 @@ export const drive = ({
         yield* sql`insert into lease_steps (project, step, run) values ('app', ${s.name}, ${s.lease})`;
     }
 
-    const fork = event._tag === "PullRequest" && event.fork ? 1 : 0;
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, rerun_of, fork)
       values ('app-2', 'app', ${number}, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
@@ -405,7 +408,15 @@ export const drive = ({
         fetch: () => Effect.void,
         hasPipeline: unused,
         pipelineTree: () => Effect.succeed("tree"),
-        commit: unused,
+        commit: (_project, sha) =>
+          Effect.succeed({
+            sha,
+            title: "title",
+            author: "hauke",
+            changeId: null,
+            timestamp: 2,
+            tree: "tree",
+          }),
         between: unused,
         contains: unused,
         pipelineDir: () => Effect.succeed("/calder"),
@@ -424,6 +435,7 @@ export const drive = ({
         trace: unused,
       }),
       Layer.succeed(Gitea)({
+        self: Effect.succeed("calder"),
         status: (_repo, _sha, status) => {
           const record = Effect.sync(() => {
             statuses.set(status.context, `${status.state}: ${status.description}`);

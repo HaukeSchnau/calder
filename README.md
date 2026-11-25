@@ -119,7 +119,7 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   There a pull request's job runs as its pool's user in the host's unit template for it, `calder-job-pr@`, with
   its own home and workspaces, apart from trusted jobs' `calder-job-trusted@`. A fork's pull request has a pool
   of its own, `calder-job-fork@`, so nothing a fork's job leaves behind reaches a same-repo pull request's job,
-  whose plan the default branch may take. A host that defines no unit for a pool fails its jobs, saying so.
+  whose plan the default branch may take. Code Calder doesn't trust runs there too (see the trust paragraph below). A host that defines no unit for a pool fails its jobs, saying so.
   Tasks get `GOMEMLIMIT` at 90% of their worker's memory limit, so Go tools such as tsgo collect
   garbage before the limit throttles them; a task's own `env` overrides it.
   Pull-request tasks reach the network only through the controller's egress allowlist. Their commands get
@@ -129,7 +129,7 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   { ENV: Secret.file("name") }` hands a trusted task the path of a file holding the project's secret
   `name`, and ``cmd`... ${Secret.file("name")}` `` passes that path as an argument; a step that names a
   secret the project doesn't configure dies saying so. A secret in the project's `defaultBranchSecrets`
-  instead of `secrets`, such as an app store key, goes only to runs of the default branch (its pushes,
+  instead of `secrets`, such as an app store key, goes only to runs of the default branch (its trusted pushes,
   schedules and manual runs), which run its head's ci.ts; a step that names one in another run, a pull
   request's preview included, dies before it runs, saying so. A project with them names its `defaultBranch`,
   since Calder otherwise takes it to be `main` until Gitea told it. The worker replaces the job's secrets and its token
@@ -234,7 +234,7 @@ took from trusted footprint records, and those it took from an earlier plan that
 attribute whose derivation is the earlier plan's counts as taken from it. A pull
 request runs its own ci.ts in the worker that plans, and with the same tree that ci.ts is the default
 branch's. A pull request's record, such as one its first push made, holds for later trees too, whose ci.ts
-may differ, so an attribute taken from it isn't marked, and the merge evaluates it again. A push of another
+may differ, so an attribute taken from it isn't marked, and the merge evaluates it again. A trusted push of another
 branch runs that branch's ci.ts in the trusted worker, so no trusted run takes its plan. So `calder merge`'s
 merge evaluates only what its pull request's rules didn't need or took from a pull request's records. Put
 the revision into what a deploy hands the service rather than into a build, and a merge reuses the pull
@@ -294,9 +294,9 @@ records nothing, so those attributes evaluate every time. A store path the evalu
 Nix doesn't know keeps the record only when it is content-addressed (a `builtins.toFile` result, a fixed
 download), refers to no copy of the source, and its text doesn't name the commit; a path whose NAR hash
 is the source's (`builtins.path { path = self; name = "src"; }`) counts as the whole source, in what was
-read and in a derivation's closure. Records come only from the default branch's runs (pushes, schedules,
+read and in a derivation's closure. Records come only from the default branch's runs (trusted pushes, schedules,
 manual runs) and same-repo pull requests: a push or manual run of another branch runs that branch's ci.ts
-in the trusted worker. After an audit found a record wrong, the attribute isn't recorded again until its footprint
+in the trusted worker, and code Calder doesn't trust records nothing, as a fork's pull request doesn't. After an audit found a record wrong, the attribute isn't recorded again until its footprint
 changes. A record counts only under the Nix version, system and evaluation settings it was made with. Trusted
 runs and forks' runs take only trusted records, since a pull request's ci.ts runs in the worker that records,
 also when they take its plan: a record holds for other trees, whose ci.ts may differ from the default
@@ -309,9 +309,27 @@ disagree. It logs each as `footprint record wrong:` with the runs whose plans to
 such a plan among them (infra alerts on that line), and the project's page shows it for two weeks. No
 run reuses a plan that took a record the audit found wrong.
 
+Calder trusts the code of each repository's owner, of the Gitea users the controller's `trustedPushers` names,
+and of its own Gitea user on the default branch, where it lands the merge train. Anyone else's code, such as
+the bot `renovate`'s, runs like a fork's pull request. A branch push by such a user gets the fork pool, no
+`secrets` or `defaultBranchSecrets` and no deploy lease, and no trusted run takes its results, plan or
+records. Its push rules still apply, and its plan fails on a step with grants or secrets, as a pull request's
+does, so it never deploys, also on the default branch. Calder's own push to another branch is the base merged
+into a pull request's branch (`calder merge`), whose code is the pull request's, so it runs like that too.
+Calder keeps, per revision, whether a webhook said someone trusted pushed it: a push's `pusher`, the sender of
+a pull request's `synchronized` whose `after` is the revision, or Calder merging the default branch into a
+revision someone trusted pushed (its `before`). A revision someone trusted pushed once stays trusted. Every run
+of a branch's revision, a pull request's included, runs like a fork's unless someone trusted pushed it,
+whoever opened the pull request. The default branch's head, which branch protection leaves to the trusted, is
+trusted unless a webhook said someone else pushed it, and so are its schedules and the closed runs of pull
+requests into it; an untrusted push's plan doesn't change the schedules. Manual runs stay trusted. A webhook
+that says otherwise of a revision than its run assumed cancels the run and starts another. The catch-up,
+which can't tell who pushed, only does that toward trusted, and looks at a head again once a webhook said who
+pushed it. The controller logs each run it doesn't trust.
+
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
-same repository, never for forks or `calder check`. Their tasks may read the project's `secrets`, not its
-`defaultBranchSecrets`: whoever can push a branch is someone a trusted run trusts. Such a task runs as a trusted job, in the trusted pool with its network
+same repository that Calder trusts, never for forks, what runs like one or `calder check`. Their tasks may
+read the project's `secrets`, not its `defaultBranchSecrets`. Such a task runs as a trusted job, in the trusted pool with its network
 and home, and so does a preview's action, such as one that waits for the preview to be ready on the
 private network; it keeps the pull request's services. A task with `lease` holds the pull request's own
 lease. Actions with grants stay refused.

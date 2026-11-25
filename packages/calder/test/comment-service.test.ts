@@ -55,6 +55,7 @@ const setup = Effect.gen(function* () {
           Layer.succeed(SqlClient.SqlClient)(sql),
           Layer.succeed(Projects)({ get: () => project, all: () => [project], byRepo: unused }),
           Layer.succeed(Gitea)({
+            self: Effect.succeed("calder"),
             comment: (_repo, _pr, body) => Effect.sync(() => (posted.push(body), posted.length)),
             status: unused,
             requiredChecks: unused,

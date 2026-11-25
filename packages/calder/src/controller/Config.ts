@@ -103,6 +103,13 @@ export const ConfigSchema = Schema.Struct({
   /** Gitea owners whose repositories are enrolled when they carry `.calder/ci.ts`. */
   owners: Schema.Array(Schema.String),
   /**
+   * Gitea users whose code Calder trusts besides each repository's owner, and Calder's own user on the
+   * default branch (Trust.ts). Anyone else's push or pull request runs like a fork's pull request.
+   */
+  trustedPushers: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
+  /**
    * The hosts' promotion endpoints, in deploy order. Calder asks each which apps it runs. One whose host
    * sleeps while idle has `wake`, the command that wakes it, such as `systemctl start calder-wake@tower.service`.
    * An `optional` one that doesn't answer is left out of the promotion instead of failing it, so a workstation

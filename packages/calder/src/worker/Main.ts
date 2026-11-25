@@ -20,6 +20,7 @@ const plan = (spec: Extract<JobSpec, { readonly _tag: "Plan" }>) =>
 
     const planned = yield* Calder.plan(project, spec.run.event, {
       requiredChecks: spec.requiredChecks,
+      trust: spec.run.trust,
     });
 
     // Nothing to run (a push to a branch no rule names), or only the rules asked for: skip evaluating the flake.

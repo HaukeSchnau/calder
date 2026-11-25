@@ -54,6 +54,7 @@ const MergedPull = Schema.Struct({
   merge_commit_sha: Schema.NullOr(Schema.String),
 });
 
+const User = Schema.Struct({ login: Schema.String });
 const ErrorBody = Schema.Struct({ message: Schema.optional(Schema.String) });
 
 const Repo = Schema.Struct({
@@ -91,6 +92,8 @@ const matches = (pattern: string, branch: string) =>
 export class Gitea extends Context.Service<
   Gitea,
   {
+    /** The login of the user Calder acts as, its token's. */
+    readonly self: Effect.Effect<string>;
     readonly status: (
       repo: string,
       sha: string,
@@ -202,7 +205,18 @@ export const layer = Layer.effect(Gitea)(
           ),
         );
 
+    // Asked once it is needed and kept once Gitea answered, so a Gitea that is down at start costs nothing.
+    let login: string | undefined;
+
     return {
+      self: Effect.suspend(() =>
+        login !== undefined
+          ? Effect.succeed(login)
+          : get("/user", User).pipe(
+              Effect.map((u) => (login = u.login)),
+              Effect.orDie,
+            ),
+      ),
       status: (repo, sha, s) =>
         send("post", `/repos/${repo}/statuses/${sha}`, {
           context: s.context,

@@ -126,6 +126,7 @@ describe("a task with a named lease", () => {
           } as unknown as Fleet.Fleet["Service"]),
           Layer.succeed(Live)({} as unknown as Live["Service"]),
           Layer.succeed(Gitea)({
+            self: Effect.succeed("calder"),
             head: () => Effect.sync(() => head),
           } as unknown as Gitea["Service"]),
           Layer.succeed(Projects)({

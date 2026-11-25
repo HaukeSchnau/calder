@@ -146,6 +146,7 @@ const setup = (
             audit: unused,
           }),
           Layer.succeed(Gitea)({
+            self: Effect.succeed("calder"),
             pull: (_repo, pr) =>
               Effect.succeed({
                 open: !merged.includes(pr),

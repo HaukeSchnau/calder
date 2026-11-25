@@ -43,6 +43,7 @@ export interface RunRow {
   readonly error: string | null;
   readonly trace_id: string;
   readonly span_id: string;
+  /** A fork's pull request, or code that runs like one (Workflow.ts `RunInput.fork`). */
   readonly fork: number;
   /** Absent in rows read before migration 0016. */
   readonly planned_at?: number | null;
@@ -502,6 +503,29 @@ export const records = (run: Pick<RunRow, "project" | "trust" | "fork">) =>
         ...(r.app === null ? {} : { app: JSON.parse(r.app) as string | null }),
       })),
     } as Records;
+  }).pipe(Effect.orDie);
+
+/**
+ * Records that someone pushed `sha`, whom Calder trusts or not (Trust.ts), as Gitea's webhooks say. A
+ * revision someone trusted pushed stays trusted, whoever pushes it again.
+ */
+export const pushed = (project: string, sha: string, trusted: boolean) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`insert into pushed (project, sha, trusted) values (${project}, ${sha}, ${trusted ? 1 : 0})
+      on conflict (project, sha) do update set trusted = max(trusted, excluded.trusted)`;
+  }).pipe(Effect.orDie);
+
+/** Whether someone Calder trusts pushed `sha`, undefined when no webhook said who pushed it. */
+export const pushedTrusted = (project: string, sha: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows = yield* sql<{
+      trusted: number;
+    }>`select trusted from pushed where project = ${project} and sha = ${sha}`;
+
+    return rows[0] === undefined ? undefined : rows[0].trusted === 1;
   }).pipe(Effect.orDie);
 
 /**

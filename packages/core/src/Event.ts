@@ -8,7 +8,10 @@ export const PullRequest = Schema.TaggedStruct("PullRequest", {
   fork: Schema.optional(Schema.Boolean),
 });
 
-/** A pull request was merged or closed. Its run plans the base branch's head, so it is trusted. */
+/**
+ * A pull request was merged or closed. Its run plans the base branch's head, so it is trusted when someone
+ * the controller trusts pushed that head, as it takes of the default branch's unless told otherwise.
+ */
 export const PullRequestClosed = Schema.TaggedStruct("PullRequestClosed", {
   number: Schema.Number,
   base: Schema.String,

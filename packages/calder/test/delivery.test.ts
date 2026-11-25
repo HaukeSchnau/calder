@@ -36,6 +36,7 @@ const fakes = (options: { readonly giteaDown?: { count: number } } = {}) => {
         }),
     } as unknown as Runs["Service"]),
     Layer.succeed(Gitea)({
+      self: Effect.succeed("calder"),
       head: () => Effect.succeed("m2"),
       mergedPull: (_repo: string, sha: string) =>
         options.giteaDown !== undefined && options.giteaDown.count-- > 0

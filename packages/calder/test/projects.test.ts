@@ -14,6 +14,7 @@ const unused = () => Effect.die("unused");
 /** Gitea where `files` lists the `repo@ref:path` that exist. */
 const gitea = (files: ReadonlyArray<string>) =>
   Layer.succeed(Gitea)({
+    self: Effect.succeed("calder"),
     status: unused,
     requiredChecks: unused,
     head: unused,
