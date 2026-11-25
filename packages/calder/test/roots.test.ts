@@ -5,7 +5,7 @@ import { SqlClient } from "effect/sql"
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import * as Outputs from "../src/controller/Outputs.ts"
 import { insertRun, insertStep, layer } from "./sqlite.ts"
 

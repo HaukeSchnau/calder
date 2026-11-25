@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect } from "effect"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { appAttr, type Job, type JobResult, type PlannedStep } from "../src/Protocol.ts"
 import { RunsCore } from "../src/controller/Runs.ts"
 import { drive, step } from "./drive.ts"

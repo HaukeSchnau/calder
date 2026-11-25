@@ -1,25 +1,18 @@
-import { Files, Task, cmd } from "@calder-ci/core"
-import { Pnpm, Project, Vitest } from "@calder-ci/std"
-import { flake } from "./flake.ts"
+import { Pnpm, Project } from "@calder-ci/std";
+import { flake } from "./flake.ts";
 
-const shell = flake.devShells.default
-const install = Pnpm.install({ shell })
+const shell = flake.devShells.default;
 
-const check = Task.make("check", {
-  shell,
-  setup: install,
-  inputs: Files.of("packages", "sdk", "tsconfig.base.json"),
-  run: cmd`pnpm run check`,
-})
-
-/** A test file runs again only when it, something it imports or the vitest config changed. */
-const test = Vitest.files({
-  shell,
-  setup: install,
-  tests: ["packages/*/test/**/*.test.ts"],
-  inputs: Files.of("vitest.config.ts"),
-  shards: 2,
-})
-
-/** The flake's checks build the package and the website, which infra deploys with the controller. */
-export default Project.standard({ flake, checks: [check, test] })
+/**
+ * The flake's checks build the package and the website, which infra deploys with the controller.
+ * `vp test` runs file by file: a test file runs again only when it, something it imports, the
+ * Vite+ config or a tsconfig changed.
+ */
+export default Project.standard({
+  flake,
+  vp: {
+    shell,
+    setup: Pnpm.install({ shell }),
+    test: { tests: ["packages/*/test/**/*.test.ts"], shards: 2 },
+  },
+});

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import * as Estimates from "../src/controller/Estimates.ts"
 import { insertRun, insertStep, layer as sqlite } from "./sqlite.ts"
 

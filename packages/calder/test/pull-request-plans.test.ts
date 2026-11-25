@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 import { SqlClient } from "effect/sql"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { appAttr, type PlannedStep } from "../src/Protocol.ts"
 import { drive, step } from "./drive.ts"
 

@@ -2,7 +2,7 @@ import * as BunChildProcessSpawner from "@effect/platform-bun/BunChildProcessSpa
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import * as BunPath from "@effect/platform-bun/BunPath"
 import { describe, expect, it } from "@effect/vitest"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { Effect, Layer } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"

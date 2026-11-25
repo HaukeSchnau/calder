@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "vite-plus/test"
 import { spawnSync } from "node:child_process"
 import { join } from "node:path"
 import { forwarded, withoutHopByHop } from "../src/ControllerProxy.ts"

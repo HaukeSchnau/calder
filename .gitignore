@@ -9,3 +9,4 @@ result-*
 
 # The UI brief is an agent note and stays local.
 /packages/ui/BRIEF.md
+.vitest/

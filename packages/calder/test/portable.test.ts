@@ -1,7 +1,7 @@
 // Tasks that may run on agents of another Linux system than the controller's (PlannedStep `systems`).
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schedule } from "effect"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import type { AgentUsage } from "../src/controller/Agents.ts"
 import { compatibility, type PlannedStep } from "../src/Protocol.ts"
 import { drive, step } from "./drive.ts"

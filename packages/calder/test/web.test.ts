@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "vite-plus/test"
 import { admit, type Session, sign, verify } from "../src/controller/Web.ts"
 
 const key = Buffer.alloc(32, 7)

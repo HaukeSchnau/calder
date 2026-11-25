@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { Gitea } from "../src/controller/Gitea.ts"
 import * as Projects from "../src/controller/Projects.ts"
 import { config } from "./config.ts"

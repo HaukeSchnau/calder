@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { backoff, converge, tick } from "../src/controller/Delivery.ts"
 import { Gitea } from "../src/controller/Gitea.ts"
 import { Mirror } from "../src/controller/Mirror.ts"

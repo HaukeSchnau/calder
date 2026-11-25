@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { anchored, lastPassed, load, type Streak, streaks } from "../src/controller/Health.ts"
 import { insertRun, insertStep, layer } from "./sqlite.ts"
 

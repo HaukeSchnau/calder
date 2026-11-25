@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "vite-plus/test"
 import { link, pipeline, sdkPath, stableSdk, tsconfig } from "../src/Gen.ts"
 
 describe("stableSdk", () => {

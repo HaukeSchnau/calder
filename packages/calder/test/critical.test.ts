@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { criticalPath } from "../src/controller/Rows.ts"
 import type { PlannedStep } from "../src/Protocol.ts"
 

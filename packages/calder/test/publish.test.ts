@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { CommandFailed } from "../src/Exec.ts"
 import type { PlannedStep } from "../src/Protocol.ts"
 import { drive, step } from "./drive.ts"

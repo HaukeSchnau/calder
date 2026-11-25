@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Fiber } from "effect"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import * as Leases from "../src/controller/Leases.ts"
 import { leaseOf, pullRequestStale } from "../src/controller/WorkerServer.ts"
 import { branchOf } from "../src/controller/Workflow.ts"

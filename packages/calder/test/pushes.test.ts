@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schedule } from "effect"
 import { SqlClient } from "effect/sql"
-import { vi } from "vitest"
+import { vi } from "vite-plus/test"
 import { drive } from "./drive.ts"
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}))
