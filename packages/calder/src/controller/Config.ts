@@ -1,5 +1,5 @@
-import { Context, Effect, Layer, Schema } from "effect"
-import { readFileSync } from "node:fs"
+import { Context, Effect, Layer, Schema } from "effect";
+import { readFileSync } from "node:fs";
 
 /** Overrides for a project; every repository of an allowed owner is a project without any. */
 export const ProjectConfig = Schema.Struct({
@@ -22,12 +22,16 @@ export const ProjectConfig = Schema.Struct({
   largeEvaluations: Schema.optional(Schema.Boolean),
   /** False keeps Calder from rerunning the default branch head's failed deploy (Delivery.ts). */
   retryDeploys: Schema.optional(Schema.Boolean),
-}).check(Schema.makeFilter((p) =>
-  // Without it Calder takes `main` until it has asked Gitea, which may never answer.
-  p.defaultBranch !== undefined || Object.keys(p.defaultBranchSecrets ?? {}).length === 0 ||
-  "a project with defaultBranchSecrets names its defaultBranch"
-))
-export type ProjectConfig = typeof ProjectConfig.Type
+}).check(
+  Schema.makeFilter(
+    (p) =>
+      // Without it Calder takes `main` until it has asked Gitea, which may never answer.
+      p.defaultBranch !== undefined ||
+      Object.keys(p.defaultBranchSecrets ?? {}).length === 0 ||
+      "a project with defaultBranchSecrets names its defaultBranch",
+  ),
+);
+export type ProjectConfig = typeof ProjectConfig.Type;
 
 export const ConfigSchema = Schema.Struct({
   listen: Schema.Struct({ host: Schema.String, port: Schema.Number }),
@@ -40,11 +44,13 @@ export const ConfigSchema = Schema.Struct({
    * own for a proxy to expose, to the Gitea users in `users` once they signed in through the OAuth2
    * application `oauth`, whose redirect URI is `<publicUrl>/auth/callback`. Null without one.
    */
-  web: Schema.NullOr(Schema.Struct({
-    listen: Schema.Struct({ host: Schema.String, port: Schema.Number }),
-    oauth: Schema.Struct({ clientId: Schema.String, clientSecretFile: Schema.String }),
-    users: Schema.Array(Schema.String),
-  })).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  web: Schema.NullOr(
+    Schema.Struct({
+      listen: Schema.Struct({ host: Schema.String, port: Schema.Number }),
+      oauth: Schema.Struct({ clientId: Schema.String, clientSecretFile: Schema.String }),
+      users: Schema.Array(Schema.String),
+    }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   stateDir: Schema.String,
   runtimeDir: Schema.String,
   /** The `node_modules` that each revision's `.calder/node_modules` links to. */
@@ -54,7 +60,11 @@ export const ConfigSchema = Schema.Struct({
   /** argv that starts a worker in process mode, before the job id. */
   workerCommand: Schema.Array(Schema.String),
   system: Schema.String,
-  gitea: Schema.Struct({ url: Schema.String, tokenFile: Schema.String, webhookSecretFile: Schema.String }),
+  gitea: Schema.Struct({
+    url: Schema.String,
+    tokenFile: Schema.String,
+    webhookSecretFile: Schema.String,
+  }),
   promotion: Schema.Struct({ tokenFile: Schema.String }),
   /**
    * The key of the fleet's placement tokens. A project's token, HMAC-SHA256(key, project), is its
@@ -82,7 +92,12 @@ export const ConfigSchema = Schema.Struct({
   jobs: Schema.Struct({
     /** systemd: template units per pool (`calder-job-pr@`, `-fork@`, `-trusted@`) with their own users. process: child processes, for development. */
     mode: Schema.Literals(["systemd", "process"]),
-    slots: Schema.Struct({ plans: Schema.Number, builds: Schema.Number, tasks: Schema.Number, actions: Schema.Number }),
+    slots: Schema.Struct({
+      plans: Schema.Number,
+      builds: Schema.Number,
+      tasks: Schema.Number,
+      actions: Schema.Number,
+    }),
   }),
   /** Gitea owners whose repositories are enrolled when they carry `.calder/ci.ts`. */
   owners: Schema.Array(Schema.String),
@@ -92,56 +107,76 @@ export const ConfigSchema = Schema.Struct({
    * An `optional` one that doesn't answer is left out of the promotion instead of failing it, so a workstation
    * that is down doesn't hold back every project's deploy; it gets the next release it is up for.
    */
-  fleet: Schema.Array(Schema.Union([
-    Schema.String,
-    Schema.Struct({
-      url: Schema.String,
-      wake: Schema.optional(Schema.NonEmptyArray(Schema.String)),
-      optional: Schema.optional(Schema.Boolean),
-    }),
-  ])),
+  fleet: Schema.Array(
+    Schema.Union([
+      Schema.String,
+      Schema.Struct({
+        url: Schema.String,
+        wake: Schema.optional(Schema.NonEmptyArray(Schema.String)),
+        optional: Schema.optional(Schema.Boolean),
+      }),
+    ]),
+  ),
   /**
    * Sandboxed workers reach the network only through the controller's egress proxy: hosts in `allow`
    * (`*.example.org` for subdomains) on public addresses, and each `host:port` in `allowPrivate` on any.
    */
-  egress: Schema.NullOr(Schema.Struct({ allow: Schema.Array(Schema.String), allowPrivate: Schema.Array(Schema.String) })),
+  egress: Schema.NullOr(
+    Schema.Struct({
+      allow: Schema.Array(Schema.String),
+      allowPrivate: Schema.Array(Schema.String),
+    }),
+  ),
   /** Agents on other hosts authenticate with the secret in this file. Without it none may connect. */
-  agents: Schema.NullOr(Schema.Struct({
-    tokenFile: Schema.String,
-    /**
-     * Agents whose hosts sleep while idle. While a job waits for `platform` and no connected agent of it
-     * has a free slot, the controller runs `command`, such as `systemctl start calder-wake@tower.service`,
-     * for each one that is away, at most once per two minutes. The agent `name` connects once its host is up.
-     */
-    wake: Schema.Array(Schema.Struct({ name: Schema.String, platform: Schema.String, command: Schema.NonEmptyArray(Schema.String) })).pipe(
-      Schema.withDecodingDefaultKey(Effect.succeed([])),
-    ),
-  })),
+  agents: Schema.NullOr(
+    Schema.Struct({
+      tokenFile: Schema.String,
+      /**
+       * Agents whose hosts sleep while idle. While a job waits for `platform` and no connected agent of it
+       * has a free slot, the controller runs `command`, such as `systemctl start calder-wake@tower.service`,
+       * for each one that is away, at most once per two minutes. The agent `name` connects once its host is up.
+       */
+      wake: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          platform: Schema.String,
+          command: Schema.NonEmptyArray(Schema.String),
+        }),
+      ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+    }),
+  ),
   projects: Schema.Record(Schema.String, ProjectConfig),
   retention: Schema.Struct({
     /** Days a finished run keeps its steps, tests and results (see `Db.prune`). */
     days: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(30))),
   }).pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
-})
-export type ConfigShape = typeof ConfigSchema.Type
+});
+export type ConfigShape = typeof ConfigSchema.Type;
 
-export class Config extends Context.Service<Config, ConfigShape & {
-  readonly giteaToken: string
-  readonly webhookSecret: string
-  readonly promotionToken: string
-  readonly placementKey: string | null
-}>()("calder/controller/Config") {}
+export class Config extends Context.Service<
+  Config,
+  ConfigShape & {
+    readonly giteaToken: string;
+    readonly webhookSecret: string;
+    readonly promotionToken: string;
+    readonly placementKey: string | null;
+  }
+>()("calder/controller/Config") {}
 
-const readSecret = (path: string) => readFileSync(path, "utf8").trim()
+const readSecret = (path: string) => readFileSync(path, "utf8").trim();
 
 export const fromFile = (path: string) =>
-  Layer.effect(Config)(Effect.gen(function*() {
-    const config = yield* Schema.decodeUnknownEffect(ConfigSchema)(JSON.parse(readFileSync(path, "utf8")))
-    return {
-      ...config,
-      giteaToken: readSecret(config.gitea.tokenFile),
-      webhookSecret: readSecret(config.gitea.webhookSecretFile),
-      promotionToken: readSecret(config.promotion.tokenFile),
-      placementKey: config.placementKeyFile == null ? null : readSecret(config.placementKeyFile),
-    }
-  }))
+  Layer.effect(Config)(
+    Effect.gen(function* () {
+      const config = yield* Schema.decodeUnknownEffect(ConfigSchema)(
+        JSON.parse(readFileSync(path, "utf8")),
+      );
+      return {
+        ...config,
+        giteaToken: readSecret(config.gitea.tokenFile),
+        webhookSecret: readSecret(config.gitea.webhookSecretFile),
+        promotionToken: readSecret(config.promotion.tokenFile),
+        placementKey: config.placementKeyFile == null ? null : readSecret(config.placementKeyFile),
+      };
+    }),
+  );

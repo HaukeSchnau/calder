@@ -1,34 +1,46 @@
-import type { Calder } from "@calder-ci/core"
-import { Effect } from "effect"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import * as Exec from "./Exec.ts"
-import type * as Remote from "./Remote.ts"
-import * as Repo from "./worker/Repo.ts"
-import * as Resolve from "./worker/Resolve.ts"
+import type { Calder } from "@calder-ci/core";
+import { Effect } from "effect";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as Exec from "./Exec.ts";
+import type * as Remote from "./Remote.ts";
+import * as Repo from "./worker/Repo.ts";
+import * as Resolve from "./worker/Resolve.ts";
 
-export type Client = Effect.Success<typeof Remote.client>
+export type Client = Effect.Success<typeof Remote.client>;
 
 /** The working copy of `dir` as a commit, and the URLs of its git remotes. */
 export interface WorkingCopy {
   /** The git directory that holds the commit. */
-  readonly gitDir: string
-  readonly sha: string
-  readonly remotes: ReadonlyArray<string>
+  readonly gitDir: string;
+  readonly sha: string;
+  readonly remotes: ReadonlyArray<string>;
 }
 
-const urls = (lines: string) => [...new Set(lines.split("\n").map((l) => l.trim().split(/\s+/)[1] ?? "").filter(Boolean))]
+const urls = (lines: string) => [
+  ...new Set(
+    lines
+      .split("\n")
+      .map((l) => l.trim().split(/\s+/)[1] ?? "")
+      .filter(Boolean),
+  ),
+];
 
 /** The remote whose URL ends in one of the controller's repositories (`owner/name`), and that repository. */
 export const target = (remotes: ReadonlyArray<string>, repos: ReadonlyArray<string>) => {
   for (const remote of remotes) {
-    const path = remote.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase()
-    const repo = repos.find((r) => path.endsWith(`/${r.toLowerCase()}`) || path.endsWith(`:${r.toLowerCase()}`))
-    if (repo !== undefined) return { remote, repo }
+    const path = remote
+      .replace(/\.git$/, "")
+      .replace(/\/$/, "")
+      .toLowerCase();
+    const repo = repos.find(
+      (r) => path.endsWith(`/${r.toLowerCase()}`) || path.endsWith(`:${r.toLowerCase()}`),
+    );
+    if (repo !== undefined) return { remote, repo };
   }
-  return undefined
-}
+  return undefined;
+};
 
 /**
  * In a jj workspace the working-copy commit is the check: jj snapshots it first, or with
@@ -37,46 +49,59 @@ export const target = (remotes: ReadonlyArray<string>, repos: ReadonlyArray<stri
  * leaving the real index and every ref alone.
  */
 export const workingCopy = (dir: string, options: { readonly snapshot?: boolean } = {}) =>
-  Effect.gen(function*() {
-    const flags = options.snapshot === false ? ["--ignore-working-copy"] : []
+  Effect.gen(function* () {
+    const flags = options.snapshot === false ? ["--ignore-working-copy"] : [];
     // A host without jj still has git checkouts.
     const jjGitDir = yield* Exec.exec(["jj", ...flags, "--repository", dir, "git", "root"]).pipe(
       Effect.map((jj) => (jj.exitCode === 0 ? jj.stdout.trim() : null)),
       Effect.orElseSucceed(() => null),
-    )
+    );
     if (jjGitDir !== null) {
-      const gitDir = jjGitDir
-      const sha = (yield* Exec.run(["jj", ...flags, "--repository", dir, "log", "-r", "@", "--no-graph", "-T", "commit_id"])).trim()
-      const remotes = urls(yield* Exec.run(["jj", ...flags, "--repository", dir, "git", "remote", "list"]))
-      return { gitDir, sha, remotes } satisfies WorkingCopy
+      const gitDir = jjGitDir;
+      const sha = (yield* Exec.run([
+        "jj",
+        ...flags,
+        "--repository",
+        dir,
+        "log",
+        "-r",
+        "@",
+        "--no-graph",
+        "-T",
+        "commit_id",
+      ])).trim();
+      const remotes = urls(
+        yield* Exec.run(["jj", ...flags, "--repository", dir, "git", "remote", "list"]),
+      );
+      return { gitDir, sha, remotes } satisfies WorkingCopy;
     }
-    const top = (yield* Exec.run(["git", "-C", dir, "rev-parse", "--show-toplevel"])).trim()
-    const gitDir = (yield* Exec.run(["git", "-C", top, "rev-parse", "--absolute-git-dir"])).trim()
-    const scratch = mkdtempSync(join(tmpdir(), "calder-check-"))
-    const env = { ...process.env, GIT_INDEX_FILE: join(scratch, "index") }
-    const git = (args: ReadonlyArray<string>) => Exec.run(["git", "-C", top, ...args], { env })
-    const sha = yield* Effect.gen(function*() {
-      yield* git(["read-tree", "HEAD"])
-      yield* git(["add", "-A"])
-      const tree = (yield* git(["write-tree"])).trim()
-      return (yield* git(["commit-tree", tree, "-p", "HEAD", "-m", "calder check"])).trim()
-    }).pipe(Effect.ensuring(Effect.sync(() => rmSync(scratch, { recursive: true, force: true }))))
-    const remotes = urls(yield* Exec.run(["git", "-C", top, "remote", "-v"]))
-    return { gitDir, sha, remotes } satisfies WorkingCopy
-  })
+    const top = (yield* Exec.run(["git", "-C", dir, "rev-parse", "--show-toplevel"])).trim();
+    const gitDir = (yield* Exec.run(["git", "-C", top, "rev-parse", "--absolute-git-dir"])).trim();
+    const scratch = mkdtempSync(join(tmpdir(), "calder-check-"));
+    const env = { ...process.env, GIT_INDEX_FILE: join(scratch, "index") };
+    const git = (args: ReadonlyArray<string>) => Exec.run(["git", "-C", top, ...args], { env });
+    const sha = yield* Effect.gen(function* () {
+      yield* git(["read-tree", "HEAD"]);
+      yield* git(["add", "-A"]);
+      const tree = (yield* git(["write-tree"])).trim();
+      return (yield* git(["commit-tree", tree, "-p", "HEAD", "-m", "calder check"])).trim();
+    }).pipe(Effect.ensuring(Effect.sync(() => rmSync(scratch, { recursive: true, force: true }))));
+    const remotes = urls(yield* Exec.run(["git", "-C", top, "remote", "-v"]));
+    return { gitDir, sha, remotes } satisfies WorkingCopy;
+  });
 
 /**
  * Fails like the controller's plan when a path or pattern of `project` matches no file of `dir`'s
  * working copy, the commit `calder check` would push.
  */
 export const checkFiles = (dir: string, project: Calder.Project) =>
-  Effect.gen(function*() {
-    const copy = yield* workingCopy(dir)
-    yield* Resolve.checkFiles(project, yield* Repo.make(copy.gitDir, copy.sha))
-  })
+  Effect.gen(function* () {
+    const copy = yield* workingCopy(dir);
+    yield* Resolve.checkFiles(project, yield* Repo.make(copy.gitDir, copy.sha));
+  });
 
 /** The repository's settings a push from elsewhere still needs: how it authenticates and where its URLs lead. */
-const pushSettings = /^(credential\..*|url\..*|http\..*|core\.sshcommand)$/i
+const pushSettings = /^(credential\..*|url\..*|http\..*|core\.sshcommand)$/i;
 
 /**
  * Runs `git push` from a scratch git directory that borrows the repository's objects and the settings
@@ -89,19 +114,36 @@ const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
   Effect.acquireUseRelease(
     Effect.sync(() => mkdtempSync(join(tmpdir(), "calder-push-"))),
     (scratch) =>
-      Effect.gen(function*() {
-        yield* Exec.run(["git", "init", "-q", "--bare", scratch])
-        writeFileSync(join(scratch, "objects", "info", "alternates"), `${join(copy.gitDir, "objects")}\n`)
-        const local = yield* Exec.exec(["git", "--git-dir", copy.gitDir, "config", "--local", "--null", "--list"])
-        const settings = local.exitCode !== 0 ? [] : local.stdout.split("\0").flatMap((entry) => {
-          const at = entry.indexOf("\n")
-          return at < 0 || !pushSettings.test(entry.slice(0, at)) ? [] : [[entry.slice(0, at), entry.slice(at + 1)] as const]
-        })
-        for (const [name, value] of settings) yield* Exec.run(["git", "--git-dir", scratch, "config", "--add", name, value])
-        yield* Exec.run(["git", "--git-dir", scratch, "push", "-q", ...args])
+      Effect.gen(function* () {
+        yield* Exec.run(["git", "init", "-q", "--bare", scratch]);
+        writeFileSync(
+          join(scratch, "objects", "info", "alternates"),
+          `${join(copy.gitDir, "objects")}\n`,
+        );
+        const local = yield* Exec.exec([
+          "git",
+          "--git-dir",
+          copy.gitDir,
+          "config",
+          "--local",
+          "--null",
+          "--list",
+        ]);
+        const settings =
+          local.exitCode !== 0
+            ? []
+            : local.stdout.split("\0").flatMap((entry) => {
+                const at = entry.indexOf("\n");
+                return at < 0 || !pushSettings.test(entry.slice(0, at))
+                  ? []
+                  : [[entry.slice(0, at), entry.slice(at + 1)] as const];
+              });
+        for (const [name, value] of settings)
+          yield* Exec.run(["git", "--git-dir", scratch, "config", "--add", name, value]);
+        yield* Exec.run(["git", "--git-dir", scratch, "push", "-q", ...args]);
       }),
     (scratch) => Effect.sync(() => rmSync(scratch, { recursive: true, force: true })),
-  )
+  );
 
 /**
  * Where a check's commit goes on the forge: `refs/calder/check/<key>`, outside `refs/heads`, which
@@ -109,12 +151,14 @@ const pushFromScratch = (copy: WorkingCopy, args: ReadonlyArray<string>) =>
  * fetched during the check imported it as a bookmark, and once the check deleted it, jj abandoned the
  * commit, an agent's unbookmarked working copy among them (F44).
  */
-export const gitRef = (ref: string) => `refs/${ref}`
+export const gitRef = (ref: string) => `refs/${ref}`;
 
 /** Pushes the commit as the git ref `ref` with the user's own git credentials, replacing what it held. Leaves the repository's refs alone. */
-export const push = (copy: WorkingCopy, remote: string, ref: string) => pushFromScratch(copy, [remote, `+${copy.sha}:${ref}`])
+export const push = (copy: WorkingCopy, remote: string, ref: string) =>
+  pushFromScratch(copy, [remote, `+${copy.sha}:${ref}`]);
 
-export const drop = (copy: WorkingCopy, remote: string, ref: string) => pushFromScratch(copy, [remote, "--delete", ref]).pipe(Effect.ignore)
+export const drop = (copy: WorkingCopy, remote: string, ref: string) =>
+  pushFromScratch(copy, [remote, "--delete", ref]).pipe(Effect.ignore);
 
 /**
  * Pushes `dir`'s working copy and starts its check run. `key` names the ref (`calder/check/<key>`), so a
@@ -123,18 +167,35 @@ export const drop = (copy: WorkingCopy, remote: string, ref: string) => pushFrom
 export const submit = (
   client: Client,
   dir: string,
-  options: { readonly key?: string; readonly background?: boolean; readonly snapshot?: boolean } = {},
+  options: {
+    readonly key?: string;
+    readonly background?: boolean;
+    readonly snapshot?: boolean;
+  } = {},
 ) =>
-  Effect.gen(function*() {
-    const copy = yield* workingCopy(dir, { snapshot: options.snapshot ?? true })
-    const projects = (yield* client.overview()).projects
-    const found = target(copy.remotes, projects.map((p) => p.repo))
-    if (found === undefined) return yield* Effect.fail(new Error("no git remote points at a repository the controller knows"))
-    const ref = `calder/check/${options.key ?? copy.sha.slice(0, 12)}`
-    yield* push(copy, found.remote, gitRef(ref))
-    const run = yield* client.check({ repo: found.repo, ref, sha: copy.sha, ...(options.background === true ? { background: true } : {}) }).pipe(
-      // No run will follow the ref, so nothing else drops it.
-      Effect.onError(() => drop(copy, found.remote, gitRef(ref))),
-    )
-    return { run, copy, remote: found.remote, pushed: gitRef(ref) }
-  })
+  Effect.gen(function* () {
+    const copy = yield* workingCopy(dir, { snapshot: options.snapshot ?? true });
+    const projects = (yield* client.overview()).projects;
+    const found = target(
+      copy.remotes,
+      projects.map((p) => p.repo),
+    );
+    if (found === undefined)
+      return yield* Effect.fail(
+        new Error("no git remote points at a repository the controller knows"),
+      );
+    const ref = `calder/check/${options.key ?? copy.sha.slice(0, 12)}`;
+    yield* push(copy, found.remote, gitRef(ref));
+    const run = yield* client
+      .check({
+        repo: found.repo,
+        ref,
+        sha: copy.sha,
+        ...(options.background === true ? { background: true } : {}),
+      })
+      .pipe(
+        // No run will follow the ref, so nothing else drops it.
+        Effect.onError(() => drop(copy, found.remote, gitRef(ref))),
+      );
+    return { run, copy, remote: found.remote, pushed: gitRef(ref) };
+  });

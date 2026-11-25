@@ -3,11 +3,11 @@
 // stopped the event loop for that long. A passive checkpoint waits for no reader or writer. The next commit
 // after one restarts the WAL and syncs its header on the controller's thread, so checkpoints stay about as
 // rare as SQLite's own every 1,000 frames were: srv-2's controller writes those in two to three minutes.
-import { Database } from "bun:sqlite"
+import { Database } from "bun:sqlite";
 
-declare const self: Worker
+declare const self: Worker;
 
 self.onmessage = ({ data: filename }: MessageEvent<string>) => {
-  const db = new Database(filename)
-  setInterval(() => db.run("pragma wal_checkpoint(passive)"), 60_000)
-}
+  const db = new Database(filename);
+  setInterval(() => db.run("pragma wal_checkpoint(passive)"), 60_000);
+};

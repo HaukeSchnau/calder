@@ -3,48 +3,62 @@
  * `calder gen` and lists the outputs, so a typo is a type error.
  */
 export interface FlakeRef<out K extends Output = Output> {
-  readonly _tag: "FlakeRef"
-  readonly output: K
+  readonly _tag: "FlakeRef";
+  readonly output: K;
   /** Attribute name below the system, or a full attribute path for `attr`. */
-  readonly name: string
+  readonly name: string;
   /** Attributes below the output, such as `pnpmDeps.web`. */
-  readonly path?: ReadonlyArray<string>
+  readonly path?: ReadonlyArray<string>;
 }
 
-export type Output = "packages" | "checks" | "devShells" | "attr"
+export type Output = "packages" | "checks" | "devShells" | "attr";
 
 export type Outputs = {
-  readonly packages?: ReadonlyArray<string>
-  readonly checks?: ReadonlyArray<string>
-  readonly devShells?: ReadonlyArray<string>
-}
+  readonly packages?: ReadonlyArray<string>;
+  readonly checks?: ReadonlyArray<string>;
+  readonly devShells?: ReadonlyArray<string>;
+};
 
-type Refs<T extends Outputs, K extends keyof Outputs> = T[K] extends ReadonlyArray<infer N extends string>
-  ? { readonly [Name in N]: FlakeRef<K> }
-  : {}
+type Refs<T extends Outputs, K extends keyof Outputs> =
+  T[K] extends ReadonlyArray<infer N extends string> ? { readonly [Name in N]: FlakeRef<K> } : {};
 
-export const make = <const T extends Outputs>(outputs: T): {
-  readonly packages: Refs<T, "packages">
-  readonly checks: Refs<T, "checks">
-  readonly devShells: Refs<T, "devShells">
+export const make = <const T extends Outputs>(
+  outputs: T,
+): {
+  readonly packages: Refs<T, "packages">;
+  readonly checks: Refs<T, "checks">;
+  readonly devShells: Refs<T, "devShells">;
 } => {
   const refs = <K extends keyof Outputs>(output: K) =>
-    Object.fromEntries((outputs[output] ?? []).map((name) => [name, { _tag: "FlakeRef", output, name }]))
-  return { packages: refs("packages"), checks: refs("checks"), devShells: refs("devShells") } as any
-}
+    Object.fromEntries(
+      (outputs[output] ?? []).map((name) => [name, { _tag: "FlakeRef", output, name }]),
+    );
+  return {
+    packages: refs("packages"),
+    checks: refs("checks"),
+    devShells: refs("devShells"),
+  } as any;
+};
 
 /** Any attribute path of the flake, for outputs outside packages, checks and devShells. */
-export const attr = (path: string): FlakeRef<"attr"> => ({ _tag: "FlakeRef", output: "attr", name: path })
+export const attr = (path: string): FlakeRef<"attr"> => ({
+  _tag: "FlakeRef",
+  output: "attr",
+  name: path,
+});
 
 /** An attribute inside an output, such as `Flake.select(flake.packages.t3code, "pnpmDeps.web")`. */
 export const select = <K extends Output>(ref: FlakeRef<K>, path: string): FlakeRef<K> => ({
   ...ref,
   path: [...(ref.path ?? []), ...path.split(".")],
-})
+});
 
 /** The attribute path for `system`. */
 export const attrPath = (ref: FlakeRef, system: string): string =>
-  [ref.output === "attr" ? ref.name : `${ref.output}.${system}.${quote(ref.name)}`, ...(ref.path ?? []).map(quote)].join(".")
+  [
+    ref.output === "attr" ? ref.name : `${ref.output}.${system}.${quote(ref.name)}`,
+    ...(ref.path ?? []).map(quote),
+  ].join(".");
 
 /**
  * The components of an attribute path such as `checks.x86_64-linux."Haukes-MacBook-Pro"`, or null for a
@@ -53,9 +67,10 @@ export const attrPath = (ref: FlakeRef, system: string): string =>
  * records from, so a name that could be Nix code, such as one with `${`, a space or a newline, is refused.
  */
 export const components = (path: string): ReadonlyArray<string> | null => {
-  const parts = path.match(/"[A-Za-z0-9_'.+-]+"|[A-Za-z0-9_'+-]+/g)
-  if (parts === null || parts.join(".") !== path) return null
-  return parts.map((part) => (part.startsWith('"') ? part.slice(1, -1) : part))
-}
+  const parts = path.match(/"[A-Za-z0-9_'.+-]+"|[A-Za-z0-9_'+-]+/g);
+  if (parts === null || parts.join(".") !== path) return null;
+  return parts.map((part) => (part.startsWith('"') ? part.slice(1, -1) : part));
+};
 
-const quote = (name: string) => (/^[A-Za-z_][A-Za-z0-9_'-]*$/.test(name) ? name : JSON.stringify(name))
+const quote = (name: string) =>
+  /^[A-Za-z_][A-Za-z0-9_'-]*$/.test(name) ? name : JSON.stringify(name);

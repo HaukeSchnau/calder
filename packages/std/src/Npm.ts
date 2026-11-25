@@ -1,23 +1,23 @@
-import { cmd, type Flake, Secret, type Setup, type Step, Task } from "@calder-ci/core"
-import { Schema } from "effect"
+import { cmd, type Flake, Secret, type Setup, type Step, Task } from "@calder-ci/core";
+import { Schema } from "effect";
 
 export interface PublishOptions {
   /** The dev shell with node, whose npm stages, and pnpm, which packs. */
-  readonly shell?: Flake.FlakeRef<"devShells">
+  readonly shell?: Flake.FlakeRef<"devShells">;
   /** The installed dependencies that the package's `prepack` and `prepare` scripts run with: `Pnpm.install`. */
-  readonly setup: Setup.Setup
+  readonly setup: Setup.Setup;
   /** The project's secret with a granular access token that may stage the package. */
-  readonly token: string
+  readonly token: string;
   /** The package's directory, relative to the repository root. The root by default. */
-  readonly dir?: string
+  readonly dir?: string;
   /** The registry, npm's by default. */
-  readonly registry?: string
+  readonly registry?: string;
   /** `public` by default, which a scoped package needs to be visible to everyone. */
-  readonly access?: "public" | "restricted"
+  readonly access?: "public" | "restricted";
   /** The step's name, `publish` by default. */
-  readonly name?: string
+  readonly name?: string;
   /** Steps that must pass first, such as the checks. */
-  readonly after?: ReadonlyArray<Step.Any>
+  readonly after?: ReadonlyArray<Step.Any>;
 }
 
 /** A publish step's value: where the package's version stands on the registry. */
@@ -29,11 +29,11 @@ export const Release = Schema.Struct({
   stage: Schema.NullOr(Schema.String),
   /** Whether this run staged it. */
   staged: Schema.Boolean,
-})
-export type Release = typeof Release.Type
+});
+export type Release = typeof Release.Type;
 
 /** Where the script writes the step's value; `git clean` removes it before the next task. */
-const valueFile = ".calder-npm-release.json"
+const valueFile = ".calder-npm-release.json";
 
 /**
  * The token goes into a user config of its own rather than onto a command line, where other users
@@ -77,7 +77,7 @@ pnpm pack --pack-destination "$pack"
 npm stage publish "$pack"/*.tgz --tag "$tag" --access "$4" --registry "$registry"
 stage=$(staged)
 echo "Staged $name@$version as $stage. Approve it with 2FA: npm stage approve $stage"
-release staged "$(json "$stage")" true`
+release staged "$(json "$stage")" true`;
 
 /**
  * Stages the package's version for a maintainer to approve with 2FA, unless the registry already has
@@ -98,4 +98,4 @@ export const publish = (options: PublishOptions) =>
       options.dir ?? "."
     } ${options.access ?? "public"}`,
     value: { path: valueFile, schema: Release },
-  })
+  });

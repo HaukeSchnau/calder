@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { readFileSync } from "node:fs";
 
 /**
  * This install's Calder build: the start of its source's content hash, which `nix/package.nix` writes,
@@ -6,8 +6,8 @@ import { readFileSync } from "node:fs"
  */
 export const id = (() => {
   try {
-    return readFileSync(new URL("../../../build", import.meta.url), "utf8").trim()
+    return readFileSync(new URL("../../../build", import.meta.url), "utf8").trim();
   } catch {
-    return "dev"
+    return "dev";
   }
-})()
+})();

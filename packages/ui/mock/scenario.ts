@@ -2,189 +2,295 @@
 // when the run is created; the state of the fleet at any instant is then a pure function of the
 // clock, so the server only has to diff snapshots to produce `changes`.
 
-import type { Domain } from "@calder-ci/api"
+import type { Domain } from "@calder-ci/api";
 
-type Outcome = "passed" | "failed" | "died"
-type Kind = Domain.StepKind
-type Event = Domain.Event
+type Outcome = "passed" | "failed" | "died";
+type Kind = Domain.StepKind;
+type Event = Domain.Event;
 
 interface StepPlan {
-  readonly name: string
-  readonly kind: Kind
-  readonly detail: string
-  readonly duration: number
-  readonly needs?: ReadonlyArray<string>
-  readonly after?: ReadonlyArray<string>
-  readonly exits?: ReadonlyArray<string>
-  readonly required?: ReadonlyArray<string>
-  readonly shards?: number
-  readonly target?: boolean
+  readonly name: string;
+  readonly kind: Kind;
+  readonly detail: string;
+  readonly duration: number;
+  readonly needs?: ReadonlyArray<string>;
+  readonly after?: ReadonlyArray<string>;
+  readonly exits?: ReadonlyArray<string>;
+  readonly required?: ReadonlyArray<string>;
+  readonly shards?: number;
+  readonly target?: boolean;
   /** Inputs that rarely change, such as a lockfile: the key survives commits, so later runs reuse it. */
-  readonly stable?: boolean
+  readonly stable?: boolean;
   /** Runs on an agent of this platform rather than on the controller's host. */
-  readonly platform?: string
+  readonly platform?: string;
 }
 
 interface Spec {
-  readonly key: string
-  readonly project: string
+  readonly key: string;
+  readonly project: string;
   /** Seconds relative to the moment the server started. */
-  readonly at: number
-  readonly event: Event
-  readonly title: string | null
-  readonly commit: { readonly title: string; readonly author: string; readonly changeId: string | null; readonly sha?: string }
-  readonly outcomes?: Readonly<Record<string, Outcome>>
+  readonly at: number;
+  readonly event: Event;
+  readonly title: string | null;
+  readonly commit: {
+    readonly title: string;
+    readonly author: string;
+    readonly changeId: string | null;
+    readonly sha?: string;
+  };
+  readonly outcomes?: Readonly<Record<string, Outcome>>;
   /** Step name to the spec key of the run whose result this one reuses. */
-  readonly reused?: Readonly<Record<string, string>>
-  readonly durations?: Readonly<Record<string, number>>
-  readonly attempts?: Readonly<Record<string, number>>
-  readonly error?: string
-  readonly cancelAt?: number
+  readonly reused?: Readonly<Record<string, string>>;
+  readonly durations?: Readonly<Record<string, number>>;
+  readonly attempts?: Readonly<Record<string, number>>;
+  readonly error?: string;
+  readonly cancelAt?: number;
 }
 
 export interface SimStep {
-  readonly plan: StepPlan
-  readonly outcome: Outcome | "reused" | "blocked"
-  readonly key: string | null
-  readonly reusedFrom: string | null
+  readonly plan: StepPlan;
+  readonly outcome: Outcome | "reused" | "blocked";
+  readonly key: string | null;
+  readonly reusedFrom: string | null;
   /** Median of the step's last ten executions before this run was planned. */
-  readonly expectedMs: number | null
-  readonly queuedAt: number
-  readonly startedAt: number
-  readonly finishedAt: number
-  readonly attempts: number
+  readonly expectedMs: number | null;
+  readonly queuedAt: number;
+  readonly startedAt: number;
+  readonly finishedAt: number;
+  readonly attempts: number;
 }
 
 export interface SimRun {
-  readonly id: string
-  readonly project: string
-  readonly number: number
-  readonly event: Event
-  readonly commit: Domain.Commit
-  readonly title: string | null
-  readonly trust: Domain.Trust
-  readonly createdAt: number
-  readonly startedAt: number
-  readonly finishedAt: number
-  readonly error: string | null
-  readonly traceId: string
-  readonly steps: ReadonlyArray<SimStep>
-  cancelledAt: number | null
+  readonly id: string;
+  readonly project: string;
+  readonly number: number;
+  readonly event: Event;
+  readonly commit: Domain.Commit;
+  readonly title: string | null;
+  readonly trust: Domain.Trust;
+  readonly createdAt: number;
+  readonly startedAt: number;
+  readonly finishedAt: number;
+  readonly error: string | null;
+  readonly traceId: string;
+  readonly steps: ReadonlyArray<SimStep>;
+  cancelledAt: number | null;
 }
 
 /* ------------------------------------------------------------------ */
 /* Deterministic randomness and identifiers                            */
 
 const fnv = (s: string): number => {
-  let h = 0x811c9dc5
+  let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
   }
-  return h >>> 0
-}
+  return h >>> 0;
+};
 
-const fromAlphabet = (alphabet: string) => (seed: string, n: number): string => {
-  let out = ""
-  for (let i = 0; out.length < n; i++) {
-    let h = fnv(`${seed}:${i}`)
-    for (let j = 0; j < 6 && out.length < n; j++) {
-      out += alphabet[h % alphabet.length]
-      h = Math.floor(h / alphabet.length)
+const fromAlphabet =
+  (alphabet: string) =>
+  (seed: string, n: number): string => {
+    let out = "";
+    for (let i = 0; out.length < n; i++) {
+      let h = fnv(`${seed}:${i}`);
+      for (let j = 0; j < 6 && out.length < n; j++) {
+        out += alphabet[h % alphabet.length];
+        h = Math.floor(h / alphabet.length);
+      }
     }
-  }
-  return out
-}
+    return out;
+  };
 
-const hex = fromAlphabet("0123456789abcdef")
-const nixHash = fromAlphabet("0123456789abcdfghijklmnpqrsvwxyz")
-const jjId = fromAlphabet("klmnopqrstuvwxyz")
+const hex = fromAlphabet("0123456789abcdef");
+const nixHash = fromAlphabet("0123456789abcdfghijklmnpqrsvwxyz");
+const jjId = fromAlphabet("klmnopqrstuvwxyz");
 
 const rng = (seed: string) => {
-  let s = fnv(seed)
+  let s = fnv(seed);
   return () => {
-    s = (s + 0x6d2b79f5) >>> 0
-    let t = s
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
 
 /* ------------------------------------------------------------------ */
 /* Projects and pipelines                                              */
 
 export const PROJECTS = [
-  "t3code", "studienbuch", "homepage", "hopwatch", "school-site", "merkbeet", "photo-album", "audio-finder",
-] as const
+  "t3code",
+  "studienbuch",
+  "homepage",
+  "hopwatch",
+  "school-site",
+  "merkbeet",
+  "photo-album",
+  "audio-finder",
+] as const;
 
 /** The controller's host, where every project deploys; t3code also deploys to a second one. */
-export const CONTROLLER = "host-a"
+export const CONTROLLER = "host-a";
 
 export const HOSTS_OF: Readonly<Record<string, ReadonlyArray<string>>> = {
   t3code: [CONTROLLER, "host-b"],
-}
-export const hostsOf = (project: string) => HOSTS_OF[project] ?? [CONTROLLER]
+};
+export const hostsOf = (project: string) => HOSTS_OF[project] ?? [CONTROLLER];
 
 const URLS: Readonly<Record<string, string>> = {
   t3code: "https://t3code.schnau.dev",
   studienbuch: "https://beta.studienbuch.app",
   homepage: "https://example.org",
   "school-site": "https://school.example.org",
-}
-export const urlOf = (project: string) => URLS[project] ?? `https://${project}.schnau.dev`
+};
+export const urlOf = (project: string) => URLS[project] ?? `https://${project}.schnau.dev`;
 
 const NUMBER_BASE: Readonly<Record<string, number>> = {
-  t3code: 590, studienbuch: 371, homepage: 142, hopwatch: 88, "school-site": 61, merkbeet: 47, "photo-album": 23, "audio-finder": 35,
-}
+  t3code: 590,
+  studienbuch: 371,
+  homepage: 142,
+  hopwatch: 88,
+  "school-site": 61,
+  merkbeet: 47,
+  "photo-album": 23,
+  "audio-finder": 35,
+};
 
 const release = (project: string): StepPlan => ({
-  name: "projectRelease", kind: "build", detail: ".#packages.aarch64-linux.projectRelease", duration: project === "t3code" ? 380 : 96,
-})
+  name: "projectRelease",
+  kind: "build",
+  detail: ".#packages.aarch64-linux.projectRelease",
+  duration: project === "t3code" ? 380 : 96,
+});
 
-const promote = (after: ReadonlyArray<string>, required: ReadonlyArray<string>, duration: number): StepPlan => ({
-  name: "promote", kind: "action", detail: "Release.promote", duration, needs: ["projectRelease"], after: [...after, ...required], required, target: true,
-})
+const promote = (
+  after: ReadonlyArray<string>,
+  required: ReadonlyArray<string>,
+  duration: number,
+): StepPlan => ({
+  name: "promote",
+  kind: "action",
+  detail: "Release.promote",
+  duration,
+  needs: ["projectRelease"],
+  after: [...after, ...required],
+  required,
+  target: true,
+});
 
-const T3_CHECKS = ["static", "typecheck clients", "typecheck rest", "test web", "test server"]
-export const DARWIN = "aarch64-darwin"
+const T3_CHECKS = ["static", "typecheck clients", "typecheck rest", "test web", "test server"];
+export const DARWIN = "aarch64-darwin";
 
 function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
-  const main = event._tag === "Push" || event._tag === "Manual"
+  const main = event._tag === "Push" || event._tag === "Manual";
   if (project === "t3code") {
     const steps: Array<StepPlan> = [
-      { name: "pnpmDeps", kind: "build", detail: ".#packages.aarch64-linux.pnpmDeps", duration: 212, stable: true },
+      {
+        name: "pnpmDeps",
+        kind: "build",
+        detail: ".#packages.aarch64-linux.pnpmDeps",
+        duration: 212,
+        stable: true,
+      },
       { name: "static", kind: "task", detail: "just qa-static", duration: 75, needs: ["pnpmDeps"] },
-      { name: "typecheck clients", kind: "task", detail: "just qa-typecheck-clients", duration: 150, needs: ["pnpmDeps"] },
-      { name: "typecheck rest", kind: "task", detail: "just qa-typecheck-rest", duration: 120, needs: ["pnpmDeps"] },
-      { name: "test web", kind: "task", detail: "just qa-test-non-server", duration: 420, needs: ["pnpmDeps"] },
-      { name: "test server", kind: "task", detail: "just qa-test-server-shard $SHARD 3", duration: 330, needs: ["pnpmDeps"], shards: 3 },
+      {
+        name: "typecheck clients",
+        kind: "task",
+        detail: "just qa-typecheck-clients",
+        duration: 150,
+        needs: ["pnpmDeps"],
+      },
+      {
+        name: "typecheck rest",
+        kind: "task",
+        detail: "just qa-typecheck-rest",
+        duration: 120,
+        needs: ["pnpmDeps"],
+      },
+      {
+        name: "test web",
+        kind: "task",
+        detail: "just qa-test-non-server",
+        duration: 420,
+        needs: ["pnpmDeps"],
+      },
+      {
+        name: "test server",
+        kind: "task",
+        detail: "just qa-test-server-shard $SHARD 3",
+        duration: 330,
+        needs: ["pnpmDeps"],
+        shards: 3,
+      },
       release(project),
-      { name: "releaseGate", kind: "build", detail: ".#checks.aarch64-linux.projectReleaseGate", duration: 50, needs: ["projectRelease"] },
-    ]
+      {
+        name: "releaseGate",
+        kind: "build",
+        detail: ".#checks.aarch64-linux.projectReleaseGate",
+        duration: 50,
+        needs: ["projectRelease"],
+      },
+    ];
     if (main) {
-      steps.push(promote(["releaseGate"], T3_CHECKS, 90))
-      steps.push({ name: "desktop-package", kind: "task", detail: "just desktop-package", duration: 300, needs: ["pnpmDeps"], platform: DARWIN, target: true })
-      steps.push({ name: "testflight", kind: "task", detail: "just testflight", duration: 140, needs: ["desktop-package"], after: ["releaseGate"], platform: DARWIN, target: true })
+      steps.push(promote(["releaseGate"], T3_CHECKS, 90));
+      steps.push({
+        name: "desktop-package",
+        kind: "task",
+        detail: "just desktop-package",
+        duration: 300,
+        needs: ["pnpmDeps"],
+        platform: DARWIN,
+        target: true,
+      });
+      steps.push({
+        name: "testflight",
+        kind: "task",
+        detail: "just testflight",
+        duration: 140,
+        needs: ["desktop-package"],
+        after: ["releaseGate"],
+        platform: DARWIN,
+        target: true,
+      });
     } else {
-      steps.push({ name: "report failures", kind: "action", detail: "Gitea.comment", duration: 2, exits: ["test web", "test server"], target: true })
+      steps.push({
+        name: "report failures",
+        kind: "action",
+        detail: "Gitea.comment",
+        duration: 2,
+        exits: ["test web", "test server"],
+        target: true,
+      });
     }
-    return steps
+    return steps;
   }
   if (project === "studienbuch") {
     const steps: Array<StepPlan> = [
       { name: "qa", kind: "task", detail: "just qa", duration: 540 },
-      { name: "releaseGate", kind: "build", detail: ".#checks.aarch64-linux.projectReleaseGate", duration: 78 },
+      {
+        name: "releaseGate",
+        kind: "build",
+        detail: ".#checks.aarch64-linux.projectReleaseGate",
+        duration: 78,
+      },
       release(project),
-    ]
-    if (event._tag !== "Schedule") steps.push(promote(["qa", "releaseGate"], [], 52))
-    return steps
+    ];
+    if (event._tag !== "Schedule") steps.push(promote(["qa", "releaseGate"], [], 52));
+    return steps;
   }
   return [
-    { name: "flake check", kind: "build", detail: ".#checks.aarch64-linux", duration: project === "hopwatch" ? 74 : 58 },
+    {
+      name: "flake check",
+      kind: "build",
+      detail: ".#checks.aarch64-linux",
+      duration: project === "hopwatch" ? 74 : 58,
+    },
     release(project),
     promote(["flake check"], [], 41),
-  ]
+  ];
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,42 +298,81 @@ function pipeline(project: string, event: Event): ReadonlyArray<StepPlan> {
 
 const TITLES: Readonly<Record<string, ReadonlyArray<string>>> = {
   t3code: [
-    "Group tool calls by turn in the sidebar", "Persist thread scroll position", "Show model and effort per turn",
-    "Retry provider requests after a 529", "Render diffs with word highlights", "Keyboard shortcut for new thread",
-    "Fix desktop notarization", "Cache git status per worktree", "Collapse long tool output", "Upgrade to Effect 4",
+    "Group tool calls by turn in the sidebar",
+    "Persist thread scroll position",
+    "Show model and effort per turn",
+    "Retry provider requests after a 529",
+    "Render diffs with word highlights",
+    "Keyboard shortcut for new thread",
+    "Fix desktop notarization",
+    "Cache git status per worktree",
+    "Collapse long tool output",
+    "Upgrade to Effect 4",
   ],
   studienbuch: [
-    "Validate module codes on import", "Show ECTS per semester", "Fix timezone of exam reminders", "Add Moodle sync status",
-    "Paginate the grade table", "Rename study plans", "Store calendar tokens hashed",
+    "Validate module codes on import",
+    "Show ECTS per semester",
+    "Fix timezone of exam reminders",
+    "Add Moodle sync status",
+    "Paginate the grade table",
+    "Rename study plans",
+    "Store calendar tokens hashed",
   ],
   homepage: ["Bump nixpkgs", "New post on Nix deploys", "Compress hero images", "Fix RSS dates"],
-  hopwatch: ["Show brewery on check-ins", "Cache Untappd avatars", "Weekly digest mail", "Fix duplicate badges"],
-  "school-site": ["Update Vertretungsplan import", "New school year dates", "Fix menu on Safari", "Add Elternbrief archive"],
-  merkbeet: ["Watering reminders per bed", "Seed calendar for Northern Germany", "Fix photo upload on iOS"],
+  hopwatch: [
+    "Show brewery on check-ins",
+    "Cache Untappd avatars",
+    "Weekly digest mail",
+    "Fix duplicate badges",
+  ],
+  "school-site": [
+    "Update Vertretungsplan import",
+    "New school year dates",
+    "Fix menu on Safari",
+    "Add Elternbrief archive",
+  ],
+  merkbeet: [
+    "Watering reminders per bed",
+    "Seed calendar for Northern Germany",
+    "Fix photo upload on iOS",
+  ],
   "photo-album": ["Guest upload limit", "Sort albums by date", "Slideshow mode"],
   "audio-finder": ["Search by BPM range", "Index FLAC metadata", "Fix waveform rendering"],
-}
+};
 
 const SPACING: Readonly<Record<string, number>> = {
-  t3code: 3 * 3600, studienbuch: 8 * 3600, homepage: 26 * 3600, hopwatch: 20 * 3600, "school-site": 30 * 3600,
-  merkbeet: 40 * 3600, "photo-album": 52 * 3600, "audio-finder": 46 * 3600,
-}
+  t3code: 3 * 3600,
+  studienbuch: 8 * 3600,
+  homepage: 26 * 3600,
+  hopwatch: 20 * 3600,
+  "school-site": 30 * 3600,
+  merkbeet: 40 * 3600,
+  "photo-album": 52 * 3600,
+  "audio-finder": 46 * 3600,
+};
 
-const push: Event = { _tag: "Push", branch: "main" }
-const pr = (number: number, head: string): Event => ({ _tag: "PullRequest", number, base: "main", head })
+const push: Event = { _tag: "Push", branch: "main" };
+const pr = (number: number, head: string): Event => ({
+  _tag: "PullRequest",
+  number,
+  base: "main",
+  head,
+});
 
 function history(project: string): Array<Spec> {
-  const r = rng(`history:${project}`)
-  const titles = TITLES[project] ?? ["Update dependencies"]
-  const spacing = SPACING[project] ?? 86400
-  const out: Array<Spec> = []
-  const count = 20
+  const r = rng(`history:${project}`);
+  const titles = TITLES[project] ?? ["Update dependencies"];
+  const spacing = SPACING[project] ?? 86400;
+  const out: Array<Spec> = [];
+  const count = 20;
   for (let i = 0; i < count; i++) {
-    const at = -(count - i) * spacing - Math.round(r() * spacing * 0.4) - 1800
-    const plans = pipeline(project, push)
-    const checks = plans.filter((p) => p.kind === "task" || p.name === "flake check" || p.name === "qa")
-    const fails = r() < 0.09 && checks.length > 0 && i < count - 2
-    const failing = fails ? checks[Math.floor(r() * checks.length)]?.name : undefined
+    const at = -(count - i) * spacing - Math.round(r() * spacing * 0.4) - 1800;
+    const plans = pipeline(project, push);
+    const checks = plans.filter(
+      (p) => p.kind === "task" || p.name === "flake check" || p.name === "qa",
+    );
+    const fails = r() < 0.09 && checks.length > 0 && i < count - 2;
+    const failing = fails ? checks[Math.floor(r() * checks.length)]?.name : undefined;
     out.push({
       key: `${project}:h${i}`,
       project,
@@ -240,7 +385,7 @@ function history(project: string): Array<Spec> {
         changeId: r() < 0.7 ? jjId(`${project}:h${i}`, 32) : null,
       },
       ...(failing ? { outcomes: { [failing]: "failed" as const } } : {}),
-    })
+    });
   }
   if (project === "studienbuch") {
     for (let d = 1; d <= 6; d++) {
@@ -251,299 +396,529 @@ function history(project: string): Array<Spec> {
         event: { _tag: "Schedule", cron: "0 3 * * *" },
         title: null,
         commit: { title: "Nightly cold run", author: "calder", changeId: null },
-      })
+      });
     }
   }
-  return out
+  return out;
 }
 
-const CHANGE_418 = jjId("t3code:pr418", 32)
+const CHANGE_418 = jjId("t3code:pr418", 32);
 
 /** The present: the runs every screen of the UI has something to say about. */
 const SCRIPTED: ReadonlyArray<Spec> = [
   {
-    key: "t3:pr415", project: "t3code", at: -52 * 60, event: pr(415, "codex/stream-tool-output"),
-    title: "Stream tool output in the thread view", commit: { title: "Stream tool output in the thread view", author: "codex", changeId: jjId("t3code:pr415", 32) },
+    key: "t3:pr415",
+    project: "t3code",
+    at: -52 * 60,
+    event: pr(415, "codex/stream-tool-output"),
+    title: "Stream tool output in the thread view",
+    commit: {
+      title: "Stream tool output in the thread view",
+      author: "codex",
+      changeId: jjId("t3code:pr415", 32),
+    },
   },
   {
-    key: "t3:pr417", project: "t3code", at: -83 * 60, event: pr(417, "claude/retry-push"),
-    title: "Retry git push on a transient Gitea 502", commit: { title: "Retry git push on a transient Gitea 502", author: "claude", changeId: jjId("t3code:pr417", 32) },
+    key: "t3:pr417",
+    project: "t3code",
+    at: -83 * 60,
+    event: pr(417, "claude/retry-push"),
+    title: "Retry git push on a transient Gitea 502",
+    commit: {
+      title: "Retry git push on a transient Gitea 502",
+      author: "claude",
+      changeId: jjId("t3code:pr417", 32),
+    },
     attempts: { "test server": 2 },
   },
   {
-    key: "t3:pr418-1", project: "t3code", at: -131 * 60, event: pr(418, "codex/token-usage"),
-    title: "Show token usage per turn", commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
+    key: "t3:pr418-1",
+    project: "t3code",
+    at: -131 * 60,
+    event: pr(418, "codex/token-usage"),
+    title: "Show token usage per turn",
+    commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
     outcomes: { "typecheck clients": "failed" },
   },
   {
-    key: "t3:pr418-2", project: "t3code", at: -96 * 60, event: pr(418, "codex/token-usage"),
-    title: "Show token usage per turn", commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
+    key: "t3:pr418-2",
+    project: "t3code",
+    at: -96 * 60,
+    event: pr(418, "codex/token-usage"),
+    title: "Show token usage per turn",
+    commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
     reused: { static: "t3:pr418-1", "typecheck rest": "t3:pr418-1" },
   },
   {
-    key: "t3:pr418-3", project: "t3code", at: -13 * 60, event: pr(418, "codex/token-usage"),
-    title: "Show token usage per turn", commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
+    key: "t3:pr418-3",
+    project: "t3code",
+    at: -13 * 60,
+    event: pr(418, "codex/token-usage"),
+    title: "Show token usage per turn",
+    commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
     outcomes: { "test web": "failed" },
     reused: { static: "t3:pr418-2", "typecheck rest": "t3:pr418-2", "test server": "t3:pr418-2" },
     durations: { "test web": 400 },
   },
   {
-    key: "t3:main-merge", project: "t3code", at: -8 * 60, event: push, title: null,
-    commit: { title: "Stream tool output in the thread view (#415)", author: "codex", changeId: jjId("t3code:pr415", 32) },
+    key: "t3:main-merge",
+    project: "t3code",
+    at: -8 * 60,
+    event: push,
+    title: null,
+    commit: {
+      title: "Stream tool output in the thread view (#415)",
+      author: "codex",
+      changeId: jjId("t3code:pr415", 32),
+    },
     reused: Object.fromEntries(T3_CHECKS.map((name) => [name, "t3:pr415"])),
-    durations: { projectRelease: 168, releaseGate: 47, promote: 18 * 60, "desktop-package": 12 * 60, testflight: 150 },
+    durations: {
+      projectRelease: 168,
+      releaseGate: 47,
+      promote: 18 * 60,
+      "desktop-package": 12 * 60,
+      testflight: 150,
+    },
   },
   {
-    key: "t3:pr418-4", project: "t3code", at: -75, event: pr(418, "codex/token-usage"),
-    title: "Show token usage per turn", commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
+    key: "t3:pr418-4",
+    project: "t3code",
+    at: -75,
+    event: pr(418, "codex/token-usage"),
+    title: "Show token usage per turn",
+    commit: { title: "Show token usage per turn", author: "codex", changeId: CHANGE_418 },
     reused: { static: "t3:pr418-3", "typecheck rest": "t3:pr418-3" },
-    durations: { "typecheck clients": 170, "test web": 9 * 60, "test server": 400, projectRelease: 430 },
+    durations: {
+      "typecheck clients": 170,
+      "test web": 9 * 60,
+      "test server": 400,
+      projectRelease: 430,
+    },
   },
   {
-    key: "sb:main-calendar", project: "studienbuch", at: -88, event: push, title: null,
-    commit: { title: "Export the calendar as ICS", author: "hauke", changeId: jjId("studienbuch:ics", 32) },
+    key: "sb:main-calendar",
+    project: "studienbuch",
+    at: -88,
+    event: push,
+    title: null,
+    commit: {
+      title: "Export the calendar as ICS",
+      author: "hauke",
+      changeId: jjId("studienbuch:ics", 32),
+    },
     durations: { qa: 11 * 60, releaseGate: 80, projectRelease: 190, promote: 64 },
   },
   {
-    key: "sb:pr96", project: "studienbuch", at: -3 * 3600 - 600, event: pr(96, "claude/offline-cache"),
-    title: "Cache the calendar for offline use", commit: { title: "Cache the calendar for offline use", author: "claude", changeId: jjId("studienbuch:pr96", 32) },
+    key: "sb:pr96",
+    project: "studienbuch",
+    at: -3 * 3600 - 600,
+    event: pr(96, "claude/offline-cache"),
+    title: "Cache the calendar for offline use",
+    commit: {
+      title: "Cache the calendar for offline use",
+      author: "claude",
+      changeId: jjId("studienbuch:pr96", 32),
+    },
   },
   {
-    key: "hw:main-batches", project: "hopwatch", at: -26 * 60, event: push, title: null,
-    commit: { title: "Ingest Untappd check-ins in batches", author: "claude", changeId: jjId("hopwatch:batches", 32) },
+    key: "hw:main-batches",
+    project: "hopwatch",
+    at: -26 * 60,
+    event: push,
+    title: null,
+    commit: {
+      title: "Ingest Untappd check-ins in batches",
+      author: "claude",
+      changeId: jjId("hopwatch:batches", 32),
+    },
     outcomes: { "flake check": "failed" },
   },
   {
-    key: "pf:main-nixpkgs", project: "homepage", at: -56 * 60, event: push, title: null,
+    key: "pf:main-nixpkgs",
+    project: "homepage",
+    at: -56 * 60,
+    event: push,
+    title: null,
     commit: { title: "Bump nixpkgs to 26.05", author: "hauke", changeId: null },
   },
   {
-    key: "school-site:manual", project: "school-site", at: -5 * 3600, event: { _tag: "Manual", inputs: { reason: "redeploy after cert renewal" } }, title: null,
+    key: "school-site:manual",
+    project: "school-site",
+    at: -5 * 3600,
+    event: { _tag: "Manual", inputs: { reason: "redeploy after cert renewal" } },
+    title: null,
     commit: { title: "New school year dates", author: "hauke", changeId: null },
-    error: "plan failed: .calder/ci.ts: step \"promote\" needs \"projectRelease\", which On.manual doesn't target",
+    error:
+      'plan failed: .calder/ci.ts: step "promote" needs "projectRelease", which On.manual doesn\'t target',
   },
   {
-    key: "mb:pr12", project: "merkbeet", at: -4 * 3600, event: pr(12, "codex/frost-warnings"),
-    title: "Frost warnings for open beds", commit: { title: "Frost warnings for open beds", author: "codex", changeId: jjId("merkbeet:pr12", 32) },
+    key: "mb:pr12",
+    project: "merkbeet",
+    at: -4 * 3600,
+    event: pr(12, "codex/frost-warnings"),
+    title: "Frost warnings for open beds",
+    commit: {
+      title: "Frost warnings for open beds",
+      author: "codex",
+      changeId: jjId("merkbeet:pr12", 32),
+    },
   },
-]
+];
 
 /* ------------------------------------------------------------------ */
 /* Planning a run                                                      */
 
-const PLANNING = 2
+const PLANNING = 2;
 
 interface Memory {
-  readonly built: ReadonlyMap<string, SimRun>
-  readonly stableKeys: Map<string, { key: string; run: string }>
-  readonly durations: Map<string, Array<number>>
+  readonly built: ReadonlyMap<string, SimRun>;
+  readonly stableKeys: Map<string, { key: string; run: string }>;
+  readonly durations: Map<string, Array<number>>;
 }
 
-const median = (xs: ReadonlyArray<number>) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+const median = (xs: ReadonlyArray<number>) =>
+  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 /**
  * With the Mac agent gone (`CALDER_MOCK_MAC=offline`), it left six minutes before the server started: the deploying
  * main run's desktop package finished just before, so its testflight waits for an agent ever since.
  */
-const OFFLINE_DURATIONS: Readonly<Record<string, Readonly<Record<string, number>>>> = { "t3:main-merge": { "desktop-package": 100 } }
+const OFFLINE_DURATIONS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+  "t3:main-merge": { "desktop-package": 100 },
+};
 
-function plan(spec: Spec, id: string, number: number, t0: number, { built, stableKeys, durations }: Memory, agentGoneAt: number | null): SimRun {
-  const r = rng(`run:${spec.key}`)
-  const createdAt = t0 + spec.at * 1000
-  const sha = spec.commit.sha ?? hex(`sha:${spec.key}`, 40)
-  const startedAt = createdAt + PLANNING * 1000
-  const plans = spec.error ? [] : pipeline(spec.project, spec.event)
-  const done = new Map<string, SimStep>()
-  const order = topo(plans)
+function plan(
+  spec: Spec,
+  id: string,
+  number: number,
+  t0: number,
+  { built, stableKeys, durations }: Memory,
+  agentGoneAt: number | null,
+): SimRun {
+  const r = rng(`run:${spec.key}`);
+  const createdAt = t0 + spec.at * 1000;
+  const sha = spec.commit.sha ?? hex(`sha:${spec.key}`, 40);
+  const startedAt = createdAt + PLANNING * 1000;
+  const plans = spec.error ? [] : pipeline(spec.project, spec.event);
+  const done = new Map<string, SimStep>();
+  const order = topo(plans);
   for (const p of order) {
-    const deps = [...(p.needs ?? []), ...(p.after ?? [])]
-    const exits = p.exits ?? []
-    const upstream = [...deps, ...exits].map((n) => done.get(n)).filter((s): s is SimStep => s !== undefined)
-    const ready = Math.max(startedAt, ...upstream.map((s) => s.finishedAt))
-    const blockedBy = deps.map((n) => done.get(n)).find((s) => s && s.outcome !== "passed" && s.outcome !== "reused")
-    const reusedSpec = spec.reused?.[p.name]
-    const reusedRun = reusedSpec ? built.get(reusedSpec) : undefined
-    const reusedStep = reusedRun?.steps.find((s) => s.plan.name === p.name)
-    const stable = p.stable ? stableKeys.get(`${spec.project}:${p.name}`) : undefined
-    const history = durations.get(`${spec.project}:${p.name}`) ?? []
-    const expectedMs = history.length ? (median(history.slice(-10)) ?? null) : null
-    const ownKey = p.kind === "build"
-      ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:${sha}`, 32)}-${spec.project}-${p.name}.drv`
-      : hex(`key:${spec.project}:${p.name}:${sha}`, 64)
-    const offline = agentGoneAt === null ? undefined : OFFLINE_DURATIONS[spec.key]?.[p.name]
-    const duration = (offline ?? spec.durations?.[p.name] ?? p.duration * (0.88 + r() * 0.24)) * 1000
-    const queue = (p.kind === "action" ? 0.3 : 0.6 + r() * 2.4) * 1000
-    let step: SimStep
+    const deps = [...(p.needs ?? []), ...(p.after ?? [])];
+    const exits = p.exits ?? [];
+    const upstream = [...deps, ...exits]
+      .map((n) => done.get(n))
+      .filter((s): s is SimStep => s !== undefined);
+    const ready = Math.max(startedAt, ...upstream.map((s) => s.finishedAt));
+    const blockedBy = deps
+      .map((n) => done.get(n))
+      .find((s) => s && s.outcome !== "passed" && s.outcome !== "reused");
+    const reusedSpec = spec.reused?.[p.name];
+    const reusedRun = reusedSpec ? built.get(reusedSpec) : undefined;
+    const reusedStep = reusedRun?.steps.find((s) => s.plan.name === p.name);
+    const stable = p.stable ? stableKeys.get(`${spec.project}:${p.name}`) : undefined;
+    const history = durations.get(`${spec.project}:${p.name}`) ?? [];
+    const expectedMs = history.length ? (median(history.slice(-10)) ?? null) : null;
+    const ownKey =
+      p.kind === "build"
+        ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:${sha}`, 32)}-${spec.project}-${p.name}.drv`
+        : hex(`key:${spec.project}:${p.name}:${sha}`, 64);
+    const offline = agentGoneAt === null ? undefined : OFFLINE_DURATIONS[spec.key]?.[p.name];
+    const duration =
+      (offline ?? spec.durations?.[p.name] ?? p.duration * (0.88 + r() * 0.24)) * 1000;
+    const queue = (p.kind === "action" ? 0.3 : 0.6 + r() * 2.4) * 1000;
+    let step: SimStep;
     if (blockedBy) {
-      step = { plan: p, outcome: "blocked", key: null, reusedFrom: null, expectedMs, queuedAt: blockedBy.finishedAt, startedAt: blockedBy.finishedAt, finishedAt: blockedBy.finishedAt, attempts: 0 }
-    } else if (reusedStep && reusedRun) {
-      step = { plan: p, outcome: "reused", key: reusedStep.key, reusedFrom: reusedStep.reusedFrom ?? reusedRun.id, expectedMs, queuedAt: ready, startedAt: ready, finishedAt: ready, attempts: 0 }
-    } else if (stable && spec.event._tag !== "Schedule") {
-      step = { plan: p, outcome: "reused", key: stable.key, reusedFrom: stable.run, expectedMs, queuedAt: ready, startedAt: ready, finishedAt: ready, attempts: 0 }
-    } else {
-      const key = p.stable ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:lock`, 32)}-${spec.project}-${p.name}.drv` : ownKey
-      // No agent for its platform: it stays queued, and whatever needs it stays pending.
-      const stranded = p.platform !== undefined && agentGoneAt !== null && ready + queue > agentGoneAt
       step = {
-        plan: p, outcome: spec.outcomes?.[p.name] ?? "passed", key, reusedFrom: null, expectedMs,
-        queuedAt: ready, startedAt: stranded ? Infinity : ready + queue, finishedAt: stranded ? Infinity : ready + queue + duration, attempts: spec.attempts?.[p.name] ?? 1,
-      }
-      if (p.stable && step.outcome === "passed") stableKeys.set(`${spec.project}:${p.name}`, { key, run: id })
-      if (!stranded) durations.set(`${spec.project}:${p.name}`, [...history, step.finishedAt - step.startedAt])
+        plan: p,
+        outcome: "blocked",
+        key: null,
+        reusedFrom: null,
+        expectedMs,
+        queuedAt: blockedBy.finishedAt,
+        startedAt: blockedBy.finishedAt,
+        finishedAt: blockedBy.finishedAt,
+        attempts: 0,
+      };
+    } else if (reusedStep && reusedRun) {
+      step = {
+        plan: p,
+        outcome: "reused",
+        key: reusedStep.key,
+        reusedFrom: reusedStep.reusedFrom ?? reusedRun.id,
+        expectedMs,
+        queuedAt: ready,
+        startedAt: ready,
+        finishedAt: ready,
+        attempts: 0,
+      };
+    } else if (stable && spec.event._tag !== "Schedule") {
+      step = {
+        plan: p,
+        outcome: "reused",
+        key: stable.key,
+        reusedFrom: stable.run,
+        expectedMs,
+        queuedAt: ready,
+        startedAt: ready,
+        finishedAt: ready,
+        attempts: 0,
+      };
+    } else {
+      const key = p.stable
+        ? `/nix/store/${nixHash(`drv:${spec.project}:${p.name}:lock`, 32)}-${spec.project}-${p.name}.drv`
+        : ownKey;
+      // No agent for its platform: it stays queued, and whatever needs it stays pending.
+      const stranded =
+        p.platform !== undefined && agentGoneAt !== null && ready + queue > agentGoneAt;
+      step = {
+        plan: p,
+        outcome: spec.outcomes?.[p.name] ?? "passed",
+        key,
+        reusedFrom: null,
+        expectedMs,
+        queuedAt: ready,
+        startedAt: stranded ? Infinity : ready + queue,
+        finishedAt: stranded ? Infinity : ready + queue + duration,
+        attempts: spec.attempts?.[p.name] ?? 1,
+      };
+      if (p.stable && step.outcome === "passed")
+        stableKeys.set(`${spec.project}:${p.name}`, { key, run: id });
+      if (!stranded)
+        durations.set(`${spec.project}:${p.name}`, [...history, step.finishedAt - step.startedAt]);
     }
-    done.set(p.name, step)
+    done.set(p.name, step);
   }
-  const steps = plans.map((p) => done.get(p.name)).filter((s): s is SimStep => s !== undefined)
+  const steps = plans.map((p) => done.get(p.name)).filter((s): s is SimStep => s !== undefined);
   return {
     id,
     project: spec.project,
     number,
     event: spec.event,
-    commit: { sha, changeId: spec.commit.changeId, title: spec.commit.title, author: spec.commit.author, timestamp: createdAt - 40_000 - Math.round(r() * 600_000) },
+    commit: {
+      sha,
+      changeId: spec.commit.changeId,
+      title: spec.commit.title,
+      author: spec.commit.author,
+      timestamp: createdAt - 40_000 - Math.round(r() * 600_000),
+    },
     title: spec.title,
     trust: spec.event._tag === "PullRequest" ? "pr" : "trusted",
     createdAt,
     startedAt: spec.error ? createdAt + 900 : startedAt,
-    finishedAt: spec.error ? createdAt + 900 : Math.max(startedAt, ...steps.map((s) => s.finishedAt)),
+    finishedAt: spec.error
+      ? createdAt + 900
+      : Math.max(startedAt, ...steps.map((s) => s.finishedAt)),
     error: spec.error ?? null,
     traceId: hex(`trace:${spec.key}`, 32),
     steps,
     cancelledAt: spec.cancelAt === undefined ? null : t0 + spec.cancelAt * 1000,
-  }
+  };
 }
 
 function topo(plans: ReadonlyArray<StepPlan>): Array<StepPlan> {
-  const byName = new Map(plans.map((p) => [p.name, p]))
-  const out: Array<StepPlan> = []
-  const seen = new Set<string>()
+  const byName = new Map(plans.map((p) => [p.name, p]));
+  const out: Array<StepPlan> = [];
+  const seen = new Set<string>();
   const visit = (p: StepPlan) => {
-    if (seen.has(p.name)) return
-    seen.add(p.name)
+    if (seen.has(p.name)) return;
+    seen.add(p.name);
     for (const d of [...(p.needs ?? []), ...(p.after ?? []), ...(p.exits ?? [])]) {
-      const dep = byName.get(d)
-      if (dep) visit(dep)
+      const dep = byName.get(d);
+      if (dep) visit(dep);
     }
-    out.push(p)
-  }
-  plans.forEach(visit)
-  return out
+    out.push(p);
+  };
+  plans.forEach(visit);
+  return out;
 }
 
-const runId = (project: string, number: number) => `r${hex(`id:${project}:${number}`, 10)}`
+const runId = (project: string, number: number) => `r${hex(`id:${project}:${number}`, 10)}`;
 
 /* ------------------------------------------------------------------ */
 /* The world                                                           */
 
 export class World {
-  readonly runs: Array<SimRun> = []
-  private readonly bySpec = new Map<string, SimRun>()
-  private readonly memory = { built: this.bySpec, stableKeys: new Map<string, { key: string; run: string }>(), durations: new Map<string, Array<number>>() }
-  private readonly numbers = new Map<string, number>()
+  readonly runs: Array<SimRun> = [];
+  private readonly bySpec = new Map<string, SimRun>();
+  private readonly memory = {
+    built: this.bySpec,
+    stableKeys: new Map<string, { key: string; run: string }>(),
+    durations: new Map<string, Array<number>>(),
+  };
+  private readonly numbers = new Map<string, number>();
 
   /** When the Mac agent disconnected, or null while it is connected. */
-  readonly agentGoneAt: number | null
+  readonly agentGoneAt: number | null;
 
-  constructor(readonly t0: number, agents: "online" | "offline" = "online") {
-    this.agentGoneAt = agents === "offline" ? t0 - 6 * 60_000 : null
-    const specs = [...PROJECTS.flatMap(history), ...SCRIPTED].sort((a, b) => a.at - b.at)
-    for (const spec of specs) this.add(spec)
+  constructor(
+    readonly t0: number,
+    agents: "online" | "offline" = "online",
+  ) {
+    this.agentGoneAt = agents === "offline" ? t0 - 6 * 60_000 : null;
+    const specs = [...PROJECTS.flatMap(history), ...SCRIPTED].sort((a, b) => a.at - b.at);
+    for (const spec of specs) this.add(spec);
   }
 
   private add(spec: Spec): SimRun {
-    const number = (this.numbers.get(spec.project) ?? NUMBER_BASE[spec.project] ?? 1) + 1
-    this.numbers.set(spec.project, number)
-    const run = plan(spec, runId(spec.project, number), number, this.t0, this.memory, this.agentGoneAt)
-    this.bySpec.set(spec.key, run)
-    this.runs.push(run)
-    return run
+    const number = (this.numbers.get(spec.project) ?? NUMBER_BASE[spec.project] ?? 1) + 1;
+    this.numbers.set(spec.project, number);
+    const run = plan(
+      spec,
+      runId(spec.project, number),
+      number,
+      this.t0,
+      this.memory,
+      this.agentGoneAt,
+    );
+    this.bySpec.set(spec.key, run);
+    this.runs.push(run);
+    return run;
   }
 
   run(id: string): SimRun | undefined {
-    return this.runs.find((r) => r.id === id)
+    return this.runs.find((r) => r.id === id);
   }
 
   /** Starts a run of the default branch head with every result it can reuse. */
-  trigger(project: string, now: number, inputs: Readonly<Record<string, unknown>> | undefined): SimRun {
-    const head = this.latestMain(project)
-    const key = `${project}:manual:${now}`
-    const reused = head ? this.reusable(head) : {}
-    if (head) this.bySpec.set(`${key}:head`, head)
+  trigger(
+    project: string,
+    now: number,
+    inputs: Readonly<Record<string, unknown>> | undefined,
+  ): SimRun {
+    const head = this.latestMain(project);
+    const key = `${project}:manual:${now}`;
+    const reused = head ? this.reusable(head) : {};
+    if (head) this.bySpec.set(`${key}:head`, head);
     return this.add({
       key,
       project,
       at: (now - this.t0) / 1000,
       event: inputs ? { _tag: "Manual", inputs } : push,
       title: null,
-      commit: head ? { title: head.commit.title, author: "hauke", changeId: head.commit.changeId, sha: head.commit.sha } : { title: "Manual run", author: "hauke", changeId: null },
+      commit: head
+        ? {
+            title: head.commit.title,
+            author: "hauke",
+            changeId: head.commit.changeId,
+            sha: head.commit.sha,
+          }
+        : { title: "Manual run", author: "hauke", changeId: null },
       reused: Object.fromEntries(Object.keys(reused).map((name) => [name, `${key}:head`])),
       durations: { promote: 6 },
-    })
+    });
   }
 
   /** Runs the same revision and event again, reusing what passed. */
   rerun(source: SimRun, now: number): SimRun {
-    const key = `${source.project}:rerun:${source.id}:${now}`
-    this.bySpec.set(`${key}:source`, source)
-    const outcomes = Object.fromEntries(source.steps.flatMap((s) => (s.outcome === "failed" || s.outcome === "died" ? [[s.plan.name, s.outcome] as const] : [])))
+    const key = `${source.project}:rerun:${source.id}:${now}`;
+    this.bySpec.set(`${key}:source`, source);
+    const outcomes = Object.fromEntries(
+      source.steps.flatMap((s) =>
+        s.outcome === "failed" || s.outcome === "died" ? [[s.plan.name, s.outcome] as const] : [],
+      ),
+    );
     return this.add({
       key,
       project: source.project,
       at: (now - this.t0) / 1000,
       event: source.event,
       title: source.title,
-      commit: { title: source.commit.title, author: source.commit.author, changeId: source.commit.changeId, sha: source.commit.sha },
+      commit: {
+        title: source.commit.title,
+        author: source.commit.author,
+        changeId: source.commit.changeId,
+        sha: source.commit.sha,
+      },
       outcomes,
-      reused: Object.fromEntries(Object.keys(this.reusable(source)).map((name) => [name, `${key}:source`])),
-    })
+      reused: Object.fromEntries(
+        Object.keys(this.reusable(source)).map((name) => [name, `${key}:source`]),
+      ),
+    });
   }
 
   private reusable(run: SimRun): Record<string, true> {
-    return Object.fromEntries(run.steps.filter((s) => (s.outcome === "passed" || s.outcome === "reused") && s.plan.kind !== "action").map((s) => [s.plan.name, true as const]))
+    return Object.fromEntries(
+      run.steps
+        .filter(
+          (s) => (s.outcome === "passed" || s.outcome === "reused") && s.plan.kind !== "action",
+        )
+        .map((s) => [s.plan.name, true as const]),
+    );
   }
 
   latestMain(project: string): SimRun | undefined {
-    return this.runs.filter((r) => r.project === project && r.event._tag === "Push" && r.error === null).at(-1)
+    return this.runs
+      .filter((r) => r.project === project && r.event._tag === "Push" && r.error === null)
+      .at(-1);
   }
 }
 
 /* ------------------------------------------------------------------ */
 /* State at an instant                                                 */
 
-type StepState = { status: Domain.StepStatus; queuedAt: number | null; startedAt: number | null; finishedAt: number | null }
+type StepState = {
+  status: Domain.StepStatus;
+  queuedAt: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+};
 
 export function stepState(run: SimRun, s: SimStep, now: number): StepState {
-  const cut = run.cancelledAt !== null && run.cancelledAt <= now && s.finishedAt > run.cancelledAt ? run.cancelledAt : null
+  const cut =
+    run.cancelledAt !== null && run.cancelledAt <= now && s.finishedAt > run.cancelledAt
+      ? run.cancelledAt
+      : null;
   if (cut !== null) {
-    return { status: "cancelled", queuedAt: s.queuedAt <= cut ? s.queuedAt : null, startedAt: s.startedAt <= cut ? s.startedAt : null, finishedAt: cut }
+    return {
+      status: "cancelled",
+      queuedAt: s.queuedAt <= cut ? s.queuedAt : null,
+      startedAt: s.startedAt <= cut ? s.startedAt : null,
+      finishedAt: cut,
+    };
   }
   if (s.outcome === "blocked") {
-    return now >= s.finishedAt ? { status: "blocked", queuedAt: null, startedAt: null, finishedAt: s.finishedAt } : { status: "pending", queuedAt: null, startedAt: null, finishedAt: null }
+    return now >= s.finishedAt
+      ? { status: "blocked", queuedAt: null, startedAt: null, finishedAt: s.finishedAt }
+      : { status: "pending", queuedAt: null, startedAt: null, finishedAt: null };
   }
-  if (now < s.queuedAt) return { status: "pending", queuedAt: null, startedAt: null, finishedAt: null }
-  if (s.outcome === "reused") return { status: "reused", queuedAt: s.queuedAt, startedAt: null, finishedAt: s.finishedAt }
-  if (now < s.startedAt) return { status: "queued", queuedAt: s.queuedAt, startedAt: null, finishedAt: null }
-  if (now < s.finishedAt) return { status: "running", queuedAt: s.queuedAt, startedAt: s.startedAt, finishedAt: null }
-  return { status: s.outcome, queuedAt: s.queuedAt, startedAt: s.startedAt, finishedAt: s.finishedAt }
+  if (now < s.queuedAt)
+    return { status: "pending", queuedAt: null, startedAt: null, finishedAt: null };
+  if (s.outcome === "reused")
+    return { status: "reused", queuedAt: s.queuedAt, startedAt: null, finishedAt: s.finishedAt };
+  if (now < s.startedAt)
+    return { status: "queued", queuedAt: s.queuedAt, startedAt: null, finishedAt: null };
+  if (now < s.finishedAt)
+    return { status: "running", queuedAt: s.queuedAt, startedAt: s.startedAt, finishedAt: null };
+  return {
+    status: s.outcome,
+    queuedAt: s.queuedAt,
+    startedAt: s.startedAt,
+    finishedAt: s.finishedAt,
+  };
 }
 
 export function runStatus(run: SimRun, now: number): Domain.RunStatus {
-  if (run.error !== null) return now >= run.finishedAt ? "errored" : "planning"
-  if (run.cancelledAt !== null && run.cancelledAt <= now && run.finishedAt > run.cancelledAt) return "cancelled"
-  if (now < run.startedAt) return "planning"
-  if (now < run.finishedAt) return "running"
-  return run.steps.some((s) => s.outcome === "failed" || s.outcome === "died") ? "failed" : "passed"
+  if (run.error !== null) return now >= run.finishedAt ? "errored" : "planning";
+  if (run.cancelledAt !== null && run.cancelledAt <= now && run.finishedAt > run.cancelledAt)
+    return "cancelled";
+  if (now < run.startedAt) return "planning";
+  if (now < run.finishedAt) return "running";
+  return run.steps.some((s) => s.outcome === "failed" || s.outcome === "died")
+    ? "failed"
+    : "passed";
 }
 
-const isActive = (status: Domain.RunStatus) => status === "queued" || status === "planning" || status === "running"
+const isActive = (status: Domain.RunStatus) =>
+  status === "queued" || status === "planning" || status === "running";
 
 export function toRun(run: SimRun, now: number): Domain.Run {
-  const status = runStatus(run, now)
-  const counts: Record<string, number> = {}
+  const status = runStatus(run, now);
+  const counts: Record<string, number> = {};
   for (const s of run.steps) {
-    const st = stepState(run, s, now).status
-    counts[st] = (counts[st] ?? 0) + 1
+    const st = stepState(run, s, now).status;
+    counts[st] = (counts[st] ?? 0) + 1;
   }
-  const end = status === "cancelled" ? run.cancelledAt : isActive(status) ? null : run.finishedAt
+  const end = status === "cancelled" ? run.cancelledAt : isActive(status) ? null : run.finishedAt;
   return {
     id: run.id,
     project: run.project,
@@ -559,15 +934,15 @@ export function toRun(run: SimRun, now: number): Domain.Run {
     error: status === "errored" ? run.error : null,
     traceId: run.error === null ? run.traceId : null,
     counts,
-  }
+  };
 }
 
 export function toStep(world: World, run: SimRun, s: SimStep, now: number): Domain.StepRun {
-  const st = stepState(run, s, now)
-  const finished = st.status === "passed" || st.status === "failed" || st.status === "died"
-  const ran = st.startedAt !== null
-  const seconds = ran ? ((st.finishedAt ?? now) - (st.startedAt ?? now)) / 1000 : 0
-  const cores = s.plan.kind === "build" ? 3.1 : s.plan.kind === "task" ? 1.8 : 0.05
+  const st = stepState(run, s, now);
+  const finished = st.status === "passed" || st.status === "failed" || st.status === "died";
+  const ran = st.startedAt !== null;
+  const seconds = ran ? ((st.finishedAt ?? now) - (st.startedAt ?? now)) / 1000 : 0;
+  const cores = s.plan.kind === "build" ? 3.1 : s.plan.kind === "task" ? 1.8 : 0.05;
   return {
     runId: run.id,
     name: s.plan.name,
@@ -575,7 +950,10 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     status: st.status,
     key: s.key,
     // A reused build is one whose output already existed; reused tasks point at the run that ran them.
-    reusedFrom: st.status === "reused" && s.plan.kind !== "build" && s.reusedFrom !== null ? { id: s.reusedFrom, number: world.run(s.reusedFrom)?.number ?? 0 } : null,
+    reusedFrom:
+      st.status === "reused" && s.plan.kind !== "build" && s.reusedFrom !== null
+        ? { id: s.reusedFrom, number: world.run(s.reusedFrom)?.number ?? 0 }
+        : null,
     contradicts: null,
     needs: s.plan.needs ?? [],
     exits: s.plan.exits ?? [],
@@ -595,148 +973,330 @@ export function toStep(world: World, run: SimRun, s: SimStep, now: number): Doma
     error: st.status === "failed" || st.status === "died" ? errorOf(run, s) : null,
     publishError: null,
     cpuSeconds: finished ? Math.round(seconds * cores * 10) / 10 : null,
-    memoryPeakBytes: finished ? Math.round((s.plan.kind === "build" ? 2.4 : s.plan.kind === "task" ? 1.3 : 0.08) * 2 ** 30 * (0.8 + (fnv(s.plan.name) % 40) / 100)) : null,
+    memoryPeakBytes: finished
+      ? Math.round(
+          (s.plan.kind === "build" ? 2.4 : s.plan.kind === "task" ? 1.3 : 0.08) *
+            2 ** 30 *
+            (0.8 + (fnv(s.plan.name) % 40) / 100),
+        )
+      : null,
     spanId: ran || st.status === "reused" ? spanIdOf(run, s.plan.name) : null,
     tests: finished || st.status === "reused" ? testCounts(run, s) : null,
-    files: s.plan.name === "test server" && st.status === "passed" ? { total: 114, ran: 114, flaky: 1 } : null,
+    files:
+      s.plan.name === "test server" && st.status === "passed"
+        ? { total: 114, ran: 114, flaky: 1 }
+        : null,
     outputs: [],
-  }
+  };
 }
 
-const spanIdOf = (run: SimRun, name: string) => hex(`span:${run.id}:${name}`, 16)
-const short = (sha: string) => sha.slice(0, 7)
-export const storePathOf = (run: SimRun) => `/nix/store/${nixHash(`out:${run.project}:${run.commit.sha}`, 32)}-${run.project}-release`
+const spanIdOf = (run: SimRun, name: string) => hex(`span:${run.id}:${name}`, 16);
+const short = (sha: string) => sha.slice(0, 7);
+export const storePathOf = (run: SimRun) =>
+  `/nix/store/${nixHash(`out:${run.project}:${run.commit.sha}`, 32)}-${run.project}-release`;
 
 function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
-  const source = s.reusedFrom ? world.run(s.reusedFrom) ?? run : run
+  const source = s.reusedFrom ? (world.run(s.reusedFrom) ?? run) : run;
   switch (s.plan.kind) {
     case "build": {
-      const path = s.plan.name === "projectRelease" ? storePathOf(source) : `/nix/store/${nixHash(`out:${run.project}:${s.plan.name}:${s.key}`, 32)}-${run.project}-${s.plan.name}`
-      return { type: null, render: "text", label: "store path", text: path, json: { path } }
+      const path =
+        s.plan.name === "projectRelease"
+          ? storePathOf(source)
+          : `/nix/store/${nixHash(`out:${run.project}:${s.plan.name}:${s.key}`, 32)}-${run.project}-${s.plan.name}`;
+      return { type: null, render: "text", label: "store path", text: path, json: { path } };
     }
     case "setup":
-      return null
+      return null;
     case "task": {
-      const counts = testCounts(run, s)
+      const counts = testCounts(run, s);
       return counts
-        ? { type: null, render: "text", label: "report", text: `${counts.passed} passed${counts.skipped ? `, ${counts.skipped} skipped` : ""}`, json: counts }
-        : { type: null, render: null, label: null, text: "exit 0", json: { exitCode: 0 } }
+        ? {
+            type: null,
+            render: "text",
+            label: "report",
+            text: `${counts.passed} passed${counts.skipped ? `, ${counts.skipped} skipped` : ""}`,
+            json: counts,
+          }
+        : { type: null, render: null, label: null, text: "exit 0", json: { exitCode: 0 } };
     }
     case "action": {
       if (s.plan.name === "promote") {
-        const hosts = hostsOf(run.project)
-        return { type: "@calder-ci/std/Release/Live", render: "text", label: "Live", text: `${short(run.commit.sha)} on ${hosts.join(", ")}`, json: { _tag: "Live", revision: run.commit.sha, hosts } }
+        const hosts = hostsOf(run.project);
+        return {
+          type: "@calder-ci/std/Release/Live",
+          render: "text",
+          label: "Live",
+          text: `${short(run.commit.sha)} on ${hosts.join(", ")}`,
+          json: { _tag: "Live", revision: run.commit.sha, hosts },
+        };
       }
-      return { type: null, render: "text", label: null, text: "comment posted", json: null }
+      return { type: null, render: "text", label: null, text: "comment posted", json: null };
     }
     case "output":
-      return null
+      return null;
   }
 }
 
 /* ------------------------------------------------------------------ */
 /* Tests                                                               */
 
-const TOKEN_TEST = { suite: "TokenUsage", name: "formats large counts with a thin space", file: "apps/web/src/components/TokenUsage.test.tsx" }
-const FLAKY_TEST = { suite: "ThreadView", name: "replays tool output after reconnect", file: "apps/web/src/thread/ThreadView.test.tsx" }
-const HOP_TEST = { suite: "ingest", name: "rejects a duplicate check-in within a batch", file: "src/ingest/batch.test.ts" }
-const SERVER_TEST = { suite: "GitService", name: "retries push after a 502 from Gitea", file: "apps/server/src/git/GitService.test.ts" }
+const TOKEN_TEST = {
+  suite: "TokenUsage",
+  name: "formats large counts with a thin space",
+  file: "apps/web/src/components/TokenUsage.test.tsx",
+};
+const FLAKY_TEST = {
+  suite: "ThreadView",
+  name: "replays tool output after reconnect",
+  file: "apps/web/src/thread/ThreadView.test.tsx",
+};
+const HOP_TEST = {
+  suite: "ingest",
+  name: "rejects a duplicate check-in within a batch",
+  file: "src/ingest/batch.test.ts",
+};
+const SERVER_TEST = {
+  suite: "GitService",
+  name: "retries push after a 502 from Gitea",
+  file: "apps/server/src/git/GitService.test.ts",
+};
 
 function flakyTimesOut(run: SimRun) {
-  return fnv(`flaky:${run.id}`) % 7 === 0
+  return fnv(`flaky:${run.id}`) % 7 === 0;
 }
 
 /** Per-run results of the few tests the scenario follows; everything else passes. */
 export function testResults(run: SimRun, step: SimStep): Array<Domain.TestResult> {
-  const out: Array<Domain.TestResult> = []
-  const base = { runId: run.id, step: step.plan.name, flaky: false }
-  if (run.project === "t3code" && step.plan.name === "test web" && (step.outcome === "passed" || step.outcome === "failed")) {
-    const tokenFails = step.outcome === "failed"
-    out.push({ ...base, ...TOKEN_TEST, status: tokenFails ? "failed" : "passed", durationMs: 41, message: tokenFails ? "AssertionError: expected '12,400 tokens' to be '12 400 tokens'" : null })
-    const timeout = tokenFails || flakyTimesOut(run)
-    out.push({ ...base, ...FLAKY_TEST, status: timeout ? "timeout" : "passed", durationMs: timeout ? 5000 : 812, message: timeout ? "Test timed out in 5000ms." : null, flaky: true })
+  const out: Array<Domain.TestResult> = [];
+  const base = { runId: run.id, step: step.plan.name, flaky: false };
+  if (
+    run.project === "t3code" &&
+    step.plan.name === "test web" &&
+    (step.outcome === "passed" || step.outcome === "failed")
+  ) {
+    const tokenFails = step.outcome === "failed";
+    out.push({
+      ...base,
+      ...TOKEN_TEST,
+      status: tokenFails ? "failed" : "passed",
+      durationMs: 41,
+      message: tokenFails ? "AssertionError: expected '12,400 tokens' to be '12 400 tokens'" : null,
+    });
+    const timeout = tokenFails || flakyTimesOut(run);
+    out.push({
+      ...base,
+      ...FLAKY_TEST,
+      status: timeout ? "timeout" : "passed",
+      durationMs: timeout ? 5000 : 812,
+      message: timeout ? "Test timed out in 5000ms." : null,
+      flaky: true,
+    });
   }
   if (run.project === "t3code" && step.plan.name === "test server" && step.outcome === "passed") {
-    out.push({ ...base, ...SERVER_TEST, status: "passed", durationMs: 230, message: null, flaky: run.commit.title.includes("Retry git push") })
+    out.push({
+      ...base,
+      ...SERVER_TEST,
+      status: "passed",
+      durationMs: 230,
+      message: null,
+      flaky: run.commit.title.includes("Retry git push"),
+    });
   }
-  if (run.project === "hopwatch" && step.plan.name === "flake check" && (step.outcome === "passed" || step.outcome === "failed")) {
-    const fails = step.outcome === "failed"
-    out.push({ ...base, ...HOP_TEST, status: fails ? "failed" : "passed", durationMs: 18, message: fails ? "expected 1 check-in, received 2\n  at batch.test.ts:48:31" : null })
+  if (
+    run.project === "hopwatch" &&
+    step.plan.name === "flake check" &&
+    (step.outcome === "passed" || step.outcome === "failed")
+  ) {
+    const fails = step.outcome === "failed";
+    out.push({
+      ...base,
+      ...HOP_TEST,
+      status: fails ? "failed" : "passed",
+      durationMs: 18,
+      message: fails ? "expected 1 check-in, received 2\n  at batch.test.ts:48:31" : null,
+    });
   }
-  return out
+  return out;
 }
 
 function testCounts(run: SimRun, s: SimStep): Domain.StepRun["tests"] {
-  const totals: Readonly<Record<string, number>> = { "test web": 403, "test server": 114, qa: 412 }
-  const total = run.project === "hopwatch" && s.plan.name === "flake check" ? 96 : totals[s.plan.name]
-  if (total === undefined) return null
-  const failed = testResults(run, s).filter((t) => t.status === "failed" || t.status === "timeout").length
-  const server = s.plan.name === "test server"
-  return { passed: total - failed - (server ? 2 : 0), failed, skipped: server ? 2 : 0, flaky: server && s.outcome === "passed" ? 1 : 0 }
+  const totals: Readonly<Record<string, number>> = { "test web": 403, "test server": 114, qa: 412 };
+  const total =
+    run.project === "hopwatch" && s.plan.name === "flake check" ? 96 : totals[s.plan.name];
+  if (total === undefined) return null;
+  const failed = testResults(run, s).filter(
+    (t) => t.status === "failed" || t.status === "timeout",
+  ).length;
+  const server = s.plan.name === "test server";
+  return {
+    passed: total - failed - (server ? 2 : 0),
+    failed,
+    skipped: server ? 2 : 0,
+    flaky: server && s.outcome === "passed" ? 1 : 0,
+  };
 }
 
 /* ------------------------------------------------------------------ */
 /* Errors and logs                                                     */
 
-type Line = readonly [at: number, level: Domain.LogLine["level"], stream: Domain.LogLine["stream"], text: string, shard?: number | undefined]
+type Line = readonly [
+  at: number,
+  level: Domain.LogLine["level"],
+  stream: Domain.LogLine["stream"],
+  text: string,
+  shard?: number | undefined,
+];
 
 function errorOf(run: SimRun, s: SimStep): Domain.StepError {
-  const lines = scriptOf(run, s)
-  const excerpt = lines.filter((l) => l[2] !== "calder").slice(-7).map((l) => l[3]).join("\n")
+  const lines = scriptOf(run, s);
+  const excerpt = lines
+    .filter((l) => l[2] !== "calder")
+    .slice(-7)
+    .map((l) => l[3])
+    .join("\n");
   if (run.project === "t3code" && s.plan.name === "test web") {
-    return { tag: "TestFailed", message: "2 tests failed: TokenUsage › formats large counts with a thin space, ThreadView › replays tool output after reconnect (timeout)", excerpt }
+    return {
+      tag: "TestFailed",
+      message:
+        "2 tests failed: TokenUsage › formats large counts with a thin space, ThreadView › replays tool output after reconnect (timeout)",
+      excerpt,
+    };
   }
   if (s.plan.name === "typecheck clients") {
-    return { tag: "CommandFailed", message: "just qa-typecheck-clients exited with code 2", excerpt }
+    return {
+      tag: "CommandFailed",
+      message: "just qa-typecheck-clients exited with code 2",
+      excerpt,
+    };
   }
   if (s.plan.kind === "build") {
-    return { tag: "BuildFailed", message: `builder for '/nix/store/${nixHash(`fail:${run.id}`, 32)}-${run.project}-vitest.drv' failed with exit code 1`, excerpt }
+    return {
+      tag: "BuildFailed",
+      message: `builder for '/nix/store/${nixHash(`fail:${run.id}`, 32)}-${run.project}-vitest.drv' failed with exit code 1`,
+      excerpt,
+    };
   }
-  return { tag: "CommandFailed", message: `${s.plan.detail} exited with code 1`, excerpt }
+  return { tag: "CommandFailed", message: `${s.plan.detail} exited with code 1`, excerpt };
 }
 
-const files = (list: ReadonlyArray<string>, from: number, to: number, shard?: number): Array<Line> =>
-  list.map((f, i) => [from + ((to - from) * i) / Math.max(1, list.length - 1), "info", "stdout", f, shard] as const)
+const files = (
+  list: ReadonlyArray<string>,
+  from: number,
+  to: number,
+  shard?: number,
+): Array<Line> =>
+  list.map(
+    (f, i) =>
+      [
+        from + ((to - from) * i) / Math.max(1, list.length - 1),
+        "info",
+        "stdout",
+        f,
+        shard,
+      ] as const,
+  );
 
 const WEB_FILES = [
-  "src/thread/Timeline.test.tsx (18 tests) 1.94s", "src/components/Sidebar.test.tsx (22 tests) 1.31s", "src/state/threads.test.ts (44 tests) 1.12s",
-  "src/components/DiffView.test.tsx (31 tests) 3.07s", "src/settings/Providers.test.tsx (12 tests) 4.88s", "src/thread/ToolOutput.test.tsx (17 tests) 2.64s",
-  "src/state/settings.test.ts (29 tests) 0.97s", "src/components/Composer.test.tsx (26 tests) 2.21s", "src/thread/Markdown.test.tsx (35 tests) 1.48s",
-  "src/hooks/useKeybindings.test.ts (14 tests) 0.41s", "src/components/ModelPicker.test.tsx (9 tests) 0.88s", "src/state/worktrees.test.ts (21 tests) 0.63s",
-  "src/thread/Scroll.test.tsx (11 tests) 1.02s", "src/components/CommandMenu.test.tsx (16 tests) 1.37s", "src/lib/format.test.ts (38 tests) 0.22s",
-  "src/thread/Approvals.test.tsx (13 tests) 1.76s", "src/components/Terminal.test.tsx (8 tests) 2.95s", "src/state/notifications.test.ts (10 tests) 0.35s",
-].map((f) => ` ✓ ${f}`)
+  "src/thread/Timeline.test.tsx (18 tests) 1.94s",
+  "src/components/Sidebar.test.tsx (22 tests) 1.31s",
+  "src/state/threads.test.ts (44 tests) 1.12s",
+  "src/components/DiffView.test.tsx (31 tests) 3.07s",
+  "src/settings/Providers.test.tsx (12 tests) 4.88s",
+  "src/thread/ToolOutput.test.tsx (17 tests) 2.64s",
+  "src/state/settings.test.ts (29 tests) 0.97s",
+  "src/components/Composer.test.tsx (26 tests) 2.21s",
+  "src/thread/Markdown.test.tsx (35 tests) 1.48s",
+  "src/hooks/useKeybindings.test.ts (14 tests) 0.41s",
+  "src/components/ModelPicker.test.tsx (9 tests) 0.88s",
+  "src/state/worktrees.test.ts (21 tests) 0.63s",
+  "src/thread/Scroll.test.tsx (11 tests) 1.02s",
+  "src/components/CommandMenu.test.tsx (16 tests) 1.37s",
+  "src/lib/format.test.ts (38 tests) 0.22s",
+  "src/thread/Approvals.test.tsx (13 tests) 1.76s",
+  "src/components/Terminal.test.tsx (8 tests) 2.95s",
+  "src/state/notifications.test.ts (10 tests) 0.35s",
+].map((f) => ` ✓ ${f}`);
 
-const DIRS = ["thread", "components", "state", "settings", "hooks", "lib", "sidebar", "composer", "terminal", "diff"]
-const FILES = ["index", "view", "store", "format", "keys", "layout", "item", "list", "panel", "model", "query", "effects"]
+const DIRS = [
+  "thread",
+  "components",
+  "state",
+  "settings",
+  "hooks",
+  "lib",
+  "sidebar",
+  "composer",
+  "terminal",
+  "diff",
+];
+const FILES = [
+  "index",
+  "view",
+  "store",
+  "format",
+  "keys",
+  "layout",
+  "item",
+  "list",
+  "panel",
+  "model",
+  "query",
+  "effects",
+];
 
 /** A big web build's per-module output: long enough that the log pages back. */
 const transforms = (from: number, to: number): Array<Line> =>
   Array.from({ length: 3000 }, (_, i) => {
-    const dir = DIRS[i % DIRS.length] ?? "lib"
-    const file = FILES[Math.floor(i / DIRS.length) % FILES.length] ?? "index"
-    const at = from + ((to - from) * i) / 3000
-    return [at, "info", "stdout", `transform apps/web/src/${dir}/${file}${Math.floor(i / 120)}.tsx ${((fnv(`${i}`) % 900) / 100 + 0.1).toFixed(2)} ms`] as const
-  })
+    const dir = DIRS[i % DIRS.length] ?? "lib";
+    const file = FILES[Math.floor(i / DIRS.length) % FILES.length] ?? "index";
+    const at = from + ((to - from) * i) / 3000;
+    return [
+      at,
+      "info",
+      "stdout",
+      `transform apps/web/src/${dir}/${file}${Math.floor(i / 120)}.tsx ${((fnv(`${i}`) % 900) / 100 + 0.1).toFixed(2)} ms`,
+    ] as const;
+  });
 
 function scriptOf(run: SimRun, s: SimStep): Array<Line> {
-  const sha = short(run.commit.sha)
-  const where = run.event._tag === "PullRequest" ? `pr/${run.project}/1` : `trusted/${run.project}/1`
-  const failed = s.outcome === "failed"
-  const cmd: Line = [0, "info", "calder", s.plan.kind === "build" ? `nix build .#${s.plan.detail.replace(/^\.#/, "")}` : `$ ${s.plan.detail}`]
-  const ws: Line = [0.004, "debug", "calder", `workspace ${where} at ${sha}`]
-  const p = `${run.project}:${s.plan.name}`
+  const sha = short(run.commit.sha);
+  const where =
+    run.event._tag === "PullRequest" ? `pr/${run.project}/1` : `trusted/${run.project}/1`;
+  const failed = s.outcome === "failed";
+  const cmd: Line = [
+    0,
+    "info",
+    "calder",
+    s.plan.kind === "build"
+      ? `nix build .#${s.plan.detail.replace(/^\.#/, "")}`
+      : `$ ${s.plan.detail}`,
+  ];
+  const ws: Line = [0.004, "debug", "calder", `workspace ${where} at ${sha}`];
+  const p = `${run.project}:${s.plan.name}`;
   if (s.plan.kind === "build") {
-    const drv = `/nix/store/${nixHash(`drv:${p}:${sha}`, 32)}-${run.project}-${s.plan.name}.drv`
+    const drv = `/nix/store/${nixHash(`drv:${p}:${sha}`, 32)}-${run.project}-${s.plan.name}.drv`;
     const lines: Array<Line> = [
       cmd,
       [0.01, "debug", "calder", `evaluating ${s.plan.detail} at ${sha}`],
       [0.04, "info", "stderr", `copying ${12 + (fnv(p) % 300)} paths from http://host-b:5080`],
       [0.12, "info", "stderr", `building '${drv}' on host-a`],
-    ]
+    ];
     if (s.plan.name === "flake check") {
-      lines.push([0.3, "info", "stderr", "checking derivation checks.aarch64-linux.lint"], [0.45, "info", "stderr", "checking derivation checks.aarch64-linux.vitest"])
-      lines.push(...files([" ✓ src/api/checkins.test.ts (14 tests) 0.41s", " ✓ src/badges/award.test.ts (22 tests) 0.18s", " ✓ src/digest/weekly.test.ts (9 tests) 0.77s"], 0.5, 0.8))
+      lines.push(
+        [0.3, "info", "stderr", "checking derivation checks.aarch64-linux.lint"],
+        [0.45, "info", "stderr", "checking derivation checks.aarch64-linux.vitest"],
+      );
+      lines.push(
+        ...files(
+          [
+            " ✓ src/api/checkins.test.ts (14 tests) 0.41s",
+            " ✓ src/badges/award.test.ts (22 tests) 0.18s",
+            " ✓ src/digest/weekly.test.ts (9 tests) 0.77s",
+          ],
+          0.5,
+          0.8,
+        ),
+      );
       if (failed) {
         lines.push(
           [0.84, "error", "stdout", " ✗ src/ingest/batch.test.ts (12 tests | 1 failed) 0.52s"],
@@ -745,286 +1305,612 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           [0.87, "error", "stdout", "      ❯ src/ingest/batch.test.ts:48:31"],
           [0.92, "info", "stdout", " Test Files  1 failed | 11 passed (12)"],
           [0.93, "info", "stdout", "      Tests  1 failed | 95 passed (96)"],
-          [0.97, "error", "stderr", `error: builder for '/nix/store/${nixHash(`fail:${run.id}`, 32)}-${run.project}-vitest.drv' failed with exit code 1`],
+          [
+            0.97,
+            "error",
+            "stderr",
+            `error: builder for '/nix/store/${nixHash(`fail:${run.id}`, 32)}-${run.project}-vitest.drv' failed with exit code 1`,
+          ],
           [0.99, "error", "calder", "step failed: BuildFailed"],
-        )
-        return lines
+        );
+        return lines;
       }
-      lines.push([0.92, "info", "stdout", " Test Files  12 passed (12)"], [0.93, "info", "stdout", "      Tests  96 passed (96)"])
+      lines.push(
+        [0.92, "info", "stdout", " Test Files  12 passed (12)"],
+        [0.93, "info", "stdout", "      Tests  96 passed (96)"],
+      );
     }
-    if (s.plan.name === "projectRelease" && run.project === "t3code") lines.push(...transforms(0.2, 0.54))
-    if (s.plan.name === "projectRelease") lines.push([0.55, "info", "stdout", "vite v8.3.2 building for production..."], [0.7, "info", "stdout", `${900 + (fnv(p) % 1500)} modules transformed.`], [0.8, "warn", "stderr", "(!) Some chunks are larger than 500 kB after minification."])
-    if (s.plan.name === "releaseGate") lines.push([0.5, "info", "stdout", "migrations reversible, 0 pending"], [0.8, "info", "stdout", "bindings compatible with host-a"])
-    if (s.plan.name === "pnpmDeps") lines.push([0.5, "info", "stderr", "pnpm install --offline --frozen-lockfile"], [0.8, "info", "stderr", "Packages: +1412"])
-    lines.push([0.99, "info", "stdout", s.plan.name === "projectRelease" ? storePathOf(run) : drv.replace(/\.drv$/, "")])
-    return lines
+    if (s.plan.name === "projectRelease" && run.project === "t3code")
+      lines.push(...transforms(0.2, 0.54));
+    if (s.plan.name === "projectRelease")
+      lines.push(
+        [0.55, "info", "stdout", "vite v8.3.2 building for production..."],
+        [0.7, "info", "stdout", `${900 + (fnv(p) % 1500)} modules transformed.`],
+        [0.8, "warn", "stderr", "(!) Some chunks are larger than 500 kB after minification."],
+      );
+    if (s.plan.name === "releaseGate")
+      lines.push(
+        [0.5, "info", "stdout", "migrations reversible, 0 pending"],
+        [0.8, "info", "stdout", "bindings compatible with host-a"],
+      );
+    if (s.plan.name === "pnpmDeps")
+      lines.push(
+        [0.5, "info", "stderr", "pnpm install --offline --frozen-lockfile"],
+        [0.8, "info", "stderr", "Packages: +1412"],
+      );
+    lines.push([
+      0.99,
+      "info",
+      "stdout",
+      s.plan.name === "projectRelease" ? storePathOf(run) : drv.replace(/\.drv$/, ""),
+    ]);
+    return lines;
   }
   if (s.plan.kind === "task") {
     switch (s.plan.name) {
       case "static":
-        return [cmd, ws, [0.4, "info", "stdout", "oxlint 1.14: 0 problems in 1,204 files"], [0.8, "info", "stdout", "prettier --check: 1,204 files formatted"], [0.99, "info", "calder", "exit 0"]]
+        return [
+          cmd,
+          ws,
+          [0.4, "info", "stdout", "oxlint 1.14: 0 problems in 1,204 files"],
+          [0.8, "info", "stdout", "prettier --check: 1,204 files formatted"],
+          [0.99, "info", "calder", "exit 0"],
+        ];
       case "typecheck clients":
         return failed
-          ? [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"], [0.93, "error", "stdout", "apps/web/src/components/TokenUsage.tsx:12:27 - error TS2339: Property 'usage' does not exist on type 'TurnSummary'."], [0.94, "error", "stdout", "Found 1 error in apps/web/src/components/TokenUsage.tsx:12"], [0.99, "error", "calder", "exit 2"]]
-          : [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"], [0.72, "info", "stdout", "apps/web: 0 errors"], [0.9, "info", "stdout", "apps/desktop, apps/mobile: 0 errors"], [0.99, "info", "calder", "exit 0"]]
+          ? [
+              cmd,
+              ws,
+              [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"],
+              [
+                0.93,
+                "error",
+                "stdout",
+                "apps/web/src/components/TokenUsage.tsx:12:27 - error TS2339: Property 'usage' does not exist on type 'TurnSummary'.",
+              ],
+              [
+                0.94,
+                "error",
+                "stdout",
+                "Found 1 error in apps/web/src/components/TokenUsage.tsx:12",
+              ],
+              [0.99, "error", "calder", "exit 2"],
+            ]
+          : [
+              cmd,
+              ws,
+              [0.3, "info", "stdout", "tsc -b apps/web apps/desktop apps/mobile"],
+              [0.72, "info", "stdout", "apps/web: 0 errors"],
+              [0.9, "info", "stdout", "apps/desktop, apps/mobile: 0 errors"],
+              [0.99, "info", "calder", "exit 0"],
+            ];
       case "typecheck rest":
-        return [cmd, ws, [0.3, "info", "stdout", "tsc -b apps/server packages/*"], [0.99, "info", "stdout", "0 errors in 7 projects"]]
+        return [
+          cmd,
+          ws,
+          [0.3, "info", "stdout", "tsc -b apps/server packages/*"],
+          [0.99, "info", "stdout", "0 errors in 7 projects"],
+        ];
       case "test web": {
-        const lines: Array<Line> = [cmd, ws, [0.01, "info", "stdout", " RUN  v4.1.2 /work/t3code/apps/web"], [0.08, "warn", "stderr", "[vite] warning: Sourcemap for \"shiki/dist/langs.mjs\" points to missing source files"]]
-        lines.push(...files(WEB_FILES, 0.1, 0.86))
+        const lines: Array<Line> = [
+          cmd,
+          ws,
+          [0.01, "info", "stdout", " RUN  v4.1.2 /work/t3code/apps/web"],
+          [
+            0.08,
+            "warn",
+            "stderr",
+            '[vite] warning: Sourcemap for "shiki/dist/langs.mjs" points to missing source files',
+          ],
+        ];
+        lines.push(...files(WEB_FILES, 0.1, 0.86));
         if (failed) {
           lines.push(
-            [0.88, "error", "stdout", " ✗ src/components/TokenUsage.test.tsx (6 tests | 1 failed) 0.86s"],
+            [
+              0.88,
+              "error",
+              "stdout",
+              " ✗ src/components/TokenUsage.test.tsx (6 tests | 1 failed) 0.86s",
+            ],
             [0.881, "error", "stdout", "   × TokenUsage > formats large counts with a thin space"],
-            [0.882, "error", "stdout", "     AssertionError: expected '12,400 tokens' to be '12 400 tokens'"],
+            [
+              0.882,
+              "error",
+              "stdout",
+              "     AssertionError: expected '12,400 tokens' to be '12 400 tokens'",
+            ],
             [0.883, "error", "stdout", "      ❯ src/components/TokenUsage.test.tsx:31:40"],
-            [0.9, "error", "stdout", " ✗ src/thread/ThreadView.test.tsx (19 tests | 1 failed) 5.81s"],
+            [
+              0.9,
+              "error",
+              "stdout",
+              " ✗ src/thread/ThreadView.test.tsx (19 tests | 1 failed) 5.81s",
+            ],
             [0.901, "error", "stdout", "   × ThreadView > replays tool output after reconnect"],
             [0.902, "error", "stdout", "     Error: Test timed out in 5000ms."],
             [0.96, "info", "stdout", " Test Files  2 failed | 40 passed (42)"],
             [0.961, "info", "stdout", "      Tests  2 failed | 401 passed (403)"],
             [0.98, "info", "calder", "report: reports/vitest.json decoded, 2 failing"],
             [0.99, "error", "calder", "exit 1"],
-          )
-          return lines
+          );
+          return lines;
         }
-        lines.push([0.9, "info", "stdout", " ✓ src/components/TokenUsage.test.tsx (6 tests) 0.81s"], [0.96, "info", "stdout", " Test Files  42 passed (42)"], [0.961, "info", "stdout", "      Tests  403 passed (403)"], [0.98, "info", "calder", "report: reports/vitest.json decoded, 403 passed"], [0.99, "info", "calder", "exit 0"])
-        return lines
+        lines.push(
+          [0.9, "info", "stdout", " ✓ src/components/TokenUsage.test.tsx (6 tests) 0.81s"],
+          [0.96, "info", "stdout", " Test Files  42 passed (42)"],
+          [0.961, "info", "stdout", "      Tests  403 passed (403)"],
+          [0.98, "info", "calder", "report: reports/vitest.json decoded, 403 passed"],
+          [0.99, "info", "calder", "exit 0"],
+        );
+        return lines;
       }
       case "test server": {
-        const lines: Array<Line> = [cmd, [0.01, "debug", "calder", "3 shards: 38, 38 and 38 files"]]
+        const lines: Array<Line> = [
+          cmd,
+          [0.01, "debug", "calder", "3 shards: 38, 38 and 38 files"],
+        ];
         for (const shard of [1, 2, 3]) {
-          lines.push([0.02, "info", "calder", `$ just qa-test-server-shard ${shard} 3`, shard])
-          lines.push(...files(["src/git/GitService.test.ts (31 tests)", "src/provider/Codex.test.ts (18 tests)", "src/ws/Protocol.test.ts (40 tests)", "src/db/Threads.test.ts (25 tests)"].map((f) => ` ✓ ${f}`), 0.1 + shard * 0.05, 0.8 + shard * 0.05, shard))
-          lines.push([0.92 + shard * 0.02, "info", "stdout", `shard ${shard} of 3: 38 passed`, shard])
+          lines.push([0.02, "info", "calder", `$ just qa-test-server-shard ${shard} 3`, shard]);
+          lines.push(
+            ...files(
+              [
+                "src/git/GitService.test.ts (31 tests)",
+                "src/provider/Codex.test.ts (18 tests)",
+                "src/ws/Protocol.test.ts (40 tests)",
+                "src/db/Threads.test.ts (25 tests)",
+              ].map((f) => ` ✓ ${f}`),
+              0.1 + shard * 0.05,
+              0.8 + shard * 0.05,
+              shard,
+            ),
+          );
+          lines.push([
+            0.92 + shard * 0.02,
+            "info",
+            "stdout",
+            `shard ${shard} of 3: 38 passed`,
+            shard,
+          ]);
         }
-        if (s.attempts > 1) lines.splice(6, 0, [0.4, "warn", "calder", "shard 2 of 3: TestTimeout, retrying once", 2])
-        return lines
+        if (s.attempts > 1)
+          lines.splice(6, 0, [
+            0.4,
+            "warn",
+            "calder",
+            "shard 2 of 3: TestTimeout, retrying once",
+            2,
+          ]);
+        return lines;
       }
       case "desktop-package":
         return [
-          cmd, [0.002, "info", "calder", "running on mac-a (aarch64-darwin)"], ws,
-          ...files(["electron-vite build: main, preload, renderer", "electron-builder --mac --arm64", "packaging T3 Code.app for darwin arm64", "signing with Developer ID Application: Hauke Schnau", "notarizing T3 Code.app with notarytool", "notarytool: status Accepted", "stapling the notarization ticket"], 0.05, 0.92),
-          [0.97, "info", "stdout", "dist/T3 Code-0.9.4-arm64.dmg (148.2 MB)"], [0.99, "info", "calder", "exit 0"],
-        ]
+          cmd,
+          [0.002, "info", "calder", "running on mac-a (aarch64-darwin)"],
+          ws,
+          ...files(
+            [
+              "electron-vite build: main, preload, renderer",
+              "electron-builder --mac --arm64",
+              "packaging T3 Code.app for darwin arm64",
+              "signing with Developer ID Application: Hauke Schnau",
+              "notarizing T3 Code.app with notarytool",
+              "notarytool: status Accepted",
+              "stapling the notarization ticket",
+            ],
+            0.05,
+            0.92,
+          ),
+          [0.97, "info", "stdout", "dist/T3 Code-0.9.4-arm64.dmg (148.2 MB)"],
+          [0.99, "info", "calder", "exit 0"],
+        ];
       case "testflight":
         return [
-          cmd, [0.002, "info", "calder", "running on mac-a (aarch64-darwin)"], ws,
-          [0.1, "info", "stdout", "xcodebuild archive -scheme T3Mobile -configuration Release"], [0.55, "info", "stdout", "** ARCHIVE SUCCEEDED **"],
-          [0.6, "info", "stdout", "xcrun altool --upload-app -f T3Mobile.ipa"], [0.97, "info", "stdout", "uploaded build 0.9.4 (412) to TestFlight"], [0.99, "info", "calder", "exit 0"],
-        ]
+          cmd,
+          [0.002, "info", "calder", "running on mac-a (aarch64-darwin)"],
+          ws,
+          [0.1, "info", "stdout", "xcodebuild archive -scheme T3Mobile -configuration Release"],
+          [0.55, "info", "stdout", "** ARCHIVE SUCCEEDED **"],
+          [0.6, "info", "stdout", "xcrun altool --upload-app -f T3Mobile.ipa"],
+          [0.97, "info", "stdout", "uploaded build 0.9.4 (412) to TestFlight"],
+          [0.99, "info", "calder", "exit 0"],
+        ];
       case "qa": {
-        const lines: Array<Line> = [cmd, ws, [0.02, "info", "stdout", "oxlint: 0 problems in 318 files"], [0.12, "info", "stdout", "tsc -b: 0 errors"]]
-        const total = 412
-        for (let i = 1; i <= 24; i++) lines.push([0.15 + (0.8 * i) / 24, "info", "stdout", `vitest: ${Math.round((total * i) / 24)} of ${total} done`])
-        lines.push([0.4, "warn", "stderr", "moodle-sync: MOODLE_TOKEN not set, sync tests use the fixture"], [0.98, "info", "stdout", `vitest: ${total} passed (${total})`], [0.99, "info", "calder", "report: reports/junit.xml decoded, 412 passed"])
-        return lines.sort((a, b) => a[0] - b[0])
+        const lines: Array<Line> = [
+          cmd,
+          ws,
+          [0.02, "info", "stdout", "oxlint: 0 problems in 318 files"],
+          [0.12, "info", "stdout", "tsc -b: 0 errors"],
+        ];
+        const total = 412;
+        for (let i = 1; i <= 24; i++)
+          lines.push([
+            0.15 + (0.8 * i) / 24,
+            "info",
+            "stdout",
+            `vitest: ${Math.round((total * i) / 24)} of ${total} done`,
+          ]);
+        lines.push(
+          [0.4, "warn", "stderr", "moodle-sync: MOODLE_TOKEN not set, sync tests use the fixture"],
+          [0.98, "info", "stdout", `vitest: ${total} passed (${total})`],
+          [0.99, "info", "calder", "report: reports/junit.xml decoded, 412 passed"],
+        );
+        return lines.sort((a, b) => a[0] - b[0]);
       }
     }
-    return [cmd, ws, [0.99, "info", "calder", "exit 0"]]
+    return [cmd, ws, [0.99, "info", "calder", "exit 0"]];
   }
-  if (s.plan.name === "promote") return promoteScript(run, s)
-  return [[0, "info", "calder", "Gitea.comment"], [0.9, "info", "calder", `comment posted on PR #${run.event._tag === "PullRequest" ? run.event.number : 0}`]]
+  if (s.plan.name === "promote") return promoteScript(run, s);
+  return [
+    [0, "info", "calder", "Gitea.comment"],
+    [
+      0.9,
+      "info",
+      "calder",
+      `comment posted on PR #${run.event._tag === "PullRequest" ? run.event.number : 0}`,
+    ],
+  ];
 }
 
 /** Phase boundaries of a deploy as fractions of the promote step: per host, from start to activation. */
 export function phases(run: SimRun): Array<{ host: string; from: number; activate: number }> {
-  const hosts = hostsOf(run.project)
-  return hosts.map((host, i) => ({ host, from: (i / hosts.length) * 0.97, activate: ((i + 1) / hosts.length) * 0.97 - 0.01 }))
+  const hosts = hostsOf(run.project);
+  return hosts.map((host, i) => ({
+    host,
+    from: (i / hosts.length) * 0.97,
+    activate: ((i + 1) / hosts.length) * 0.97 - 0.01,
+  }));
 }
 
 function promoteScript(run: SimRun, s: SimStep): Array<Line> {
-  const sha = short(run.commit.sha)
-  const duration = (s.finishedAt - s.startedAt) / 1000
-  const after = [...(s.plan.after ?? [])]
+  const sha = short(run.commit.sha);
+  const duration = (s.finishedAt - s.startedAt) / 1000;
+  const after = [...(s.plan.after ?? [])];
   const lines: Array<Line> = [
-    [0, "info", "calder", `lease deploy:${run.project} acquired (latest wins, fencing token ${1100 + run.number})`],
+    [
+      0,
+      "info",
+      "calder",
+      `lease deploy:${run.project} acquired (latest wins, fencing token ${1100 + run.number})`,
+    ],
     [0.002, "info", "calder", `required checks passed: ${after.join(", ")}`],
-  ]
+  ];
   for (const ph of phases(run)) {
-    const span = ph.activate - ph.from
-    const at = (f: number) => ph.from + span * f
-    lines.push([at(0.01), "info", "calder", `POST ${ph.host}:18100/preflight/${run.project} 200`])
-    lines.push([at(0.04), "info", "calder", `cache: narinfo for ${storePathOf(run).slice(11, 19)} present`])
-    lines.push([at(0.06), "info", "calder", `head check: main still at ${sha}`])
-    lines.push([at(0.08), "info", "calder", `POST ${ph.host}:18100/deploy/${run.project} 202 (fence ${1100 + run.number})`])
-    const polls = Math.max(1, Math.floor((span * duration) / 15))
+    const span = ph.activate - ph.from;
+    const at = (f: number) => ph.from + span * f;
+    lines.push([at(0.01), "info", "calder", `POST ${ph.host}:18100/preflight/${run.project} 200`]);
+    lines.push([
+      at(0.04),
+      "info",
+      "calder",
+      `cache: narinfo for ${storePathOf(run).slice(11, 19)} present`,
+    ]);
+    lines.push([at(0.06), "info", "calder", `head check: main still at ${sha}`]);
+    lines.push([
+      at(0.08),
+      "info",
+      "calder",
+      `POST ${ph.host}:18100/deploy/${run.project} 202 (fence ${1100 + run.number})`,
+    ]);
+    const polls = Math.max(1, Math.floor((span * duration) / 15));
     for (let i = 1; i < polls; i++) {
-      lines.push([at(0.1 + (0.88 * i) / polls), "debug", "calder", `readiness: ${ph.host} still reports the previous revision, retry in 15 s`])
+      lines.push([
+        at(0.1 + (0.88 * i) / polls),
+        "debug",
+        "calder",
+        `readiness: ${ph.host} still reports the previous revision, retry in 15 s`,
+      ]);
     }
-    lines.push([at(1), "info", "calder", `readiness: ${ph.host} reports ${sha}`])
+    lines.push([at(1), "info", "calder", `readiness: ${ph.host} reports ${sha}`]);
   }
-  lines.push([0.99, "info", "calder", `${run.project} ${sha} live on ${hostsOf(run.project).join(", ")}`])
-  return lines
+  lines.push([
+    0.99,
+    "info",
+    "calder",
+    `${run.project} ${sha} live on ${hostsOf(run.project).join(", ")}`,
+  ]);
+  return lines;
 }
 
 export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.LogLine> {
-  const st = stepState(run, s, now)
-  const name = s.plan.name
+  const st = stepState(run, s, now);
+  const name = s.plan.name;
   if (st.status === "reused") {
-    return [{ step: name, shard: null, stream: "calder", level: "info", timestamp: s.queuedAt, text: s.plan.kind === "build" ? `already built: ${s.key ?? ""}` : `reused ${s.key ?? ""} from run ${s.reusedFrom ?? ""}, nothing ran` }]
+    return [
+      {
+        step: name,
+        shard: null,
+        stream: "calder",
+        level: "info",
+        timestamp: s.queuedAt,
+        text:
+          s.plan.kind === "build"
+            ? `already built: ${s.key ?? ""}`
+            : `reused ${s.key ?? ""} from run ${s.reusedFrom ?? ""}, nothing ran`,
+      },
+    ];
   }
   if (st.status === "blocked") {
-    return [{ step: name, shard: null, stream: "calder", level: "info", timestamp: s.finishedAt, text: "blocked: a step it depends on didn't pass" }]
+    return [
+      {
+        step: name,
+        shard: null,
+        stream: "calder",
+        level: "info",
+        timestamp: s.finishedAt,
+        text: "blocked: a step it depends on didn't pass",
+      },
+    ];
   }
   if (st.status === "queued" && s.plan.platform !== undefined) {
-    return [{ step: name, shard: null, stream: "calder", level: "info", timestamp: s.queuedAt, text: `waiting for a ${s.plan.platform} agent` }]
+    return [
+      {
+        step: name,
+        shard: null,
+        stream: "calder",
+        level: "info",
+        timestamp: s.queuedAt,
+        text: `waiting for a ${s.plan.platform} agent`,
+      },
+    ];
   }
-  if (st.startedAt === null) return []
-  const duration = s.finishedAt - s.startedAt
-  const until = st.finishedAt ?? now
+  if (st.startedAt === null) return [];
+  const duration = s.finishedAt - s.startedAt;
+  const until = st.finishedAt ?? now;
   const out: Array<Domain.LogLine> = scriptOf(run, s)
     .sort((a, b) => a[0] - b[0])
-    .map(([at, level, stream, text, shard]) => ({ step: name, shard: shard ?? null, stream, level, timestamp: Math.round(s.startedAt + at * duration), text }))
-    .filter((l) => l.timestamp <= until)
-  if (st.status === "cancelled") out.push({ step: name, shard: null, stream: "calder", level: "warn", timestamp: until, text: "cancelled by hauke" })
-  return out
+    .map(([at, level, stream, text, shard]) => ({
+      step: name,
+      shard: shard ?? null,
+      stream,
+      level,
+      timestamp: Math.round(s.startedAt + at * duration),
+      text,
+    }))
+    .filter((l) => l.timestamp <= until);
+  if (st.status === "cancelled")
+    out.push({
+      step: name,
+      shard: null,
+      stream: "calder",
+      level: "warn",
+      timestamp: until,
+      text: "cancelled by hauke",
+    });
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
 /* Traces and metrics                                                  */
 
 export function trace(run: SimRun, now: number): Array<Domain.Span> {
-  const status = runStatus(run, now)
-  const end = isActive(status) ? now : (status === "cancelled" ? run.cancelledAt ?? run.finishedAt : run.finishedAt)
-  const root = hex(`span:${run.id}:root`, 16)
-  const spans: Array<Domain.Span> = [{
-    spanId: root, parentId: null, name: `run ${run.project} #${run.number}`, start: run.createdAt, end,
-    status: isActive(status) ? "unset" : status === "failed" ? "error" : "ok",
-    attributes: { "calder.run": run.id, "calder.project": run.project },
-  }]
-  spans.push({ spanId: hex(`span:${run.id}:plan`, 16), parentId: root, name: "plan", start: run.createdAt, end: run.startedAt, status: "ok", attributes: { "calder.project": run.project, "calder.run": run.id } })
+  const status = runStatus(run, now);
+  const end = isActive(status)
+    ? now
+    : status === "cancelled"
+      ? (run.cancelledAt ?? run.finishedAt)
+      : run.finishedAt;
+  const root = hex(`span:${run.id}:root`, 16);
+  const spans: Array<Domain.Span> = [
+    {
+      spanId: root,
+      parentId: null,
+      name: `run ${run.project} #${run.number}`,
+      start: run.createdAt,
+      end,
+      status: isActive(status) ? "unset" : status === "failed" ? "error" : "ok",
+      attributes: { "calder.run": run.id, "calder.project": run.project },
+    },
+  ];
+  spans.push({
+    spanId: hex(`span:${run.id}:plan`, 16),
+    parentId: root,
+    name: "plan",
+    start: run.createdAt,
+    end: run.startedAt,
+    status: "ok",
+    attributes: { "calder.project": run.project, "calder.run": run.id },
+  });
   for (const s of run.steps) {
-    const st = stepState(run, s, now)
-    if (st.status === "pending" || st.status === "blocked" || st.status === "queued") continue
-    const id = spanIdOf(run, s.plan.name)
-    const from = st.status === "reused" ? s.queuedAt : st.startedAt ?? s.queuedAt
-    const to = st.finishedAt ?? now
-    const open = st.finishedAt === null
+    const st = stepState(run, s, now);
+    if (st.status === "pending" || st.status === "blocked" || st.status === "queued") continue;
+    const id = spanIdOf(run, s.plan.name);
+    const from = st.status === "reused" ? s.queuedAt : (st.startedAt ?? s.queuedAt);
+    const to = st.finishedAt ?? now;
+    const open = st.finishedAt === null;
     spans.push({
-      spanId: id, parentId: root, name: s.plan.name, start: from, end: to,
+      spanId: id,
+      parentId: root,
+      name: s.plan.name,
+      start: from,
+      end: to,
       status: open ? "unset" : st.status === "failed" || st.status === "died" ? "error" : "ok",
       attributes: {
-        "calder.project": run.project, "calder.run": run.id, "calder.step": s.plan.name, "calder.kind": s.plan.kind, "calder.status": st.status,
+        "calder.project": run.project,
+        "calder.run": run.id,
+        "calder.step": s.plan.name,
+        "calder.kind": s.plan.kind,
+        "calder.status": st.status,
         ...(s.key ? { "calder.key": s.key } : {}),
       },
-    })
-    if (st.status === "reused" || st.startedAt === null) continue
-    const d = s.finishedAt - s.startedAt
-    const child = (name: string, a: number, b: number, attributes: Record<string, string>, err = false) => {
-      const cs = s.startedAt + a * d
-      if (cs > to) return
-      const ce = Math.min(to, s.startedAt + b * d)
-      spans.push({ spanId: hex(`span:${run.id}:${s.plan.name}:${name}`, 16), parentId: id, name, start: cs, end: ce, status: ce >= to && open ? "unset" : err ? "error" : "ok", attributes })
-    }
+    });
+    if (st.status === "reused" || st.startedAt === null) continue;
+    const d = s.finishedAt - s.startedAt;
+    const child = (
+      name: string,
+      a: number,
+      b: number,
+      attributes: Record<string, string>,
+      err = false,
+    ) => {
+      const cs = s.startedAt + a * d;
+      if (cs > to) return;
+      const ce = Math.min(to, s.startedAt + b * d);
+      spans.push({
+        spanId: hex(`span:${run.id}:${s.plan.name}:${name}`, 16),
+        parentId: id,
+        name,
+        start: cs,
+        end: ce,
+        status: ce >= to && open ? "unset" : err ? "error" : "ok",
+        attributes,
+      });
+    };
     if (s.plan.kind === "build") {
-      child("evaluate", 0, 0.03, { "nix.activity": "eval" })
-      child(`substitute ${12 + (fnv(s.plan.name) % 300)} paths`, 0.03, 0.12, { "nix.activity": "substitute" })
-      child(`build ${s.plan.name}`, 0.12, 0.99, { "nix.activity": "build", ...(s.key ? { "nix.drv": s.key } : {}) }, st.status === "failed")
+      child("evaluate", 0, 0.03, { "nix.activity": "eval" });
+      child(`substitute ${12 + (fnv(s.plan.name) % 300)} paths`, 0.03, 0.12, {
+        "nix.activity": "substitute",
+      });
+      child(
+        `build ${s.plan.name}`,
+        0.12,
+        0.99,
+        { "nix.activity": "build", ...(s.key ? { "nix.drv": s.key } : {}) },
+        st.status === "failed",
+      );
     } else if (s.plan.kind === "task") {
-      child("workspace", 0, 0.01, {})
-      child(".ci/setup", 0.01, 0.04, {})
+      child("workspace", 0, 0.01, {});
+      child(".ci/setup", 0.01, 0.04, {});
       if (s.plan.shards) {
-        for (let i = 1; i <= s.plan.shards; i++) child(`shard ${i} of ${s.plan.shards}`, 0.04, 0.9 + i * 0.03, {})
+        for (let i = 1; i <= s.plan.shards; i++)
+          child(`shard ${i} of ${s.plan.shards}`, 0.04, 0.9 + i * 0.03, {});
       } else {
-        child(s.plan.detail, 0.04, 0.99, {}, st.status === "failed")
+        child(s.plan.detail, 0.04, 0.99, {}, st.status === "failed");
       }
     } else if (s.plan.name === "promote") {
-      child(`lease deploy:${run.project}`, 0, 0.002, { "calder.fence": String(1100 + run.number) })
+      child(`lease deploy:${run.project}`, 0, 0.002, { "calder.fence": String(1100 + run.number) });
       for (const ph of phases(run)) {
-        const span = ph.activate - ph.from
-        const deploy = `http://${ph.host}:18100`
-        child(`POST ${ph.host} /preflight`, ph.from + span * 0.005, ph.from + span * 0.02, { "http.url": `${deploy}/preflight/${run.project}`, "http.status": "200" })
-        child("query narinfo", ph.from + span * 0.02, ph.from + span * 0.04, { "nix.activity": "query" })
-        child(`POST ${ph.host} /deploy`, ph.from + span * 0.07, ph.from + span * 0.1, { "http.url": `${deploy}/deploy/${run.project}`, "http.status": "202", "calder.fence": String(1100 + run.number) })
-        child(`readiness ${ph.host}`, ph.from + span * 0.1, ph.activate, { "http.url": `${urlOf(run.project)}/api/health/ready` })
+        const span = ph.activate - ph.from;
+        const deploy = `http://${ph.host}:18100`;
+        child(`POST ${ph.host} /preflight`, ph.from + span * 0.005, ph.from + span * 0.02, {
+          "http.url": `${deploy}/preflight/${run.project}`,
+          "http.status": "200",
+        });
+        child("query narinfo", ph.from + span * 0.02, ph.from + span * 0.04, {
+          "nix.activity": "query",
+        });
+        child(`POST ${ph.host} /deploy`, ph.from + span * 0.07, ph.from + span * 0.1, {
+          "http.url": `${deploy}/deploy/${run.project}`,
+          "http.status": "202",
+          "calder.fence": String(1100 + run.number),
+        });
+        child(`readiness ${ph.host}`, ph.from + span * 0.1, ph.activate, {
+          "http.url": `${urlOf(run.project)}/api/health/ready`,
+        });
       }
     } else {
-      child(s.plan.detail, 0, 0.99, {})
+      child(s.plan.detail, 0, 0.99, {});
     }
   }
-  return spans
+  return spans;
 }
 
 export function metrics(run: SimRun, s: SimStep, now: number): Domain.Metrics {
-  const st = stepState(run, s, now)
-  if (st.startedAt === null) return { samples: [] }
-  const until = st.finishedAt ?? now
-  const base = s.plan.kind === "build" ? 310 : s.plan.kind === "task" ? 170 : 4
-  const mem = s.plan.kind === "build" ? 2.1 : s.plan.kind === "task" ? 1.1 : 0.06
-  const samples: Array<Domain.Metrics["samples"][number]> = []
-  const seed = fnv(`${run.id}:${s.plan.name}`)
+  const st = stepState(run, s, now);
+  if (st.startedAt === null) return { samples: [] };
+  const until = st.finishedAt ?? now;
+  const base = s.plan.kind === "build" ? 310 : s.plan.kind === "task" ? 170 : 4;
+  const mem = s.plan.kind === "build" ? 2.1 : s.plan.kind === "task" ? 1.1 : 0.06;
+  const samples: Array<Domain.Metrics["samples"][number]> = [];
+  const seed = fnv(`${run.id}:${s.plan.name}`);
   for (let t = st.startedAt, i = 0; t <= until; t += 2000, i++) {
-    const wave = Math.sin(i / 3 + (seed % 7)) * 0.22 + Math.sin(i / 11) * 0.12
-    const ramp = Math.min(1, i / 8)
-    samples.push({ timestamp: t, cpuPercent: Math.max(2, Math.round(base * (0.55 + 0.45 * ramp) * (1 + wave))), memoryBytes: Math.round(mem * 2 ** 30 * (0.35 + 0.65 * ramp) * (1 + wave * 0.15)) })
+    const wave = Math.sin(i / 3 + (seed % 7)) * 0.22 + Math.sin(i / 11) * 0.12;
+    const ramp = Math.min(1, i / 8);
+    samples.push({
+      timestamp: t,
+      cpuPercent: Math.max(2, Math.round(base * (0.55 + 0.45 * ramp) * (1 + wave))),
+      memoryBytes: Math.round(mem * 2 ** 30 * (0.35 + 0.65 * ramp) * (1 + wave * 0.15)),
+    });
   }
-  return { samples: samples.slice(-400) }
+  return { samples: samples.slice(-400) };
 }
 
 /* ------------------------------------------------------------------ */
 /* Deployments                                                         */
 
-type MutableDeployment = { -readonly [K in keyof Domain.Deployment]: Domain.Deployment[K] }
+type MutableDeployment = { -readonly [K in keyof Domain.Deployment]: Domain.Deployment[K] };
 
 /** Folds every promote that has started by `now` into what each host runs. */
 export function deployments(world: World, now: number): Array<Domain.Deployment> {
-  const state = new Map<string, MutableDeployment>()
+  const state = new Map<string, MutableDeployment>();
   for (const project of PROJECTS) {
     for (const host of hostsOf(project)) {
-      state.set(`${project}|${host}`, { project, host, revision: null, storePath: null, pending: null, previous: null, since: null, healthy: null, url: urlOf(project), deployingRun: null })
+      state.set(`${project}|${host}`, {
+        project,
+        host,
+        revision: null,
+        storePath: null,
+        pending: null,
+        previous: null,
+        since: null,
+        healthy: null,
+        url: urlOf(project),
+        deployingRun: null,
+      });
     }
   }
   const promotes = world.runs
-    .flatMap((run) => run.steps.filter((s) => s.plan.name === "promote" && s.outcome === "passed").map((s) => ({ run, s })))
-    .sort((a, b) => a.s.startedAt - b.s.startedAt)
+    .flatMap((run) =>
+      run.steps
+        .filter((s) => s.plan.name === "promote" && s.outcome === "passed")
+        .map((s) => ({ run, s })),
+    )
+    .sort((a, b) => a.s.startedAt - b.s.startedAt);
   for (const { run, s } of promotes) {
-    if (now < s.startedAt) continue
-    const d = s.finishedAt - s.startedAt
+    if (now < s.startedAt) continue;
+    const d = s.finishedAt - s.startedAt;
     for (const ph of phases(run)) {
-      const dep = state.get(`${run.project}|${ph.host}`)
-      if (!dep) continue
-      const from = s.startedAt + ph.from * d
-      const activate = s.startedAt + ph.activate * d
-      const cut = run.cancelledAt
+      const dep = state.get(`${run.project}|${ph.host}`);
+      if (!dep) continue;
+      const from = s.startedAt + ph.from * d;
+      const activate = s.startedAt + ph.activate * d;
+      const cut = run.cancelledAt;
       if (cut !== null && cut < activate) {
-        dep.deployingRun = now >= from && now < cut ? run.id : dep.deployingRun === run.id ? null : dep.deployingRun
-        continue
+        dep.deployingRun =
+          now >= from && now < cut ? run.id : dep.deployingRun === run.id ? null : dep.deployingRun;
+        continue;
       }
       if (now >= activate) {
-        if (dep.revision !== run.commit.sha) dep.previous = dep.revision
-        dep.revision = run.commit.sha
-        dep.storePath = storePathOf(run)
-        dep.since = Math.round(activate)
-        dep.healthy = true
-        if (dep.deployingRun === run.id) dep.deployingRun = null
+        if (dep.revision !== run.commit.sha) dep.previous = dep.revision;
+        dep.revision = run.commit.sha;
+        dep.storePath = storePathOf(run);
+        dep.since = Math.round(activate);
+        dep.healthy = true;
+        if (dep.deployingRun === run.id) dep.deployingRun = null;
       } else if (now >= from) {
-        dep.deployingRun = run.id
+        dep.deployingRun = run.id;
       }
     }
   }
-  const audioFinder = state.get("audio-finder|host-a")
-  if (audioFinder) audioFinder.healthy = false
-  const merkbeet = state.get("merkbeet|host-a")
-  if (merkbeet) merkbeet.healthy = null
-  const photoAlbum = state.get("photo-album|host-a")
-  if (photoAlbum) photoAlbum.pending = hex("sha:photo-album:incompatible", 40)
-  return [...state.values()]
+  const audioFinder = state.get("audio-finder|host-a");
+  if (audioFinder) audioFinder.healthy = false;
+  const merkbeet = state.get("merkbeet|host-a");
+  if (merkbeet) merkbeet.healthy = null;
+  const photoAlbum = state.get("photo-album|host-a");
+  if (photoAlbum) photoAlbum.pending = hex("sha:photo-album:incompatible", 40);
+  return [...state.values()];
 }
 
 /** Every activation of a revision on a host by `now`, newest first. */
 export function deployRecords(world: World, now: number): Array<Domain.DeploymentRecord> {
-  const out: Array<Domain.DeploymentRecord> = []
+  const out: Array<Domain.DeploymentRecord> = [];
   for (const run of world.runs) {
     for (const s of run.steps) {
-      if (s.plan.name !== "promote" || s.outcome !== "passed" || now < s.startedAt) continue
-      const d = s.finishedAt - s.startedAt
+      if (s.plan.name !== "promote" || s.outcome !== "passed" || now < s.startedAt) continue;
+      const d = s.finishedAt - s.startedAt;
       for (const ph of phases(run)) {
-        const at = s.startedAt + ph.activate * d
-        if (at > now || (run.cancelledAt !== null && run.cancelledAt < at)) continue
-        out.push({ project: run.project, host: ph.host, revision: run.commit.sha, storePath: storePathOf(run), runId: run.id, runNumber: run.number, at: Math.round(at) })
+        const at = s.startedAt + ph.activate * d;
+        if (at > now || (run.cancelledAt !== null && run.cancelledAt < at)) continue;
+        out.push({
+          project: run.project,
+          host: ph.host,
+          revision: run.commit.sha,
+          storePath: storePathOf(run),
+          runId: run.id,
+          runNumber: run.number,
+          at: Math.round(at),
+        });
       }
     }
   }
-  return out.sort((a, b) => b.at - a.at)
+  return out.sort((a, b) => b.at - a.at);
 }

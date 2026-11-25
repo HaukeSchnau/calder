@@ -1,79 +1,79 @@
-import type { Schema } from "effect"
-import type { Cmd } from "./Cmd.ts"
-import * as Files from "./Files.ts"
-import type { FlakeRef } from "./Flake.ts"
-import type { TaskFailed } from "./Calder.ts"
-import type { ReportSpec } from "./Report.ts"
-import type { SecretRef } from "./Secret.ts"
-import type { Setup } from "./Setup.ts"
-import { make as makeStep, type Platform, type Shard, type Step } from "./Step.ts"
+import type { Schema } from "effect";
+import type { Cmd } from "./Cmd.ts";
+import * as Files from "./Files.ts";
+import type { FlakeRef } from "./Flake.ts";
+import type { TaskFailed } from "./Calder.ts";
+import type { ReportSpec } from "./Report.ts";
+import type { SecretRef } from "./Secret.ts";
+import type { Setup } from "./Setup.ts";
+import { make as makeStep, type Platform, type Shard, type Step } from "./Step.ts";
 
 export interface Options<R, O extends { readonly [name: string]: string }, A = void> {
   /** The toolchain: a dev shell of the repository's flake. Without it the task runs with the host's PATH. */
-  readonly shell?: FlakeRef<"devShells">
+  readonly shell?: FlakeRef<"devShells">;
   /** The setup the workspace starts from, such as installed dependencies. */
-  readonly setup?: Setup
-  readonly run: Cmd<R> | ((shard: Shard) => Cmd<R>)
+  readonly setup?: Setup;
+  readonly run: Cmd<R> | ((shard: Shard) => Cmd<R>);
   /**
    * What the task reads. Defaults to the whole repository; with `each`, what every file's key shares,
    * by default the root manifest and lockfiles (add configs and setup files the files run with). The
    * setup's key is part of the task's, so a task with a setup needn't list what the setup reads.
    */
-  readonly inputs?: Files.Files
+  readonly inputs?: Files.Files;
   /**
    * Files the task checks one by one, such as test files, usually `Files.imports(...)`. Each has its own
    * key, a file that passed with its key doesn't run again, and `run` gets the files a job should
    * check. Needs a `report` that names files, so Calder knows which passed.
    */
-  readonly each?: Files.Files
+  readonly each?: Files.Files;
   /** Steps that must pass first. They don't enter the task's key. */
-  readonly after?: ReadonlyArray<Step.Any>
+  readonly after?: ReadonlyArray<Step.Any>;
   /**
    * Steps that must end first, in any state: the task runs whether they passed, were skipped or failed,
    * where `after` would skip or block it. For an order alone, such as a deploy that restarts the
    * controller going last. They don't enter the task's key.
    */
-  readonly afterEnded?: ReadonlyArray<Step.Any>
+  readonly afterEnded?: ReadonlyArray<Step.Any>;
   /**
    * Steps that must pass first like `after`, on the task's critical path: a deploy gated on them waits
    * for them in the latency lane, such as a preview on a smoke test of what it deploys. Keep them few
    * and quick; checks a deploy only waits for belong in `after`.
    */
-  readonly gate?: ReadonlyArray<Step.Any>
-  readonly report?: ReportSpec
+  readonly gate?: ReadonlyArray<Step.Any>;
+  readonly report?: ReportSpec;
   /** Runs the task as `count` parallel shards. With `split`, each shard gets a share of the files; with `each`, at most `count` jobs run. */
-  readonly shards?: { readonly count: number; readonly split?: Files.Files }
+  readonly shards?: { readonly count: number; readonly split?: Files.Files };
   /** Paths the task writes, added to the Nix store by content. Each becomes a step: `task.outputs.name`. */
-  readonly outputs?: O
+  readonly outputs?: O;
   /**
    * A JSON file the task writes, decoded with `schema` once its command passed: the task's value, which
    * `needs` and `cmd` hand to other steps. Only what the schema decodes reaches the journal, and the file
    * itself never enters the store, so it may hold secrets the schema leaves out.
    */
-  readonly value?: { readonly path: string; readonly schema: Schema.Decoder<A> }
+  readonly value?: { readonly path: string; readonly schema: Schema.Decoder<A> };
   /** Environment variables pointing at secret files. Trusted runs only. */
-  readonly secrets?: { readonly [env: string]: SecretRef }
-  readonly env?: { readonly [env: string]: string }
-  readonly platform?: Platform
+  readonly secrets?: { readonly [env: string]: SecretRef };
+  readonly env?: { readonly [env: string]: string };
+  readonly platform?: Platform;
   /**
    * `"never"`: the task runs every time, also where its rule reuses results, such as a task that checks
    * the machine rather than the code. The rule's `reuse` still applies to its other steps. A rerun
    * (`calder rerun`) takes its result from the run it repeats where it passed there with the same key and
    * secrets, unless `--force`.
    */
-  readonly reuse?: "never"
+  readonly reuse?: "never";
   /**
    * `false`: the task runs on the controller's host, never on an agent that only takes load off it,
    * such as a task that writes to a directory only that host has. Tasks of another `platform` still
    * run on their platform's agents.
    */
-  readonly offload?: false
+  readonly offload?: false;
   /**
    * Store paths the task deploys, by the environment variable that gets each path, such as
    * `{ CALDER_BUNDLE: bundle }`. The task waits for those steps; holding the lease, it publishes each path
    * to the binary cache first, kept as that variable's release of the step.
    */
-  readonly artifacts?: { readonly [env: string]: Step<string, any, any, any, never> }
+  readonly artifacts?: { readonly [env: string]: Step<string, any, any, any, never> };
   /**
    * `true`: the task holds the deploy lease while its command runs, like `Release.promote`: the project's,
    * or in a pull request's run the pull request's own, so its previews and their removal take turns.
@@ -83,18 +83,27 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
    * A name holds a lease of the project's own instead, `<project>#<name>`, with the same rules, for
    * deploys that neither wait for the project's others nor hold them up, such as an app store build.
    */
-  readonly lease?: true | string
+  readonly lease?: true | string;
   /**
    * An exit code that means the task didn't do its work and that's no failure, such as a deploy to a
    * host that is offline. The step ends as skipped, with the last line the command printed as the reason.
    */
-  readonly skipCode?: number
+  readonly skipCode?: number;
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
 const dependencyFiles = Files.optional(
-  Files.glob("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", ".npmrc"),
-)
+  Files.glob(
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "package-lock.json",
+    "yarn.lock",
+    ".npmrc",
+  ),
+);
 
 /**
  * A command in a pinned toolchain, run in a persistent workspace of the repository. It is keyed by the
@@ -116,7 +125,10 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     gate: options.gate ?? [],
     afterEnded: options.afterEnded ?? [],
     report: options.report,
-    shards: options.shards === undefined ? undefined : { count: options.shards.count, split: options.shards.split },
+    shards:
+      options.shards === undefined
+        ? undefined
+        : { count: options.shards.count, split: options.shards.split },
     outputs: options.outputs ?? {},
     value: options.value,
     secrets: options.secrets ?? {},
@@ -127,4 +139,4 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     lease: options.lease,
     artifacts: options.artifacts ?? {},
     skipCode: options.skipCode,
-  }) as Step<A, TaskFailed, R, O>
+  }) as Step<A, TaskFailed, R, O>;

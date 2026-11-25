@@ -1,112 +1,216 @@
-import * as BunChildProcessSpawner from "@effect/platform-bun/BunChildProcessSpawner"
-import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
-import * as BunPath from "@effect/platform-bun/BunPath"
-import { describe, expect, it } from "@effect/vitest"
-import { cmd, Files, Calder, On, Task } from "@calder-ci/core"
-import { Effect, Layer } from "effect"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { vi } from "vite-plus/test"
-import { Refused } from "@calder-ci/api"
-import { checkFiles, type Client, drop, gitRef, push, submit, target, workingCopy } from "../src/Check.ts"
-import * as Exec from "../src/Exec.ts"
+import * as BunChildProcessSpawner from "@effect/platform-bun/BunChildProcessSpawner";
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import * as BunPath from "@effect/platform-bun/BunPath";
+import { describe, expect, it } from "@effect/vitest";
+import { cmd, Files, Calder, On, Task } from "@calder-ci/core";
+import { Effect, Layer } from "effect";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { vi } from "vite-plus/test";
+import { Refused } from "@calder-ci/api";
+import {
+  checkFiles,
+  type Client,
+  drop,
+  gitRef,
+  push,
+  submit,
+  target,
+  workingCopy,
+} from "../src/Check.ts";
+import * as Exec from "../src/Exec.ts";
 
-const processes = BunChildProcessSpawner.layer.pipe(Layer.provide([BunFileSystem.layer, BunPath.layer]))
+const processes = BunChildProcessSpawner.layer.pipe(
+  Layer.provide([BunFileSystem.layer, BunPath.layer]),
+);
 
 describe("calder check", () => {
   it("pushes to the remote of a repository the controller knows", () => {
-    const repos = ["schnau/t3code", "schnau/calder"]
-    expect(target(["git@github.com:HaukeSchnau/t3code.git", "git@git.schnau.dev:schnau/t3code.git"], repos))
-      .toEqual({ remote: "git@git.schnau.dev:schnau/t3code.git", repo: "schnau/t3code" })
-    expect(target(["https://git.schnau.dev/schnau/Calder/"], repos)).toEqual({ remote: "https://git.schnau.dev/schnau/Calder/", repo: "schnau/calder" })
-    expect(target(["git@github.com:HaukeSchnau/t3code.git"], repos)).toBeUndefined()
-  })
+    const repos = ["schnau/t3code", "schnau/calder"];
+    expect(
+      target(
+        ["git@github.com:HaukeSchnau/t3code.git", "git@git.schnau.dev:schnau/t3code.git"],
+        repos,
+      ),
+    ).toEqual({ remote: "git@git.schnau.dev:schnau/t3code.git", repo: "schnau/t3code" });
+    expect(target(["https://git.schnau.dev/schnau/Calder/"], repos)).toEqual({
+      remote: "https://git.schnau.dev/schnau/Calder/",
+      repo: "schnau/calder",
+    });
+    expect(target(["git@github.com:HaukeSchnau/t3code.git"], repos)).toBeUndefined();
+  });
 
-  it.effect("leaves a jj workspace's bookmarks and commits as it found them, also for a workspace that fetches during the check", () =>
-    Effect.gen(function*() {
-      for (const [name, value] of Object.entries({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", JJ_CONFIG: "/dev/null", JJ_USER: "calder", JJ_EMAIL: "calder@test" })) {
-        vi.stubEnv(name, value)
-      }
-      const dir = mkdtempSync(join(tmpdir(), "calder-check-jj-"))
-      yield* Effect.addFinalizer(() => Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))))
-      const remote = join(dir, "remote.git")
-      const work = join(dir, "work")
-      const jj = (...args: ReadonlyArray<string>) => Exec.run(["jj", "--repository", work, ...args])
-      yield* Exec.run(["git", "init", "-q", "--bare", remote])
-      yield* Exec.run(["jj", "git", "init", work])
-      yield* jj("git", "remote", "add", "origin", remote)
-      writeFileSync(join(work, "a"), "a")
-      yield* jj("commit", "-m", "base")
-      yield* jj("bookmark", "create", "main", "-r", "@-")
-      yield* jj("git", "push", "--bookmark", "main")
-      writeFileSync(join(work, "b"), "b")
-      yield* jj("commit", "-m", "an agent's work, without a bookmark")
-      const log = jj("log", "-r", "all()", "--no-graph", "-T", 'description.first_line() ++ " [" ++ bookmarks ++ "]\n"')
-      const before = yield* log
+  it.effect(
+    "leaves a jj workspace's bookmarks and commits as it found them, also for a workspace that fetches during the check",
+    () =>
+      Effect.gen(function* () {
+        for (const [name, value] of Object.entries({
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          JJ_CONFIG: "/dev/null",
+          JJ_USER: "calder",
+          JJ_EMAIL: "calder@test",
+        })) {
+          vi.stubEnv(name, value);
+        }
+        const dir = mkdtempSync(join(tmpdir(), "calder-check-jj-"));
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))),
+        );
+        const remote = join(dir, "remote.git");
+        const work = join(dir, "work");
+        const jj = (...args: ReadonlyArray<string>) =>
+          Exec.run(["jj", "--repository", work, ...args]);
+        yield* Exec.run(["git", "init", "-q", "--bare", remote]);
+        yield* Exec.run(["jj", "git", "init", work]);
+        yield* jj("git", "remote", "add", "origin", remote);
+        writeFileSync(join(work, "a"), "a");
+        yield* jj("commit", "-m", "base");
+        yield* jj("bookmark", "create", "main", "-r", "@-");
+        yield* jj("git", "push", "--bookmark", "main");
+        writeFileSync(join(work, "b"), "b");
+        yield* jj("commit", "-m", "an agent's work, without a bookmark");
+        const log = jj(
+          "log",
+          "-r",
+          "all()",
+          "--no-graph",
+          "-T",
+          'description.first_line() ++ " [" ++ bookmarks ++ "]\n"',
+        );
+        const before = yield* log;
 
-      const copy = yield* workingCopy(work)
-      // The remote's URL leads to it only through the repository's own settings, which the push keeps.
-      yield* Exec.run(["git", "--git-dir", copy.gitDir, "config", `url.${remote}.insteadOf`, "https://forge.invalid/app.git"])
-      yield* push(copy, "https://forge.invalid/app.git", gitRef("calder/check/x"))
-      expect(yield* Exec.run(["git", "--git-dir", remote, "rev-parse", "refs/calder/check/x"])).toContain(copy.sha)
-      expect(yield* log).toBe(before)
-      // Another workspace of the same repository fetches while the check runs. A bookmark it imported
-      // would, once the check deleted it, take the unbookmarked commit with it (F44).
-      yield* jj("git", "fetch")
-      expect(yield* log).toBe(before)
-      yield* drop(copy, "https://forge.invalid/app.git", gitRef("calder/check/x"))
-      expect((yield* Exec.exec(["git", "--git-dir", remote, "rev-parse", "--verify", "-q", "refs/calder/check/x"])).exitCode).not.toBe(0)
-      yield* jj("git", "fetch")
-      expect(yield* log).toBe(before)
-    }).pipe(Effect.scoped, Effect.provide(processes)), { timeout: 60_000 })
-})
+        const copy = yield* workingCopy(work);
+        // The remote's URL leads to it only through the repository's own settings, which the push keeps.
+        yield* Exec.run([
+          "git",
+          "--git-dir",
+          copy.gitDir,
+          "config",
+          `url.${remote}.insteadOf`,
+          "https://forge.invalid/app.git",
+        ]);
+        yield* push(copy, "https://forge.invalid/app.git", gitRef("calder/check/x"));
+        expect(
+          yield* Exec.run(["git", "--git-dir", remote, "rev-parse", "refs/calder/check/x"]),
+        ).toContain(copy.sha);
+        expect(yield* log).toBe(before);
+        // Another workspace of the same repository fetches while the check runs. A bookmark it imported
+        // would, once the check deleted it, take the unbookmarked commit with it (F44).
+        yield* jj("git", "fetch");
+        expect(yield* log).toBe(before);
+        yield* drop(copy, "https://forge.invalid/app.git", gitRef("calder/check/x"));
+        expect(
+          (yield* Exec.exec([
+            "git",
+            "--git-dir",
+            remote,
+            "rev-parse",
+            "--verify",
+            "-q",
+            "refs/calder/check/x",
+          ])).exitCode,
+        ).not.toBe(0);
+        yield* jj("git", "fetch");
+        expect(yield* log).toBe(before);
+      }).pipe(Effect.scoped, Effect.provide(processes)),
+    { timeout: 60_000 },
+  );
+});
 
 describe("a refused check", () => {
-  it.effect("leaves no ref on the forge", () =>
-    Effect.gen(function*() {
-      for (const [name, value] of Object.entries({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "calder", GIT_AUTHOR_EMAIL: "calder@test", GIT_COMMITTER_NAME: "calder", GIT_COMMITTER_EMAIL: "calder@test" })) {
-        vi.stubEnv(name, value)
-      }
-      const dir = mkdtempSync(join(tmpdir(), "calder-check-refused-"))
-      yield* Effect.addFinalizer(() => Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))))
-      const remote = join(dir, "remote.git")
-      const work = join(dir, "work")
-      yield* Exec.run(["git", "init", "-q", "--bare", remote])
-      yield* Exec.run(["git", "init", "-q", work])
-      yield* Exec.run(["git", "-C", work, "commit", "-q", "--allow-empty", "-m", "base"])
-      yield* Exec.run(["git", "-C", work, "remote", "add", "origin", "https://forge.invalid/schnau/app.git"])
-      yield* Exec.run(["git", "-C", work, "config", `url.${remote}.pushInsteadOf`, "https://forge.invalid/schnau/app.git"])
-      const client = {
-        overview: () => Effect.succeed({ projects: [{ repo: "schnau/app" }] }),
-        check: () => Effect.fail(new Refused({ reason: "revision not found" })),
-      } as unknown as Client
-      const error = yield* Effect.flip(submit(client, work, { key: "x" }))
-      expect(error).toMatchObject({ _tag: "Refused" })
-      expect((yield* Exec.exec(["git", "--git-dir", remote, "for-each-ref", "refs/calder"])).stdout).toBe("")
-    }).pipe(Effect.scoped, Effect.provide(processes)), { timeout: 60_000 })
-})
+  it.effect(
+    "leaves no ref on the forge",
+    () =>
+      Effect.gen(function* () {
+        for (const [name, value] of Object.entries({
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "calder",
+          GIT_AUTHOR_EMAIL: "calder@test",
+          GIT_COMMITTER_NAME: "calder",
+          GIT_COMMITTER_EMAIL: "calder@test",
+        })) {
+          vi.stubEnv(name, value);
+        }
+        const dir = mkdtempSync(join(tmpdir(), "calder-check-refused-"));
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))),
+        );
+        const remote = join(dir, "remote.git");
+        const work = join(dir, "work");
+        yield* Exec.run(["git", "init", "-q", "--bare", remote]);
+        yield* Exec.run(["git", "init", "-q", work]);
+        yield* Exec.run(["git", "-C", work, "commit", "-q", "--allow-empty", "-m", "base"]);
+        yield* Exec.run([
+          "git",
+          "-C",
+          work,
+          "remote",
+          "add",
+          "origin",
+          "https://forge.invalid/schnau/app.git",
+        ]);
+        yield* Exec.run([
+          "git",
+          "-C",
+          work,
+          "config",
+          `url.${remote}.pushInsteadOf`,
+          "https://forge.invalid/schnau/app.git",
+        ]);
+        const client = {
+          overview: () => Effect.succeed({ projects: [{ repo: "schnau/app" }] }),
+          check: () => Effect.fail(new Refused({ reason: "revision not found" })),
+        } as unknown as Client;
+        const error = yield* Effect.flip(submit(client, work, { key: "x" }));
+        expect(error).toMatchObject({ _tag: "Refused" });
+        expect(
+          (yield* Exec.exec(["git", "--git-dir", remote, "for-each-ref", "refs/calder"])).stdout,
+        ).toBe("");
+      }).pipe(Effect.scoped, Effect.provide(processes)),
+    { timeout: 60_000 },
+  );
+});
 
 describe("calder plan", () => {
-  it.effect("fails on a path or pattern that matches no file of the working copy, uncommitted files included", () =>
-    Effect.gen(function*() {
-      // The user's git configuration, such as commit signing, stays out of it.
-      for (const [name, value] of Object.entries({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "calder", GIT_AUTHOR_EMAIL: "calder@test", GIT_COMMITTER_NAME: "calder", GIT_COMMITTER_EMAIL: "calder@test" })) {
-        vi.stubEnv(name, value)
-      }
-      const dir = mkdtempSync(join(tmpdir(), "calder-plan-"))
-      yield* Effect.addFinalizer(() => Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))))
-      const git = (...args: ReadonlyArray<string>) => Exec.run(["git", "-C", dir, ...args])
-      yield* git("init", "-q")
-      writeFileSync(join(dir, "package.json"), "{}")
-      yield* git("add", "package.json")
-      yield* git("commit", "-q", "-m", "init")
-      mkdirSync(join(dir, "src"))
-      writeFileSync(join(dir, "src/a.ts"), "export const a = 1")
+  it.effect(
+    "fails on a path or pattern that matches no file of the working copy, uncommitted files included",
+    () =>
+      Effect.gen(function* () {
+        // The user's git configuration, such as commit signing, stays out of it.
+        for (const [name, value] of Object.entries({
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "calder",
+          GIT_AUTHOR_EMAIL: "calder@test",
+          GIT_COMMITTER_NAME: "calder",
+          GIT_COMMITTER_EMAIL: "calder@test",
+        })) {
+          vi.stubEnv(name, value);
+        }
+        const dir = mkdtempSync(join(tmpdir(), "calder-plan-"));
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => (vi.unstubAllEnvs(), rmSync(dir, { recursive: true, force: true }))),
+        );
+        const git = (...args: ReadonlyArray<string>) => Exec.run(["git", "-C", dir, ...args]);
+        yield* git("init", "-q");
+        writeFileSync(join(dir, "package.json"), "{}");
+        yield* git("add", "package.json");
+        yield* git("commit", "-q", "-m", "init");
+        mkdirSync(join(dir, "src"));
+        writeFileSync(join(dir, "src/a.ts"), "export const a = 1");
 
-      const build = (inputs: Files.Files) => Calder.project({ rules: [On.push("main", [Task.make("build", { inputs, run: cmd`make` })])] })
-      yield* checkFiles(dir, build(Files.glob("package.json", "src/**")))
-      const error = yield* Effect.flip(checkFiles(dir, build(Files.of("package.json", "static"))))
-      expect(error.message).toContain(`No file matches "static" (build's inputs).`)
-    }).pipe(Effect.scoped, Effect.provide(processes)))
-})
+        const build = (inputs: Files.Files) =>
+          Calder.project({
+            rules: [On.push("main", [Task.make("build", { inputs, run: cmd`make` })])],
+          });
+        yield* checkFiles(dir, build(Files.glob("package.json", "src/**")));
+        const error = yield* Effect.flip(
+          checkFiles(dir, build(Files.of("package.json", "static"))),
+        );
+        expect(error.message).toContain(`No file matches "static" (build's inputs).`);
+      }).pipe(Effect.scoped, Effect.provide(processes)),
+  );
+});

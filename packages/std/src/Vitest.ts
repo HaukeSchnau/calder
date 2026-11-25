@@ -1,43 +1,43 @@
-import { cmd, Files, type Flake, Report, type Setup, Task } from "@calder-ci/core"
+import { cmd, Files, type Flake, Report, type Setup, Task } from "@calder-ci/core";
 
 export interface FilesOptions {
   /** The step's name, `test` by default. */
-  readonly name?: string
+  readonly name?: string;
   /** The dev shell with node. */
-  readonly shell?: Flake.FlakeRef<"devShells">
+  readonly shell?: Flake.FlakeRef<"devShells">;
   /** The setup that installs the package's vitest, such as `Pnpm.install`. */
-  readonly setup?: Setup.Setup
+  readonly setup?: Setup.Setup;
   /** The package vitest runs in, relative to the repository root. The root by default. */
-  readonly dir?: string
+  readonly dir?: string;
   /**
    * Globs of the test files, relative to `dir`. One starting with `!` leaves files out, such as
    * `!apps/server/**` for a package with a vitest config of its own.
    */
-  readonly tests: ReadonlyArray<string>
+  readonly tests: ReadonlyArray<string>;
   /**
    * Lets `tests` match no file, such as in a package before its first test: the step then has no file
    * to run. Otherwise tests that match nothing fail the plan, in case a pattern is wrong.
    */
-  readonly allowEmpty?: boolean
+  readonly allowEmpty?: boolean;
   /**
    * What every test file runs with besides its imports: vitest configs and setup files. The setup's
    * key already covers manifests and lockfiles; without a setup, the default is the root ones.
    */
-  readonly inputs?: Files.Files
+  readonly inputs?: Files.Files;
   /** The import aliases of the vitest config, so that following a test file's imports finds them. */
-  readonly aliases?: { readonly [prefix: string]: string }
+  readonly aliases?: { readonly [prefix: string]: string };
   /** Spreads the files that need to run over at most this many parallel jobs. */
-  readonly shards?: number
+  readonly shards?: number;
   /** Arguments after `vitest run`, such as `--maxWorkers 3` or `--project unit`. */
-  readonly args?: ReadonlyArray<string>
+  readonly args?: ReadonlyArray<string>;
   /** The command that runs vitest: `vitest` by default, `["vp", "test"]` with Vite+. */
-  readonly vitest?: ReadonlyArray<string>
+  readonly vitest?: ReadonlyArray<string>;
   /** A command run in `dir` before vitest, such as one that fetches a runtime the tests launch. */
-  readonly before?: ReadonlyArray<string>
-  readonly env?: { readonly [env: string]: string }
+  readonly before?: ReadonlyArray<string>;
+  readonly env?: { readonly [env: string]: string };
 }
 
-const quote = (arg: string) => `'${arg.replaceAll("'", `'\\''`)}'`
+const quote = (arg: string) => `'${arg.replaceAll("'", `'\\''`)}'`;
 
 /**
  * Runs the command after `$1` and `$2` in the package directory `$1`, with the package's own binaries
@@ -54,38 +54,43 @@ const script = (before: ReadonlyArray<string>) =>
     "PATH=$PWD/node_modules/.bin:$PATH",
     ...(before.length === 0 ? [] : [before.map(quote).join(" ")]),
     'exec "$@" --reporter=default --reporter=json "--outputFile.json=$report"',
-  ].join("; ")
+  ].join("; ");
 
 /** `Vitest.suite`'s options: those of `files` that don't pick or key test files. */
-export interface SuiteOptions extends Omit<FilesOptions, "tests" | "allowEmpty" | "inputs" | "aliases" | "shards"> {}
+export interface SuiteOptions extends Omit<
+  FilesOptions,
+  "tests" | "allowEmpty" | "inputs" | "aliases" | "shards"
+> {}
 
 /**
  * A package's whole vitest suite as one task, keyed by the whole repository, for a suite whose config
  * decides what runs: the files its `test.include` names and the `setupFiles` they run with.
  */
 export const suite = (options: SuiteOptions) => {
-  const dir = options.dir ?? "."
-  const report = dir === "." ? ".vitest-report.json" : `${dir}/.vitest-report.json`
+  const dir = options.dir ?? ".";
+  const report = dir === "." ? ".vitest-report.json" : `${dir}/.vitest-report.json`;
   return Task.make(options.name ?? "test", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     ...(options.setup === undefined ? {} : { setup: options.setup }),
     ...(options.env === undefined ? {} : { env: options.env }),
     run: cmd`bash -c ${script(options.before ?? [])} vitest ${dir} ${report} ${options.vitest ?? ["vitest"]} run ${options.args ?? []}`,
     report: Report.vitest(report),
-  })
-}
+  });
+};
 
 /**
  * A package's vitest suite as a task with `each`: a test file runs again only when it, what it
  * imports or `inputs` changed. Vitest runs in `dir` and gets the files relative to it.
  */
 export const files = (options: FilesOptions) => {
-  const dir = options.dir ?? "."
-  const inDir = (path: string) => (dir === "." ? path : `${dir}/${path}`)
-  const pattern = (glob: string) => (glob.startsWith("!") ? `!${inDir(glob.slice(1))}` : inDir(glob))
-  const fromDir = (file: string) => (dir !== "." && file.startsWith(`${dir}/`) ? file.slice(dir.length + 1) : file)
-  const report = inDir(".vitest-report.json")
-  const each = Files.imports(options.tests.map(pattern), { aliases: options.aliases ?? {} })
+  const dir = options.dir ?? ".";
+  const inDir = (path: string) => (dir === "." ? path : `${dir}/${path}`);
+  const pattern = (glob: string) =>
+    glob.startsWith("!") ? `!${inDir(glob.slice(1))}` : inDir(glob);
+  const fromDir = (file: string) =>
+    dir !== "." && file.startsWith(`${dir}/`) ? file.slice(dir.length + 1) : file;
+  const report = inDir(".vitest-report.json");
+  const each = Files.imports(options.tests.map(pattern), { aliases: options.aliases ?? {} });
   return Task.make(options.name ?? "test", {
     ...(options.shell === undefined ? {} : { shell: options.shell }),
     ...(options.setup === undefined ? {} : { setup: options.setup }),
@@ -96,5 +101,5 @@ export const files = (options: FilesOptions) => {
     run: ({ files }) =>
       cmd`bash -c ${script(options.before ?? [])} vitest ${dir} ${report} ${options.vitest ?? ["vitest"]} run ${options.args ?? []} ${files.map(fromDir)}`,
     report: Report.vitest(report),
-  })
-}
+  });
+};

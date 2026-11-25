@@ -1,20 +1,25 @@
-import { describe, expect, it } from "@effect/vitest"
-import { Cmd, Files, Flake, Nix, Secret, Step } from "@calder-ci/core"
-import { Schema } from "effect"
-import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import * as Alchemy from "../src/Alchemy.ts"
-import * as Bun from "../src/Bun.ts"
-import * as Pnpm from "../src/Pnpm.ts"
+import { describe, expect, it } from "@effect/vitest";
+import { Cmd, Files, Flake, Nix, Secret, Step } from "@calder-ci/core";
+import { Schema } from "effect";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as Alchemy from "../src/Alchemy.ts";
+import * as Bun from "../src/Bun.ts";
+import * as Pnpm from "../src/Pnpm.ts";
 
-const shell = Flake.make({ packages: [], checks: [], devShells: ["ci"] }).devShells.ci
+const shell = Flake.make({ packages: [], checks: [], devShells: ["ci"] }).devShells.ci;
 
-const argv = (step: ReturnType<typeof Alchemy.deploy<unknown>>, env: string, values: Record<string, unknown> = {}) => {
-  if (step.def._tag !== "Task" || typeof step.def.run === "function") throw new Error("not a task with one command")
-  return Cmd.render(step.def.run, values, { secrets: { cloudflare: env }, pullRequest: 7 })
-}
+const argv = (
+  step: ReturnType<typeof Alchemy.deploy<unknown>>,
+  env: string,
+  values: Record<string, unknown> = {},
+) => {
+  if (step.def._tag !== "Task" || typeof step.def.run === "function")
+    throw new Error("not a task with one command");
+  return Cmd.render(step.def.run, values, { secrets: { cloudflare: env }, pullRequest: 7 });
+};
 
 /**
  * Runs a step's command in a fresh workspace where `<dir>/node_modules/.bin/alchemy`, `bun` and `curl`
@@ -24,147 +29,237 @@ const argv = (step: ReturnType<typeof Alchemy.deploy<unknown>>, env: string, val
  */
 const execute = (
   step: ReturnType<typeof Alchemy.deploy<unknown>>,
-  options: { readonly dir?: string; readonly values?: Record<string, unknown>; readonly env?: string } = {},
+  options: {
+    readonly dir?: string;
+    readonly values?: Record<string, unknown>;
+    readonly env?: string;
+  } = {},
 ) => {
-  const root = mkdtempSync(join(tmpdir(), "alchemy-"))
-  const at = options.dir === undefined ? root : join(root, options.dir)
-  const fake = `#!/usr/bin/env bash\necho "$(basename "$0") $PWD $* ${"$"}{CALDER_BUNDLE:-}" >> ${join(root, "calls")}\n` +
+  const root = mkdtempSync(join(tmpdir(), "alchemy-"));
+  const at = options.dir === undefined ? root : join(root, options.dir);
+  const fake =
+    `#!/usr/bin/env bash\necho "$(basename "$0") $PWD $* ${"$"}{CALDER_BUNDLE:-}" >> ${join(root, "calls")}\n` +
     `echo "DO_NOT_TRACK=$DO_NOT_TRACK ALCHEMY_HOME=$ALCHEMY_HOME $(cat "$ALCHEMY_HOME"/profiles/default/state-stores/cloudflare.json 2>/dev/null)" >> ${join(root, "seen")}\n` +
-    `[[ " $* " == *" state read "* ]] && printf '%s\\n' '• Refreshing credentials' '[12:00:00] INFO (#1): from the environment' '{' '  "url": "https://site.example",' '  "token": { "__redacted__": "s3cret" }' '}'\ntrue\n`
+    `[[ " $* " == *" state read "* ]] && printf '%s\\n' '• Refreshing credentials' '[12:00:00] INFO (#1): from the environment' '{' '  "url": "https://site.example",' '  "token": { "__redacted__": "s3cret" }' '}'\ntrue\n`;
   // The store answers a request for the outputs unless its token is "refused".
-  const curl = `#!/usr/bin/env bash\nconfig=$(cat)\necho "curl $* | $config" >> ${join(root, "calls")}\n` +
-    `[[ "$config" == *refused* ]] && exit 22\nwhile [ "$1" != -o ]; do shift; done\necho '{"url":"https://store.example"}' > "$2"\n`
-  mkdirSync(join(at, "node_modules", ".bin"), { recursive: true })
-  mkdirSync(join(root, "bin"))
-  mkdirSync(join(root, "home"))
-  mkdirSync(join(root, "tmp"))
-  writeFileSync(join(at, "node_modules", ".bin", "alchemy"), fake, { mode: 0o755 })
-  writeFileSync(join(root, "bin", "bun"), fake.replace('$(basename "$0")', "bun"), { mode: 0o755 })
-  writeFileSync(join(root, "bin", "curl"), curl, { mode: 0o755 })
-  writeFileSync(join(root, "cloudflare"), options.env ?? "CLOUDFLARE_API_TOKEN=cf-token\n")
-  const [command, ...args] = argv(step, join(root, "cloudflare"), options.values)
+  const curl =
+    `#!/usr/bin/env bash\nconfig=$(cat)\necho "curl $* | $config" >> ${join(root, "calls")}\n` +
+    `[[ "$config" == *refused* ]] && exit 22\nwhile [ "$1" != -o ]; do shift; done\necho '{"url":"https://store.example"}' > "$2"\n`;
+  mkdirSync(join(at, "node_modules", ".bin"), { recursive: true });
+  mkdirSync(join(root, "bin"));
+  mkdirSync(join(root, "home"));
+  mkdirSync(join(root, "tmp"));
+  writeFileSync(join(at, "node_modules", ".bin", "alchemy"), fake, { mode: 0o755 });
+  writeFileSync(join(root, "bin", "bun"), fake.replace('$(basename "$0")', "bun"), { mode: 0o755 });
+  writeFileSync(join(root, "bin", "curl"), curl, { mode: 0o755 });
+  writeFileSync(join(root, "cloudflare"), options.env ?? "CLOUDFLARE_API_TOKEN=cf-token\n");
+  const [command, ...args] = argv(step, join(root, "cloudflare"), options.values);
   // With a socket for stdin, as in Calder's workers, NixOS's bash sources /etc/bashrc, which resets PATH.
   execFileSync(command!, args, {
     cwd: root,
-    env: { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, HOME: join(root, "home"), TMPDIR: join(root, "tmp") },
+    env: {
+      ...process.env,
+      PATH: `${join(root, "bin")}:${process.env.PATH}`,
+      HOME: join(root, "home"),
+      TMPDIR: join(root, "tmp"),
+    },
     stdio: ["ignore", "pipe", "pipe"],
-  })
-  const lines = (file: string) => readFileSync(join(root, file), "utf8").trim().split("\n").map((line) => line.replaceAll(root, "<root>").trim())
-  return { root, calls: lines("calls"), seen: lines("seen") }
-}
+  });
+  const lines = (file: string) =>
+    readFileSync(join(root, file), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => line.replaceAll(root, "<root>").trim());
+  return { root, calls: lines("calls"), seen: lines("seen") };
+};
 
-const rest = "deploy --stage prod --yes --env-file <root>/cloudflare"
+const rest = "deploy --stage prod --yes --env-file <root>/cloudflare";
 
 describe("Alchemy.plan", () => {
   it("plans the stage without --yes, so the CLI changes nothing", () => {
-    const step = Alchemy.plan({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod" })
-    expect(execute(step).calls).toEqual(["alchemy <root> plan --stage prod --env-file <root>/cloudflare"])
-    if (step.def._tag !== "Task") throw new Error("not a task")
-    expect(step.def.lease).toBeUndefined()
-  })
-})
+    const step = Alchemy.plan(
+      { shell, setup: Pnpm.install({ shell }), env: "cloudflare" },
+      { stage: "prod" },
+    );
+    expect(execute(step).calls).toEqual([
+      "alchemy <root> plan --stage prod --env-file <root>/cloudflare",
+    ]);
+    if (step.def._tag !== "Task") throw new Error("not a task");
+    expect(step.def.lease).toBeUndefined();
+  });
+});
 
 describe("Alchemy.deploy", () => {
   it("starts the installed CLI, without pnpm checking the install again, or bun's", () => {
-    const pnpm = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod" })
-    const bun = Alchemy.deploy({ shell, setup: Bun.install({ shell }), runner: "bun", env: "cloudflare" }, { stage: "prod" })
-    expect(execute(pnpm).calls).toEqual([`alchemy <root> ${rest}`])
-    expect(execute(bun).calls).toEqual([`bun <root> alchemy ${rest}`])
-  })
+    const pnpm = Alchemy.deploy(
+      { shell, setup: Pnpm.install({ shell }), env: "cloudflare" },
+      { stage: "prod" },
+    );
+    const bun = Alchemy.deploy(
+      { shell, setup: Bun.install({ shell }), runner: "bun", env: "cloudflare" },
+      { stage: "prod" },
+    );
+    expect(execute(pnpm).calls).toEqual([`alchemy <root> ${rest}`]);
+    expect(execute(bun).calls).toEqual([`bun <root> alchemy ${rest}`]);
+  });
 
   it("hands the stack's secrets to the task by environment variable", () => {
     const step = Alchemy.deploy(
-      { shell, setup: Pnpm.install({ shell }), env: "cloudflare", secrets: { FLEET_TOKEN_FILE: "placement-token" } },
+      {
+        shell,
+        setup: Pnpm.install({ shell }),
+        env: "cloudflare",
+        secrets: { FLEET_TOKEN_FILE: "placement-token" },
+      },
       { stage: "prod" },
-    )
-    if (step.def._tag !== "Task") throw new Error("not a task")
-    expect(step.def.secrets).toEqual({ FLEET_TOKEN_FILE: Secret.file("placement-token") })
-  })
+    );
+    if (step.def._tag !== "Task") throw new Error("not a task");
+    expect(step.def.secrets).toEqual({ FLEET_TOKEN_FILE: Secret.file("placement-token") });
+  });
 
   it("runs the CLI in the stack's directory, from that directory's install", () => {
-    const pnpmInstall = Pnpm.install({ name: "site-install", shell, dir: "site" })
-    const bunInstall = Bun.install({ name: "site-install", shell, dir: "site" })
-    const pnpm = Alchemy.deploy({ shell, setup: pnpmInstall, dir: "site", env: "cloudflare" }, { stage: "prod" })
-    const bun = Alchemy.deploy({ shell, setup: bunInstall, runner: "bun", dir: "site", env: "cloudflare" }, { stage: "prod" })
-    expect(execute(pnpm, { dir: "site" }).calls).toEqual([`alchemy <root>/site ${rest}`])
-    expect(execute(bun, { dir: "site" }).calls).toEqual([`bun <root>/site alchemy ${rest}`])
-    if (pnpmInstall.def._tag !== "Setup" || bunInstall.def._tag !== "Setup") throw new Error("not a setup")
-    expect(Cmd.render(pnpmInstall.def.run, {})).toEqual(["pnpm", "--dir", "site", "install", "--frozen-lockfile"])
-    expect(Cmd.render(bunInstall.def.run, {})).toEqual(["bun", "--cwd=site", "install", "--frozen-lockfile"])
-    expect(pnpmInstall.def.path).toEqual(["site/node_modules/.bin"])
+    const pnpmInstall = Pnpm.install({ name: "site-install", shell, dir: "site" });
+    const bunInstall = Bun.install({ name: "site-install", shell, dir: "site" });
+    const pnpm = Alchemy.deploy(
+      { shell, setup: pnpmInstall, dir: "site", env: "cloudflare" },
+      { stage: "prod" },
+    );
+    const bun = Alchemy.deploy(
+      { shell, setup: bunInstall, runner: "bun", dir: "site", env: "cloudflare" },
+      { stage: "prod" },
+    );
+    expect(execute(pnpm, { dir: "site" }).calls).toEqual([`alchemy <root>/site ${rest}`]);
+    expect(execute(bun, { dir: "site" }).calls).toEqual([`bun <root>/site alchemy ${rest}`]);
+    if (pnpmInstall.def._tag !== "Setup" || bunInstall.def._tag !== "Setup")
+      throw new Error("not a setup");
+    expect(Cmd.render(pnpmInstall.def.run, {})).toEqual([
+      "pnpm",
+      "--dir",
+      "site",
+      "install",
+      "--frozen-lockfile",
+    ]);
+    expect(Cmd.render(bunInstall.def.run, {})).toEqual([
+      "bun",
+      "--cwd=site",
+      "install",
+      "--frozen-lockfile",
+    ]);
+    expect(pnpmInstall.def.path).toEqual(["site/node_modules/.bin"]);
     expect(pnpmInstall.def.inputs).toEqual(
       Files.union(
         Files.glob("site/**/package.json", "site/pnpm-lock.yaml"),
         Files.optional(
-          Files.glob("site/pnpm-workspace.yaml", "site/.npmrc", "site/.pnpmfile.cjs", "site/pnpmfile.cjs", "site/patches/**/*.patch"),
+          Files.glob(
+            "site/pnpm-workspace.yaml",
+            "site/.npmrc",
+            "site/.pnpmfile.cjs",
+            "site/pnpmfile.cjs",
+            "site/patches/**/*.patch",
+          ),
         ),
       ),
-    )
-  })
+    );
+  });
 
   it("with outputs, deploys and then writes what the stack returned where the task's value comes from", () => {
-    const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) }
-    const step = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), dir: "site", env: "cloudflare", outputs }, { stage: "prod" })
-    const { root, calls } = execute(step, { dir: "site" })
+    const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) };
+    const step = Alchemy.deploy(
+      { shell, setup: Pnpm.install({ shell }), dir: "site", env: "cloudflare", outputs },
+      { stage: "prod" },
+    );
+    const { root, calls } = execute(step, { dir: "site" });
     expect(calls).toEqual([
       `alchemy <root>/site ${rest}`,
       "alchemy <root>/site state read Site/prod/output --env-file <root>/cloudflare",
-    ])
-    if (step.def._tag !== "Task" || step.def.value === undefined) throw new Error("not a task with a value")
-    const written: unknown = JSON.parse(readFileSync(join(root, step.def.value.path), "utf8"))
-    expect(Schema.decodeUnknownSync(step.def.value.schema)(written)).toEqual({ url: "https://site.example" })
-  })
+    ]);
+    if (step.def._tag !== "Task" || step.def.value === undefined)
+      throw new Error("not a task with a value");
+    const written: unknown = JSON.parse(readFileSync(join(root, step.def.value.path), "utf8"));
+    expect(Schema.decodeUnknownSync(step.def.value.schema)(written)).toEqual({
+      url: "https://site.example",
+    });
+  });
 
   it("runs the CLI without telemetry, in an Alchemy home of its own that it removes once it ends", () => {
-    const { root, seen } = execute(Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod" }))
-    expect(seen).toEqual([expect.stringMatching(/^DO_NOT_TRACK=1 ALCHEMY_HOME=<root>\/tmp\/tmp\.\w+$/)])
-    expect(readdirSync(join(root, "tmp"))).toEqual([])
-    expect(readdirSync(join(root, "home", ".alchemy"))).toEqual(["logs"])
-  })
+    const { root, seen } = execute(
+      Alchemy.deploy(
+        { shell, setup: Pnpm.install({ shell }), env: "cloudflare" },
+        { stage: "prod" },
+      ),
+    );
+    expect(seen).toEqual([
+      expect.stringMatching(/^DO_NOT_TRACK=1 ALCHEMY_HOME=<root>\/tmp\/tmp\.\w+$/),
+    ]);
+    expect(readdirSync(join(root, "tmp"))).toEqual([]);
+    expect(readdirSync(join(root, "home", ".alchemy"))).toEqual(["logs"]);
+  });
 
   it("starts the CLI from the state store's token in the env file, and reads the outputs from the store with it", () => {
-    const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) }
-    const step = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare", outputs }, { stage: "prod" })
-    const url = "https://alchemy-state-store-fleet.acme.workers.dev"
-    const env = (token: string) => `CLOUDFLARE_ACCOUNT_ID=9118\nALCHEMY_STATE_STORE_URL=${url}\nALCHEMY_STATE_STORE_TOKEN=${token}\n`
-    const { root, calls, seen } = execute(step, { env: env("s3cret") })
-    expect(seen[0]).toContain(JSON.stringify({ stores: { "alchemy-state-store-fleet": { url, authToken: "s3cret", accountId: "9118" } } }))
+    const outputs = { name: "Site", schema: Schema.Struct({ url: Schema.String }) };
+    const step = Alchemy.deploy(
+      { shell, setup: Pnpm.install({ shell }), env: "cloudflare", outputs },
+      { stage: "prod" },
+    );
+    const url = "https://alchemy-state-store-fleet.acme.workers.dev";
+    const env = (token: string) =>
+      `CLOUDFLARE_ACCOUNT_ID=9118\nALCHEMY_STATE_STORE_URL=${url}\nALCHEMY_STATE_STORE_TOKEN=${token}\n`;
+    const { root, calls, seen } = execute(step, { env: env("s3cret") });
+    expect(seen[0]).toContain(
+      JSON.stringify({
+        stores: { "alchemy-state-store-fleet": { url, authToken: "s3cret", accountId: "9118" } },
+      }),
+    );
     expect(calls).toEqual([
       `alchemy <root> ${rest}`,
       `curl -fsS --config - -o <root>/.calder-alchemy-outputs.json ${url}/state/stacks/Site/stages/prod/output | header = "Authorization: Bearer s3cret"`,
-    ])
-    if (step.def._tag !== "Task" || step.def.value === undefined) throw new Error("not a task with a value")
-    expect(JSON.parse(readFileSync(join(root, step.def.value.path), "utf8"))).toEqual({ url: "https://store.example" })
+    ]);
+    if (step.def._tag !== "Task" || step.def.value === undefined)
+      throw new Error("not a task with a value");
+    expect(JSON.parse(readFileSync(join(root, step.def.value.path), "utf8"))).toEqual({
+      url: "https://store.example",
+    });
 
     // A token the store refuses: the CLI fetches the token itself, as without one, and reads the outputs.
-    expect(execute(step, { env: env("refused") }).calls.at(-1)).toBe("alchemy <root> state read Site/prod/output --env-file <root>/cloudflare")
-  })
+    expect(execute(step, { env: env("refused") }).calls.at(-1)).toBe(
+      "alchemy <root> state read Site/prod/output --env-file <root>/cloudflare",
+    );
+  });
 
   it("declares its artifacts, which the worker hands the stack by variable and publishes, and waits for those builds", () => {
-    const flake = Flake.make({ packages: ["bundle"], checks: [], devShells: ["ci"] })
-    const bundle = Nix.build(flake.packages.bundle, { name: "bundle" })
-    const step = Alchemy.deploy({ shell, setup: Pnpm.install({ shell }), env: "cloudflare" }, { stage: "prod", artifacts: { CALDER_BUNDLE: bundle } })
-    if (step.def._tag !== "Task") throw new Error("not a task")
-    expect(step.def.artifacts).toEqual({ CALDER_BUNDLE: bundle })
-    expect(execute(step).calls).toEqual([`alchemy <root> ${rest}`])
-    expect(Step.dependencies(step).map((d) => [d.step.name, d.via])).toContainEqual(["bundle", "needs"])
-  })
+    const flake = Flake.make({ packages: ["bundle"], checks: [], devShells: ["ci"] });
+    const bundle = Nix.build(flake.packages.bundle, { name: "bundle" });
+    const step = Alchemy.deploy(
+      { shell, setup: Pnpm.install({ shell }), env: "cloudflare" },
+      { stage: "prod", artifacts: { CALDER_BUNDLE: bundle } },
+    );
+    if (step.def._tag !== "Task") throw new Error("not a task");
+    expect(step.def.artifacts).toEqual({ CALDER_BUNDLE: bundle });
+    expect(execute(step).calls).toEqual([`alchemy <root> ${rest}`]);
+    expect(Step.dependencies(step).map((d) => [d.step.name, d.via])).toContainEqual([
+      "bundle",
+      "needs",
+    ]);
+  });
 
   it("holds the lease for a pull request's preview and its removal, which then take turns", () => {
-    const stack = { shell, setup: Pnpm.install({ shell }), env: "cloudflare" }
-    const [preview] = Alchemy.preview(stack, { url: () => "https://pr.example" })
-    const destroy = Alchemy.destroy(stack)
-    expect([preview.def, destroy.def].map((def) => def._tag === "Task" && def.lease)).toEqual([true, true])
-  })
+    const stack = { shell, setup: Pnpm.install({ shell }), env: "cloudflare" };
+    const [preview] = Alchemy.preview(stack, { url: () => "https://pr.example" });
+    const destroy = Alchemy.destroy(stack);
+    expect([preview.def, destroy.def].map((def) => def._tag === "Task" && def.lease)).toEqual([
+      true,
+      true,
+    ]);
+  });
 
   it("deploys and destroys a pull request's own stage", () => {
-    const stack = { shell, setup: Pnpm.install({ shell }), env: "cloudflare" }
-    const [preview] = Alchemy.preview(stack, { url: () => "https://pr.example" })
+    const stack = { shell, setup: Pnpm.install({ shell }), env: "cloudflare" };
+    const [preview] = Alchemy.preview(stack, { url: () => "https://pr.example" });
     expect(execute(preview as ReturnType<typeof Alchemy.deploy<unknown>>).calls).toEqual([
       "alchemy <root> deploy --stage pr-7 --yes --env-file <root>/cloudflare",
-    ])
-    expect(execute(Alchemy.destroy(stack) as ReturnType<typeof Alchemy.deploy<unknown>>).calls).toEqual([
-      "alchemy <root> destroy --stage pr-7 --yes --env-file <root>/cloudflare",
-    ])
-  })
-})
+    ]);
+    expect(
+      execute(Alchemy.destroy(stack) as ReturnType<typeof Alchemy.deploy<unknown>>).calls,
+    ).toEqual(["alchemy <root> destroy --stage pr-7 --yes --env-file <root>/cloudflare"]);
+  });
+});

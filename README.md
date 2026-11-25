@@ -10,16 +10,18 @@ Most projects run the standard pipeline, which `calder gen` writes into a reposi
 
 ```ts
 // .calder/ci.ts
-import { Step, Task, cmd } from "@calder-ci/core"
-import { Pnpm, Project } from "@calder-ci/std"
-import { flake } from "./flake.ts"
+import { Step, Task, cmd } from "@calder-ci/core";
+import { Pnpm, Project } from "@calder-ci/std";
+import { flake } from "./flake.ts";
 
-const shell = flake.devShells.ci
-const install = Pnpm.install({ shell })
+const shell = flake.devShells.ci;
+const install = Pnpm.install({ shell });
 
-const qa = Task.make("qa", { shell, setup: install, run: cmd`just qa` }).pipe(Step.timeout("30 minutes"))
+const qa = Task.make("qa", { shell, setup: install, run: cmd`just qa` }).pipe(
+  Step.timeout("30 minutes"),
+);
 
-export default Project.standard({ flake, checks: [qa] })
+export default Project.standard({ flake, checks: [qa] });
 ```
 
 Calder reads only the default export and finds the steps by following the rules, so steps need no `export`.
@@ -343,8 +345,14 @@ pull request deploys stage `pr-<n>` as soon as its artifacts are built (not afte
 
 ```ts
 export default Environments.project({
-  stack: { shell, dir: "deploy", env: "cloudflare", setup: Pnpm.install({ shell, dir: "deploy", name: "deploy-install" }),
-    secrets: { FLEET_TOKEN_FILE: "placement-token" }, outputs: { name: "Studienbuch", schema: Outputs } },
+  stack: {
+    shell,
+    dir: "deploy",
+    env: "cloudflare",
+    setup: Pnpm.install({ shell, dir: "deploy", name: "deploy-install" }),
+    secrets: { FLEET_TOKEN_FILE: "placement-token" },
+    outputs: { name: "Studienbuch", schema: Outputs },
+  },
   checks,
   artifacts: { CALDER_BUNDLE: bundle },
   readiness: (outputs) => outputs.readiness,
@@ -354,7 +362,7 @@ export default Environments.project({
     prod: { on: { manual: { release: Schema.Literal("prod") } } },
   },
   nightly: "0 3 * * *",
-})
+});
 ```
 
 `Project.alchemy` is the same with one environment, the production stage the default branch deploys once
@@ -389,7 +397,7 @@ export default Project.alchemy({
     outputs: { name: "Site", schema: Schema.Struct({ url: Schema.String }) },
   },
   previews: { url: (_pr, outputs) => outputs.url },
-})
+});
 ```
 
 `Npm.publish` from `@calder-ci/std` stages a package's version on npm, or the `registry` given, for a maintainer to
@@ -402,9 +410,9 @@ packs the package, so `workspace:` versions resolve, and a prerelease (`1.2.0-be
 holds the deploy lease, and its value says where the version stands: `{ name, version, state, stage, staged }`.
 
 ```ts
-const publish = Npm.publish({ shell, setup: install, token: "npm", after: checks })
+const publish = Npm.publish({ shell, setup: install, token: "npm", after: checks });
 
-export default Calder.project({ rules: [On.pullRequest(checks), On.push("main", [publish])] })
+export default Calder.project({ rules: [On.pullRequest(checks), On.push("main", [publish])] });
 ```
 
 `Expo` from `@calder-ci/std` releases an Expo app whose runtime version policy is `fingerprint`.
@@ -431,15 +439,40 @@ the runtime versions, the export, the publish and the store builds all evaluate 
 one of them lacks can change its runtime version or bundle.
 
 ```ts
-const tower = { platform: "x86_64-linux", shell } as const
-const ios = Expo.runtimeVersion("ios", { shell, setup: install })
-const android = Expo.runtimeVersion("android", { shell, setup: install })
-const update = Expo.exportUpdate({ shell, setup: Pnpm.install({ ...tower, name: "install-tower" }), after: checks })
-const ota = Expo.publishUpdate({ shell, setup: install, update, channel: "production", token: "expo-token", runtimes: { ios, android } })
-const testflight = Expo.testflight({ runtime: ios, appId: "6818526671", appStoreConnect: { key: "app-store-connect", keyId, issuerId }, after: checks })
-const play = Expo.playInternal({ shell, runtime: android, keystore: "play-upload-keystore", password: "play-upload-password", serviceAccount: "play-service-account", after: checks })
+const tower = { platform: "x86_64-linux", shell } as const;
+const ios = Expo.runtimeVersion("ios", { shell, setup: install });
+const android = Expo.runtimeVersion("android", { shell, setup: install });
+const update = Expo.exportUpdate({
+  shell,
+  setup: Pnpm.install({ ...tower, name: "install-tower" }),
+  after: checks,
+});
+const ota = Expo.publishUpdate({
+  shell,
+  setup: install,
+  update,
+  channel: "production",
+  token: "expo-token",
+  runtimes: { ios, android },
+});
+const testflight = Expo.testflight({
+  runtime: ios,
+  appId: "6818526671",
+  appStoreConnect: { key: "app-store-connect", keyId, issuerId },
+  after: checks,
+});
+const play = Expo.playInternal({
+  shell,
+  runtime: android,
+  keystore: "play-upload-keystore",
+  password: "play-upload-password",
+  serviceAccount: "play-service-account",
+  after: checks,
+});
 
-export default Calder.project({ rules: [On.pullRequest(checks), On.push("main", [ota, testflight, play])] })
+export default Calder.project({
+  rules: [On.pullRequest(checks), On.push("main", [ota, testflight, play])],
+});
 ```
 
 `ci.ts` runs on the worker's Bun. `.calder/tsconfig.json` extends `@calder-ci/tsconfig` from the SDK, which gives it Bun's
@@ -473,7 +506,7 @@ const testServer = Vitest.files({
   inputs: Files.of("package.json", "pnpm-lock.yaml", "apps/server/vitest.config.ts"),
   shards: 4,
   args: ["--maxWorkers", "3"],
-})
+});
 ```
 
 `vitest: ["vp", "test"]` runs it through Vite+, and `before` is a command that runs in `dir` first. A
@@ -502,9 +535,9 @@ tests passes, and a file-by-file job whose files the config leaves out passes wi
 a repository with a root `vite.config.ts` and `vite-plus` among its root dependencies:
 
 ```ts
-const shell = flake.devShells.ci
+const shell = flake.devShells.ci;
 
-export default Project.standard({ flake, vp: { shell, setup: Pnpm.install({ shell }) } })
+export default Project.standard({ flake, vp: { shell, setup: Pnpm.install({ shell }) } });
 ```
 
 `vp.test` takes `Vp.test`'s options, such as `{ tests: ["src/**/*.test.ts"], shards: 2 }`. `vp` is off unless given. The tasks are named
@@ -514,9 +547,13 @@ because its deploys wait only for the checks their `after` lists. Call `Vp.tasks
 into `checks` and into those lists, since a second call makes steps of the same names that fail the plan:
 
 ```ts
-const checks = [...Vp.tasks({ shell, setup })]
+const checks = [...Vp.tasks({ shell, setup })];
 
-export default Environments.project({ stack, checks, environments: { prod: { on: { push: "main" }, after: checks } } })
+export default Environments.project({
+  stack,
+  checks,
+  environments: { prod: { on: { push: "main" }, after: checks } },
+});
 ```
 
 ## Commands
@@ -711,15 +748,15 @@ retried. `retryDeploys: false` in a project's configuration turns the reruns off
 
 ## Layout
 
-| Path | What |
-| --- | --- |
-| `packages/core` | `@calder-ci/core`: the API and the plan engine (`Calder.plan` is pure and testable) |
-| `packages/std` | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Expo` (runtime versions, EAS updates, TestFlight, Play internal), `Release.promote` (deploy lease, a release per host system, preflight, head check, fencing token, readiness; fails when a host can't be reached, none runs the app or a host's system has no release), `Pnpm.install`, `Bun.install`, `Vitest.files`, `Vp` (`vp check` and `vp test`) |
-| `packages/api` | Schemas and the RPC group the UI speaks |
-| `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent |
-| `packages/ui` | The web UI (React, Vite), served by the controller |
-| `sdk` | What `.calder/node_modules` links to, so ci.ts and the worker share one copy of Effect, and the tsconfig `.calder/tsconfig.json` extends |
-| `site` | The website, plain HTML, CSS and JavaScript that the flake packages as `packages.site` and the proxy serves at `/` of https://calder.schnau.dev |
+| Path              | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/core`   | `@calder-ci/core`: the API and the plan engine (`Calder.plan` is pure and testable)                                                                                                                                                                                                                                                                                                                                                                                    |
+| `packages/std`    | `@calder-ci/std`: `Environments.project`, `Project.standard`, `Project.alchemy` and `Alchemy`, `Npm.publish`, `Expo` (runtime versions, EAS updates, TestFlight, Play internal), `Release.promote` (deploy lease, a release per host system, preflight, head check, fencing token, readiness; fails when a host can't be reached, none runs the app or a host's system has no release), `Pnpm.install`, `Bun.install`, `Vitest.files`, `Vp` (`vp check` and `vp test`) |
+| `packages/api`    | Schemas and the RPC group the UI speaks                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `packages/calder` | The CLI: controller (Gitea webhooks, runs driven from a SQLite journal, statuses, leases, agents, egress proxy), worker and agent                                                                                                                                                                                                                                                                                                                                      |
+| `packages/ui`     | The web UI (React, Vite), served by the controller                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `sdk`             | What `.calder/node_modules` links to, so ci.ts and the worker share one copy of Effect, and the tsconfig `.calder/tsconfig.json` extends                                                                                                                                                                                                                                                                                                                               |
+| `site`            | The website, plain HTML, CSS and JavaScript that the flake packages as `packages.site` and the proxy serves at `/` of https://calder.schnau.dev                                                                                                                                                                                                                                                                                                                        |
 
 ```
 pnpm install

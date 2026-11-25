@@ -1,13 +1,21 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema } from "effect";
 
-export const Trust = Schema.Literals(["pr", "trusted"])
-export type Trust = typeof Trust.Type
+export const Trust = Schema.Literals(["pr", "trusted"]);
+export type Trust = typeof Trust.Type;
 
-export const RunStatus = Schema.Literals(["queued", "planning", "running", "passed", "failed", "cancelled", "errored"])
-export type RunStatus = typeof RunStatus.Type
+export const RunStatus = Schema.Literals([
+  "queued",
+  "planning",
+  "running",
+  "passed",
+  "failed",
+  "cancelled",
+  "errored",
+]);
+export type RunStatus = typeof RunStatus.Type;
 
 /** A run with one of these statuses has ended. */
-export const ended: ReadonlySet<RunStatus> = new Set(["passed", "failed", "cancelled", "errored"])
+export const ended: ReadonlySet<RunStatus> = new Set(["passed", "failed", "cancelled", "errored"]);
 
 export const StepStatus = Schema.Literals([
   /** Waiting for the steps it depends on. */
@@ -29,11 +37,11 @@ export const StepStatus = Schema.Literals([
    * lease, the task exited with its `skipCode`, or a step it depends on was skipped.
    */
   "skipped",
-])
-export type StepStatus = typeof StepStatus.Type
+]);
+export type StepStatus = typeof StepStatus.Type;
 
-export const StepKind = Schema.Literals(["build", "setup", "task", "action", "output"])
-export type StepKind = typeof StepKind.Type
+export const StepKind = Schema.Literals(["build", "setup", "task", "action", "output"]);
+export type StepKind = typeof StepKind.Type;
 
 export const Event = Schema.Union([
   Schema.TaggedStruct("PullRequest", {
@@ -42,15 +50,26 @@ export const Event = Schema.Union([
     head: Schema.String,
     fork: Schema.optional(Schema.Boolean),
   }),
-  Schema.TaggedStruct("PullRequestClosed", { number: Schema.Number, base: Schema.String, head: Schema.String }),
+  Schema.TaggedStruct("PullRequestClosed", {
+    number: Schema.Number,
+    base: Schema.String,
+    head: Schema.String,
+  }),
   Schema.TaggedStruct("Push", { branch: Schema.String }),
   Schema.TaggedStruct("Schedule", { cron: Schema.String }),
   /** A run of `branch`'s head started by hand. Older runs lack `branch` and count as the default branch's. */
-  Schema.TaggedStruct("Manual", { inputs: Schema.Record(Schema.String, Schema.Unknown), branch: Schema.optional(Schema.String) }),
+  Schema.TaggedStruct("Manual", {
+    inputs: Schema.Record(Schema.String, Schema.Unknown),
+    branch: Schema.optional(Schema.String),
+  }),
   /** A working copy checked before it is pushed (`calder check`), pushed as `ref`. It runs what a pull request would. */
-  Schema.TaggedStruct("Check", { ref: Schema.String, base: Schema.String, background: Schema.optional(Schema.Boolean) }),
-])
-export type Event = typeof Event.Type
+  Schema.TaggedStruct("Check", {
+    ref: Schema.String,
+    base: Schema.String,
+    background: Schema.optional(Schema.Boolean),
+  }),
+]);
+export type Event = typeof Event.Type;
 
 export const Commit = Schema.Struct({
   sha: Schema.String,
@@ -59,8 +78,8 @@ export const Commit = Schema.Struct({
   title: Schema.String,
   author: Schema.String,
   timestamp: Schema.Number,
-})
-export type Commit = typeof Commit.Type
+});
+export type Commit = typeof Commit.Type;
 
 /** A pull request Calder merges once it is green and up to date with its base. */
 export const MergeRequest = Schema.Struct({
@@ -69,8 +88,8 @@ export const MergeRequest = Schema.Struct({
   status: Schema.Literals(["waiting", "updating", "merged", "failed", "closed"]),
   message: Schema.NullOr(Schema.String),
   requestedAt: Schema.Number,
-})
-export type MergeRequest = typeof MergeRequest.Type
+});
+export type MergeRequest = typeof MergeRequest.Type;
 
 export const Run = Schema.Struct({
   id: Schema.String,
@@ -93,8 +112,8 @@ export const Run = Schema.Struct({
   traceId: Schema.NullOr(Schema.String),
   /** Counts by status, for lists, where a task whose `each` matched no file counts as `no-files`. */
   counts: Schema.Record(Schema.String, Schema.Number),
-})
-export type Run = typeof Run.Type
+});
+export type Run = typeof Run.Type;
 
 /** A value a step produced, ready to show. */
 export const Value = Schema.Struct({
@@ -105,16 +124,16 @@ export const Value = Schema.Struct({
   /** Short text for the UI: a store path, a URL, a tag and its fields. */
   text: Schema.String,
   json: Schema.Unknown,
-})
-export type Value = typeof Value.Type
+});
+export type Value = typeof Value.Type;
 
 export const StepError = Schema.Struct({
   tag: Schema.String,
   message: Schema.String,
   /** The last lines of output before the failure. */
   excerpt: Schema.String,
-})
-export type StepError = typeof StepError.Type
+});
+export type StepError = typeof StepError.Type;
 
 export const StepRun = Schema.Struct({
   runId: Schema.String,
@@ -161,9 +180,18 @@ export const StepRun = Schema.Struct({
   memoryPeakBytes: Schema.NullOr(Schema.Number),
   spanId: Schema.NullOr(Schema.String),
   /** Each test once, with its last outcome. `flaky` of the passed ones failed first and passed on a retry. */
-  tests: Schema.NullOr(Schema.Struct({ passed: Schema.Number, failed: Schema.Number, skipped: Schema.Number, flaky: Schema.Number })),
+  tests: Schema.NullOr(
+    Schema.Struct({
+      passed: Schema.Number,
+      failed: Schema.Number,
+      skipped: Schema.Number,
+      flaky: Schema.Number,
+    }),
+  ),
   /** For a task with `each`: its files, how many ran rather than being reused, and how many passed only on retry. */
-  files: Schema.NullOr(Schema.Struct({ total: Schema.Number, ran: Schema.Number, flaky: Schema.Number })),
+  files: Schema.NullOr(
+    Schema.Struct({ total: Schema.Number, ran: Schema.Number, flaky: Schema.Number }),
+  ),
   /** A task's outputs, also those a failed task wrote, at the store path the controller serves at `outputPath`. */
   outputs: Schema.Array(Schema.Struct({ name: Schema.String, path: Schema.String })),
   /**
@@ -173,25 +201,26 @@ export const StepRun = Schema.Struct({
   waiting: Schema.optionalKey(Schema.NullOr(Schema.String)),
   /** On a deploy's or a preview's critical path, so it takes the latency lane. */
   critical: Schema.optionalKey(Schema.Boolean),
-})
-export type StepRun = typeof StepRun.Type
+});
+export type StepRun = typeof StepRun.Type;
 
 /** A task whose `each` matched no file: it counts as reused, though nothing was there to reuse. */
-export const noFiles = (step: Pick<StepRun, "status" | "files">) => step.status === "reused" && step.files?.total === 0
+export const noFiles = (step: Pick<StepRun, "status" | "files">) =>
+  step.status === "reused" && step.files?.total === 0;
 
 /**
  * A setup that never ran because no task of its run that starts from it ran. It counts as reused and
  * never queued, which a setup that was asked for always did.
  */
 export const unneeded = (step: Pick<StepRun, "kind" | "status" | "queuedAt">) =>
-  step.kind === "setup" && step.status === "reused" && step.queuedAt === null
+  step.kind === "setup" && step.status === "reused" && step.queuedAt === null;
 
 /**
  * Where the controller serves a step's output, relative to the UI's page: a file as it is, a directory
  * as a list of links.
  */
 export const outputPath = (runId: string, step: string, output: string) =>
-  `outputs/${[runId, step, output].map(encodeURIComponent).join("/")}`
+  `outputs/${[runId, step, output].map(encodeURIComponent).join("/")}`;
 
 export const TestResult = Schema.Struct({
   runId: Schema.String,
@@ -204,8 +233,8 @@ export const TestResult = Schema.Struct({
   message: Schema.NullOr(Schema.String),
   /** Passed and failed on the same key in recent runs. */
   flaky: Schema.Boolean,
-})
-export type TestResult = typeof TestResult.Type
+});
+export type TestResult = typeof TestResult.Type;
 
 /**
  * A file of an `each` task that failed in its job and passed when it ran again, with only the files that
@@ -221,8 +250,8 @@ export const RetriedFile = Schema.Struct({
   others: Schema.Array(Schema.Struct({ id: Schema.String, number: Schema.Number })),
   /** The files that shared its job every time; null until it passed only on retry in another run too. */
   suspects: Schema.NullOr(Schema.Array(Schema.String)),
-})
-export type RetriedFile = typeof RetriedFile.Type
+});
+export type RetriedFile = typeof RetriedFile.Type;
 
 export const RunDetail = Schema.Struct({
   /** The last change included; apply only changes with a higher seq. */
@@ -234,8 +263,8 @@ export const RunDetail = Schema.Struct({
   retried: Schema.Array(RetriedFile),
   /** Other runs of the same change or pull request, newest first. */
   siblings: Schema.Array(Run),
-})
-export type RunDetail = typeof RunDetail.Type
+});
+export type RunDetail = typeof RunDetail.Type;
 
 export const LogLine = Schema.Struct({
   step: Schema.String,
@@ -245,16 +274,16 @@ export const LogLine = Schema.Struct({
   level: Schema.Literals(["debug", "info", "warn", "error"]),
   timestamp: Schema.Number,
   text: Schema.String,
-})
-export type LogLine = typeof LogLine.Type
+});
+export type LogLine = typeof LogLine.Type;
 
 /** A line as the `logs` RPC serves it. */
 export const LogEntry = Schema.Struct({
   ...LogLine.fields,
   /** Position in the log as the controller serves it; `before` pages back by it. */
   index: Schema.Number,
-})
-export type LogEntry = typeof LogEntry.Type
+});
+export type LogEntry = typeof LogEntry.Type;
 
 /**
  * A span of a run's trace. Calder's own spans carry `calder.project`, `calder.run`, `calder.step`, `calder.kind`,
@@ -270,8 +299,8 @@ export const Span = Schema.Struct({
   end: Schema.Number,
   status: Schema.Literals(["ok", "error", "unset"]),
   attributes: Schema.Record(Schema.String, Schema.String),
-})
-export type Span = typeof Span.Type
+});
+export type Span = typeof Span.Type;
 
 export const Deployment = Schema.Struct({
   project: Schema.String,
@@ -286,8 +315,8 @@ export const Deployment = Schema.Struct({
   url: Schema.NullOr(Schema.String),
   /** The run deploying here right now. */
   deployingRun: Schema.NullOr(Schema.String),
-})
-export type Deployment = typeof Deployment.Type
+});
+export type Deployment = typeof Deployment.Type;
 
 /** A footprint record an audit found wrong (see the controller's `audit`). */
 export const AuditMismatch = Schema.Struct({
@@ -299,8 +328,8 @@ export const AuditMismatch = Schema.Struct({
   evaluated: Schema.NullOr(Schema.String),
   /** What the fresh evaluation read that the record didn't. */
   missed: Schema.Array(Schema.String),
-})
-export type AuditMismatch = typeof AuditMismatch.Type
+});
+export type AuditMismatch = typeof AuditMismatch.Type;
 
 /** Where a deploying project's default branch stands: what is deployed, how far the head is ahead, and the next retry. */
 export const Delivery = Schema.Struct({
@@ -313,9 +342,11 @@ export const Delivery = Schema.Struct({
   /** The head's newest push run ended without deploying it, rather than still running toward it. */
   stalled: Schema.Boolean,
   /** The head's failed run Calder reruns at `at`, which is the head's `attempt`th failed run. Null when nothing is due. */
-  retry: Schema.NullOr(Schema.Struct({ runId: Schema.String, at: Schema.Number, attempt: Schema.Number })),
-})
-export type Delivery = typeof Delivery.Type
+  retry: Schema.NullOr(
+    Schema.Struct({ runId: Schema.String, at: Schema.Number, attempt: Schema.Number }),
+  ),
+});
+export type Delivery = typeof Delivery.Type;
 
 export const Project = Schema.Struct({
   name: Schema.String,
@@ -325,13 +356,19 @@ export const Project = Schema.Struct({
   main: Schema.NullOr(Run),
   deployments: Schema.Array(Deployment),
   /** The last 20 runs on the default branch, oldest first, for sparklines. */
-  history: Schema.Array(Schema.Struct({ id: Schema.String, status: RunStatus, durationMs: Schema.NullOr(Schema.Number) })),
+  history: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      status: RunStatus,
+      durationMs: Schema.NullOr(Schema.Number),
+    }),
+  ),
   /** Footprint records audits found wrong in the last two weeks. Older controllers send none. */
   audits: Schema.optional(Schema.Array(AuditMismatch)),
   /** For a project whose pushes deploy. Older controllers send none. */
   delivery: Schema.optional(Schema.NullOr(Delivery)),
-})
-export type Project = typeof Project.Type
+});
+export type Project = typeof Project.Type;
 
 export const Overview = Schema.Struct({
   /** The last change included; apply only changes with a higher seq. */
@@ -344,50 +381,61 @@ export const Overview = Schema.Struct({
   /** Recent runs across projects, newest first. */
   recent: Schema.Array(Run),
   /** Slot use right now on the controller's host. */
-  slots: Schema.Struct({ tasks: Schema.Number, tasksMax: Schema.Number, builds: Schema.Number, buildsMax: Schema.Number }),
+  slots: Schema.Struct({
+    tasks: Schema.Number,
+    tasksMax: Schema.Number,
+    builds: Schema.Number,
+    buildsMax: Schema.Number,
+  }),
   /** Agents on other hosts seen since the controller started, and their slot use. */
-  agents: Schema.Array(Schema.Struct({
-    name: Schema.String,
-    platform: Schema.String,
-    slots: Schema.Number,
-    running: Schema.Number,
-    connected: Schema.Boolean,
-    build: Schema.String,
-    compatibility: Schema.Number,
-    /** Has the controller's compatibility version; other agents get no jobs. */
-    current: Schema.Boolean,
-    /** Takes evaluation jobs only, for any platform. */
-    evaluator: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-    /** Takes only other systems' tasks that may run on its own (`calder agent --portable-only`). */
-    portableOnly: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-  })),
-})
-export type Overview = typeof Overview.Type
+  agents: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      platform: Schema.String,
+      slots: Schema.Number,
+      running: Schema.Number,
+      connected: Schema.Boolean,
+      build: Schema.String,
+      compatibility: Schema.Number,
+      /** Has the controller's compatibility version; other agents get no jobs. */
+      current: Schema.Boolean,
+      /** Takes evaluation jobs only, for any platform. */
+      evaluator: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+      /** Takes only other systems' tasks that may run on its own (`calder agent --portable-only`). */
+      portableOnly: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+    }),
+  ),
+});
+export type Overview = typeof Overview.Type;
 
 export const StepStats = Schema.Struct({
   project: Schema.String,
   step: Schema.String,
   /** Recent executions, oldest first. */
-  samples: Schema.Array(Schema.Struct({
-    runId: Schema.String,
-    status: StepStatus,
-    durationMs: Schema.NullOr(Schema.Number),
-    queueMs: Schema.NullOr(Schema.Number),
-    reused: Schema.Boolean,
-    finishedAt: Schema.Number,
-  })),
-})
-export type StepStats = typeof StepStats.Type
+  samples: Schema.Array(
+    Schema.Struct({
+      runId: Schema.String,
+      status: StepStatus,
+      durationMs: Schema.NullOr(Schema.Number),
+      queueMs: Schema.NullOr(Schema.Number),
+      reused: Schema.Boolean,
+      finishedAt: Schema.Number,
+    }),
+  ),
+});
+export type StepStats = typeof StepStats.Type;
 
 export const Metrics = Schema.Struct({
   /** Samples of a running step's cgroup, oldest first. */
-  samples: Schema.Array(Schema.Struct({
-    timestamp: Schema.Number,
-    cpuPercent: Schema.Number,
-    memoryBytes: Schema.Number,
-  })),
-})
-export type Metrics = typeof Metrics.Type
+  samples: Schema.Array(
+    Schema.Struct({
+      timestamp: Schema.Number,
+      cpuPercent: Schema.Number,
+      memoryBytes: Schema.Number,
+    }),
+  ),
+});
+export type Metrics = typeof Metrics.Type;
 
 /** A deploy Calder made: one promotion of one revision to one host. */
 export const DeploymentRecord = Schema.Struct({
@@ -398,8 +446,8 @@ export const DeploymentRecord = Schema.Struct({
   runId: Schema.String,
   runNumber: Schema.Number,
   at: Schema.Number,
-})
-export type DeploymentRecord = typeof DeploymentRecord.Type
+});
+export type DeploymentRecord = typeof DeploymentRecord.Type;
 
 /**
  * Pushed to UI subscribers whenever something changes. `seq` rises by one per change, so a client can
@@ -415,5 +463,5 @@ export const Change = Schema.Union([
   }),
   Schema.TaggedStruct("DeploymentChanged", { seq: Schema.Number, deployment: Deployment }),
   Schema.TaggedStruct("DeploymentRecorded", { seq: Schema.Number, record: DeploymentRecord }),
-])
-export type Change = typeof Change.Type
+]);
+export type Change = typeof Change.Type;

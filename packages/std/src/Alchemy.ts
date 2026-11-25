@@ -1,43 +1,54 @@
-import { Action, Cmd, cmd, CurrentRun, type Flake, PullRequest, Secret, type Setup, type Step, Task } from "@calder-ci/core"
-import type { Schema } from "effect"
-import * as Release from "./Release.ts"
+import {
+  Action,
+  Cmd,
+  cmd,
+  CurrentRun,
+  type Flake,
+  PullRequest,
+  Secret,
+  type Setup,
+  type Step,
+  Task,
+} from "@calder-ci/core";
+import type { Schema } from "effect";
+import * as Release from "./Release.ts";
 
 /** How the repository's Alchemy stack deploys. */
 export interface Stack<A = void> {
   /** The dev shell with node and pnpm, or bun for `runner: "bun"`, and nix when the stack's build runs it. */
-  readonly shell?: Flake.FlakeRef<"devShells">
+  readonly shell?: Flake.FlakeRef<"devShells">;
   /** The installed dependencies the CLI runs from: `Pnpm.install`, or `Bun.install` with `runner: "bun"`. */
-  readonly setup: Setup.Setup
+  readonly setup: Setup.Setup;
   /**
    * What starts the CLI: the installed `node_modules/.bin/alchemy` by default, `bun alchemy` with `"bun"`.
    * Not `pnpm exec`, which checks the install again before every command: 8 s of a deploy on srv-2.
    */
-  readonly runner?: "pnpm" | "bun"
+  readonly runner?: "pnpm" | "bun";
   /**
    * The project's secret with a dotenv file of the providers' credentials, for `--env-file`. With
    * `ALCHEMY_STATE_STORE_URL` and `ALCHEMY_STATE_STORE_TOKEN`, the workers.dev URL and bearer token of the
    * Cloudflare state store the stack uses, the CLI starts from them instead of fetching the token through a
    * preview Worker, and a deploy reads its `outputs` from the store with one request.
    */
-  readonly env: string
+  readonly env: string;
   /**
    * The directory the CLI runs in, relative to the repository root, when the stack and its package
    * aren't at the root. The setup installs that package (`dir` of `Pnpm.install`), and `config` is
    * relative to it.
    */
-  readonly dir?: string
+  readonly dir?: string;
   /** The stack file, when it isn't `alchemy.run.ts`. */
-  readonly config?: string
+  readonly config?: string;
   /**
    * More of the project's secrets the stack reads, by the environment variable that gets its file's
    * path, such as `{ FLEET_TOKEN_FILE: "placement-token" }` for a `Fleet.Placement`.
    */
-  readonly secrets?: { readonly [env: string]: string }
+  readonly secrets?: { readonly [env: string]: string };
   /**
    * What the stack returns, as the value of its deploys: `name` is the stack's (`Alchemy.Stack(name, ...)`),
    * `schema` decodes its outputs. Outputs the schema leaves out, such as secrets, never reach Calder.
    */
-  readonly outputs?: { readonly name: string; readonly schema: Schema.Decoder<A> }
+  readonly outputs?: { readonly name: string; readonly schema: Schema.Decoder<A> };
 }
 
 /**
@@ -46,7 +57,7 @@ export interface Stack<A = void> {
  * a deploy waits for them and nothing else unless told to, and it publishes them to the binary cache
  * first, for a host that substitutes them.
  */
-export type Artifacts = { readonly [env: string]: Step.Step<string, any, any, any, never> }
+export type Artifacts = { readonly [env: string]: Step.Step<string, any, any, any, never> };
 
 /**
  * A stage name: one word, since the CLI gets it as an argument, and not `pr-<number>`, the stages of
@@ -54,23 +65,33 @@ export type Artifacts = { readonly [env: string]: Step.Step<string, any, any, an
  */
 export const stageName = (stage: string) => {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(stage)) {
-    throw new Error(`Alchemy stage "${stage}": use letters, digits, ".", "_" and "-", starting with a letter or digit`)
+    throw new Error(
+      `Alchemy stage "${stage}": use letters, digits, ".", "_" and "-", starting with a letter or digit`,
+    );
   }
-  if (/^pr-\d+$/.test(stage)) throw new Error(`Alchemy stage "${stage}" is a pull request's preview stage; pick another name`)
-  return stage
-}
+  if (/^pr-\d+$/.test(stage))
+    throw new Error(
+      `Alchemy stage "${stage}" is a pull request's preview stage; pick another name`,
+    );
+  return stage;
+};
 
 /** Where a deploy writes the stack's outputs for the task's value; `git clean` removes it before the next task. */
-const outputsFile = ".calder-alchemy-outputs.json"
+const outputsFile = ".calder-alchemy-outputs.json";
 
 const shellOf = (stack: Stack<unknown>) => ({
   ...(stack.shell === undefined ? {} : { shell: stack.shell }),
   ...(stack.secrets === undefined
     ? {}
-    : { secrets: Object.fromEntries(Object.entries(stack.secrets).map(([env, name]) => [env, Secret.file(name)])) }),
-})
+    : {
+        secrets: Object.fromEntries(
+          Object.entries(stack.secrets).map(([env, name]) => [env, Secret.file(name)]),
+        ),
+      }),
+});
 
-const quote = (words: ReadonlyArray<string>) => words.map((word) => `'${word.replaceAll("'", `'\\''`)}'`).join(" ")
+const quote = (words: ReadonlyArray<string>) =>
+  words.map((word) => `'${word.replaceAll("'", `'\\''`)}'`).join(" ");
 
 /**
  * The script every command runs: in the stack's directory, `alchemy <verb>` of stage `$1` with the env
@@ -84,9 +105,9 @@ const quote = (words: ReadonlyArray<string>) => words.map((word) => `'${word.rep
  * so the file keeps what starts at the line `{`. The token goes to curl on stdin, never in its arguments.
  */
 const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan") => {
-  const config = stack.config === undefined ? "" : ` --config ${quote([stack.config])}`
-  const outputs = verb === "deploy" ? stack.outputs : undefined
-  const cache = `"$ALCHEMY_HOME"/profiles/default/state-stores`
+  const config = stack.config === undefined ? "" : ` --config ${quote([stack.config])}`;
+  const outputs = verb === "deploy" ? stack.outputs : undefined;
+  const cache = `"$ALCHEMY_HOME"/profiles/default/state-stores`;
   return [
     "set -euo pipefail",
     "root=$PWD",
@@ -104,33 +125,40 @@ const script = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan") => {
     `url=$(dotenv ALCHEMY_STATE_STORE_URL "$2") token=$(dotenv ALCHEMY_STATE_STORE_TOKEN "$2") account=$(dotenv CLOUDFLARE_ACCOUNT_ID "$2")`,
     // The cache holds each store by its Worker's name, the first label of its workers.dev URL.
     `if [ -n "$url" ] && [ -n "$token" ]; then store=\${url#https://} && mkdir -p ${cache} && printf '{"stores":{"%s":{"url":"%s","authToken":"%s","accountId":"%s"}}}' "\${store%%.*}" "$url" "$token" "$account" > ${cache}/cloudflare.json; fi`,
-    stack.runner === "bun" ? `alchemy() { bun alchemy "$@"; }` : `alchemy() { node_modules/.bin/alchemy "$@"; }`,
+    stack.runner === "bun"
+      ? `alchemy() { bun alchemy "$@"; }`
+      : `alchemy() { node_modules/.bin/alchemy "$@"; }`,
     // `plan` has no --yes: without it the CLI changes nothing, the state store included.
     `alchemy ${verb}${config} --stage "$1"${verb === "plan" ? "" : " --yes"} --env-file "$2"`,
-    ...(outputs === undefined ? [] : [
-      `if [ -z "$token" ] || ! printf 'header = "Authorization: Bearer %s"\\n' "$token" | curl -fsS --config - -o "$root"/${outputsFile} "$url"/state/stacks/${quote([outputs.name])}/stages/"$1"/output; then`,
-      `  alchemy state read ${quote([`${outputs.name}/`])}"$1"/output${config} --env-file "$2" | sed -n '/^{/,$p' > "$root"/${outputsFile}`,
-      "fi",
-    ]),
-  ].join("\n")
-}
+    ...(outputs === undefined
+      ? []
+      : [
+          `if [ -z "$token" ] || ! printf 'header = "Authorization: Bearer %s"\\n' "$token" | curl -fsS --config - -o "$root"/${outputsFile} "$url"/state/stacks/${quote([outputs.name])}/stages/"$1"/output; then`,
+          `  alchemy state read ${quote([`${outputs.name}/`])}"$1"/output${config} --env-file "$2" | sed -n '/^{/,$p' > "$root"/${outputsFile}`,
+          "fi",
+        ]),
+  ].join("\n");
+};
 
 /** Literal command text, which splits on whitespace like a template's, or a value interpolated whole. */
-type Part = { readonly text: string } | Cmd.Interpolation
+type Part = { readonly text: string } | Cmd.Interpolation;
 
 /** A command from literal text and interpolations in order, for commands whose interpolations vary. */
 const command = (parts: ReadonlyArray<Part>) => {
-  const strings: Array<string> = [""]
-  const values: Array<Cmd.Interpolation> = []
+  const strings: Array<string> = [""];
+  const values: Array<Cmd.Interpolation> = [];
   for (const part of parts) {
-    if (typeof part === "object" && "text" in part) strings[strings.length - 1] += part.text
+    if (typeof part === "object" && "text" in part) strings[strings.length - 1] += part.text;
     else {
-      values.push(part)
-      strings.push("")
+      values.push(part);
+      strings.push("");
     }
   }
-  return cmd(Object.assign(strings, { raw: strings }) as unknown as TemplateStringsArray, ...values)
-}
+  return cmd(
+    Object.assign(strings, { raw: strings }) as unknown as TemplateStringsArray,
+    ...values,
+  );
+};
 
 const run = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan", stage: ReadonlyArray<Part>) =>
   command([
@@ -140,10 +168,10 @@ const run = <A>(stack: Stack<A>, verb: "deploy" | "destroy" | "plan", stage: Rea
     ...stage,
     { text: " " },
     Secret.file(stack.env),
-  ])
+  ]);
 
 const valueOf = <A>(stack: Stack<A>) =>
-  stack.outputs === undefined ? {} : { value: { path: outputsFile, schema: stack.outputs.schema } }
+  stack.outputs === undefined ? {} : { value: { path: outputsFile, schema: stack.outputs.schema } };
 
 /**
  * `alchemy deploy --stage <stage>`, holding the project's deploy lease: one deploy at a time, and a
@@ -156,11 +184,11 @@ const valueOf = <A>(stack: Stack<A>) =>
 export const deploy = <A = void>(
   stack: Stack<A>,
   options: {
-    readonly stage: string
+    readonly stage: string;
     /** The step's name, `deploy-<stage>` by default. */
-    readonly name?: string
-    readonly after?: ReadonlyArray<Step.Any>
-    readonly artifacts?: Artifacts
+    readonly name?: string;
+    readonly after?: ReadonlyArray<Step.Any>;
+    readonly artifacts?: Artifacts;
   },
 ) =>
   Task.make(options.name ?? `deploy-${options.stage}`, {
@@ -172,7 +200,7 @@ export const deploy = <A = void>(
     run: run(stack, "deploy", [{ text: stageName(options.stage) }]),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...valueOf(stack),
-  })
+  });
 
 /**
  * `alchemy plan --stage <stage>`: what a deploy of the revision would change, without changing anything,
@@ -180,14 +208,17 @@ export const deploy = <A = void>(
  * evaluate or whose provider or state store refuses it. It takes no lease and runs every time. A stack that
  * reads the deploy's `artifacts` while it plans gets them too.
  */
-export const plan = <A>(stack: Stack<A>, options: { readonly stage: string; readonly name?: string; readonly artifacts?: Artifacts }) =>
+export const plan = <A>(
+  stack: Stack<A>,
+  options: { readonly stage: string; readonly name?: string; readonly artifacts?: Artifacts },
+) =>
   Task.make(options.name ?? `plan-${options.stage}`, {
     ...shellOf(stack),
     setup: stack.setup,
     reuse: "never",
     run: run(stack, "plan", [{ text: stageName(options.stage) }]),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
-  })
+  });
 
 /**
  * Waits until the URL `readiness` reads from the deploy's outputs reports the run's revision as its
@@ -197,11 +228,11 @@ export const ready = <A>(
   deployed: Step.Step<A, any, any, any, any>,
   options: { readonly name: string; readonly readiness: (outputs: A) => string },
 ) =>
-  Action.make(options.name, { needs: { outputs: deployed } }, function*({ outputs }) {
-    const current = yield* CurrentRun
-    yield* Release.awaitReadiness(options.readiness(outputs), current.revision)
-    return outputs
-  })
+  Action.make(options.name, { needs: { outputs: deployed } }, function* ({ outputs }) {
+    const current = yield* CurrentRun;
+    yield* Release.awaitReadiness(options.readiness(outputs), current.revision);
+    return outputs;
+  });
 
 /**
  * A pull request's own stage, `pr-<number>`, for `On.preview`: deployed on every update, holding the
@@ -211,12 +242,12 @@ export const ready = <A>(
 export const preview = <A = void>(
   stack: Stack<A>,
   options: {
-    readonly url: (pr: number, outputs: A) => string
-    readonly after?: ReadonlyArray<Step.Any>
+    readonly url: (pr: number, outputs: A) => string;
+    readonly after?: ReadonlyArray<Step.Any>;
     /** Steps the deploy waits for on its critical path, such as a smoke test of what it deploys (`Task.make`'s `gate`). */
-    readonly gate?: ReadonlyArray<Step.Any>
-    readonly artifacts?: Artifacts
-    readonly readiness?: (outputs: A) => string
+    readonly gate?: ReadonlyArray<Step.Any>;
+    readonly artifacts?: Artifacts;
+    readonly readiness?: (outputs: A) => string;
   },
 ) => {
   const upload = Task.make("preview", {
@@ -229,16 +260,17 @@ export const preview = <A = void>(
     run: run(stack, "deploy", [{ text: "pr-" }, Cmd.pullRequest]),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...valueOf(stack),
-  })
-  const link = Action.make("preview-url", { needs: { outputs: upload } }, function*({ outputs }) {
-    const pr = yield* PullRequest
-    const current = yield* CurrentRun
-    if (options.readiness !== undefined) yield* Release.awaitReadiness(options.readiness(outputs), current.revision)
-    yield* pr.comment(`Preview: ${options.url(pr.number, outputs)}`)
-    return outputs
-  })
-  return [upload, link] as const
-}
+  });
+  const link = Action.make("preview-url", { needs: { outputs: upload } }, function* ({ outputs }) {
+    const pr = yield* PullRequest;
+    const current = yield* CurrentRun;
+    if (options.readiness !== undefined)
+      yield* Release.awaitReadiness(options.readiness(outputs), current.revision);
+    yield* pr.comment(`Preview: ${options.url(pr.number, outputs)}`);
+    return outputs;
+  });
+  return [upload, link] as const;
+};
 
 /** Removes a closed pull request's stage, for `On.pullRequestClosed`, holding the pull request's lease like its previews. */
 export const destroy = <A>(stack: Stack<A>) =>
@@ -248,4 +280,4 @@ export const destroy = <A>(stack: Stack<A>) =>
     lease: true,
     reuse: "never",
     run: run(stack, "destroy", [{ text: "pr-" }, Cmd.pullRequest]),
-  })
+  });

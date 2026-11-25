@@ -1,39 +1,59 @@
-import { Effect } from "effect"
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { delimiter, join, resolve } from "node:path"
-import * as Exec from "./Exec.ts"
+import { Effect } from "effect";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { delimiter, join, resolve } from "node:path";
+import * as Exec from "./Exec.ts";
 
 /** Calder's SDK next to this file: in a checkout `<repo>/sdk/node_modules`, in the Nix package the same layout. */
-export const sdkPath = resolve(import.meta.dirname, "../../../sdk/node_modules")
+export const sdkPath = resolve(import.meta.dirname, "../../../sdk/node_modules");
 
 /**
  * `.calder/tsconfig.json`. The compiler options come from the SDK through `.calder/node_modules`, so a
  * change to them reaches every project with the next Calder instead of the next `calder gen`.
  */
-export const tsconfig = { extends: "@calder-ci/tsconfig", include: ["*.ts"] }
+export const tsconfig = { extends: "@calder-ci/tsconfig", include: ["*.ts"] };
 
 const names = (dir: string, output: string, system: string) =>
-  Exec.run(["nix", "eval", "--json", `${dir}#${output}.${system}`, "--apply", "builtins.attrNames"], { cwd: dir }).pipe(
+  Exec.run(
+    ["nix", "eval", "--json", `${dir}#${output}.${system}`, "--apply", "builtins.attrNames"],
+    { cwd: dir },
+  ).pipe(
     Effect.map((json) => JSON.parse(json) as ReadonlyArray<string>),
     Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
-  )
+  );
 
 /**
  * The `.calder/ci.ts` of a repository without one: the standard pipeline, with Vite+'s checks when the
  * repository has a root `vite.config.ts`, `vite-plus` among its root dependencies, a pnpm or Bun lockfile
  * to install it from and a `ci` dev shell, and no flake check takes the name of a step it adds.
  */
-export const pipeline = (dir: string, flake: { readonly checks: ReadonlyArray<string>; readonly devShells: ReadonlyArray<string> }) => {
-  const has = (file: string) => existsSync(join(dir, file))
-  const install = has("pnpm-lock.yaml") ? "Pnpm" : has("bun.lock") || has("bun.lockb") ? "Bun" : undefined
-  const vitePlus = has("vite.config.ts") && dependsOn(join(dir, "package.json"), "vite-plus")
-  const named = ["check", "test", "install"].some((name) => flake.checks.includes(name))
+export const pipeline = (
+  dir: string,
+  flake: { readonly checks: ReadonlyArray<string>; readonly devShells: ReadonlyArray<string> },
+) => {
+  const has = (file: string) => existsSync(join(dir, file));
+  const install = has("pnpm-lock.yaml")
+    ? "Pnpm"
+    : has("bun.lock") || has("bun.lockb")
+      ? "Bun"
+      : undefined;
+  const vitePlus = has("vite.config.ts") && dependsOn(join(dir, "package.json"), "vite-plus");
+  const named = ["check", "test", "install"].some((name) => flake.checks.includes(name));
   if (!vitePlus || install === undefined || !flake.devShells.includes("ci") || named) {
     return `import { Project } from "@calder-ci/std"
 import { flake } from "./flake.ts"
 
 export default Project.standard({ flake })
-`
+`;
   }
   return `import { ${install}, Project } from "@calder-ci/std"
 import { flake } from "./flake.ts"
@@ -41,17 +61,20 @@ import { flake } from "./flake.ts"
 const shell = flake.devShells.ci
 
 export default Project.standard({ flake, vp: { shell, setup: ${install}.install({ shell }) } })
-`
-}
+`;
+};
 
 const dependsOn = (manifest: string, name: string) => {
   try {
-    const json = JSON.parse(readFileSync(manifest, "utf8")) as { readonly dependencies?: object; readonly devDependencies?: object }
-    return name in (json.dependencies ?? {}) || name in (json.devDependencies ?? {})
+    const json = JSON.parse(readFileSync(manifest, "utf8")) as {
+      readonly dependencies?: object;
+      readonly devDependencies?: object;
+    };
+    return name in (json.dependencies ?? {}) || name in (json.devDependencies ?? {});
   } catch {
-    return false
+    return false;
   }
-}
+};
 
 /**
  * `calder gen`: writes `.calder/flake.ts` from the flake's outputs, a tsconfig for editors, and links
@@ -59,15 +82,19 @@ const dependsOn = (manifest: string, name: string) => {
  * without `.calder/ci.ts` gets the standard pipeline (`pipeline`).
  */
 export const gen = (repo: string, system: string) =>
-  Effect.gen(function*() {
-    const dir = resolve(repo)
-    const calder = join(dir, ".calder")
-    mkdirSync(calder, { recursive: true })
+  Effect.gen(function* () {
+    const dir = resolve(repo);
+    const calder = join(dir, ".calder");
+    mkdirSync(calder, { recursive: true });
     const [packages, checks, devShells] = yield* Effect.all(
-      [names(dir, "packages", system), names(dir, "checks", system), names(dir, "devShells", system)],
+      [
+        names(dir, "packages", system),
+        names(dir, "checks", system),
+        names(dir, "devShells", system),
+      ],
       { concurrency: "unbounded" },
-    )
-    const list = (xs: ReadonlyArray<string>) => `[${xs.map((x) => JSON.stringify(x)).join(", ")}]`
+    );
+    const list = (xs: ReadonlyArray<string>) => `[${xs.map((x) => JSON.stringify(x)).join(", ")}]`;
     writeFileSync(
       join(calder, "flake.ts"),
       `// Generated by \`calder gen\` from the flake's outputs. Run it again after adding or renaming outputs.
@@ -79,14 +106,14 @@ export const flake = Flake.make({
   devShells: ${list(devShells)},
 })
 `,
-    )
-    writeFileSync(join(calder, "tsconfig.json"), `${JSON.stringify(tsconfig, null, 2)}\n`)
-    writeFileSync(join(calder, ".gitignore"), "node_modules\n")
-    linkCheckout(calder)
-    const created = !existsSync(join(calder, "ci.ts"))
-    if (created) writeFileSync(join(calder, "ci.ts"), pipeline(dir, { checks, devShells }))
-    return { packages, checks, devShells, created }
-  })
+    );
+    writeFileSync(join(calder, "tsconfig.json"), `${JSON.stringify(tsconfig, null, 2)}\n`);
+    writeFileSync(join(calder, ".gitignore"), "node_modules\n");
+    linkCheckout(calder);
+    const created = !existsSync(join(calder, "ci.ts"));
+    if (created) writeFileSync(join(calder, "ci.ts"), pipeline(dir, { checks, devShells }));
+    return { packages, checks, devShells, created };
+  });
 
 /**
  * The SDK as seen through the profile that put this Calder on PATH, such as
@@ -95,30 +122,31 @@ export const flake = Flake.make({
  * a profile, as in a checkout of Calder itself, the SDK's own path.
  */
 export const stableSdk = (sdk: string, path: string): string => {
-  const real = realpathSync(sdk)
+  const real = realpathSync(sdk);
   for (const dir of path.split(delimiter)) {
-    if (dir === "") continue
-    const candidate = resolve(dir, "../lib/calder/sdk/node_modules")
-    if (existsSync(candidate) && realpathSync(candidate) === real) return candidate
+    if (dir === "") continue;
+    const candidate = resolve(dir, "../lib/calder/sdk/node_modules");
+    if (existsSync(candidate) && realpathSync(candidate) === real) return candidate;
   }
-  return sdk
-}
+  return sdk;
+};
 
 /** Points a checkout's `.calder/node_modules` at the SDK of the Calder on PATH. */
-export const linkCheckout = (pipelineDir: string) => link(join(pipelineDir, "node_modules"), stableSdk(sdkPath, process.env.PATH ?? ""))
+export const linkCheckout = (pipelineDir: string) =>
+  link(join(pipelineDir, "node_modules"), stableSdk(sdkPath, process.env.PATH ?? ""));
 
 export const link = (path: string, target: string) => {
   if (existsSync(path) || isLink(path)) {
-    if (isLink(path) && readlinkSync(path) === target) return
-    rmSync(path, { recursive: true, force: true })
+    if (isLink(path) && readlinkSync(path) === target) return;
+    rmSync(path, { recursive: true, force: true });
   }
-  symlinkSync(target, path)
-}
+  symlinkSync(target, path);
+};
 
 const isLink = (path: string) => {
   try {
-    return lstatSync(path).isSymbolicLink()
+    return lstatSync(path).isSymbolicLink();
   } catch {
-    return false
+    return false;
   }
-}
+};
