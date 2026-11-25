@@ -62,7 +62,7 @@ describe("footprints", () => {
         open("/nix/store/11111111111111111111111111111111-source/lib/default.nix"),
         mark(0),
         list(`${src}/hosts`),
-        '2 newfstatat(AT_FDCWD, "' + `${src}/hosts/a.nix` + '",  <unfinished ...>',
+        `2 newfstatat(AT_FDCWD, "${src}/hosts/a.nix",  <unfinished ...>`,
         look(`${src}/README.md`),
         "2 <... newfstatat resumed>{st_mode=S_IFREG|0444, st_size=1, ...}, AT_SYMLINK_NOFOLLOW) = 0",
         missing(`${src}/hosts/b.nix`),
@@ -1028,7 +1028,7 @@ describe("what a record may be trusted with", () => {
         const copy = "/nix/store/cccccccccccccccccccccccccccccccc-src";
         // A derivation whose input is `builtins.toFile "rev" self.rev`: a text file in its closure names the commit.
         const rev = join(dir, "rev");
-        writeFileSync(rev, `${src}`);
+        writeFileSync(rev, src);
         const reads = join(dir, "reads-rev.drv");
         writeFileSync(
           reads,

@@ -33,7 +33,7 @@ describe("Project.standard", () => {
         Event.pullRequest({ number: 1 }),
       );
 
-      expect(plan.steps.map((s) => s.name).sort()).toEqual([
+      expect(plan.steps.map((s) => s.name).toSorted()).toEqual([
         "artifact",
         "projectRelease",
         "qa",
@@ -100,7 +100,7 @@ describe("Project.standard", () => {
         });
 
         const pr = yield* Calder.plan(project, Event.pullRequest({ number: 1 }));
-        expect(pr.steps.map((s) => s.name).sort()).toEqual([
+        expect(pr.steps.map((s) => s.name).toSorted()).toEqual([
           "artifact",
           "projectRelease",
           "release",
@@ -156,36 +156,40 @@ describe("Project.standard", () => {
           }),
         );
 
-        yield* Effect.scoped(body as Effect.Effect<unknown, unknown, any>).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              Layer.succeed(CurrentRun, {
-                id: "r",
-                project: "app",
-                revision,
-                branch: "main",
-                trust: "trusted",
-                event: Event.push("main"),
-                system: "aarch64-linux",
-                descriptor: Effect.succeed({}),
-              }),
-              Layer.succeed(Fleet, {
-                deploying: () =>
-                  Effect.succeed({
-                    _tag: "Held",
-                    fence: 1,
-                    targets: [target("m1", "aarch64-darwin"), target("srv", "aarch64-linux")],
-                    unreachable: [],
-                  }),
-              }),
-              Layer.succeed(Git, { head: () => Effect.succeed(revision) }),
-              Layer.succeed(Cache, { publish: () => Effect.void }),
-              Layer.succeed(
-                HttpClient.HttpClient,
-                HttpClient.make(() => Effect.die(new Error("no requests expected"))),
-              ),
+        yield* Effect.scoped(
+          body as Effect.Effect<
+            unknown,
+            unknown,
+            CurrentRun | Fleet | Git | Cache | HttpClient.HttpClient
+          >,
+        ).pipe(
+          Effect.provide([
+            Layer.succeed(CurrentRun, {
+              id: "r",
+              project: "app",
+              revision,
+              branch: "main",
+              trust: "trusted",
+              event: Event.push("main"),
+              system: "aarch64-linux",
+              descriptor: Effect.succeed({}),
+            }),
+            Layer.succeed(Fleet, {
+              deploying: () =>
+                Effect.succeed({
+                  _tag: "Held",
+                  fence: 1,
+                  targets: [target("m1", "aarch64-darwin"), target("srv", "aarch64-linux")],
+                  unreachable: [],
+                }),
+            }),
+            Layer.succeed(Git, { head: () => Effect.succeed(revision) }),
+            Layer.succeed(Cache, { publish: () => Effect.void }),
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make(() => Effect.die(new Error("no requests expected"))),
             ),
-          ),
+          ]),
         );
         expect(deployed).toEqual([`m1 ${path("darwin")}`, `srv ${path("release")}`]);
       }),
@@ -198,7 +202,11 @@ describe("Project.standard", () => {
         Event.schedule("0 3 * * *"),
       );
 
-      expect(plan.steps.map((s) => s.name).sort()).toEqual(["artifact", "projectRelease", "qa"]);
+      expect(plan.steps.map((s) => s.name).toSorted()).toEqual([
+        "artifact",
+        "projectRelease",
+        "qa",
+      ]);
       expect(plan.reuse).toBe("none");
     }),
   );
@@ -231,7 +239,11 @@ describe("Project.alchemy", () => {
   it.effect("main deploys production after the checks, holding the deploy lease", () =>
     Effect.gen(function* () {
       const plan = yield* Calder.plan(project, Event.push("main"));
-      expect(plan.steps.map((s) => s.name).sort()).toEqual(["artifact", "deploy-prod", "install"]);
+      expect(plan.steps.map((s) => s.name).toSorted()).toEqual([
+        "artifact",
+        "deploy-prod",
+        "install",
+      ]);
       const deploy = plan.get("deploy-prod")!;
       expect(deploy.after).toEqual(["artifact"]);
       expect(deploy.step.def._tag === "Task" && deploy.step.def.lease).toBe(true);
@@ -241,7 +253,7 @@ describe("Project.alchemy", () => {
   it.effect("a same-repo pull request deploys its own stage and links it; a fork only checks", () =>
     Effect.gen(function* () {
       const same = yield* Calder.plan(project, Event.pullRequest({ number: 7 }));
-      expect(same.steps.map((s) => s.name).sort()).toEqual([
+      expect(same.steps.map((s) => s.name).toSorted()).toEqual([
         "artifact",
         "install",
         "plan-prod",
@@ -259,7 +271,7 @@ describe("Project.alchemy", () => {
     Effect.gen(function* () {
       const plan = yield* Calder.plan(project, Event.pullRequestClosed({ number: 7 }));
       expect(plan.trust).toBe("trusted");
-      expect(plan.steps.map((s) => s.name).sort()).toEqual(["destroy-preview", "install"]);
+      expect(plan.steps.map((s) => s.name).toSorted()).toEqual(["destroy-preview", "install"]);
     }),
   );
 

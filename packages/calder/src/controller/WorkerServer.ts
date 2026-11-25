@@ -88,7 +88,7 @@ export const handlers = WorkerRpcs.toLayer(
     const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
       effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 
-    const refuse = (reason: string) => Effect.fail(new Unauthorized({ reason }));
+    const refuse = (reason: string) => Effect.fail(Unauthorized.make({ reason }));
 
     /** The job and its run, for calls only steps of trusted runs may make. */
     const trusted = (job: string, token: string) =>
@@ -229,7 +229,7 @@ export const handlers = WorkerRpcs.toLayer(
                 duration: "5 minutes",
                 orElse: () =>
                   Effect.fail(
-                    new Exec.CommandFailed({
+                    Exec.CommandFailed.make({
                       command: `nix-store --realise ${path}`,
                       exitCode: -1,
                       stderr: "timed out after 5 minutes",
@@ -380,7 +380,7 @@ export const handlers = WorkerRpcs.toLayer(
           const url = targetUrl(targets, target);
 
           if (url === undefined)
-            return yield* new FleetRejected({
+            return yield* FleetRejected.make({
               target,
               status: 0,
               reason: `${target} is not a target of ${project}`,
@@ -398,7 +398,7 @@ export const handlers = WorkerRpcs.toLayer(
           const url = targetUrl(targets, target);
 
           if (url === undefined)
-            return yield* new FleetRejected({
+            return yield* FleetRejected.make({
               target,
               status: 0,
               reason: `${target} is not a target of ${project}`,

@@ -52,7 +52,7 @@ describe("Imports", () => {
         types: true,
       });
 
-      expect([...closure].sort()).toEqual([
+      expect([...closure].toSorted()).toEqual([
         "apps/server/src/fixtures/repo",
         "apps/server/src/git.test.ts",
         "apps/server/src/git.ts",
@@ -78,7 +78,7 @@ describe("Imports", () => {
             aliases: { "~": "apps/web/src" },
             types: false,
           })),
-        ].sort(),
+        ].toSorted(),
       ).toEqual(["apps/web/src/app.test.tsx", "apps/web/src/lib/x.ts"]);
       expect(
         yield* graph.closure(["apps/server/src/plugin.test.ts"], { aliases: {}, types: false }),

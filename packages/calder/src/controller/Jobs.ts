@@ -762,7 +762,7 @@ export const layer = Layer.effect(Jobs)(
 
         return job !== undefined && job.tokenHash === sha256(token)
           ? Effect.succeed(job)
-          : Effect.fail(new Unauthorized({ reason: "unknown job or wrong token" }));
+          : Effect.fail(Unauthorized.make({ reason: "unknown job or wrong token" }));
       },
       get: (id) => jobs.get(id),
       active: () => [...jobs.values()],

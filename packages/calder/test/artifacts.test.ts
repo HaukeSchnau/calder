@@ -3,7 +3,7 @@ import { Effect, Fiber, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { TestClock } from "effect/testing";
 import { realpathSync } from "node:fs";
-import { Job } from "../src/worker/Client.ts";
+import type { Job } from "../src/worker/Client.ts";
 import * as Steps from "../src/worker/Steps.ts";
 
 const bundle = "/nix/store/0pnbk1rns4wk6azih0kcz7136aid5x6f-studienbuch-bundle";

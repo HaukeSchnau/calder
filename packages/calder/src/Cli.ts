@@ -26,6 +26,8 @@ const readEvent = (kind: string, arg: string | undefined): Event.Event | undefin
       return arg === undefined
         ? Event.manual()
         : Option.getOrUndefined(Option.map(manualInputs(arg), Event.manual));
+    default:
+      return undefined;
   }
 };
 
@@ -73,7 +75,7 @@ const distance = (a: string, b: string) => {
 export const closest = (typed: string, names: ReadonlyArray<string>) =>
   names
     .map((name) => ({ name, d: distance(typed, name) }))
-    .sort((x, y) => x.d - y.d)
+    .toSorted((x, y) => x.d - y.d)
     .map((x) => x.name);
 
 /** A coarse span of time: `40s`, `12m`, `5h`, `3d`. */
@@ -93,7 +95,7 @@ export const ago = (ms: number) => `${span(ms)} ago`;
 
 /** Where a project's deploys stand, for people: `deployed`, or how far behind and when Calder retries. */
 export const delivery = (d: Domain.Delivery | null | undefined, now: number) => {
-  if (d == null) return "";
+  if (d === null || d === undefined) return "";
 
   if (d.revision === d.head) return "deployed";
 
@@ -136,7 +138,7 @@ export const timings = (steps: ReadonlyArray<Domain.StepRun>, now: number) =>
           ? `running ${took(now - s.startedAt)}`
           : `took ${took(s.finishedAt - s.startedAt)}`,
       s.status === "pending" || s.status === "queued"
-        ? s.waiting == null
+        ? s.waiting === null || s.waiting === undefined
           ? ""
           : `waits for ${s.waiting}`
         : s.error !== null && s.status !== "passed"

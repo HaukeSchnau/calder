@@ -16,7 +16,7 @@ export const client = Effect.gen(function* () {
     Effect.try({
       try: () => db.prepare(sql).all(...(params as ReadonlyArray<SQLInputValue>)),
       catch: (cause) =>
-        new SqlError.SqlError({
+        SqlError.SqlError.make({
           reason: SqlError.classifySqliteError(cause, { message: sql, operation: "execute" }),
         }),
     });

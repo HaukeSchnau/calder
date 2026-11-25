@@ -9,7 +9,7 @@ export interface TestOutcome extends Tests.TestRecord {
 export type FileStatus = "passed" | "flaky" | "failed" | "unknown";
 
 const median = (xs: ReadonlyArray<number>) =>
-  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+  [...xs].toSorted((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 
 /** A file's expected duration from its recent ones; files never seen get the median of the others. */
 export const durations = (
@@ -35,7 +35,9 @@ export const split = (
     ms: 0,
   }));
 
-  for (const file of [...files].sort((a, b) => duration(b) - duration(a) || a.localeCompare(b))) {
+  for (const file of [...files].toSorted(
+    (a, b) => duration(b) - duration(a) || a.localeCompare(b),
+  )) {
     const bin = bins.reduce((least, b) => (b.ms < least.ms ? b : least));
     bin.files.push(file);
     bin.ms += duration(file);

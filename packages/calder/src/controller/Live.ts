@@ -28,7 +28,7 @@ export const combine = (
 ): ReadonlyArray<Domain.LogLine> => {
   const kept = new Set(live.map((l) => l.step));
 
-  return [...live, ...stored.filter((l) => !kept.has(l.step))].sort(
+  return [...live, ...stored.filter((l) => !kept.has(l.step))].toSorted(
     (a, b) => a.timestamp - b.timestamp,
   );
 };
@@ -129,7 +129,7 @@ export const layer = Layer.effect(Live)(
       lines: (runId, step) =>
         matching(runId, step)
           .flatMap((b) => b.lines)
-          .sort((a, b) => a.timestamp - b.timestamp),
+          .toSorted((a, b) => a.timestamp - b.timestamp),
       follow: (runId, step) =>
         Stream.unwrap(
           Effect.gen(function* () {

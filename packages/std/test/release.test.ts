@@ -24,31 +24,28 @@ const promoting = (
   releases: StorePath | Release.Releases = release,
   published: Array<string> = [],
 ) =>
-  Effect.provide(
-    Release.promote(releases),
-    Layer.mergeAll(
-      Layer.succeed(CurrentRun, {
-        id: "calder-1",
-        project: "calder",
-        revision,
-        branch: "main",
-        trust: "trusted",
-        event: Event.push("main"),
-        system: "x86_64-linux",
-        descriptor: Effect.succeed({}),
-      }),
-      Layer.succeed(Fleet, { deploying: () => Effect.succeed(lease) }),
-      Layer.succeed(Git, { head: () => Effect.sync(head) }),
-      Layer.succeed(Cache, {
-        publish: (path, options) =>
-          Effect.sync(() => published.push(`${options?.system ?? "own"} ${path}`)),
-      }),
-      Layer.succeed(
-        HttpClient.HttpClient,
-        HttpClient.make(() => Effect.die(new Error("no requests expected"))),
-      ),
+  Effect.provide(Release.promote(releases), [
+    Layer.succeed(CurrentRun, {
+      id: "calder-1",
+      project: "calder",
+      revision,
+      branch: "main",
+      trust: "trusted",
+      event: Event.push("main"),
+      system: "x86_64-linux",
+      descriptor: Effect.succeed({}),
+    }),
+    Layer.succeed(Fleet, { deploying: () => Effect.succeed(lease) }),
+    Layer.succeed(Git, { head: () => Effect.sync(head) }),
+    Layer.succeed(Cache, {
+      publish: (path, options) =>
+        Effect.sync(() => published.push(`${options?.system ?? "own"} ${path}`)),
+    }),
+    Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die(new Error("no requests expected"))),
     ),
-  );
+  ]);
 
 describe("Release.promote", () => {
   it.effect("fails instead of going live when no host runs the app", () =>
@@ -57,7 +54,7 @@ describe("Release.promote", () => {
         promoting({ _tag: "Held", fence: 1, targets: [], unreachable: [] }),
       );
 
-      expect(error).toEqual(new Release.NoHosts({ project: "calder" }));
+      expect(error).toEqual(Release.NoHosts.make({ project: "calder" }));
     }),
   );
 
@@ -76,12 +73,12 @@ describe("Release.promote", () => {
         promoting({ _tag: "Held", fence: 1, targets: [hostA], unreachable: ["host-b"] }),
       );
 
-      expect(error).toEqual(new Release.Unreachable({ project: "calder", hosts: ["host-b"] }));
+      expect(error).toEqual(Release.Unreachable.make({ project: "calder", hosts: ["host-b"] }));
       expect(touched).toEqual([]);
     }),
   );
 
-  const topology = new Rejected({
+  const topology = Rejected.make({
     target: "host-a",
     status: 409,
     reason: "Release topology differs from the host-compatible contract",
@@ -135,7 +132,7 @@ describe("Release.promote", () => {
       yield* TestClock.adjust("30 seconds");
       head = Sha.make("0000000000000000000000000000000000000001");
       yield* TestClock.adjust("30 seconds");
-      expect(yield* Fiber.join(promotion)).toEqual(new Release.Skipped({ reason: "Superseded" }));
+      expect(yield* Fiber.join(promotion)).toEqual(Release.Skipped.make({ reason: "Superseded" }));
       expect(touched).not.toContain("deploy");
     }),
   );
@@ -144,7 +141,7 @@ describe("Release.promote", () => {
     Effect.gen(function* () {
       const touched: Array<string> = [];
 
-      const secret = new Rejected({
+      const secret = Rejected.make({
         target: "host-a",
         status: 409,
         reason: "missing required Secret binding: token",
@@ -192,9 +189,9 @@ describe("Release.promote", () => {
         published,
       );
 
-      expect(result).toEqual(new Release.Live({ revision, hosts: ["m1", "tower", "dev"] }));
+      expect(result).toEqual(Release.Live.make({ revision, hosts: ["m1", "tower", "dev"] }));
       expect(deployed).toEqual([`m1 ${darwin}`, `tower ${linux}`, `dev ${linux}`]);
-      expect(published.sort()).toEqual([`aarch64-darwin ${darwin}`, `own ${linux}`]);
+      expect(published.toSorted()).toEqual([`aarch64-darwin ${darwin}`, `own ${linux}`]);
     }),
   );
 
@@ -214,7 +211,7 @@ describe("Release.promote", () => {
       );
 
       expect(error).toEqual(
-        new Release.NoRelease({
+        Release.NoRelease.make({
           project: "calder",
           host: "m1",
           system: "aarch64-darwin",

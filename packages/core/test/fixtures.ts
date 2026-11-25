@@ -34,10 +34,10 @@ export const promoteRelease = Effect.fn("promote")(function* (release: string) {
   const run = yield* CurrentRun;
   const lease = yield* Fleet.deploying(run.project, { queue: "latest-wins" });
 
-  if (lease._tag === "Replaced") return new Skipped({ reason: "Superseded" });
+  if (lease._tag === "Replaced") return Skipped.make({ reason: "Superseded" });
   yield* Cache.publish(release as never);
 
-  return new Live({ revision: `${run.revision}:${release}` });
+  return Live.make({ revision: `${run.revision}:${release}` });
 }, Effect.scoped);
 
 export class DevController extends Context.Service<

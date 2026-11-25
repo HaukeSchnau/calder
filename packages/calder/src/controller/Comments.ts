@@ -22,7 +22,9 @@ const statusOf = (step: Domain.StepRun) => {
   if (Domain.noFiles(step)) return "no files";
 
   if (step.status === "pending" || step.status === "queued")
-    return step.waiting == null ? "waiting" : `waiting for ${step.waiting}`;
+    return step.waiting === null || step.waiting === undefined
+      ? "waiting"
+      : `waiting for ${step.waiting}`;
 
   if (step.error !== null && step.status !== "passed")
     return `${step.status}: ${step.error.message.split("\n")[0]!.slice(0, 120)}`;
@@ -62,7 +64,9 @@ export const render = (input: {
   const total = took((run.finishedAt ?? now) - run.createdAt);
 
   const planned =
-    run.plannedAt == null ? "planning" : `planned in ${took(run.plannedAt - run.createdAt)}`;
+    run.plannedAt === null || run.plannedAt === undefined
+      ? "planning"
+      : `planned in ${took(run.plannedAt - run.createdAt)}`;
 
   const header = `**Run ${run.number}** ${ended ? `${run.status} in ${total}` : `${run.status}, ${total} so far`} · \`${run.commit.sha.slice(0, 12)}\` · ${planned} · [steps](${input.link})`;
   const ran = steps.filter((s) => s.status !== "reused" || Domain.noFiles(s));
@@ -231,7 +235,7 @@ export const layer = Layer.effect(Comments)(
 
     const pullRequestOf = (runId: string) =>
       Effect.map(db(Rows.loadRun(runId)), (run) =>
-        run?.pr == null ? undefined : { project: run.project, pr: run.pr },
+        run === undefined || run.pr === null ? undefined : { project: run.project, pr: run.pr },
       );
 
     return {

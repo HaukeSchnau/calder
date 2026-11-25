@@ -51,14 +51,14 @@ const withPolicies = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   policies: ReadonlyArray<Step.Policy>,
 ) =>
-  policies.reduce<Effect.Effect<A, any, R>>(
+  policies.reduce<Effect.Effect<A, E | Calder.TimedOut, R>>(
     (eff, policy) =>
       policy._tag === "Retry"
         ? Effect.retry(eff, policy.options)
         : Effect.timeoutOrElse(eff, {
             duration: policy.duration,
             orElse: () =>
-              Effect.fail(new Calder.TimedOut({ after: Duration.format(policy.duration) })),
+              Effect.fail(Calder.TimedOut.make({ after: Duration.format(policy.duration) })),
           }),
     effect,
   );
@@ -184,8 +184,8 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
         const cause = BuildFailure.infrastructure(said);
 
         return yield* cause === null
-          ? new Calder.BuildFailed({ attr, drv })
-          : new Calder.Infrastructure({ attr, drv, cause });
+          ? Calder.BuildFailed.make({ attr, drv })
+          : Calder.Infrastructure.make({ attr, drv, cause });
       }
 
       return out.find((l) => l.startsWith("/nix/store/")) as Calder.StorePath;
@@ -220,7 +220,7 @@ export const build = (job: StepJob, step: Step.Any, attr: string) =>
                 : `${attr} evaluates to ${evaluated} now, not ${drv}`,
             );
 
-            return yield* new Calder.BuildFailed({ attr, drv });
+            return yield* Calder.BuildFailed.make({ attr, drv });
           }
 
           return yield* attempt;
@@ -640,7 +640,7 @@ const prepare = (
         return {
           _tag: "Failed",
           result: toResult(
-            Exit.fail(new Calder.TaskFailed({ exitCode, failures: [], ...last.said() })),
+            Exit.fail(Calder.TaskFailed.make({ exitCode, failures: [], ...last.said() })),
           ),
         } as const;
       }
@@ -697,7 +697,7 @@ export const setup = (job: StepJob, step: Step.Any) =>
   });
 
 const shardFiles = (files: ReadonlyArray<string>, index: number, count: number) =>
-  [...files].sort().filter((_, i) => i % count === index - 1);
+  [...files].toSorted().filter((_, i) => i % count === index - 1);
 
 const limitIn = (file: string) => {
   const text = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
@@ -1001,7 +1001,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
       }
 
       if (exitCode !== 0)
-        return yield* new Calder.TaskFailed({ exitCode, failures, ...last.said() });
+        return yield* Calder.TaskFailed.make({ exitCode, failures, ...last.said() });
 
       return def.value === undefined ? undefined : yield* readValue(workspace, def.value);
     });
@@ -1323,13 +1323,18 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
                                 reconnecting(
                                   client.fleetPreflight({ ...auth, target, descriptor }),
                                 ).pipe(
-                                  Effect.catchTag("FleetRejected", (e) =>
-                                    Effect.fail(
-                                      new Rejected({ target, status: e.status, reason: e.reason }),
-                                    ),
-                                  ),
-                                  Effect.catchTag("Unauthorized", (e) => Effect.die(e)),
-                                  Effect.catchTag("RpcClientError", (e) => Effect.die(e)),
+                                  Effect.catchTags({
+                                    FleetRejected: (e) =>
+                                      Effect.fail(
+                                        Rejected.make({
+                                          target,
+                                          status: e.status,
+                                          reason: e.reason,
+                                        }),
+                                      ),
+                                    Unauthorized: (e) => Effect.die(e),
+                                    RpcClientError: (e) => Effect.die(e),
+                                  }),
                                 ),
                               deploy: (release: {
                                 readonly revision: Calder.Sha;
@@ -1343,16 +1348,19 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
                                     storePath: release.storePath,
                                   }),
                                 ).pipe(
-                                  Effect.catchTag("FleetBusy", () =>
-                                    Effect.fail(new Busy({ target })),
-                                  ),
-                                  Effect.catchTag("FleetRejected", (e) =>
-                                    Effect.fail(
-                                      new Rejected({ target, status: e.status, reason: e.reason }),
-                                    ),
-                                  ),
-                                  Effect.catchTag("Unauthorized", (e) => Effect.die(e)),
-                                  Effect.catchTag("RpcClientError", (e) => Effect.die(e)),
+                                  Effect.catchTags({
+                                    FleetBusy: () => Effect.fail(Busy.make({ target })),
+                                    FleetRejected: (e) =>
+                                      Effect.fail(
+                                        Rejected.make({
+                                          target,
+                                          status: e.status,
+                                          reason: e.reason,
+                                        }),
+                                      ),
+                                    Unauthorized: (e) => Effect.die(e),
+                                    RpcClientError: (e) => Effect.die(e),
+                                  }),
                                 ),
                             })),
                           },
@@ -1379,7 +1387,7 @@ const services = (job: StepJob, project: Calder.Project, step: string, grants: S
     // ci.ts was type-checked: Calder.project only accepts rules whose services Base and the layer provide.
     return (
       project.layer === undefined ? base : Layer.provideMerge(project.layer, base)
-    ) as Layer.Layer<unknown, never, never>;
+    ) as Layer.Layer<unknown>;
   });
 
 export const action = (job: StepJob, project: Calder.Project, step: Step.Any) =>
@@ -1389,7 +1397,7 @@ export const action = (job: StepJob, project: Calder.Project, step: Step.Any) =>
     if (def._tag !== "Action") return yield* Effect.die(new Error(`${step.name} is not an action`));
     const layer = yield* services(job, project, step.name, def.grants);
     const inputs = inputsOf(def.needs, job);
-    const body = Effect.gen(() => def.body(inputs)) as Effect.Effect<unknown, unknown, never>;
+    const body = Effect.gen(() => def.body(inputs)) as Effect.Effect<unknown, unknown>;
 
     const exit = yield* Effect.exit(
       Effect.scoped(withPolicies(body, step.policies)).pipe(Effect.provide(layer)),

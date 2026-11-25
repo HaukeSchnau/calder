@@ -1,5 +1,6 @@
 import { Effect } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import type { HttpServerRequest } from "effect/http";
+import { HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { randomUUID } from "node:crypto";
 import {
@@ -313,7 +314,7 @@ export const serve = (request: HttpServerRequest.HttpServerRequest) =>
 
     const links = readdirSync(real, { withFileTypes: true })
       .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
-      .sort()
+      .toSorted()
       .map(
         (entry) =>
           `<li><a href="${encodeURIComponent(entry).replace(/%2F$/, "/")}">${escape(entry)}</a></li>`,

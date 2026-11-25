@@ -456,19 +456,19 @@ describe("Slots", () => {
             );
           });
 
-        const deploy = (host: string) => ({
+        const deploy = () => ({
           project: "infra",
           expected: minutes(1),
           run: 0,
           critical: true,
         });
 
-        yield* job("infra-1", deploy("srv-1"));
-        yield* job("infra-2", deploy("srv-2"));
+        yield* job("infra-1", deploy());
+        yield* job("infra-2", deploy());
         yield* job("t3code-1", { project: "t3code", expected: minutes(20), run: 0 });
-        yield* job("infra-lane", deploy("m1"));
+        yield* job("infra-lane", deploy());
         yield* Effect.yieldNow;
-        yield* job("infra-3", deploy("tower"));
+        yield* job("infra-3", deploy());
         yield* job("t3code-2", { project: "t3code", expected: minutes(5), run: 0 });
         yield* Effect.yieldNow;
         expect(order).toEqual(["infra-1", "infra-2", "t3code-1", "infra-lane"]);

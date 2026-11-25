@@ -250,6 +250,7 @@ function RunningRow({ run, first }: { readonly run: Domain.Run; readonly first: 
   );
 
   const left = (s: Domain.StepRun) => (s.expectedMs ?? 0) - (stepDuration(s, now) ?? 0);
+
   const longest = steps.filter((s) => s.status === "running").sort((a, b) => left(b) - left(a))[0];
 
   return (

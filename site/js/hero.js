@@ -19,7 +19,7 @@ import {
 import { socketList } from "./assembly.js";
 import { reduced, s } from "./svg.js";
 
-const MOVABLE = ["typecheck", "test", "site", "deploy"];
+const MOVABLE = new Set(["typecheck", "test", "site", "deploy"]);
 
 const EVENT_CMD = {
   pr: "calder plan --event pr:7",
@@ -294,7 +294,7 @@ export function setupHero() {
   // Parts become controls after every render; their state is painted separately.
   function decorate(v) {
     for (const [name, g] of Object.entries(v.partEls)) {
-      if (!MOVABLE.includes(name)) continue;
+      if (!MOVABLE.has(name)) continue;
       g.setAttribute("tabindex", "0");
       g.setAttribute("role", "button");
       g.setAttribute("aria-describedby", "dwg-help");
@@ -333,7 +333,7 @@ export function setupHero() {
 
   function paint(v = view) {
     for (const [name, g] of Object.entries(v.partEls)) {
-      if (!MOVABLE.includes(name)) continue;
+      if (!MOVABLE.has(name)) continue;
       const rule = v.L.pos[name].rule;
       const refusedHere = st.refused && name === "deploy";
       g.setAttribute(
@@ -423,7 +423,7 @@ export function setupHero() {
         .pop()
         .trim()
         .replace(/'\{ readonly secrets: [^']*\}'/, "'{ readonly secrets: … }'");
-    hint.hidden = !!st.refused;
+    hint.hidden = st.refused;
     hintBack.hidden = !st.refused;
     reset.hidden = keyOf(st.where) === "pr,pr,pr" && !st.refused;
   };
@@ -787,7 +787,7 @@ export function setupHero() {
     const ease = "cubic-bezier(0.2, 0, 0, 1)";
     const anims = [];
     const timers = [];
-    const at = (ms, fn) => timers.push(setTimeout(fn, ms));
+    const at = (ms, fn) => timers.push(setTimeout(() => fn(), ms));
     const svg = view.svg;
     const L = view.L;
     svg.classList.add("is-deriving");

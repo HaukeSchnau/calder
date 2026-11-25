@@ -141,4 +141,4 @@ async function main() {
   setupSections();
 }
 
-main();
+void main();

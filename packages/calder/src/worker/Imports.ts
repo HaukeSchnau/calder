@@ -422,7 +422,7 @@ export const make = (repo: Repo, workspace: ReadonlyArray<string>) =>
               !docs.test(p) &&
               packageOf(p) === dir,
           )
-          .sort();
+          .toSorted();
         dataOf.set(dir, out);
       }
 
@@ -431,7 +431,8 @@ export const make = (repo: Repo, workspace: ReadonlyArray<string>) =>
 
     return {
       /** Paths matching the patterns, without those a `!` pattern matches. */
-      match: (patterns: ReadonlyArray<string>) => [...files].filter(Files.matcher(patterns)).sort(),
+      match: (patterns: ReadonlyArray<string>) =>
+        [...files].filter(Files.matcher(patterns)).toSorted(),
       closures,
       closure,
       packageOf,

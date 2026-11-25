@@ -42,9 +42,7 @@ describe("Fleet", () => {
         );
 
         const fleet = yield* Effect.provide(
-          Effect.gen(function* () {
-            return yield* Fleet.Fleet;
-          }),
+          Effect.service(Fleet.Fleet),
           Fleet.layer.pipe(
             Layer.provide(
               Layer.mergeAll(
@@ -97,9 +95,7 @@ describe("Fleet", () => {
       );
 
       const fleet = yield* Effect.provide(
-        Effect.gen(function* () {
-          return yield* Fleet.Fleet;
-        }),
+        Effect.service(Fleet.Fleet),
         Fleet.layer.pipe(
           Layer.provide(
             Layer.mergeAll(

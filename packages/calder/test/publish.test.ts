@@ -23,7 +23,7 @@ const app: PlannedStep = {
   },
 };
 
-const rejected = new CommandFailed({
+const rejected = CommandFailed.make({
   command: "nix-cache-publish",
   exitCode: 1,
   stderr: [

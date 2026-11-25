@@ -27,7 +27,7 @@ export interface StandardFlake {
 export interface StandardOptions {
   readonly flake: StandardFlake;
   /** Checks beyond the flake's own, such as tasks running the repository's QA. They run on both events. */
-  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>;
+  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any>>;
   /**
    * Vite+'s checks besides `checks` (`Vp.tasks`): `check` runs `vp check` and `test` runs `vp test`. Off
    * unless given, since a repository may run the same in tasks of its own.
@@ -137,7 +137,7 @@ export interface AlchemyOptions<A = void> {
   readonly flake: Pick<StandardFlake, "checks">;
   readonly stack: Alchemy.Stack<A>;
   /** Checks beyond the flake's own. They run on pull requests and pushes, and gate every deploy. */
-  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>;
+  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any>>;
   /** As in `standard`: Vite+'s checks, which gate every deploy like `checks`. */
   readonly vp?: Vp.TasksOptions;
   /** The stage the default branch deploys, `prod` by default. */

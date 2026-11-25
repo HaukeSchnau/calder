@@ -114,7 +114,7 @@ const setup = (
             push: (_project, sha, ref) =>
               options.protected === true && ref === "refs/heads/main"
                 ? Effect.fail(
-                    new Exec.CommandFailed({
+                    Exec.CommandFailed.make({
                       command: "git push",
                       exitCode: 1,
                       stderr: "protected branch",

@@ -115,7 +115,7 @@ const world = (pulls: ReadonlyArray<Pull>, headDelay: Duration.Input = 0) =>
                       ? []
                       : [{ number: p.number, base: "main", head: p.head, closedAt: p.closedAt }],
                   )
-                  .sort((a, b) => b.closedAt - a.closedAt),
+                  .toSorted((a, b) => b.closedAt - a.closedAt),
               ),
             status: unused,
             requiredChecks: unused,

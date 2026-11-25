@@ -77,11 +77,11 @@ const found = await Effect.runPromise(
 
         const echoed = await new Promise<string>((resolve) => {
           const ws = new WebSocket(`ws://127.0.0.1:${bridge.port}/worker`);
-          ws.onopen = () => ws.send("hello");
-          ws.onmessage = (event) => {
+          ws.addEventListener("open", () => ws.send("hello"));
+          ws.addEventListener("message", (event) => {
             resolve(String(event.data));
             ws.close();
-          };
+          });
         });
 
         const egressSocket = join(dir, "egress.sock");

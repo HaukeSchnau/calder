@@ -8,7 +8,7 @@ export interface Secret<S extends string> {
 }
 
 export interface SecretValue {
-  readonly value: Redacted.Redacted<string>;
+  readonly value: Redacted.Redacted;
   /** A file holding the value, readable only by the step. */
   readonly path: string;
 }
@@ -29,7 +29,7 @@ export const tag = <S extends string>(name: S): Context.Service<Secret<S>, Secre
 /** Reads a granted secret. */
 export const value = <S extends string>(
   name: S,
-): Effect.Effect<Redacted.Redacted<string>, never, Secret<S>> =>
+): Effect.Effect<Redacted.Redacted, never, Secret<S>> =>
   tag(name).use((s) => Effect.succeed(s.value));
 
 /**

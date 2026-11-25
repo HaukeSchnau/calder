@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Context, Data, Deferred, Effect, Exit, Fiber, Layer, Scope, Sink, Stream } from "effect";
+import { Context, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { RpcClient, RpcServer } from "effect/rpc";
+import { type RpcGroup, RpcClient, RpcServer } from "effect/rpc";
 import { SqlClient } from "effect/sql";
 import { TestClock } from "effect/testing";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import type * as NodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vite-plus/test";
@@ -28,14 +29,17 @@ vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
 // On a Calder host the test's user may not hand files to the pools' groups, which the controller does.
 vi.mock("node:fs", async (original) => ({
-  ...(await original<typeof import("node:fs")>()),
+  ...(await original<typeof NodeFs>()),
   chownSync: () => {},
 }));
 
 const unused = () => Effect.die(new Error("not used by this test"));
 
 /** What the worker's socket gives a call while no controller listens. */
-class Disconnected extends Data.TaggedError("RpcClientError")<{}> {}
+class Disconnected extends Schema.TaggedError<Disconnected>("test/Disconnected")(
+  "RpcClientError",
+  {},
+) {}
 
 /**
  * systemd as the controller sees it: every worker's unit starts and keeps running, and stopping one never
@@ -145,12 +149,12 @@ const restarted = Effect.gen(function* () {
   );
 
   // One worker connection that outlives the controllers behind it, as the worker's socket reconnects.
-  let server: RpcServer.RpcServer<any> | undefined;
+  let server: RpcServer.RpcServer<RpcGroup.Rpcs<typeof WorkerRpcs>> | undefined;
 
   const { client, write } = yield* RpcClient.makeNoSerialization(WorkerRpcs, {
     supportsAck: true,
     onFromClient: ({ message }) =>
-      server === undefined ? Effect.fail(new Disconnected()) : server.write(0, message),
+      server === undefined ? Effect.fail(Disconnected.make({})) : server.write(0, message),
   });
 
   const published: Array<{ readonly path: string; readonly pin: string | undefined }> = [];
@@ -361,7 +365,7 @@ describe("a controller restart", () => {
 
           return tries === 2
             ? Effect.sleep("10 minutes").pipe(Effect.andThen(Effect.interrupt))
-            : Effect.fail(new Disconnected());
+            : Effect.fail(Disconnected.make({}));
         });
 
         const result = yield* reconnecting(call).pipe(Effect.forkChild);

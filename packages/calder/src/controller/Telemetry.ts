@@ -1,6 +1,8 @@
 import type { Domain } from "@calder-ci/api";
-import { Cause, Context, Effect, Exit, Layer, Schedule } from "effect";
-import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+import type { Cause } from "effect";
+import { Context, Effect, Exit, Layer, Schedule } from "effect";
+import type { HttpClientError } from "effect/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Config } from "./Config.ts";
 
@@ -110,7 +112,7 @@ export const layer = Layer.effect(Telemetry)(
       path: string,
       body: unknown,
       what: string,
-      schedule: Schedule.Schedule<unknown, unknown>,
+      schedule: Schedule.Schedule<unknown>,
     ) =>
       config.telemetry.otlp === null
         ? Effect.void
@@ -127,7 +129,7 @@ export const layer = Layer.effect(Telemetry)(
               Effect.catch((e) => Effect.logWarning(`dropped ${what}: the OTLP export failed`, e)),
             );
 
-    const flush = (schedule: Schedule.Schedule<unknown, unknown>) =>
+    const flush = (schedule: Schedule.Schedule<unknown>) =>
       Effect.suspend(() => {
         const s = spans;
         const l = logs;
@@ -293,7 +295,7 @@ export const layer = Layer.effect(Telemetry)(
                   })),
                 ),
               )
-              .sort((a, b) => a.start - b.start);
+              .toSorted((a, b) => a.start - b.start);
           }).pipe(
             Effect.timeout("15 seconds"),
             Effect.orElseSucceed(() => []),

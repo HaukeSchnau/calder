@@ -67,7 +67,7 @@ export const serve = (path: string, controller: string) =>
       if (existsSync(path)) rmSync(path);
       const base = controller.replace(/\/$/, "");
 
-      return Bun.serve<Peer, never>({
+      return Bun.serve<Peer>({
         unix: path,
         // Outputs such as packaged desktop apps, far past Bun's 128 MiB default (controller/Http.ts).
         maxRequestBodySize: 8 * 1024 ** 3,
@@ -117,28 +117,36 @@ export const serve = (path: string, controller: string) =>
             const upstream = new WebSocket(ws.data.target);
             upstream.binaryType = "arraybuffer";
             ws.data.upstream = upstream;
-            upstream.onopen = () => {
+            upstream.addEventListener("open", () => {
               for (const message of ws.data.early.splice(0)) upstream.send(message);
-            };
+            });
 
-            upstream.onmessage = (event) =>
+            upstream.addEventListener("message", (event) =>
               ws.send(
                 typeof event.data === "string"
                   ? event.data
                   : new Uint8Array(event.data as ArrayBuffer),
-              );
-            upstream.onclose = (event) =>
+              ),
+            );
+            upstream.addEventListener("close", (event) =>
               ws.close(
                 event.code === 1005 || event.code === 1006 ? 1011 : event.code,
                 event.reason,
-              );
-            upstream.onerror = () => ws.close(1011, "the controller can't be reached");
+              ),
+            );
+            upstream.addEventListener("error", () =>
+              ws.close(1011, "the controller can't be reached"),
+            );
           },
           message(ws: ServerWebSocket<Peer>, message) {
             const upstream = ws.data.upstream;
 
-            if (upstream !== null && upstream.readyState === WebSocket.OPEN)
-              return void upstream.send(message);
+            if (upstream !== null && upstream.readyState === WebSocket.OPEN) {
+              upstream.send(message);
+
+              return;
+            }
+
             ws.data.earlyBytes +=
               typeof message === "string" ? Buffer.byteLength(message) : message.byteLength;
 

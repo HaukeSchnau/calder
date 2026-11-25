@@ -267,7 +267,7 @@ describe("evaluating a run's builds with an evaluator agent connected", () => {
           { where: "here", builds: ["throws"], planned: [] },
         ]);
         expect(evaluations).toEqual(["srv-1 evaluates"]);
-        expect(jobs.filter((j) => !j.endsWith("evaluates")).sort()).toEqual(["mbp", "srv-1"]);
+        expect(jobs.filter((j) => !j.endsWith("evaluates")).toSorted()).toEqual(["mbp", "srv-1"]);
         expect(steps.get("throws")?.error?.tag).toBe("EvaluationFailed");
         expect(steps.get("mbp")?.needs).toEqual(["srv-1"]);
         // The fake's evaluations here all record mbp, the alone one of `throws` too.

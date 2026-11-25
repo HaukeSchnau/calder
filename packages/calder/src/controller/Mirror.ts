@@ -372,7 +372,7 @@ export const layer = Layer.effect(Mirror)(
 
           if (!extracted(root)) {
             if (!(yield* hasPipeline(project, sha)))
-              return yield* new NoPipeline({ revision: sha });
+              return yield* NoPipeline.make({ revision: sha });
             yield* extract(root, (scratch) =>
               Exec.run([
                 "bash",
@@ -416,7 +416,7 @@ export const layer = Layer.effect(Mirror)(
               }
 
               if (merged.exitCode !== 0) {
-                return yield* new Exec.CommandFailed({
+                return yield* Exec.CommandFailed.make({
                   command: `git merge-tree ${tip} ${head.sha}`,
                   exitCode: merged.exitCode,
                   stderr: merged.stderr,
@@ -454,7 +454,7 @@ export const layer = Layer.effect(Mirror)(
             heads.push({ pr: Number(m[1]), sha: m[2]! });
           }
 
-          return { base: base ?? sha, heads: heads.reverse() };
+          return { base: base ?? sha, heads: heads.toReversed() };
         }),
       push: (project, sha, ref, options) =>
         git(

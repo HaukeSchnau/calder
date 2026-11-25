@@ -82,8 +82,6 @@ export const toBuild = (stderr: string) => {
   return /will be fetched|^don't know how to build/m.test(stderr) ? 0 : null;
 };
 
-const short = (sha: string) => sha.slice(0, 12);
-
 const duration = (ms: number) => Duration.format(Duration.millis(Math.round(ms / 1000) * 1000));
 
 /** The remote builders of Nix's machines file (`/etc/nix/machines`): each one's address and systems. */
@@ -901,7 +899,9 @@ export const layerCore = Layer.effect(RunsCore)(
 
         if (!stored) return null;
         yield* rootDerivations(run, [
-          ...spec.steps.flatMap((s) => (s.build?.drv == null ? [] : [s.build.drv])),
+          ...spec.steps.flatMap((s) =>
+            s.build?.drv === undefined || s.build.drv === null ? [] : [s.build.drv],
+          ),
           ...Object.values(spec.derivations ?? {}).flatMap((d) => (d === null ? [] : [d.drv])),
         ]);
         yield* status(
@@ -2210,7 +2210,7 @@ export const layerCore = Layer.effect(RunsCore)(
               const trusted =
                 plan.trusted === undefined
                   ? {}
-                  : { trusted: [...new Set([...plan.trusted, ...Object.keys(attrs)])].sort() };
+                  : { trusted: [...new Set([...plan.trusted, ...Object.keys(attrs)])].toSorted() };
 
               yield* sql`update run_plans set plan = ${JSON.stringify({ ...plan, steps, derivations: { ...plan.derivations, ...attrs }, ...trusted })}
           where run_id = ${run.id}`;
@@ -2277,7 +2277,7 @@ export const layerCore = Layer.effect(RunsCore)(
           const what = {
             builds: builds
               .flatMap((b) => (b.build.drv === null ? [{ name: b.name, attr: b.build.attr }] : []))
-              .sort((a, b) => rank(a.attr) - rank(b.attr)),
+              .toSorted((a, b) => rank(a.attr) - rank(b.attr)),
             planned: builds.flatMap((b) =>
               b.build.drv === null ? [] : [{ name: b.name, drv: b.build.drv }],
             ),
@@ -2368,7 +2368,7 @@ export const layerCore = Layer.effect(RunsCore)(
         );
         const of = run.rerun_of;
 
-        if (of == null) return undefined;
+        if (of === null || of === undefined) return undefined;
         const earlier = yield* db(Rows.loadStep(of, name));
 
         if (earlier === undefined || !Rows.succeeded(earlier.status)) return undefined;
@@ -2754,11 +2754,11 @@ export const layerCore = Layer.effect(RunsCore)(
             yield* publishStep(runId, name);
 
             const ended = yield* Effect.raceFirst(
-              Effect.sleep(wait).pipe(Effect.as(false)),
-              Effect.raceFirst(
-                Deferred.await(cancelSignal(runId)),
-                Deferred.await(supersedeSignal(runId)),
-              ).pipe(Effect.as(true)),
+              Deferred.await(cancelSignal(runId)),
+              Deferred.await(supersedeSignal(runId)),
+            ).pipe(
+              Effect.as(true),
+              Effect.timeoutOrElse({ duration: wait, orElse: () => Effect.succeed(false) }),
             );
 
             if (ended) return yield* settle(run, row, { status: "cancelled" });
@@ -3482,7 +3482,7 @@ export const layerCore = Layer.effect(RunsCore)(
         yield* db(
           sql`update steps set to_build = ${count} where run_id = ${run.id} and name = ${name}`,
         );
-        const counts = before.map((r) => r.to_build).sort((a, b) => a - b);
+        const counts = before.map((r) => r.to_build).toSorted((a, b) => a - b);
 
         return sized(estimate, count, counts[Math.floor(counts.length / 2)]);
       });

@@ -45,7 +45,7 @@ for (const command of ["systemctl", "sandbox"]) {
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
 // The controller's side: what a worker's requests and messages reach.
-const controller = Bun.serve<undefined, never>({
+const controller = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request, server) {
@@ -166,7 +166,7 @@ const result = await Effect.runPromise(
 
 console.log(JSON.stringify(result));
 
-controller.stop(true);
+await controller.stop(true);
 
 rmSync(root, { recursive: true, force: true });
 

@@ -1,6 +1,5 @@
 import { Cron, Effect, Layer } from "effect";
 import { SqlClient } from "effect/sql";
-import { Config } from "./Config.ts";
 import { Gitea } from "./Gitea.ts";
 import { Projects } from "./Projects.ts";
 import { Runs } from "./Workflow.ts";
@@ -8,7 +7,6 @@ import { Runs } from "./Workflow.ts";
 /** Starts the runs of `On.schedule` rules. The schedules come from the last plan of each default branch. */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
-    const config = yield* Config;
     const sql = yield* SqlClient.SqlClient;
     const gitea = yield* Gitea;
     const runs = yield* Runs;

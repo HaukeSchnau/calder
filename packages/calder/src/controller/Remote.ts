@@ -1,5 +1,6 @@
 import { Effect, Pull, Stream } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import type { HttpServerRequest } from "effect/http";
+import { HttpServerResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -69,7 +70,7 @@ export const cgi = <E>(stdout: Stream.Stream<Uint8Array, E>) =>
     );
 
     return { status, headers, body };
-  }).pipe(Pull.catchDone(() => Effect.succeed(undefined)));
+  }).pipe(Pull.catchDone(() => Effect.undefined));
 
 /**
  * Whether a job's worker may fetch the mirror of `project`: its own project's, and for a build evaluation

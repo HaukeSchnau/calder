@@ -20,7 +20,7 @@ export interface Options<A> {
   /** The stack, whose stages are the environments and the previews `pr-<number>`. */
   readonly stack: Alchemy.Stack<A>;
   /** Checks that pull requests and pushes to `defaultBranch` run. Deploys wait for them only where `after` says so. */
-  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any, never>>;
+  readonly checks?: ReadonlyArray<Step.Step<unknown, unknown, never, any>>;
   /**
    * What every deploy hands the stack, by environment variable, such as `{ CALDER_BUNDLE: bundle }`. Pull
    * requests build them; a deploy that holds the lease publishes them to the binary cache first.
@@ -46,7 +46,7 @@ export interface Options<A> {
     /** Steps such as E2E tests against the preview. Like the rest of a pull request's, they may not have grants. */
     readonly then?: (
       deployed: Step.Step<A, any, any, any, any>,
-    ) => ReadonlyArray<Step.Step<any, any, any, any, never>>;
+    ) => ReadonlyArray<Step.Step<any, any, any, any>>;
   };
   /** Each environment by its stage name, which is what the stack sees as its stage. */
   readonly environments: { readonly [stage: string]: Environment<A> };

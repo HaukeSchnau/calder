@@ -246,7 +246,7 @@ export const step = (row: StepRow, expectedMs: number | null = null): Domain.Ste
             flaky: row.tests_flaky ?? 0,
           },
     files:
-      row.files_total == null
+      row.files_total === null || row.files_total === undefined
         ? null
         : { total: row.files_total, ran: row.files_ran ?? 0, flaky: row.files_flaky ?? 0 },
     outputs: Object.entries(JSON.parse(row.outputs ?? "{}") as Record<string, string>).map(
@@ -348,7 +348,7 @@ const trustedOnly = (run: Pick<RunRow, "trust" | "fork">) =>
  */
 export const earlierPlan = (run: RunRow, defaultBranch: string | undefined) =>
   Effect.gen(function* () {
-    if (run.tree == null) return null;
+    if (run.tree === null || run.tree === undefined) return null;
     const sql = yield* SqlClient.SqlClient;
 
     const rows = yield* sql<{
@@ -450,7 +450,7 @@ export const trustedAttrs = (
       .filter((attr) =>
         attr in taken ? trustedIds.has(taken[attr]!) : (fromEarlier(attr) ?? true),
       )
-      .sort();
+      .toSorted();
   }).pipe(Effect.orDie);
 
 type Derivation = NonNullable<NonNullable<PlanSpec["derivations"]>[string]>;

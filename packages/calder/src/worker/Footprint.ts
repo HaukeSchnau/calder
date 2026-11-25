@@ -198,7 +198,10 @@ export const tree = (
     }
   }
 
-  return { files, dirs: new Map([...children].map(([dir, names]) => [dir, [...names].sort()])) };
+  return {
+    files,
+    dirs: new Map([...children].map(([dir, names]) => [dir, [...names].toSorted()])),
+  };
 };
 
 /**

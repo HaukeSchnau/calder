@@ -26,9 +26,7 @@ const answering = (status: number) =>
     );
 
     const gitea = yield* Effect.provide(
-      Effect.gen(function* () {
-        return yield* Gitea;
-      }),
+      Effect.service(Gitea),
       layer.pipe(
         Layer.provide(Layer.mergeAll(config(), Layer.succeed(HttpClient.HttpClient)(client))),
       ),

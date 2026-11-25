@@ -210,7 +210,7 @@ export function layout(steps: ReadonlyArray<Domain.StepRun>): Layout {
     );
   }
 
-  const solid = [...nodes.map((n) => boxes.get(n))].filter((b): b is Box => b !== undefined);
+  const solid = nodes.map((n) => boxes.get(n)).filter((b): b is Box => b !== undefined);
   // Each source in a column gets its own vertical lane, so trunks of different sources never merge.
   const lanes = new Map<string, number>();
 

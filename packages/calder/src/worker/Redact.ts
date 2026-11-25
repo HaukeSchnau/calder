@@ -119,7 +119,7 @@ export const make = (secrets: Iterable<string>): ((text: string) => string) => {
 
   const pattern = new RegExp(
     [...values]
-      .sort((a, b) => b.length - a.length)
+      .toSorted((a, b) => b.length - a.length)
       .map(escape)
       .join("|"),
     "g",

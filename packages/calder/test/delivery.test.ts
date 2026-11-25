@@ -25,7 +25,7 @@ const fakes = (options: { readonly giteaDown?: { count: number } } = {}) => {
     Layer.succeed(Projects)({
       get: () => project,
       all: () => [project],
-      byRepo: () => Effect.succeed(undefined),
+      byRepo: () => Effect.undefined,
     }),
     Layer.succeed(Runs)({
       rerun: (id: string) =>
@@ -53,7 +53,7 @@ const fakes = (options: { readonly giteaDown?: { count: number } } = {}) => {
         Effect.succeed(
           history
             .slice(history.indexOf(from) + 1, history.indexOf(to) + 1)
-            .reverse()
+            .toReversed()
             .map((sha, i) => ({ sha, at: 1000 * (10 - i) })),
         ),
       contains: (_project: string, revision: string, commit: string) =>
@@ -303,18 +303,15 @@ describe("converge", () => {
           planned: true,
         });
         yield* insertStep("p-1", "deploy", { status: "failed" });
-        yield* Effect.provide(
-          tick(10),
-          Layer.succeed(Gitea)({
-            mergedPull: () => Effect.succeed(7),
-            comment: (_repo: string, pr: number, body: string, existing: number | null) =>
-              Effect.sync(() => {
-                comments.push({ pr, body, existing });
+        yield* Effect.provideService(tick(10), Gitea, {
+          mergedPull: () => Effect.succeed(7),
+          comment: (_repo: string, pr: number, body: string, existing: number | null) =>
+            Effect.sync(() => {
+              comments.push({ pr, body, existing });
 
-                return existing ?? 100;
-              }),
-          } as unknown as Gitea["Service"]),
-        );
+              return existing ?? 100;
+            }),
+        } as unknown as Gitea["Service"]);
         const sql = yield* SqlClient.SqlClient;
         yield* sql`update runs set status = 'passed', finished_at = 20, retries = 1 where id = 'p-1'`;
         yield* tick(30);

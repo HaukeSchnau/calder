@@ -51,7 +51,7 @@ describe("Environments.project", () => {
     () =>
       Effect.gen(function* () {
         const plan = yield* Calder.plan(project, Event.pullRequest({ number: 5 }));
-        expect(plan.steps.map((s) => s.name).sort()).toEqual(
+        expect(plan.steps.map((s) => s.name).toSorted()).toEqual(
           [
             "bundle",
             "deploy-install",
@@ -61,7 +61,7 @@ describe("Environments.project", () => {
             "preview",
             "preview-url",
             "serverSmoke",
-          ].sort(),
+          ].toSorted(),
         );
         expect(plan.get("preview")).toMatchObject({
           needs: ["deploy-install", "bundle"],
@@ -149,7 +149,7 @@ describe("Environments.project", () => {
   it.effect("a fork's pull request runs the checks and builds the bundle, but has no preview", () =>
     Effect.gen(function* () {
       const plan = yield* Calder.plan(project, Event.pullRequest({ number: 5, fork: true }));
-      expect(plan.steps.map((s) => s.name).sort()).toEqual(["bundle", "lint", "serverSmoke"]);
+      expect(plan.steps.map((s) => s.name).toSorted()).toEqual(["bundle", "lint", "serverSmoke"]);
     }),
   );
 
@@ -175,7 +175,7 @@ describe("Environments.project", () => {
     () =>
       Effect.gen(function* () {
         const plan = yield* Calder.plan(project, Event.manual({ release: "prod" }));
-        expect(plan.steps.map((s) => s.name).sort()).toEqual([
+        expect(plan.steps.map((s) => s.name).toSorted()).toEqual([
           "bundle",
           "deploy-install",
           "deploy-prod",
@@ -191,13 +191,17 @@ describe("Environments.project", () => {
     () =>
       Effect.gen(function* () {
         const closed = yield* Calder.plan(project, Event.pullRequestClosed({ number: 5 }));
-        expect(closed.steps.map((s) => s.name).sort()).toEqual([
+        expect(closed.steps.map((s) => s.name).toSorted()).toEqual([
           "deploy-install",
           "destroy-preview",
         ]);
         const nightly = yield* Calder.plan(project, Event.schedule("0 3 * * *"));
         expect(nightly.reuse).toBe("none");
-        expect(nightly.steps.map((s) => s.name).sort()).toEqual(["bundle", "lint", "serverSmoke"]);
+        expect(nightly.steps.map((s) => s.name).toSorted()).toEqual([
+          "bundle",
+          "lint",
+          "serverSmoke",
+        ]);
       }),
   );
 });

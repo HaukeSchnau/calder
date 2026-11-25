@@ -601,7 +601,7 @@ interface Memory {
 }
 
 const median = (xs: ReadonlyArray<number>) =>
-  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  [...xs].toSorted((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 /**
  * With the Mac agent gone (`CALDER_MOCK_MAC=offline`), it left six minutes before the server started: the deploying
@@ -797,12 +797,12 @@ export class World {
   /** When the Mac agent disconnected, or null while it is connected. */
   readonly agentGoneAt: number | null;
 
-  constructor(
-    readonly t0: number,
-    agents: "online" | "offline" = "online",
-  ) {
+  readonly t0: number;
+
+  constructor(t0: number, agents: "online" | "offline" = "online") {
+    this.t0 = t0;
     this.agentGoneAt = agents === "offline" ? t0 - 6 * 60_000 : null;
-    const specs = [...PROJECTS.flatMap(history), ...SCRIPTED].sort((a, b) => a.at - b.at);
+    const specs = [...PROJECTS.flatMap(history), ...SCRIPTED].toSorted((a, b) => a.at - b.at);
 
     for (const spec of specs) this.add(spec);
   }
@@ -902,9 +902,9 @@ export class World {
   }
 
   latestMain(project: string): SimRun | undefined {
-    return this.runs
-      .filter((r) => r.project === project && r.event._tag === "Push" && r.error === null)
-      .at(-1);
+    return this.runs.findLast(
+      (r) => r.project === project && r.event._tag === "Push" && r.error === null,
+    );
   }
 }
 
@@ -1661,7 +1661,7 @@ function scriptOf(run: SimRun, s: SimStep): Array<Line> {
           [0.99, "info", "calder", "report: reports/junit.xml decoded, 412 passed"],
         );
 
-        return lines.sort((a, b) => a[0] - b[0]);
+        return lines.toSorted((a, b) => a[0] - b[0]);
       }
     }
 
@@ -1799,7 +1799,7 @@ export function logLines(run: SimRun, s: SimStep, now: number): Array<Domain.Log
   const until = st.finishedAt ?? now;
 
   const out: Array<Domain.LogLine> = scriptOf(run, s)
-    .sort((a, b) => a[0] - b[0])
+    .toSorted((a, b) => a[0] - b[0])
     .map(([at, level, stream, text, shard]) => ({
       step: name,
       shard: shard ?? null,
@@ -2016,7 +2016,7 @@ export function deployments(world: World, now: number): Array<Domain.Deployment>
         .filter((s) => s.plan.name === "promote" && s.outcome === "passed")
         .map((s) => ({ run, s })),
     )
-    .sort((a, b) => a.s.startedAt - b.s.startedAt);
+    .toSorted((a, b) => a.s.startedAt - b.s.startedAt);
 
   for (const { run, s } of promotes) {
     if (now < s.startedAt) continue;
@@ -2089,5 +2089,5 @@ export function deployRecords(world: World, now: number): Array<Domain.Deploymen
     }
   }
 
-  return out.sort((a, b) => b.at - a.at);
+  return out.toSorted((a, b) => b.at - a.at);
 }

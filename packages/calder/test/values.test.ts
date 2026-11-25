@@ -12,14 +12,14 @@ class Busy extends Calder.Failure<Busy>("@test/values")("Busy", { target: Schema
 
 describe("Values", () => {
   it("round-trips Calder results and failures through JSON", () => {
-    const live = new Live({ revision: "abc", hosts: ["host-a"] });
+    const live = Live.make({ revision: "abc", hosts: ["host-a"] });
     const json = JSON.parse(JSON.stringify(Values.encode({ live, n: 1, path: "/nix/store/x" })));
     expect(json.live.$calder).toBe("@test/values/Live");
     const back = Values.decode(json) as { live: Live; n: number };
     expect(back.live._tag).toBe("Live");
     expect(back.live.hosts).toEqual(["host-a"]);
     expect(back.n).toBe(1);
-    expect(Values.decode(Values.encode(new Busy({ target: "host-b" })))).toMatchObject({
+    expect(Values.decode(Values.encode(Busy.make({ target: "host-b" })))).toMatchObject({
       _tag: "Busy",
       target: "host-b",
     });
@@ -28,7 +28,7 @@ describe("Values", () => {
     expect(
       Values.describe(
         Values.encode(
-          new Live({ revision: "0123456789abcdef0123456789abcdef01234567", hosts: [] }),
+          Live.make({ revision: "0123456789abcdef0123456789abcdef01234567", hosts: [] }),
         ),
       ),
     ).toBe("Live (revision: 0123456789ab, hosts: [])");

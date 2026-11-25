@@ -1,4 +1,4 @@
-import { Clock, Context, Duration, Effect, Layer, Schedule, Schema } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Predicate, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as Exec from "../Exec.ts";
 import { FleetBusy, FleetRejected } from "../Protocol.ts";
@@ -149,9 +149,7 @@ export const patiently = (
           ? rouse(endpoint, endpoint.wake)
           : Effect.void,
       ),
-      Effect.flatMap((health) =>
-        health === null ? Effect.fail(endpoint.url) : Effect.succeed(health),
-      ),
+      Effect.filterOrFail(Predicate.isNotNull, () => endpoint.url),
       Effect.retry({
         schedule: Schedule.spaced("5 seconds").pipe(
           Schedule.upTo({ duration: endpoint.wake === undefined ? "1 minute" : "5 minutes" }),
@@ -230,7 +228,7 @@ export const layer = Layer.effect(Fleet)(
               r.status === 200
                 ? Effect.void
                 : Effect.fail(
-                    new FleetRejected({
+                    FleetRejected.make({
                       target: hostOf(target),
                       status: r.status,
                       reason: reason(r.text),
@@ -254,10 +252,10 @@ export const layer = Layer.effect(Fleet)(
             Effect.flatMap((r): Effect.Effect<void, FleetBusy | FleetRejected> => {
               if (r.status === 202) return Effect.void;
 
-              if (r.status === 503) return Effect.fail(new FleetBusy({ target: hostOf(target) }));
+              if (r.status === 503) return Effect.fail(FleetBusy.make({ target: hostOf(target) }));
 
               return Effect.fail(
-                new FleetRejected({
+                FleetRejected.make({
                   target: hostOf(target),
                   status: r.status,
                   reason: reason(r.text),

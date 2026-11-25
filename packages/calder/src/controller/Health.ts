@@ -139,7 +139,7 @@ export const load = (
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    let runs: Array<Loaded> = [];
+    const runs: Array<Loaded> = [];
     let wanted: ReadonlyArray<string> | null = null;
 
     while (wanted === null || wanted.length > 0) {
@@ -192,7 +192,7 @@ export const load = (
           });
       }
 
-      runs = [...older, ...runs];
+      runs.unshift(...older);
       wanted = unsettled(runs, follow);
     }
 

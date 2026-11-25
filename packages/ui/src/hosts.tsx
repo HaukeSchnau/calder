@@ -62,7 +62,7 @@ export function HostSlots({
           <span
             key={a.name}
             className="hsl"
-            data-tip={`${a.name}, ${a.evaluator ? "evaluator" : `${a.platform}`} agent${a.portableOnly ? " for other systems' tasks only" : ""}, compatibility version ${a.compatibility} (Calder build ${a.build})`}
+            data-tip={`${a.name}, ${a.evaluator ? "evaluator" : a.platform} agent${a.portableOnly ? " for other systems' tasks only" : ""}, compatibility version ${a.compatibility} (Calder build ${a.build})`}
           >
             <b>{a.name}</b>
             {compact ? null : <Meter used={a.running} max={a.slots} />}

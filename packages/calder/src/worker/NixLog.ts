@@ -27,6 +27,18 @@ export type NixMessage =
       readonly buildLog?: boolean;
     };
 
+/** A line of Nix's `--log-format internal-json`, with the fields the parser reads. */
+interface NixJson {
+  readonly action?: string;
+  readonly id: number;
+  readonly parent?: number;
+  readonly type?: number;
+  readonly text?: string;
+  readonly fields?: ReadonlyArray<string | number>;
+  readonly level?: number;
+  readonly msg?: unknown;
+}
+
 /** Parses Nix's `--log-format internal-json` stderr, keeping the state of open activities. */
 export const parser = () => {
   const open = new Map<number, NixActivity>();
@@ -34,7 +46,7 @@ export const parser = () => {
   return (line: string, now: number): ReadonlyArray<NixMessage> => {
     if (!line.startsWith("@nix "))
       return line.trim() === "" ? [] : [{ _tag: "Log", text: line, error: false }];
-    let msg: Record<string, any>;
+    let msg: NixJson;
 
     try {
       msg = JSON.parse(line.slice(5));

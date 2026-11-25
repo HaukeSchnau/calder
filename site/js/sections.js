@@ -1097,7 +1097,6 @@ function fitSecret(root) {
     const lines = deleted ? [...CI_TS.slice(0, 26), ...CI_TS.slice(27)] : CI_TS.slice();
     const custom = {};
     const after = {};
-    const marks = {};
     const cls = {};
 
     if (deleted) {

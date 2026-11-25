@@ -57,7 +57,7 @@ export interface Stack<A = void> {
  * a deploy waits for them and nothing else unless told to, and it publishes them to the binary cache
  * first, for a host that substitutes them.
  */
-export type Artifacts = { readonly [env: string]: Step.Step<string, any, any, any, never> };
+export type Artifacts = { readonly [env: string]: Step.Step<string, any, any, any> };
 
 /**
  * A stage name: one word, since the CLI gets it as an argument, and not `pr-<number>`, the stages of

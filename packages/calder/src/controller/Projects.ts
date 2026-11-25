@@ -169,7 +169,7 @@ export const layer = Layer.effect(Projects)(
 
     return {
       get: (name) => projects.get(name),
-      all: () => [...projects.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      all: () => [...projects.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
       byRepo,
     };
   }),

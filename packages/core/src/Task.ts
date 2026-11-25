@@ -73,7 +73,7 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
    * `{ CALDER_BUNDLE: bundle }`. The task waits for those steps; holding the lease, it publishes each path
    * to the binary cache first, kept as that variable's release of the step.
    */
-  readonly artifacts?: { readonly [env: string]: Step<string, any, any, any, never> };
+  readonly artifacts?: { readonly [env: string]: Step<string, any, any, any> };
   /**
    * `true`: the task holds the deploy lease while its command runs, like `Release.promote`: the project's,
    * or in a pull request's run the pull request's own, so its previews and their removal take turns.

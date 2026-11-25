@@ -26,7 +26,14 @@ describe("Calder.plan", () => {
       expect(plan.reuse).toBe("all");
       expect(plan.runs(qa)).toBe(true);
       expect(plan.runs(promote)).toBe(false);
-      expect(names(plan).sort()).toEqual(["comment", "gate", "preview", "qa", "release", "smoke"]);
+      expect(names(plan).toSorted()).toEqual([
+        "comment",
+        "gate",
+        "preview",
+        "qa",
+        "release",
+        "smoke",
+      ]);
     }),
   );
 
@@ -100,10 +107,9 @@ describe("Calder.plan", () => {
         ],
       });
 
-      expect(names(yield* Calder.plan(apps, Event.manual({ release: "android" }))).sort()).toEqual([
-        "android",
-        "any",
-      ]);
+      expect(
+        names(yield* Calder.plan(apps, Event.manual({ release: "android" }))).toSorted(),
+      ).toEqual(["android", "any"]);
       expect(names(yield* Calder.plan(apps, Event.manual()))).toEqual(["any"]);
     }),
   );

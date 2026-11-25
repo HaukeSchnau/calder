@@ -38,7 +38,7 @@ const make = <T extends "pr" | "trusted", R>(
 ): Rule<T, R> => ({ [TypeId]: variance, trust, trigger, reuse, targets });
 
 /** Runs on every pull request. Steps with grants are refused, and the run gets `PrBase`. */
-export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, any, never>>>(
+export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, any>>>(
   targets: T,
 ): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "PullRequest" }, "all", targets);
 
@@ -48,7 +48,7 @@ export const pullRequest = <const T extends ReadonlyArray<Step<any, any, any, an
  * are the ones a trusted run trusts. Fork pull requests and `calder check` don't run it. Actions with
  * grants and tasks that hold the deploy lease are still refused, and the run gets `PrBase`.
  */
-export const preview = <const T extends ReadonlyArray<Step<any, any, any, any, never>>>(
+export const preview = <const T extends ReadonlyArray<Step<any, any, any, any>>>(
   targets: T,
 ): Rule<"pr", Step.Services<T[number]>> => make("pr", { _tag: "Preview" }, "all", targets);
 

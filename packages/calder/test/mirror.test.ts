@@ -53,7 +53,7 @@ describe("extract", () => {
 
       yield* Effect.all([extract(root, watching), extract(root, watching)], { concurrency: 2 });
       expect(seen.every((files) => files.length === 0 || files.length === 2)).toBe(true);
-      expect(readdirSync(join(root, ".calder")).sort()).toEqual(["ci.ts", "flake.ts"]);
+      expect(readdirSync(join(root, ".calder")).toSorted()).toEqual(["ci.ts", "flake.ts"]);
       expect(readdirSync(join(root, ".."))).toEqual(["sha"]);
     }),
   );
@@ -64,7 +64,7 @@ describe("extract", () => {
       mkdirSync(join(root, ".calder"), { recursive: true });
       writeFileSync(join(root, ".calder", "flake.ts"), "");
       yield* extract(root, fill);
-      expect(readdirSync(join(root, ".calder")).sort()).toEqual(["ci.ts", "flake.ts"]);
+      expect(readdirSync(join(root, ".calder")).toSorted()).toEqual(["ci.ts", "flake.ts"]);
     }),
   );
 
@@ -331,7 +331,7 @@ describe("Mirror", () => {
       yield* insertRun("kept-1", { at: 0 });
       yield* sql`update runs set sha = 'running', status = 'running', finished_at = null where id = 'kept-1'`;
       yield* sweptOnce(state);
-      expect(readdirSync(join(state, "revs/kept")).sort()).toEqual(["fresh", "running"]);
+      expect(readdirSync(join(state, "revs/kept")).toSorted()).toEqual(["fresh", "running"]);
     }).pipe(Effect.provide(sqlite)),
   );
 });

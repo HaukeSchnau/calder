@@ -17,7 +17,7 @@ export const infrastructure = (lines: ReadonlyArray<string>): string | null => {
   // build that really failed also says "build of '…' on '…' failed", which always counts.
   // calder-672 and infra-1048 failed so when srv-2's SSH connection to the Mac builder was killed.
   const disconnected = lines.some((line) =>
-    /^error: Nix daemon disconnected unexpectedly/.test(line),
+    line.startsWith("error: Nix daemon disconnected unexpectedly"),
   );
 
   const builderFailed =
@@ -62,7 +62,7 @@ export const infrastructure = (lines: ReadonlyArray<string>): string | null => {
         ? "no remote builder could take the build"
         : null,
     (line) =>
-      /^error: Nix daemon disconnected unexpectedly/.test(line)
+      line.startsWith("error: Nix daemon disconnected unexpectedly")
         ? "Nix lost its connection to a Nix daemon, its own or a builder's, in the middle of the build"
         : null,
   ];

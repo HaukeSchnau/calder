@@ -238,7 +238,7 @@ export const layer = Layer.effect(Runs)(
         const project = projects.get(input.project);
 
         if (project === undefined)
-          return yield* new RunError({ message: `unknown project ${input.project}` });
+          return yield* RunError.make({ message: `unknown project ${input.project}` });
 
         const commit = yield* mirror.commit(input.project, input.sha).pipe(
           Effect.catch(() =>
@@ -246,8 +246,8 @@ export const layer = Layer.effect(Runs)(
               .fetch(input.project)
               .pipe(Effect.andThen(mirror.commit(input.project, input.sha))),
           ),
-          Effect.mapError(
-            (e) => new RunError({ message: `revision ${input.sha} not found: ${e.message}` }),
+          Effect.mapError((e) =>
+            RunError.make({ message: `revision ${input.sha} not found: ${e.message}` }),
           ),
         );
 
@@ -301,7 +301,7 @@ export const layer = Layer.effect(Runs)(
         if (existing[0] !== undefined) return Rows.run(existing[0]);
 
         if (ensuring.has(key))
-          return yield* new RunError({ message: `a run of ${key} is starting` });
+          return yield* RunError.make({ message: `a run of ${key} is starting` });
         ensuring.add(key);
 
         return yield* create(input).pipe(Effect.ensuring(Effect.sync(() => ensuring.delete(key))));
@@ -326,7 +326,7 @@ export const layer = Layer.effect(Runs)(
         Effect.gen(function* () {
           const row = yield* db(Rows.loadRun(runId));
 
-          if (row === undefined) return yield* new RunError({ message: `no run ${runId}` });
+          if (row === undefined) return yield* RunError.make({ message: `no run ${runId}` });
 
           if (options.force !== true && row.plan !== null && row.status !== "cancelled") {
             const reason = options.reason ?? "calder rerun";
@@ -341,7 +341,7 @@ export const layer = Layer.effect(Runs)(
                   if (names.length === 0) return names;
                   const entry = driving.get(runId);
 
-                  if (entry?.relaunch != null) yield* entry.relaunch(names);
+                  if (entry !== undefined && entry.relaunch !== null) yield* entry.relaunch(names);
                   // A driver that hasn't launched its steps yet runs the reset ones with the rest.
                   else if (entry === undefined) yield* start(runId);
 
@@ -353,7 +353,7 @@ export const layer = Layer.effect(Runs)(
             if (retried.length > 0) return Rows.run((yield* db(Rows.loadRun(runId)))!);
 
             if (!Domain.ended.has(row.status))
-              return yield* new RunError({
+              return yield* RunError.make({
                 message: `nothing of ${runId} failed so far, so there is nothing to run again yet`,
               });
           }

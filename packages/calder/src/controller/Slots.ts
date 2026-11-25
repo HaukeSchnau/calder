@@ -1,4 +1,5 @@
-import { Deferred, Duration, Effect } from "effect";
+import type { Duration } from "effect";
+import { Deferred, Effect } from "effect";
 import type { Pool } from "../Protocol.ts";
 
 /** What a step asks the pool for. */

@@ -132,7 +132,7 @@ export const remember = (slot: Slot, deps: string, keep = 3) =>
     const old = readdirSync(dir)
       .filter((name) => !name.includes("."))
       .map((name) => ({ path: join(dir, name), at: statSync(join(dir, name)).mtimeMs }))
-      .sort((a, b) => b.at - a.at)
+      .toSorted((a, b) => b.at - a.at)
       .slice(keep);
 
     yield* Effect.forEach(old, (s) => remove(s.path).pipe(Effect.ignore), { discard: true });

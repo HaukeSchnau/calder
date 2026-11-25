@@ -3,6 +3,7 @@ import { Deferred, Effect, Layer, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { SqlClient } from "effect/sql";
 import { mkdtempSync, rmSync } from "node:fs";
+import type * as NodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vite-plus/test";
@@ -17,7 +18,7 @@ vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
 // On a Calder host the test's user may not hand files to the pools' groups, which the controller does.
 vi.mock("node:fs", async (original) => ({
-  ...(await original<typeof import("node:fs")>()),
+  ...(await original<typeof NodeFs>()),
   chownSync: () => {},
 }));
 

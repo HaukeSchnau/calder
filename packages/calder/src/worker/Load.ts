@@ -11,7 +11,7 @@ export const project = (pipelineDir: string) =>
   Effect.tryPromise({
     try: () => import(join(pipelineDir, "ci.ts")) as Promise<{ readonly default?: unknown }>,
     catch: (error) =>
-      new LoadFailed({
+      LoadFailed.make({
         message: `.calder/ci.ts failed to load: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
       }),
   }).pipe(
@@ -19,7 +19,7 @@ export const project = (pipelineDir: string) =>
       Calder.isProject(module.default)
         ? Effect.succeed(module.default)
         : Effect.fail(
-            new LoadFailed({
+            LoadFailed.make({
               message: ".calder/ci.ts must `export default Calder.project({ ... })`",
             }),
           ),
@@ -28,12 +28,12 @@ export const project = (pipelineDir: string) =>
 
 export const step = (project: Calder.Project, name: string) =>
   Calder.universe(project).pipe(
-    Effect.mapError((e) => new LoadFailed({ message: e.message })),
+    Effect.mapError((e) => LoadFailed.make({ message: e.message })),
     Effect.flatMap((all): Effect.Effect<Step.Any, LoadFailed> => {
       const found = all.get(name);
 
       return found === undefined
-        ? Effect.fail(new LoadFailed({ message: `no step named "${name}" in .calder/ci.ts` }))
+        ? Effect.fail(LoadFailed.make({ message: `no step named "${name}" in .calder/ci.ts` }))
         : Effect.succeed(found);
     }),
   );

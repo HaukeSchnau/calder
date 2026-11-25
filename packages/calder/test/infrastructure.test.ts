@@ -131,7 +131,9 @@ const unreachable: JobResult = {
   _tag: "Failed",
   tag: "Infrastructure",
   message: `nix build checks.aarch64-darwin.m1 failed: ${cause}`,
-  error: Values.encode(new Calder.Infrastructure({ attr: "checks.aarch64-darwin.m1", drv, cause })),
+  error: Values.encode(
+    Calder.Infrastructure.make({ attr: "checks.aarch64-darwin.m1", drv, cause }),
+  ),
   key: drv,
 };
 
@@ -276,9 +278,9 @@ describe("a run's derivations", () => {
       });
 
       expect(status).toBe("passed");
-      const built = nix.filter((args) => args.includes("build") && args.includes("--out-link"));
-      expect(built[0]?.slice(-2)).toEqual([drv, shell]);
-      expect(built[0]?.[built[0].indexOf("--out-link") + 1]?.startsWith(roots)).toBe(true);
+      const built = nix.find((args) => args.includes("build") && args.includes("--out-link"));
+      expect(built?.slice(-2)).toEqual([drv, shell]);
+      expect(built?.[built.indexOf("--out-link") + 1]?.startsWith(roots)).toBe(true);
       expect(rootedWhileBuilding).toBe(true);
       expect(existsSync(roots)).toBe(false);
       expect(existsSync(stale)).toBe(false);

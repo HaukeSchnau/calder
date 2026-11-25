@@ -399,11 +399,11 @@ export const layer = Layer.effect(Merges)(
           const repo = projects.get(project)?.repo;
 
           if (repo === undefined)
-            return yield* new MergeRefused({ reason: `no project ${project}` });
+            return yield* MergeRefused.make({ reason: `no project ${project}` });
           const pull = yield* gitea.pull(repo, pr);
 
           if (!pull.open)
-            return yield* new MergeRefused({
+            return yield* MergeRefused.make({
               reason: `pull request #${pr} is ${pull.merged ? "merged" : "closed"}`,
             });
           yield* db(sql`insert into merges (project, pr, base, status, message, requested_at)

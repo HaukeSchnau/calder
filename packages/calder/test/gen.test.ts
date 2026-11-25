@@ -89,7 +89,7 @@ describe("the generated ci.ts", () => {
     );
   };
 
-  const names = (plan: Calder.Plan) => plan.steps.map((step) => step.name).sort();
+  const names = (plan: Calder.Plan) => plan.steps.map((step) => step.name).toSorted();
 
   const installer = (plan: Calder.Plan) => {
     const def = plan.get("install")?.step.def;

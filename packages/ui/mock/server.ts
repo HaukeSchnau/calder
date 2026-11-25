@@ -81,11 +81,11 @@ function overview(world: World, now: number, seq: number): Domain.Overview {
     }),
     active: visible
       .filter((r) => isActive(runStatus(r, now)))
-      .reverse()
+      .toReversed()
       .map((r) => toRun(r, now)),
     recent: visible
       .slice(-40)
-      .reverse()
+      .toReversed()
       .map((r) => toRun(r, now)),
     slots: {
       tasks: running.filter((s) => s.plan.kind === "task" && s.plan.platform === undefined).length,
@@ -129,7 +129,7 @@ function detail(world: World, run: SimRun, now: number, seq: number): Domain.Run
         (pr !== null && r.event._tag === "PullRequest" && r.event.number === pr) ||
         (run.commit.changeId !== null && r.commit.changeId === run.commit.changeId),
     )
-    .reverse()
+    .toReversed()
     .map((r) => toRun(r, now));
 
   const steps = run.steps.map((s) => toStep(world, run, s, now));
@@ -165,7 +165,7 @@ function follow(
   sent: number,
 ): Stream.Stream<Domain.LogEntry> {
   const lines = (now: number) =>
-    steps.flatMap((s) => logLines(run, s, now)).sort((a, b) => a.timestamp - b.timestamp);
+    steps.flatMap((s) => logLines(run, s, now)).toSorted((a, b) => a.timestamp - b.timestamp);
 
   const done = (now: number) => steps.every((s) => terminal.has(stepState(run, s, now).status));
 
@@ -234,7 +234,7 @@ const Handlers = UiRpcs.toLayer(
           publish({ _tag: "DeploymentChanged", seq: ++seq, deployment });
       }
 
-      for (const record of deployRecords(world, now).reverse()) {
+      for (const record of deployRecords(world, now).toReversed()) {
         const key = `${record.runId}:${record.host}:${record.at}`;
 
         if (recorded.has(key)) continue;
@@ -257,7 +257,7 @@ const Handlers = UiRpcs.toLayer(
 
       return run && run.createdAt <= Date.now()
         ? Effect.succeed(run)
-        : Effect.fail(new NotFound({ what: `run ${id}` }));
+        : Effect.fail(NotFound.make({ what: `run ${id}` }));
     };
 
     const findStep = (run: SimRun, name: string): Effect.Effect<SimStep, NotFound> => {
@@ -265,7 +265,7 @@ const Handlers = UiRpcs.toLayer(
 
       return step
         ? Effect.succeed(step)
-        : Effect.fail(new NotFound({ what: `step ${name} in run ${run.id}` }));
+        : Effect.fail(NotFound.make({ what: `step ${name} in run ${run.id}` }));
     };
 
     return UiRpcs.of({
@@ -288,7 +288,7 @@ const Handlers = UiRpcs.toLayer(
                 (r.event._tag === "PullRequest" && r.event.number === pullRequest),
             )
             .filter((r) => before === undefined || r.createdAt < before)
-            .reverse()
+            .toReversed()
             .slice(0, limit ?? 50)
             .map((r) => toRun(r, now));
 
@@ -311,7 +311,7 @@ const Handlers = UiRpcs.toLayer(
 
             const all = steps
               .flatMap((s) => logLines(run, s, now))
-              .sort((a, b) => a.timestamp - b.timestamp);
+              .toSorted((a, b) => a.timestamp - b.timestamp);
 
             const end = before ?? all.length;
             const from = Math.max(0, end - (limit ?? 5000));
@@ -360,7 +360,7 @@ const Handlers = UiRpcs.toLayer(
               reused: st.status === "reused",
               finishedAt: st.finishedAt ?? s.finishedAt,
             }))
-            .sort((a, b) => a.finishedAt - b.finishedAt)
+            .toSorted((a, b) => a.finishedAt - b.finishedAt)
             .slice(-30);
 
           return { project, step, samples };
@@ -392,10 +392,10 @@ const Handlers = UiRpcs.toLayer(
 
               return toRun(world.trigger(project, now, inputs), now);
             })
-          : Effect.fail(new NotFound({ what: `project ${project}` })),
+          : Effect.fail(NotFound.make({ what: `project ${project}` })),
       audit: () => Effect.succeed([]),
-      check: () => Effect.fail(new Refused({ reason: "the mock has no working copies to check" })),
-      merge: () => Effect.fail(new Refused({ reason: "the mock has no pull requests to merge" })),
+      check: () => Effect.fail(Refused.make({ reason: "the mock has no working copies to check" })),
+      merge: () => Effect.fail(Refused.make({ reason: "the mock has no pull requests to merge" })),
       merges: () => Effect.succeed([]),
       cancel: ({ runId }) =>
         findRun(runId).pipe(
@@ -404,7 +404,7 @@ const Handlers = UiRpcs.toLayer(
             const status = runStatus(run, now);
 
             if (!isActive(status))
-              return Effect.fail(new Refused({ reason: `#${run.number} already ${status}` }));
+              return Effect.fail(Refused.make({ reason: `#${run.number} already ${status}` }));
             run.cancelledAt = now;
 
             return Effect.void;
@@ -416,7 +416,7 @@ const Handlers = UiRpcs.toLayer(
             const now = Date.now();
 
             if (isActive(runStatus(run, now)))
-              return Effect.fail(new Refused({ reason: `#${run.number} is still running` }));
+              return Effect.fail(Refused.make({ reason: `#${run.number} is still running` }));
 
             return Effect.succeed(toRun(world.rerun(run, now), now));
           }),

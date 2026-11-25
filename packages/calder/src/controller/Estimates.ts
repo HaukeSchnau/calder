@@ -6,7 +6,7 @@ import type { StepRow } from "./Rows.ts";
 const unknown = 10 * 60_000;
 
 const median = (xs: ReadonlyArray<number>) =>
-  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+  [...xs].toSorted((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 
 interface Execution {
   readonly name: string;
@@ -29,7 +29,7 @@ const recent = (
     if (known.some((e) => e.id === execution.id)) return;
     byName.set(
       execution.name,
-      [...known, execution].sort((a, b) => b.finishedAt - a.finishedAt).slice(0, window),
+      [...known, execution].toSorted((a, b) => b.finishedAt - a.finishedAt).slice(0, window),
     );
   };
 

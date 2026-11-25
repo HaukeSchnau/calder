@@ -232,7 +232,7 @@ export const make = (
   const check = (auth: { readonly token: string; readonly name: string }) =>
     secret !== null && auth.token === secret
       ? Effect.void
-      : Effect.fail(new Unauthorized({ reason: "wrong agent token" }));
+      : Effect.fail(Unauthorized.make({ reason: "wrong agent token" }));
 
   const evaluatorConnected = () =>
     [...connections.values()].some((c) => c.evaluator && c.compatibility === version);
@@ -277,7 +277,8 @@ export const make = (
   };
 
   const assign = Effect.gen(function* () {
-    for (const waiter of [...waiters]) {
+    // A copy, since assigning a waiter takes it out of the list.
+    for (const waiter of waiters.slice()) {
       // An agent that takes only other systems' tasks goes first, since other jobs can't use its slot, then
       // one of the job's own platform.
       const candidates = [...connections.values()].filter((c) => takes(c, waiter));
@@ -566,7 +567,8 @@ export const make = (
                   stopping: true,
                 });
 
-              for (const [job, p] of [...placed]) {
+              // A copy, since finishing a job takes it out of the map.
+              for (const [job, p] of Array.from(placed)) {
                 if (p.agent !== auth.name) continue;
 
                 // Workers that exited while the agent was away can't report it any more.

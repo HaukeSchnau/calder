@@ -47,9 +47,7 @@ const setup = Effect.gen(function* () {
   const project = { name: "app", repo: "o/app", defaultBranch: "main", targets: null, secrets: {} };
 
   const service = yield* Effect.provide(
-    Effect.gen(function* () {
-      return yield* Comments;
-    }),
+    Effect.service(Comments),
     comments.pipe(
       Layer.provide(
         Layer.mergeAll(

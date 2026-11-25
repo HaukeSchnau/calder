@@ -40,7 +40,7 @@ const execute = (
   const at = options.dir === undefined ? root : join(root, options.dir);
 
   const fake =
-    `#!/usr/bin/env bash\necho "$(basename "$0") $PWD $* ${"$"}{CALDER_BUNDLE:-}" >> ${join(root, "calls")}\n` +
+    `#!/usr/bin/env bash\necho "$(basename "$0") $PWD $* \${CALDER_BUNDLE:-}" >> ${join(root, "calls")}\n` +
     `echo "DO_NOT_TRACK=$DO_NOT_TRACK ALCHEMY_HOME=$ALCHEMY_HOME $(cat "$ALCHEMY_HOME"/profiles/default/state-stores/cloudflare.json 2>/dev/null)" >> ${join(root, "seen")}\n` +
     `[[ " $* " == *" state read "* ]] && printf '%s\\n' '• Refreshing credentials' '[12:00:00] INFO (#1): from the environment' '{' '  "url": "https://site.example",' '  "token": { "__redacted__": "s3cret" }' '}'\ntrue\n`;
 

@@ -3,7 +3,6 @@ import {
   Cause,
   Clock,
   Context,
-  Data,
   Duration,
   Effect,
   Exit,
@@ -11,6 +10,7 @@ import {
   Layer,
   Predicate,
   Schedule,
+  Schema,
   type Scope,
   Semaphore,
 } from "effect";
@@ -23,7 +23,10 @@ const makeClient = RpcClient.make(WorkerRpcs);
 export type Client = Effect.Success<typeof makeClient>;
 
 /** The controller stopped while it handled a call: Effect's RpcServer interrupts its handlers and sends the interrupt back. */
-class ControllerStopped extends Data.TaggedError("ControllerStopped")<{}> {}
+class ControllerStopped extends Schema.TaggedError<ControllerStopped>("calder/ControllerStopped")(
+  "ControllerStopped",
+  {},
+) {}
 
 /**
  * How long calls keep trying once the controller went away. A restarting controller adopts running
@@ -54,7 +57,7 @@ export const reconnecting = <A, E, R>(call: Effect.Effect<A, E, R>): Effect.Effe
       const exit = yield* Fiber.await(yield* Effect.forkChild(call, { startImmediately: true }));
 
       if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause))
-        return yield* new ControllerStopped();
+        return yield* ControllerStopped.make({});
 
       return yield* exit;
     }).pipe(

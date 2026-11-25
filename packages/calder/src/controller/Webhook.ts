@@ -1,5 +1,6 @@
 import { Effect } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import type { HttpServerRequest } from "effect/http";
+import { HttpServerResponse } from "effect/http";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Closes } from "./Closes.ts";
 import { Config } from "./Config.ts";
@@ -151,6 +152,4 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
     }
 
     return HttpServerResponse.text("ignored");
-  }).pipe(
-    Effect.catch(() => Effect.succeed(HttpServerResponse.text("bad request", { status: 400 }))),
-  );
+  }).pipe(Effect.orElseSucceed(() => HttpServerResponse.text("bad request", { status: 400 })));

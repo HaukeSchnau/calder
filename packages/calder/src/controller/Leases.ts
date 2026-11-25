@@ -131,9 +131,9 @@ export const make = (
 
   /** Why a holder's run no longer deploys, or undefined while it does, or when that can't be told in time. */
   const staleness = (holder: Holder) =>
-    (holder.stale ?? Effect.succeed(undefined)).pipe(
+    (holder.stale ?? Effect.undefined).pipe(
       Effect.timeout(staleAfter),
-      Effect.catchCause(() => Effect.succeed(undefined)),
+      Effect.catchCause(() => Effect.undefined),
     );
 
   /**
@@ -151,7 +151,7 @@ export const make = (
 
       const same = s.waiters
         .filter((waiter) => waiter.step === first.step)
-        .sort((a, b) => b.run - a.run);
+        .toSorted((a, b) => b.run - a.run);
 
       const floor = newestOf(project, first.step);
       const stale: Array<{ readonly waiter: Waiter; readonly reason: string }> = [];

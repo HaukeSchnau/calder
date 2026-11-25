@@ -455,7 +455,9 @@ describe("a new run", () => {
         yield* insert("infra-590", { status: "queued", sha: "c" });
         const push = { project: "infra", branch: "main", pr: null, sha: "c" };
         expect(
-          [...(yield* Rows.replaced({ ...push, event: { _tag: "Push", branch: "main" } }))].sort(),
+          [
+            ...(yield* Rows.replaced({ ...push, event: { _tag: "Push", branch: "main" } })),
+          ].toSorted(),
         ).toEqual(["infra-587", "infra-588", "infra-589"]);
         // A schedule of the head replaces nothing, and isn't replaced by a push of the same revision.
         yield* insert("infra-591", { status: "running", sha: "c", event: hourly });

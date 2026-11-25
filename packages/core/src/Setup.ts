@@ -1,5 +1,5 @@
 import type { Cmd } from "./Cmd.ts";
-import * as Files from "./Files.ts";
+import type * as Files from "./Files.ts";
 import type { FlakeRef } from "./Flake.ts";
 import type { TaskFailed } from "./Calder.ts";
 import { make as makeStep, type Platform, type Step } from "./Step.ts";
@@ -14,7 +14,7 @@ export interface Options {
   readonly shell?: FlakeRef<"devShells">;
   /** The files that decide whether a prepared workspace is still current: manifests, lockfiles, patches. */
   readonly inputs: Files.Files;
-  readonly run: Cmd<never>;
+  readonly run: Cmd;
   /**
    * What the setup creates that a task's `git clean` keeps, as gitignore patterns (`node_modules`).
    * Kept files carry over to tasks of other revisions without entering their keys, so keep only caches

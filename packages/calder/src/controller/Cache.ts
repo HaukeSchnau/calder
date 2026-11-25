@@ -79,7 +79,7 @@ export const layer = Layer.effect(Cache)(
               duration: "30 minutes",
               orElse: () =>
                 Effect.fail(
-                  new Exec.CommandFailed({
+                  Exec.CommandFailed.make({
                     command: argv.join(" "),
                     exitCode: -1,
                     stderr: "timed out after 30 minutes",

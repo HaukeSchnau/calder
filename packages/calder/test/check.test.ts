@@ -169,7 +169,7 @@ describe("a refused check", () => {
 
         const client = {
           overview: () => Effect.succeed({ projects: [{ repo: "schnau/app" }] }),
-          check: () => Effect.fail(new Refused({ reason: "revision not found" })),
+          check: () => Effect.fail(Refused.make({ reason: "revision not found" })),
         } as unknown as Client;
 
         const error = yield* Effect.flip(submit(client, work, { key: "x" }));

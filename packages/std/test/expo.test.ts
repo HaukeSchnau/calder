@@ -492,7 +492,7 @@ describe("Expo.playInternal", scripts, () => {
     expect(task(mac).platform).toBe("aarch64-darwin");
     expect(def.inputs).toEqual(Files.of());
     expect(def.lease).toBe("play");
-    expect(Object.keys(def.secrets).sort()).toEqual([
+    expect(Object.keys(def.secrets).toSorted()).toEqual([
       "GPLAY_SERVICE_ACCOUNT_JSON",
       "UPLOAD_KEYSTORE",
       "UPLOAD_KEYSTORE_PASSWORD",
@@ -517,7 +517,7 @@ describe("an Expo release pipeline", () => {
         Calder.plan(Calder.project({ rules: [On.push("main", [wrong])] }), Event.push("main")),
       );
 
-      expect(String(error.message ?? error)).toContain(
+      expect(error.message).toContain(
         `"ota-export" runs on x86_64-linux but its setup "install" on the controller's platform`,
       );
     }),

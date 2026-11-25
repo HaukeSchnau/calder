@@ -244,7 +244,7 @@ export const tick = (now: number, looked: Set<string> = new Set()) =>
             const after =
               passed.id === row.run_id
                 ? " when it ran again"
-                : failedRun?.finished_at == null
+                : failedRun === undefined || failedRun.finished_at === null
                   ? ""
                   : `, ${span(passed.finished_at - failedRun.finished_at)} after ${link(row.run_id)} failed`;
 

@@ -15,19 +15,17 @@ import {
   type CurrentRun,
 } from "../src/index.ts";
 import type { TaskFailed, TimedOut } from "../src/Calder.ts";
+import type { Cmd } from "../src/Cmd.ts";
 import type { Blocked, Died, Failed, Passed } from "../src/Step.ts";
+import type { DevController, Live, project, Skipped } from "./fixtures.ts";
 import {
-  DevController,
   DevControllerLive,
   gate,
-  Live,
   preview,
-  project,
   promote,
   promoteRelease,
   qa,
   release,
-  Skipped,
 } from "./fixtures.ts";
 
 type Expect<T extends true> = T;
@@ -55,6 +53,8 @@ Action.make(
     >;
 
     type _n = Expect<Equal<typeof all.length, 2>>;
+
+    yield* Effect.succeed<[_q, _n]>([true, true]);
   },
 );
 
@@ -69,7 +69,7 @@ export type _data = Expect<
 
 // Only Calder.Failure errors stay typed.
 const failing = Action.make("failing", {}, function* () {
-  yield* new Busy({ target: "host-a" });
+  yield* Busy.make({ target: "host-a" });
   yield* Effect.fail(new Error("plain"));
 });
 
@@ -107,7 +107,7 @@ cmd`deploy ${promote}`;
 
 const typed = cmd`echo ${release} ${preview} ${"x"} ${1}`;
 
-export type _cmdR = Expect<Equal<typeof typed, import("../src/Cmd.ts").Cmd<DevController>>>;
+export type _cmdR = Expect<Equal<typeof typed, Cmd<DevController>>>;
 
 // PullRequest is only provided to pull-request rules.
 const commenter = Action.make("commenter", {}, function* () {
@@ -136,7 +136,7 @@ const retried = archive.pipe(
   Step.timeout("1 minute"),
 );
 
-export const ipa: Step.Step<Calder.StorePath, never, never> = retried.outputs.ipa;
+export const ipa: Step.Step<Calder.StorePath> = retried.outputs.ipa;
 
 export type _retried = Expect<Equal<Step.Error<typeof retried>, TaskFailed | TimedOut>>;
 

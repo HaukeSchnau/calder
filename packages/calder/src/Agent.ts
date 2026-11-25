@@ -509,7 +509,8 @@ export const run = (options: Options) =>
         ? `agent ${options.name} serving ${options.platform} jobs from ${options.url}${options.units === null ? "" : host === null ? `, each in its pool's unit` : `, pull requests' through ${host.command}`}`
         : `agent ${options.name} evaluating for ${options.url}, pushing derivations to ${options.evaluator}`,
     );
-    yield* Effect.suspend(() => {
+
+    return yield* Effect.suspend(() => {
       offering = offered();
 
       return client

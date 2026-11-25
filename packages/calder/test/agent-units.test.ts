@@ -35,7 +35,7 @@ describe("an agent's units", () => {
       }),
     );
 
-    expect([...headers.keys()].sort()).toEqual(["authorization", "content-type"]);
+    expect([...headers.keys()].toSorted()).toEqual(["authorization", "content-type"]);
   });
 
   // The agent serves its sockets with Bun's, which vitest's Node lacks: bun/agent-units.ts runs jobs
@@ -83,7 +83,7 @@ describe("an agent's units", () => {
       expect(result.sandbox.kept).toBe(false);
       // What an earlier run left in any sandboxed pool is stopped first, the pools at once, and a pool's jobs
       // wait until its stop succeeded.
-      expect(result.sandbox.calls.slice(0, 2).sort()).toEqual(["stop fork", "stop pr"]);
+      expect(result.sandbox.calls.slice(0, 2).toSorted()).toEqual(["stop fork", "stop pr"]);
       expect(result.sandbox.calls.slice(2)).toEqual([
         "stop pr",
         "run pr 5a1d <units>/5a1d calder main.ts",

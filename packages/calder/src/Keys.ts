@@ -10,7 +10,7 @@ export const placementToken = (key: string, project: string): string =>
  */
 export const secretsDigest = (key: string, secrets: Record<string, string>): string =>
   createHmac("sha256", key)
-    .update(JSON.stringify(Object.entries(secrets).sort()))
+    .update(JSON.stringify(Object.entries(secrets).toSorted()))
     .digest("hex");
 
 export const sha256 = (value: unknown): string =>
@@ -30,7 +30,7 @@ export const taskKey = (
   sha256({
     keyBase,
     values: Object.keys(values)
-      .sort()
+      .toSorted()
       .map((k) => [k, values[k]]),
     shard: shard === null ? null : [shard.index, shard.count],
   });

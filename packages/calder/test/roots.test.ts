@@ -42,7 +42,7 @@ describe("output roots", () => {
       yield* Outputs.sweep(stateDir).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noProcesses),
       );
-      expect(readdirSync(join(stateDir, "gcroots")).sort()).toEqual([
+      expect(readdirSync(join(stateDir, "gcroots")).toSorted()).toEqual([
         basename(path("dist")),
         basename(path("screenshots")),
       ]);

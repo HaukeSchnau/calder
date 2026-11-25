@@ -590,7 +590,9 @@ const status = Command.make("status", { run: runId, url }, ({ run, url }) =>
     yield* Console.log(
       [
         r.finishedAt === null ? `  ${total} so far` : `  took ${total}`,
-        r.plannedAt == null ? null : `planned in ${Cli.took(r.plannedAt - r.createdAt)}`,
+        r.plannedAt === null || r.plannedAt === undefined
+          ? null
+          : `planned in ${Cli.took(r.plannedAt - r.createdAt)}`,
         critical.length === 0
           ? null
           : `the critical path (·) waited ${Cli.took(critical.reduce((sum, s) => sum + s.startedAt! - s.queuedAt!, 0))} for slots`,

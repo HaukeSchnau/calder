@@ -24,11 +24,11 @@ const ago = (now: number, since: number) => `${Math.round((now - since) / 1000)}
 /** The layers stopping right now, longest first, as "Runs for 95 s", then the worker calls in flight. */
 export const report = (now: number) => {
   const layers = [...stopping]
-    .sort(([, a], [, b]) => a - b)
+    .toSorted(([, a], [, b]) => a - b)
     .map(([name, since]) => `${name} for ${ago(now, since)}`);
 
   const inFlight = [...calls.values()]
-    .sort((a, b) => a.since - b.since)
+    .toSorted((a, b) => a.since - b.since)
     .map((c) => `${c.rpc} for ${ago(now, c.since)}`);
 
   return inFlight.length === 0

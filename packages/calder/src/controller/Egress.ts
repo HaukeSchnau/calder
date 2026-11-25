@@ -63,7 +63,7 @@ export const isPrivate = (address: string): boolean => {
     canonical === "::" ||
     /^f[cd]/.test(canonical) ||
     /^fe[89ab]/.test(canonical) ||
-    /^ff/.test(canonical)
+    canonical.startsWith("ff")
   );
 };
 
@@ -230,7 +230,7 @@ export const layer = Layer.effectDiscard(
     const config = yield* Config;
 
     if (config.egress === null) return;
-    const services = yield* Effect.context<never>();
+    const services = yield* Effect.context();
     const path = join(config.runtimeDir, "egress.sock");
     yield* serve(
       path,

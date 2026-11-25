@@ -54,7 +54,7 @@ export const run = (argv: ReadonlyArray<string>, options: Options = {}) =>
       );
 
       if (exitCode !== 0)
-        return yield* new CommandFailed({ command: argv.join(" "), exitCode, stderr });
+        return yield* CommandFailed.make({ command: argv.join(" "), exitCode, stderr });
 
       return stdout;
     }),

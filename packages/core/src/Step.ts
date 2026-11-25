@@ -121,7 +121,7 @@ export type Def =
   | {
       readonly _tag: "Setup";
       readonly shell: FlakeRef | undefined;
-      readonly run: Cmd<never>;
+      readonly run: Cmd;
       readonly inputs: Files;
       readonly keep: ReadonlyArray<string>;
       readonly path: ReadonlyArray<string>;
@@ -160,7 +160,7 @@ export type Def =
       readonly needs: Step.Needs;
       readonly after: ReadonlyArray<Step.Any>;
       readonly grants: Grants;
-      readonly body: (inputs: any) => Generator<any, any, any>;
+      readonly body: (inputs: any) => Generator<any>;
     }
   | { readonly _tag: "Output"; readonly task: Step.Any; readonly output: string };
 
@@ -174,12 +174,15 @@ const variance = {
 class StepImpl implements Step<any, any, any, any, any> {
   readonly [TypeId] = variance;
   readonly outputs: { readonly [name: string]: Step<StorePath, never, any> };
-  constructor(
-    readonly kind: Kind,
-    readonly name: string,
-    readonly def: Def,
-    readonly policies: ReadonlyArray<Policy>,
-  ) {
+  readonly kind: Kind;
+  readonly name: string;
+  readonly def: Def;
+  readonly policies: ReadonlyArray<Policy>;
+  constructor(kind: Kind, name: string, def: Def, policies: ReadonlyArray<Policy>) {
+    this.kind = kind;
+    this.name = name;
+    this.def = def;
+    this.policies = policies;
     this.outputs =
       def._tag === "Task"
         ? Object.fromEntries(

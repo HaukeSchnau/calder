@@ -155,7 +155,7 @@ describe("the `vp` option", () => {
     Effect.gen(function* () {
       const project = Project.standard({ flake, vp });
       const pr = yield* Calder.plan(project, Event.pullRequest({ number: 1 }));
-      expect(pr.steps.map((s) => s.name).sort()).toEqual([
+      expect(pr.steps.map((s) => s.name).toSorted()).toEqual([
         "artifact",
         "check",
         "install",

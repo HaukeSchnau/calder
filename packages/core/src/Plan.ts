@@ -64,7 +64,7 @@ export interface Options {
   readonly requiredChecks?: ReadonlyArray<string>;
 }
 
-const fail = (message: string) => new PlanError({ message });
+const fail = (message: string) => PlanError.make({ message });
 
 const matches = (rule: Rule<any, any>, event: Event): boolean => {
   const t = rule.trigger;
@@ -108,7 +108,7 @@ export const universe = (project: Project): Effect.Effect<Map<string, Step.Any>,
     const seen = new Set<Step.Any>();
 
     const visit = (step: Step.Any): PlanError | undefined => {
-      if (seen.has(step)) return;
+      if (seen.has(step)) return undefined;
       seen.add(step);
       const existing = byName.get(step.name);
 
@@ -123,6 +123,8 @@ export const universe = (project: Project): Effect.Effect<Map<string, Step.Any>,
 
         if (error) return error;
       }
+
+      return undefined;
     };
 
     for (const rule of project.rules) {
@@ -192,7 +194,7 @@ export const plan = (
       const step = canonical(input);
       const mark = state.get(step.name);
 
-      if (mark === "done") return;
+      if (mark === "done") return undefined;
 
       if (mark === "visiting")
         return fail(`steps depend on each other in a cycle: ${[...path, step.name].join(" → ")}`);
@@ -318,6 +320,8 @@ export const plan = (
       });
       state.set(step.name, "done");
       order.push(step.name);
+
+      return undefined;
     };
 
     for (const [preview, group] of [

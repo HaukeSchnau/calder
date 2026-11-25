@@ -3,7 +3,8 @@ const NS = "http://www.w3.org/2000/svg";
 export const s = (tag, attrs = {}, parent) => {
   const e = document.createElementNS(NS, tag);
 
-  for (const [k, v] of Object.entries(attrs)) if (v != null && v !== false) e.setAttribute(k, v);
+  for (const [k, v] of Object.entries(attrs))
+    if (v !== null && v !== undefined && v !== false) e.setAttribute(k, v);
   parent?.appendChild(e);
 
   return e;
@@ -13,7 +14,7 @@ export const h = (tag, attrs = {}, parent) => {
   const e = document.createElement(tag);
 
   for (const [k, v] of Object.entries(attrs)) {
-    if (v == null || v === false) continue;
+    if (v === null || v === undefined || v === false) continue;
 
     if (k === "text") e.textContent = v;
     else if (k === "html") e.innerHTML = v;

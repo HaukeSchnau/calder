@@ -94,13 +94,13 @@ export const awaitReadiness = Effect.fn("Release.awaitReadiness")(function* (
   const check = client.get(url).pipe(
     Effect.flatMap(HttpClientResponse.schemaBodyJson(Readiness)),
     Effect.timeout("5 seconds"),
-    Effect.catch(() => Effect.succeed({ revision: undefined })),
+    Effect.orElseSucceed(() => ({ revision: undefined })),
     Effect.flatMap((body) => {
       seen = body.revision ?? seen;
 
       return body.revision === revision
         ? Effect.void
-        : Effect.fail(new NotReady({ url, revision, seen }));
+        : Effect.fail(NotReady.make({ url, revision, seen }));
     }),
   );
 
@@ -131,16 +131,16 @@ export const promote = Effect.fn("Release.promote")(function* (
 
   const lease = yield* Fleet.deploying(run.project, { queue: "latest-wins" });
 
-  if (lease._tag === "Replaced") return new Skipped({ reason: "Superseded" });
+  if (lease._tag === "Replaced") return Skipped.make({ reason: "Superseded" });
 
   if (lease.unreachable.length > 0)
-    return yield* new Unreachable({ project: run.project, hosts: lease.unreachable });
+    return yield* Unreachable.make({ project: run.project, hosts: lease.unreachable });
 
-  if (lease.targets.length === 0) return yield* new NoHosts({ project: run.project });
+  if (lease.targets.length === 0) return yield* NoHosts.make({ project: run.project });
   const missing = lease.targets.find((t) => bySystem[t.system] === undefined);
 
   if (missing !== undefined) {
-    return yield* new NoRelease({
+    return yield* NoRelease.make({
       project: run.project,
       host: missing.host,
       system: missing.system,
@@ -161,7 +161,7 @@ export const promote = Effect.fn("Release.promote")(function* (
 
   const preflighted = yield* Effect.forEach(lease.targets, preflight, { concurrency: "unbounded" });
 
-  if (preflighted.includes(false)) return new Skipped({ reason: "Superseded" });
+  if (preflighted.includes(false)) return Skipped.make({ reason: "Superseded" });
   const systems = new Set(lease.targets.map((t) => t.system));
   yield* Effect.forEach(
     systems,
@@ -172,7 +172,7 @@ export const promote = Effect.fn("Release.promote")(function* (
   for (const target of lease.targets) {
     const head = yield* Git.head(branch);
 
-    if (head !== run.revision) return new Skipped({ reason: "Superseded" });
+    if (head !== run.revision) return Skipped.make({ reason: "Superseded" });
     yield* target.deploy({ revision: run.revision, storePath: bySystem[target.system]! }).pipe(
       Effect.retry({
         while: (e) => e._tag === "Busy",
@@ -183,5 +183,5 @@ export const promote = Effect.fn("Release.promote")(function* (
 
   if (options.readiness !== undefined) yield* awaitReadiness(options.readiness, run.revision);
 
-  return new Live({ revision: run.revision, hosts: lease.targets.map((t) => t.host) });
+  return Live.make({ revision: run.revision, hosts: lease.targets.map((t) => t.host) });
 }, Effect.scoped);

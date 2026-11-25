@@ -44,5 +44,5 @@ export const make = <
     needs: options.needs ?? {},
     after: options.after ?? [],
     grants: options.grants ?? {},
-    body: body as (inputs: any) => Generator<any, any, any>,
+    body: body as (inputs: any) => Generator<any>,
   }) as any;

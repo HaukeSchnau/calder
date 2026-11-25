@@ -179,7 +179,10 @@ export const fromFile = (path: string) =>
         giteaToken: readSecret(config.gitea.tokenFile),
         webhookSecret: readSecret(config.gitea.webhookSecretFile),
         promotionToken: readSecret(config.promotion.tokenFile),
-        placementKey: config.placementKeyFile == null ? null : readSecret(config.placementKeyFile),
+        placementKey:
+          config.placementKeyFile === null || config.placementKeyFile === undefined
+            ? null
+            : readSecret(config.placementKeyFile),
       };
     }),
   );

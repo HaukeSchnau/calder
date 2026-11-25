@@ -11,7 +11,7 @@ const said = (lines: ReadonlyArray<string>, redact = Redact.make([token])) => {
 
   for (const line of lines) last.see(line);
 
-  return new Calder.TaskFailed({ exitCode: 1, failures: [], ...last.said() }).message;
+  return Calder.TaskFailed.make({ exitCode: 1, failures: [], ...last.said() }).message;
 };
 
 describe("why a task failed", () => {

@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 
 declare const self: Worker;
 
-self.onmessage = ({ data: filename }: MessageEvent<string>) => {
+self.addEventListener("message", ({ data: filename }: MessageEvent<string>) => {
   const db = new Database(filename);
   setInterval(() => db.run("pragma wal_checkpoint(passive)"), 60_000);
-};
+});

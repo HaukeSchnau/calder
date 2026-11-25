@@ -19,7 +19,9 @@ import { Runs } from "./Workflow.ts";
 
 /** Run ids are the project and the run's number, such as `ebb-3`. */
 const unknownRun = (id: string) =>
-  new NotFound({ what: /-\d+$/.test(id) ? `run ${id}` : `run ${id} (run ids look like ${id}-12)` });
+  NotFound.make({
+    what: /-\d+$/.test(id) ? `run ${id}` : `run ${id} (run ids look like ${id}-12)`,
+  });
 
 export const handlers = UiRpcs.toLayer(
   Effect.gen(function* () {
@@ -316,7 +318,7 @@ export const handlers = UiRpcs.toLayer(
                       };
                     },
                   ),
-                  history: [...history].reverse().map((r) => ({
+                  history: [...history].toReversed().map((r) => ({
                     id: r.id,
                     status: r.status,
                     durationMs:
@@ -440,7 +442,7 @@ export const handlers = UiRpcs.toLayer(
           return {
             project,
             step,
-            samples: [...rows].reverse().map((r) => ({
+            samples: [...rows].toReversed().map((r) => ({
               runId: r.run_id,
               status: r.status,
               durationMs: r.started_at === null ? null : r.finished_at - r.started_at,
@@ -474,7 +476,7 @@ export const handlers = UiRpcs.toLayer(
         Effect.gen(function* () {
           const p = enrolled.get(project);
 
-          if (p === undefined) return yield* new NotFound({ what: `project ${project}` });
+          if (p === undefined) return yield* NotFound.make({ what: `project ${project}` });
 
           if (schedule !== undefined) {
             const known = yield* db(
@@ -484,7 +486,7 @@ export const handlers = UiRpcs.toLayer(
             );
 
             if (known.length === 0)
-              return yield* new Refused({ reason: `${project} has no schedule ${schedule}` });
+              return yield* Refused.make({ reason: `${project} has no schedule ${schedule}` });
           }
 
           const target = schedule === undefined ? (branch ?? p.defaultBranch) : p.defaultBranch;
@@ -499,22 +501,22 @@ export const handlers = UiRpcs.toLayer(
 
           return yield* runs
             .create({ project, event, sha })
-            .pipe(Effect.mapError((e) => new Refused({ reason: e.message })));
+            .pipe(Effect.mapError((e) => Refused.make({ reason: e.message })));
         }),
       audit: ({ project }) =>
         enrolled.get(project) === undefined
-          ? Effect.fail(new NotFound({ what: `project ${project}` }))
+          ? Effect.fail(NotFound.make({ what: `project ${project}` }))
           : runs.audit(project),
       check: ({ repo, ref, sha, background }) =>
         Effect.gen(function* () {
           if (!ref.startsWith("calder/check/"))
-            return yield* new Refused({ reason: "checks are pushed under calder/check/" });
+            return yield* Refused.make({ reason: "checks are pushed under calder/check/" });
 
           if (ref.startsWith("calder/check/train-"))
-            return yield* new Refused({ reason: "calder/check/train- is the merge queue's" });
+            return yield* Refused.make({ reason: "calder/check/train- is the merge queue's" });
           const p = yield* enrolled.byRepo(repo, { sha });
 
-          if (p === undefined) return yield* new NotFound({ what: `a project for ${repo}` });
+          if (p === undefined) return yield* NotFound.make({ what: `a project for ${repo}` });
 
           const event: Domain.Event = {
             _tag: "Check",
@@ -525,10 +527,12 @@ export const handlers = UiRpcs.toLayer(
 
           return yield* runs
             .create({ project: p.name, event, sha })
-            .pipe(Effect.mapError((e) => new Refused({ reason: e.message })));
+            .pipe(Effect.mapError((e) => Refused.make({ reason: e.message })));
         }),
       merge: ({ project, pr }) =>
-        merges.request(project, pr).pipe(Effect.mapError((e) => new Refused({ reason: e.reason }))),
+        merges
+          .request(project, pr)
+          .pipe(Effect.mapError((e) => Refused.make({ reason: e.reason }))),
       merges: ({ project }) => merges.list(project),
       cancel: ({ runId }) =>
         Effect.gen(function* () {
@@ -537,7 +541,7 @@ export const handlers = UiRpcs.toLayer(
           if (row === undefined) return yield* unknownRun(runId);
 
           if (!["queued", "planning", "running"].includes(row.status))
-            return yield* new Refused({ reason: `run is ${row.status}` });
+            return yield* Refused.make({ reason: `run is ${row.status}` });
           yield* runs.cancel(runId, "cancelled from the UI");
         }),
       rerun: ({ runId, force }) =>
@@ -546,8 +550,8 @@ export const handlers = UiRpcs.toLayer(
           .pipe(
             Effect.mapError((e) =>
               e.message.startsWith("no run")
-                ? new NotFound({ what: runId })
-                : new Refused({ reason: e.message }),
+                ? NotFound.make({ what: runId })
+                : Refused.make({ reason: e.message }),
             ),
           ),
     };

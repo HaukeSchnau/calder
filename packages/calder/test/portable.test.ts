@@ -103,7 +103,7 @@ describe("a task that may run on another Linux system", () => {
       });
 
       expect(status).toBe("passed");
-      expect([...placements.values()].map((p) => p.remote).sort()).toEqual([false, true]);
+      expect([...placements.values()].map((p) => p.remote).toSorted()).toEqual([false, true]);
     }),
   );
 
@@ -203,7 +203,7 @@ describe("a pull request's task", () => {
         });
 
         expect(status).toBe("passed");
-        expect([...placements.values()].map((p) => p.remote).sort()).toEqual([false, true]);
+        expect([...placements.values()].map((p) => p.remote).toSorted()).toEqual([false, true]);
         // Before the agent came, the waiting task asked for a host of either system it may run on.
         expect(new Set(roused)).toEqual(new Set(["x86_64-linux", "aarch64-linux"]));
       }),

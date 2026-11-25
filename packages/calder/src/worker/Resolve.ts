@@ -157,7 +157,7 @@ export const paths = (
       case "Imports": {
         const graph = yield* graphOf(repo);
 
-        return [...(yield* graph.closure(graph.match(files.patterns), files))].sort();
+        return [...(yield* graph.closure(graph.match(files.patterns), files))].toSorted();
       }
 
       case "Union":
@@ -189,7 +189,7 @@ export const paths = (
           else seen.add(dir);
         }
 
-        return [...(yield* rootFiles(repo)), ...[...seen].sort()];
+        return [...(yield* rootFiles(repo)), ...[...seen].toSorted()];
       }
     }
   });
@@ -273,7 +273,7 @@ export const checkFiles = (project: Calder.Project, repo: RepoAt) =>
             ]),
       ];
 
-      return yield* new Calder.PlanError({
+      return yield* Calder.PlanError.make({
         message: `${what.join(" ")} Fix the path or pattern, or wrap files that may be missing in Files.optional(...).`,
       });
     }
@@ -318,7 +318,7 @@ const eachKeys = (repo: RepoAt, written: Files.Files, keyBase: string) =>
     const entries =
       each._tag === "Imports" || each._tag === "Glob"
         ? graph.match(each.patterns)
-        : [...new Set(yield* paths(repo, each))].sort();
+        : [...new Set(yield* paths(repo, each))].toSorted();
 
     const byEntry =
       each._tag === "Imports"
@@ -348,7 +348,7 @@ const eachKeys = (repo: RepoAt, written: Files.Files, keyBase: string) =>
       key: sha256({
         keyBase,
         file,
-        closure: [...closures[i]!].sort().map((p) => [p, id(p)]),
+        closure: [...closures[i]!].toSorted().map((p) => [p, id(p)]),
         data: dataKey(graph.packageOf(file)),
       }),
       always: graph.always(file),
@@ -1011,7 +1011,7 @@ const evaluator = (
 ) =>
   Effect.gen(function* () {
     const unexpected = (what: string) =>
-      new Exec.CommandFailed({
+      Exec.CommandFailed.make({
         command: `nix eval of ${flake}`,
         exitCode: 0,
         stderr: `nix eval gave ${what}`,
@@ -1128,7 +1128,7 @@ const evaluator = (
         if (bad !== null) refused.set(index, bad);
         got.push(bad === null ? derivation : null);
 
-        if (got.length < attrs.length && full()) return yield* new Stopped();
+        if (got.length < attrs.length && full()) return yield* Stopped.make();
       });
 
     const logged = (line: string) => {
@@ -1236,20 +1236,21 @@ const evaluator = (
           while (memory.budget !== null) {
             yield* Effect.sleep(memory.every);
 
-            if (full()) return yield* new Stopped();
+            if (full()) return yield* Stopped.make();
           }
         });
 
         return Effect.all([budget, heartbeat(id)], { concurrency: "unbounded", discard: true });
       },
     ).pipe(
-      Effect.catchTag("Stopped", () => Effect.succeed("over" as const)),
-      // A signal, such as the kernel's OOM killer's SIGKILL, fails the exit code rather than giving one.
-      Effect.catchTag("PlatformError", (e) =>
-        /receipt of signal/.test(String(e.cause ?? e.message))
-          ? Effect.succeed("killed" as const)
-          : Effect.fail(e),
-      ),
+      Effect.catchTags({
+        Stopped: () => Effect.succeed("over" as const),
+        // A signal, such as the kernel's OOM killer's SIGKILL, fails the exit code rather than giving one.
+        PlatformError: (e) =>
+          /receipt of signal/.test(String(e.cause ?? e.message))
+            ? Effect.succeed("killed" as const)
+            : Effect.fail(e),
+      }),
       Effect.ensuring(
         Effect.sync(() => rmSync(join(scratch, "cache"), { recursive: true, force: true })),
       ),
@@ -1274,7 +1275,7 @@ const evaluator = (
     // Killed before the flake loaded under the recorder, such as strace by a signal: the recording failed,
     // and the plan evaluates without it. Without the recorder, loading the flake outgrew the memory.
     if (exit !== 0 && exit !== "over" && !loaded && (exit !== "killed" || recorder !== undefined)) {
-      return yield* new Exec.CommandFailed({
+      return yield* Exec.CommandFailed.make({
         command: `nix eval of ${flake}`,
         exitCode: exit === "killed" ? -1 : exit,
         stderr: stderr.join("\n"),
@@ -1415,10 +1416,10 @@ const evaluate = (
       if (next === undefined || (pass.stop === "over" && pass.got.length > 0)) continue;
 
       if (pass.stop === "over" && !pass.loaded)
-        return yield* new TooLarge({ attr: loadingTheFlake, budget: memory.budget ?? 0 });
+        return yield* TooLarge.make({ attr: loadingTheFlake, budget: memory.budget ?? 0 });
 
       if (pass.stop === "over") {
-        tooLarge.set(next, new TooLarge({ attr: next, budget: memory.budget ?? 0 }));
+        tooLarge.set(next, TooLarge.make({ attr: next, budget: memory.budget ?? 0 }));
         done++;
         yield* log(tooLarge.get(next)!.message);
         continue;
@@ -1929,7 +1930,7 @@ export const ownReads = (records: Records | undefined) => {
   for (const evaluations of byFootprint.values()) {
     let before = 0;
 
-    for (const e of [...evaluations].sort((a, b) => a.count - b.count)) {
+    for (const e of [...evaluations].toSorted((a, b) => a.count - b.count)) {
       own.set(e.attr, e.count - before);
       before = e.count;
     }
@@ -2188,7 +2189,7 @@ export const resolve = (
     const refused = attrs.filter((attr) => Flake.components(attr) === null);
 
     if (refused.length > 0) {
-      return yield* new Calder.PlanError({
+      return yield* Calder.PlanError.make({
         message: `${refused.join(", ")}: not an attribute path Calder evaluates (letters, digits and _'+- per name, or those and . in double quotes)`,
       });
     }
@@ -2317,25 +2318,24 @@ export const resolve = (
                     }),
                   ),
             ),
-            Effect.mapError(
-              (e) =>
-                new Calder.PlanError({
-                  message:
-                    e._tag === "TooLarge"
-                      ? e.message
-                      : `Nix could not evaluate the dev shells ${shells.join(", ")}, which task keys include: ${
-                          e._tag === "CommandFailed"
-                            ? e.stderr.trim().split("\n").slice(-10).join("\n")
-                            : e.message
-                        }`,
-                }),
+            Effect.mapError((e) =>
+              Calder.PlanError.make({
+                message:
+                  e._tag === "TooLarge"
+                    ? e.message
+                    : `Nix could not evaluate the dev shells ${shells.join(", ")}, which task keys include: ${
+                        e._tag === "CommandFailed"
+                          ? e.stderr.trim().split("\n").slice(-10).join("\n")
+                          : e.message
+                      }`,
+              }),
             ),
           );
 
     // A spare shell too large to evaluate only keeps its tasks off that system.
     const large = [...result.tooLarge].find(([attr]) => !spares.includes(attr));
 
-    if (large !== undefined) return yield* new Calder.PlanError({ message: large[1].message });
+    if (large !== undefined) return yield* Calder.PlanError.make({ message: large[1].message });
     const evaluated = new Map([...known, ...result.derivations]);
     // Evaluated in the order a plan evaluates, so their footprints keep as much as the plan's would.
     const left = deferred.filter((attr) => !evaluated.has(attr));
@@ -2347,7 +2347,7 @@ export const resolve = (
         .map((shell) => `${shell}: ${result.errors.get(shell) || "it threw"}`)
         .join("; ");
 
-      return yield* new Calder.PlanError({
+      return yield* Calder.PlanError.make({
         message: `A dev shell did not evaluate, and task keys include it. ${why}`,
       });
     }
@@ -2379,7 +2379,7 @@ export const resolve = (
             const def = p.step.def;
 
             if (def._tag !== "Setup") return [p.name, ""] as const;
-            const inputs = (yield* paths(repo, def.inputs)).slice().sort();
+            const inputs = (yield* paths(repo, def.inputs)).slice().toSorted();
             const ids = yield* repo.objectIds(inputs);
             const shell = def.shell === undefined ? null : Flake.attrPath(def.shell, run.system);
 
@@ -2392,7 +2392,7 @@ export const resolve = (
                 command: Cmd.show(def.run),
                 keep: def.keep,
                 path: def.path,
-                env: Object.entries(def.env).sort(),
+                env: Object.entries(def.env).toSorted(),
                 platform: def.platform ?? null,
               }),
             ] as const;
@@ -2459,7 +2459,10 @@ export const resolve = (
                 },
               };
             case "Task": {
-              const inputs = [...new Set([...(yield* paths(repo, def.inputs)), ...shared])].sort();
+              const inputs = [
+                ...new Set([...(yield* paths(repo, def.inputs)), ...shared]),
+              ].toSorted();
+
               const ids = yield* repo.objectIds(inputs);
 
               const split =
@@ -2484,10 +2487,10 @@ export const resolve = (
                 toolchain,
                 setup,
                 command: describeCmd(def.run, count),
-                env: Object.entries(def.env).sort(),
+                env: Object.entries(def.env).toSorted(),
                 secrets: Object.entries(def.secrets)
                   .map(([env, ref]) => [env, ref.name])
-                  .sort(),
+                  .toSorted(),
                 // Two pull requests with the same trees must not share a preview's result. Absent otherwise,
                 // so the keys of tasks that don't read it stay what they were.
                 ...(command.pullRequest
@@ -2499,10 +2502,10 @@ export const resolve = (
                   : {
                       artifacts: Object.entries(def.artifacts)
                         .map(([env, s]) => [env, s.name])
-                        .sort(),
+                        .toSorted(),
                     }),
                 report: def.report ?? null,
-                outputs: Object.entries(def.outputs).sort(),
+                outputs: Object.entries(def.outputs).toSorted(),
                 shards: def.shards?.count ?? null,
                 platform: def.platform ?? null,
               });
