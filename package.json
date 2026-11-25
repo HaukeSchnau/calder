@@ -11,7 +11,7 @@
     "@effect/tsgo": "0.73.4",
     "@effect/vitest": "4.0.0",
     "@oxlint/plugins": "1.94.0",
-    "@schnau/tsconfig": "^0.1.0",
+    "@schnau/tsconfig": "^0.1.1",
     "@types/bun": "1.4.2",
     "tsrs": "7.1.0-beta.tsrs4",
     "vite-plus": "catalog:"

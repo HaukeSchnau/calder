@@ -16,7 +16,6 @@ let
   src = lib.fileset.toSource {
     inherit root;
     fileset = lib.fileset.difference (lib.fileset.unions [
-      ../.npmrc
       ../package.json
       ../pnpm-lock.yaml
       ../pnpm-workspace.yaml
@@ -35,7 +34,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     inherit (finalAttrs) pname version src;
     inherit (toolchain) pnpm;
     fetcherVersion = 4;
-    hash = "sha256-kC6fg4knOeZpsJAAcC35H2uUn0jA5RS9CIXYRxQXYrU=";
+    hash = "sha256-kocAx6CtHUt5yzZR78oDeBn8sWgTHKbudKuO7PGpKMs=";
   };
 
   nativeBuildInputs = [
