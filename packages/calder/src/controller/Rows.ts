@@ -43,6 +43,7 @@ export interface RunRow {
   readonly error: string | null;
   readonly trace_id: string;
   readonly span_id: string;
+  /** A fork's pull request, or a run of a bot's branch, which runs like one (Workflow.ts `RunInput.fork`). */
   readonly fork: number;
   /** Absent in rows read before migration 0016. */
   readonly planned_at?: number | null;

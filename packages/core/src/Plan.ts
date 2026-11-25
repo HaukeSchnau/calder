@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import type { Event } from "./Event.ts";
+import { describe, type Event } from "./Event.ts";
 import type { Project } from "./Calder.ts";
 import * as Files from "./Files.ts";
 import { matchesBranch, type Reuse, type Rule } from "./On.ts";
@@ -62,6 +62,11 @@ export interface Plan {
 export interface Options {
   /** Status contexts that branch protection requires, such as `calder/qa`. */
   readonly requiredChecks?: ReadonlyArray<string>;
+  /**
+   * "pr" when the controller doesn't trust the run's code, such as a push of a branch a bot pushes, which
+   * then runs like a pull request. A pull request or check is "pr" either way.
+   */
+  readonly trust?: "pr" | "trusted";
 }
 
 const fail = (message: string) => PlanError.make({ message });
@@ -156,7 +161,9 @@ export const plan = (
     const rules = project.rules.filter((rule) => matches(rule, event));
 
     const trust: "pr" | "trusted" =
-      event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
+      event._tag === "PullRequest" || event._tag === "Check" || options.trust === "pr"
+        ? "pr"
+        : "trusted";
 
     const reuse: Reuse = rules.some((r) => r.reuse === "none")
       ? "none"
@@ -216,7 +223,9 @@ export const plan = (
         return fail(
           preview
             ? `previews don't run actions with grants, but "${step.name}" is one${named}`
-            : `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them${named}`,
+            : event._tag === "PullRequest" || event._tag === "Check"
+              ? `pull-request runs don't run steps with grants or secrets, but "${step.name}" has them${named}`
+              : `this ${describe(event)} has code Calder doesn't trust, so it runs like a pull request, without steps with grants or secrets, but "${step.name}" has them${named}`,
         );
       }
 

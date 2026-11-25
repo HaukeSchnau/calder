@@ -140,7 +140,8 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
             _tag: "PullRequest",
             number,
             base: pr.base?.ref ?? "main",
-            head: pr.head?.ref ?? `pr-${number}`,
+            // Gitea's ref of the head when no branch holds it, which Calder doesn't trust (Trust.ts).
+            head: pr.head?.ref ?? `refs/pull/${number}/head`,
             fork,
           },
           sha,

@@ -1,6 +1,8 @@
 import { Domain } from "@calder-ci/api";
+import { Event } from "@calder-ci/core";
 import { Context, Deferred, Effect, FiberMap, FiberSet, Layer, Schema, Semaphore } from "effect";
 import { SqlClient } from "effect/sql";
+import { Config } from "./Config.ts";
 import * as Counters from "./Counters.ts";
 import { Gitea } from "./Gitea.ts";
 import { Live } from "./Live.ts";
@@ -9,6 +11,7 @@ import { Projects } from "./Projects.ts";
 import * as Rows from "./Rows.ts";
 import { RunsCore } from "./Runs.ts";
 import * as Telemetry from "./Telemetry.ts";
+import * as Trust from "./Trust.ts";
 
 export class RunError extends Schema.TaggedError<RunError>("calder/RunError")("RunError", {
   message: Schema.String,
@@ -18,7 +21,10 @@ export interface RunInput {
   readonly project: string;
   readonly event: Domain.Event;
   readonly sha: string;
-  /** A pull request whose head lives in another repository. */
+  /**
+   * A pull request whose head lives in another repository, or code that runs like one: `create` adds the
+   * branches a bot pushes (Trust.ts `untrusted`).
+   */
   readonly fork?: boolean;
   /** The run this one reruns, whose passed steps it takes instead of running them again. */
   readonly rerunOf?: string;
@@ -74,6 +80,7 @@ export const layer = Layer.effect(Runs)(
     const gitea = yield* Gitea;
     const live = yield* Live;
     const projects = yield* Projects;
+    const config = yield* Config;
 
     const db = <A>(effect: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
       effect.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
@@ -252,11 +259,19 @@ export const layer = Layer.effect(Runs)(
         );
 
         const event = input.event;
+        const branch = branchOf(event, project.defaultBranch);
+
+        const fork =
+          input.fork === true ||
+          Trust.untrusted(config.untrustedBranches, event, branch, project.defaultBranch);
 
         const trust: Domain.Trust =
-          event._tag === "PullRequest" || event._tag === "Check" ? "pr" : "trusted";
+          event._tag === "PullRequest" || event._tag === "Check" || fork ? "pr" : "trusted";
 
-        const branch = branchOf(event, project.defaultBranch);
+        if (fork && input.fork !== true)
+          yield* Effect.logInfo(
+            `${Event.describe(event)} of ${input.project} at ${input.sha.slice(0, 12)} runs like a fork's pull request: Calder doesn't trust ${branch} (untrustedBranches)`,
+          );
 
         const pr =
           event._tag === "PullRequest" || event._tag === "PullRequestClosed" ? event.number : null;
@@ -269,7 +284,7 @@ export const layer = Layer.effect(Runs)(
           trust, status, created_at, trace_id, span_id, fork, tree, rerun_of)
         values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
           ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
-          ${input.fork === true ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`);
+          ${fork ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`);
 
         const older = yield* db(
           Rows.replaced({ project: input.project, event, branch, pr, sha: input.sha }),

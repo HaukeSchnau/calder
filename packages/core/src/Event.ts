@@ -4,11 +4,17 @@ export const PullRequest = Schema.TaggedStruct("PullRequest", {
   number: Schema.Number,
   base: Schema.String,
   head: Schema.String,
-  /** Whether the head branch is in another repository. Unknown on older runs, which previews treat as forks. */
+  /**
+   * Whether the head branch is in another repository, or the controller runs the pull request like such a
+   * one's, as for a bot's branch. Unknown on older runs, which previews treat as forks.
+   */
   fork: Schema.optional(Schema.Boolean),
 });
 
-/** A pull request was merged or closed. Its run plans the base branch's head, so it is trusted. */
+/**
+ * A pull request was merged or closed. Its run plans the base branch's head, so it is trusted, unless the
+ * base is a branch the controller's `untrustedBranches` names.
+ */
 export const PullRequestClosed = Schema.TaggedStruct("PullRequestClosed", {
   number: Schema.Number,
   base: Schema.String,

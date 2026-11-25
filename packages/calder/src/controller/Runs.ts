@@ -478,6 +478,13 @@ export const layerCore = Layer.effect(RunsCore)(
         targetUrl: link(run.id),
       });
 
+    /** The run's event, in which a pull request that runs like a fork's is one, so its plan has no previews. */
+    const workerEvent = (run: Rows.RunRow): Domain.Event => {
+      const event = JSON.parse(run.event) as Domain.Event;
+
+      return event._tag === "PullRequest" && run.fork === 1 ? { ...event, fork: true } : event;
+    };
+
     const runInfo = (run: Rows.RunRow, pipelineDir: string): RunInfo => ({
       id: run.id,
       project: run.project,
@@ -485,7 +492,7 @@ export const layerCore = Layer.effect(RunsCore)(
       revision: run.sha,
       branch: run.branch,
       trust: run.trust,
-      event: JSON.parse(run.event) as Domain.Event,
+      event: workerEvent(run),
       flake: mirror.flake(run.project, run.sha),
       mirror: mirror.path(run.project),
       mirrors: mirror.byUrl(),
