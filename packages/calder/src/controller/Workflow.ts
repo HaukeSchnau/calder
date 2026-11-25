@@ -272,8 +272,7 @@ export const layer = Layer.effect(Runs)(
 
     yield* Effect.forEach(unfinished, (r) => start(r.id), { discard: true });
 
-    /** `create`, for a caller that holds the revision's lock (`exclusive`). */
-    const createHeld: Runs["Service"]["create"] = (input) =>
+    const create: Runs["Service"]["create"] = (input) =>
       Effect.gen(function* () {
         const project = projects.get(input.project);
 
@@ -292,28 +291,45 @@ export const layer = Layer.effect(Runs)(
         );
 
         const event = input.event;
-        const fork = yield* db(untrusted(input, project.defaultBranch));
-
-        if (fork && input.fork !== true)
-          yield* Effect.logInfo(
-            `${Event.describe(event)} of ${input.project} at ${input.sha.slice(0, 12)} runs like a fork's pull request: no webhook said someone Calder trusts pushed it`,
-          );
-
-        const trust = trustOf(event, fork);
         const branch = branchOf(event, project.defaultBranch);
 
         const pr =
           event._tag === "PullRequest" || event._tag === "PullRequestClosed" ? event.number : null;
 
         const title = pr === null ? null : yield* gitea.pullTitle(project.repo, pr);
-        const number = yield* db(Counters.next(`run:${input.project}`));
-        const id = `${input.project}-${number}`;
         const now = Date.now();
-        yield* db(sql`insert into runs (id, project, number, event, sha, branch, pr, title, commit_title, author, change_id, commit_time,
-          trust, status, created_at, trace_id, span_id, fork, tree, rerun_of)
-        values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
-          ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trust}, 'queued', ${now}, ${Telemetry.traceId()}, ${Telemetry.spanId()},
-          ${fork ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${input.rerunOf ?? null})`);
+
+        // Judged as it is written down, so a webhook that says who pushed the revision comes before, and
+        // counts, or after, and its `ensure` finds the run.
+        const { id, number, fork } = yield* db(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const fork = yield* untrusted(input, project.defaultBranch);
+              const number = yield* Counters.next(`run:${input.project}`);
+              const id = `${input.project}-${number}`;
+
+              // A run takes what the run it reruns passed only when both trust the code alike.
+              const earlier =
+                input.rerunOf === undefined
+                  ? []
+                  : yield* sql<{ fork: number }>`select fork from runs where id = ${input.rerunOf}`;
+
+              const rerunOf = earlier[0]?.fork === (fork ? 1 : 0) ? input.rerunOf! : null;
+              yield* sql`insert into runs (id, project, number, event, sha, branch, pr, title, commit_title, author, change_id, commit_time,
+                trust, status, created_at, trace_id, span_id, fork, tree, rerun_of)
+              values (${id}, ${input.project}, ${number}, ${JSON.stringify(event)}, ${input.sha}, ${branch}, ${pr}, ${title}, ${commit.title},
+                ${commit.author}, ${commit.changeId}, ${commit.timestamp}, ${trustOf(event, fork)}, 'queued', ${now}, ${Telemetry.traceId()},
+                ${Telemetry.spanId()}, ${fork ? 1 : 0}, ${commit.tree === "" ? null : commit.tree}, ${rerunOf})`;
+
+              return { id, number, fork };
+            }),
+          ),
+        );
+
+        if (fork && input.fork !== true)
+          yield* Effect.logInfo(
+            `${Event.describe(event)} of ${input.project} at ${input.sha.slice(0, 12)} runs like a fork's pull request: no webhook said someone Calder trusts pushed it`,
+          );
 
         const older = yield* db(
           Rows.replaced({ project: input.project, event, branch, pr, sha: input.sha }),
@@ -331,8 +347,8 @@ export const layer = Layer.effect(Runs)(
         return run;
       });
 
-    // Per project and revision, so a run never starts beside the webhook's or the catch-up's `ensure` that
-    // judges it, while runs of other revisions start meanwhile.
+    // Per project and revision, so the webhook's and the catch-up's `ensure` of a revision never start runs
+    // of it side by side, while runs of other revisions start meanwhile.
     const ensuring = new Map<
       string,
       { readonly key: string; readonly lock: Semaphore.Semaphore; users: number }
@@ -358,8 +374,6 @@ export const layer = Layer.effect(Runs)(
               if (entry.users === 0) ensuring.delete(entry.key);
             }),
         );
-
-    const create: Runs["Service"]["create"] = (input) => exclusive(input)(createHeld(input));
 
     /** What starts a run like `row` again; null for a run whose trust no webhook changes. */
     const again = (row: Rows.RunRow): RunInput | null => {
@@ -403,7 +417,7 @@ export const layer = Layer.effect(Runs)(
 
             if (reason === null) continue;
             yield* core.cancel(row.id, reason);
-            yield* createHeld(again(row)!).pipe(
+            yield* create(again(row)!).pipe(
               Effect.catch((e) => Effect.logError(`starting ${row.id} again failed`, e)),
             );
           }
@@ -415,13 +429,13 @@ export const layer = Layer.effect(Runs)(
 
           const found = existing[0];
 
-          if (found === undefined) return yield* createHeld(input);
+          if (found === undefined) return yield* create(input);
           const reason = yield* stale(found);
 
           if (reason === null) return Rows.run(found);
           yield* core.cancel(found.id, reason);
 
-          return yield* createHeld(input);
+          return yield* create(input);
         }),
       );
 
@@ -445,16 +459,11 @@ export const layer = Layer.effect(Runs)(
           const row = yield* db(Rows.loadRun(runId));
 
           if (row === undefined) return yield* RunError.make({ message: `no run ${runId}` });
-          // A run whose trust webhooks changed since doesn't run again as it was, nor gives a new run what
-          // it passed: a new run with the trust the revision has now runs everything.
-          const changed = (yield* stale(row)) !== null;
+          // A run whose trust webhooks changed since (`stale`) doesn't run again as it was: a new run with the
+          // trust the revision has now runs instead.
+          const changed = Effect.map(stale(row), (why) => why !== null);
 
-          if (
-            !changed &&
-            options.force !== true &&
-            row.plan !== null &&
-            row.status !== "cancelled"
-          ) {
+          if (options.force !== true && row.plan !== null && row.status !== "cancelled") {
             const reason = options.reason ?? "calder rerun";
 
             // The steps it reset run again even when the caller goes away, such as a CLI interrupted while
@@ -462,7 +471,7 @@ export const layer = Layer.effect(Runs)(
             const retried = yield* Effect.uninterruptible(
               lock(runId).withPermits(1)(
                 Effect.gen(function* () {
-                  const names = yield* core.retry(runId, reason);
+                  const names = yield* core.retry(runId, reason, { unless: changed });
 
                   if (names.length === 0) return names;
                   const entry = driving.get(runId);
@@ -478,7 +487,7 @@ export const layer = Layer.effect(Runs)(
 
             if (retried.length > 0) return Rows.run((yield* db(Rows.loadRun(runId)))!);
 
-            if (!Domain.ended.has(row.status))
+            if (!Domain.ended.has(row.status) && !(yield* changed))
               return yield* RunError.make({
                 message: `nothing of ${runId} failed so far, so there is nothing to run again yet`,
               });
@@ -491,7 +500,7 @@ export const layer = Layer.effect(Runs)(
               sha: row.sha,
               fork: row.fork === 1,
             }),
-            ...(options.force === true || changed ? {} : { rerunOf: runId }),
+            ...(options.force === true ? {} : { rerunOf: runId }),
           });
         }),
     };

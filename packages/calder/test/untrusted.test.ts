@@ -738,6 +738,32 @@ describe("a push to main", () => {
     }),
   );
 
+  it.live("by renovate gives nothing to a run of it again once the owner pushed it too", () =>
+    Effect.gen(function* () {
+      const { read } = yield* drive({
+        steps: [task("qa", [])],
+        untrusted: true,
+        seed: Effect.andThen(
+          reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
+          Rows.pushed("app", "sha", false),
+        ),
+        meanwhile: Effect.gen(function* () {
+          yield* ended("app-2");
+          yield* Rows.pushed("app", "sha", true);
+          yield* (yield* Runs).rerun("app-2").pipe(Effect.orDie);
+        }),
+        read: reading(
+          (sql) => sql`select id, trust, fork, rerun_of from runs where sha = 'sha' order by id`,
+        ),
+      });
+
+      expect(read).toEqual([
+        { id: "app-2", trust: "pr", fork: 1, rerun_of: null },
+        { id: "app-3", trust: "trusted", fork: 0, rerun_of: null },
+      ]);
+    }),
+  );
+
   it.live("isn't run again in place as trusted once a webhook said renovate pushed it", () =>
     Effect.gen(function* () {
       const { read } = yield* drive({
@@ -828,7 +854,7 @@ describe("a push to main", () => {
   );
 
   it.live(
-    "by renovate starts a closed pull request's run of it again like a fork's, which judged it as the webhook came",
+    "by renovate, said while a closed pull request's run of it starts, makes that run like a fork's",
     () =>
       Effect.gen(function* () {
         const asked = Deferred.makeUnsafe<void>();
@@ -843,8 +869,6 @@ describe("a push to main", () => {
 
         const { read } = yield* drive({
           steps: [task("qa", [])],
-          // Still running when the webhook judges the revision.
-          work: () => Effect.sleep("300 millis"),
           seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
           // Gitea answers for the title once the push's webhook judged the revision.
           pullTitle: Deferred.succeed(asked, undefined).pipe(
@@ -865,10 +889,9 @@ describe("a push to main", () => {
               runs.ensure({ ...input, sha: "next" }).pipe(Effect.orDie),
             );
 
-            yield* Effect.sleep("50 millis");
+            yield* Fiber.join(webhook);
             yield* Deferred.succeed(answer, undefined);
             yield* Fiber.join(closing);
-            yield* Fiber.join(webhook);
           }),
           read: reading(
             (sql) => sql`select id, event, trust, fork from runs where sha = 'next' order by id`,
@@ -876,9 +899,8 @@ describe("a push to main", () => {
         });
 
         expect(read).toEqual([
-          { id: "app-3", event: JSON.stringify(closed), trust: "trusted", fork: 0 },
+          { id: "app-3", event: JSON.stringify(input.event), trust: "pr", fork: 1 },
           { id: "app-4", event: JSON.stringify(closed), trust: "pr", fork: 1 },
-          { id: "app-5", event: JSON.stringify(input.event), trust: "pr", fork: 1 },
         ]);
       }),
   );
@@ -1021,6 +1043,27 @@ describe("the nightly audit", () => {
       expect(yield* audit({ planning: Rows.pushed("app", "head", false) })).toEqual({
         pools: ["trusted"],
         wrong: [],
+      });
+    }),
+  );
+});
+
+describe("a pull request that runs like a fork's", () => {
+  it.live("is a fork's to its plan, which so leaves out the previews", () =>
+    Effect.gen(function* () {
+      const { planJob } = yield* drive({
+        steps: [task("qa", [])],
+        event: { _tag: "PullRequest", number: 7, base: "main", head: "feature", fork: false },
+        untrusted: true,
+        unplanned: true,
+      });
+
+      expect(planJob?.run.event).toEqual({
+        _tag: "PullRequest",
+        number: 7,
+        base: "main",
+        head: "feature",
+        fork: true,
       });
     }),
   );

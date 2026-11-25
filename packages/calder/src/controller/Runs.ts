@@ -128,6 +128,8 @@ export class RunsCore extends Context.Service<
         readonly only?: ReadonlyArray<string>;
         /** Neither counts as a retry of the run nor tells Gitea and the step's log, such as for a step the driver runs again itself. */
         readonly quiet?: boolean;
+        /** Checked as the run reopens, in the same transaction: when it holds, the run stays as it ended. */
+        readonly unless?: Effect.Effect<boolean>;
       },
     ) => Effect.Effect<ReadonlyArray<string>>;
     /** Blocked steps none of whose dependencies failed, died or is blocked any more, such as after a retry passed. */
@@ -3728,7 +3730,11 @@ export const layerCore = Layer.effect(RunsCore)(
     const retry = (
       runId: string,
       reason: string,
-      options: { readonly only?: ReadonlyArray<string>; readonly quiet?: boolean } = {},
+      options: {
+        readonly only?: ReadonlyArray<string>;
+        readonly quiet?: boolean;
+        readonly unless?: Effect.Effect<boolean>;
+      } = {},
     ) =>
       Effect.gen(function* () {
         const run = yield* db(Rows.loadRun(runId));
@@ -3797,7 +3803,8 @@ export const layerCore = Layer.effect(RunsCore)(
                 (r) => names.includes(r.name) && Rows.terminal(r.status),
               );
 
-              if (rows.length === 0) return [];
+              if (rows.length === 0 || (options.unless !== undefined && (yield* options.unless)))
+                return [];
 
               const reopened =
                 yield* sql`update runs set status = 'running', finished_at = null, error = null,
@@ -3900,14 +3907,11 @@ export const layerCore = Layer.effect(RunsCore)(
 
         // Its ci.ts plans in the trusted pool, and what it finds changes trusted records: so not of a head a
         // webhook said someone Calder doesn't trust pushed (Workflow.ts `untrusted`), also while it waited.
-        const revoked = Effect.gen(function* () {
-          if ((yield* db(Rows.pushedTrusted(project, sha))) !== false) return false;
-          yield* Effect.logWarning(
-            `the audit of ${project} skipped ${sha.slice(0, 12)}: someone Calder doesn't trust pushed it`,
-          );
+        const revoked = Effect.map(db(Rows.pushedTrusted(project, sha)), (said) => said === false);
 
-          return true;
-        });
+        const skipped = Effect.logWarning(
+          `the audit of ${project} skipped ${sha.slice(0, 12)}: someone Calder doesn't trust pushed it`,
+        ).pipe(Effect.as([]));
 
         yield* mirror.fetch(project);
         const dir = yield* mirror.pipelineDir(project, sha);
@@ -3954,7 +3958,7 @@ export const layerCore = Layer.effect(RunsCore)(
           }),
         );
 
-        if (ran === null || (yield* revoked)) return [];
+        if (ran === null) return yield* skipped;
         const { result } = ran;
 
         if (result._tag !== "Planned") {
@@ -3967,27 +3971,47 @@ export const layerCore = Layer.effect(RunsCore)(
 
         const mismatches = result.plan.mismatches ?? [];
 
-        for (const m of mismatches) {
-          // The runs whose plans took this record, such as deploys that may have shipped the wrong derivation.
-          const used =
-            m.record === undefined
-              ? []
-              : yield* db(sql<{ run_id: string }>`select run_id from run_records
-          where evaluation = ${m.record} order by run_id`);
+        // With the check that no webhook said someone else pushed the head meanwhile, in one transaction.
+        const noted = yield* db(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              if ((yield* Rows.pushedTrusted(project, sha)) === false) return null;
 
-          // Until its footprint changes, the attribute isn't recorded again: it would be wrong again.
-          if (m.record !== undefined) {
-            yield* db(sql`insert into record_blocks (project, attr, digest) select project, attr, digest from evaluations
-            where id = ${m.record} on conflict do nothing`);
-          }
+              const noted: Array<{ m: (typeof mismatches)[number]; used: ReadonlyArray<string> }> =
+                [];
 
-          yield* db(sql`delete from evaluations where project = ${project} and attr = ${m.attr}`);
-          yield* db(sql`insert into audit_mismatches (project, attr, revision, detail, at)
-          values (${project}, ${m.attr}, ${sha}, ${JSON.stringify({ ...m, runs: used.map((u) => u.run_id) })}, ${Date.now()})`);
+              for (const m of mismatches) {
+                // The runs whose plans took this record, such as deploys that may have shipped the wrong derivation.
+                const used =
+                  m.record === undefined
+                    ? []
+                    : yield* sql<{ run_id: string }>`select run_id from run_records
+                where evaluation = ${m.record} order by run_id`;
+
+                // Until its footprint changes, the attribute isn't recorded again: it would be wrong again.
+                if (m.record !== undefined) {
+                  yield* sql`insert into record_blocks (project, attr, digest) select project, attr, digest from evaluations
+                  where id = ${m.record} on conflict do nothing`;
+                }
+
+                yield* sql`delete from evaluations where project = ${project} and attr = ${m.attr}`;
+                yield* sql`insert into audit_mismatches (project, attr, revision, detail, at)
+                values (${project}, ${m.attr}, ${sha}, ${JSON.stringify({ ...m, runs: used.map((u) => u.run_id) })}, ${Date.now()})`;
+                noted.push({ m, used: used.map((u) => u.run_id) });
+              }
+
+              return noted;
+            }),
+          ),
+        );
+
+        if (noted === null) return yield* skipped;
+
+        for (const { m, used } of noted) {
           // infra's CalderFootprintRecordWrong alert matches this line (modules/features/calder/alerts.nix).
           yield* Effect.logError(
             `footprint record wrong: ${project} ${m.attr} at ${sha.slice(0, 12)} evaluated to ${m.evaluated?.drv ?? "nothing"} where its ` +
-              `record said ${m.recorded?.drv ?? "nothing"}; runs that took it: ${used.map((u) => u.run_id).join(", ") || "none"}; ` +
+              `record said ${m.recorded?.drv ?? "nothing"}; runs that took it: ${used.join(", ") || "none"}; ` +
               `the fresh evaluation also read ${m.missed.join(", ") || "nothing the record didn't"}`,
           );
         }
