@@ -6,6 +6,7 @@ import { Closes } from "./Closes.ts";
 import { Config } from "./Config.ts";
 import { Mirror } from "./Mirror.ts";
 import { Projects } from "./Projects.ts";
+import * as Trust from "./Trust.ts";
 import { Runs } from "./Workflow.ts";
 
 interface Payload {
@@ -18,6 +19,7 @@ interface Payload {
     readonly closed_at?: string | null;
     readonly head?: {
       readonly ref?: string;
+      readonly label?: string;
       readonly sha?: string;
       readonly repo?: { readonly full_name?: string };
     };
@@ -140,8 +142,7 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
             _tag: "PullRequest",
             number,
             base: pr.base?.ref ?? "main",
-            // Gitea's ref of the head when no branch holds it, which Calder doesn't trust (Trust.ts).
-            head: pr.head?.ref ?? `refs/pull/${number}/head`,
+            head: Trust.head(number, pr.head),
             fork,
           },
           sha,

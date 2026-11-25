@@ -234,11 +234,38 @@ export const layer = Layer.effect(Runs)(
         return FiberMap.run(drivers, runId, drive(runId, entry)).pipe(Effect.asVoid);
       });
 
-    // A restart interrupted these; their steps that were running start over. Cancelled ones only finish.
-    const unfinished = yield* db(sql<{ id: string }>`select id from runs
+    /**
+     * Why Calder wouldn't trust a run it trusted when it started (`create`), such as a run of renovate's
+     * branch from before `untrustedBranches` named it; null when it still would.
+     */
+    const distrusted = (row: Rows.RunRow) => {
+      const project = projects.get(row.project);
+
+      if (row.fork === 1 || project === undefined) return null;
+      const event = JSON.parse(row.event) as Domain.Event;
+      const branch = branchOf(event, project.defaultBranch);
+
+      return Trust.untrusted(config.untrustedBranches, event, branch, project.defaultBranch)
+        ? `Calder no longer trusts ${branch} (untrustedBranches)`
+        : null;
+    };
+
+    // A restart interrupted these; their steps that were running start over, unless Calder no longer
+    // trusts the run's code. Cancelled ones only finish.
+    const unfinished = yield* db(sql<Rows.RunRow>`select * from runs
     where status in ('queued', 'planning', 'running') or (status = 'cancelled' and finished_at is null) order by created_at`);
 
-    yield* Effect.forEach(unfinished, (r) => start(r.id), { discard: true });
+    yield* Effect.forEach(
+      unfinished,
+      (r) => {
+        const why = distrusted(r);
+
+        return (why === null ? Effect.void : core.cancel(r.id, why)).pipe(
+          Effect.andThen(start(r.id)),
+        );
+      },
+      { discard: true },
+    );
 
     const create: Runs["Service"]["create"] = (input) =>
       Effect.gen(function* () {
@@ -343,7 +370,13 @@ export const layer = Layer.effect(Runs)(
 
           if (row === undefined) return yield* RunError.make({ message: `no run ${runId}` });
 
-          if (options.force !== true && row.plan !== null && row.status !== "cancelled") {
+          // A run whose code Calder no longer trusts doesn't run again as it was: a new run of it does.
+          if (
+            options.force !== true &&
+            row.plan !== null &&
+            row.status !== "cancelled" &&
+            distrusted(row) === null
+          ) {
             const reason = options.reason ?? "calder rerun";
 
             // The steps it reset run again even when the caller goes away, such as a CLI interrupted while

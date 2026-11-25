@@ -13,11 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vite-plus/test";
 import { Closes } from "../src/controller/Closes.ts";
+import { Runs } from "../src/controller/Workflow.ts";
 import * as Rows from "../src/controller/Rows.ts";
 import * as Webhook from "../src/controller/Webhook.ts";
 import type { Job, PlannedStep } from "../src/Protocol.ts";
 import * as Main from "../src/worker/Main.ts";
 import { drive, step, unused } from "./drive.ts";
+import { insertRun, insertStep } from "./sqlite.ts";
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
@@ -174,7 +176,9 @@ describe("Gitea's webhook of a pull request", () => {
     "from a branch the controller's untrustedBranches names is a fork's, to its plan too, which so has no previews",
     () =>
       Effect.gen(function* () {
-        expect(yield* hooked(pull({ ref: "renovate/toolchain" }))).toMatchObject({
+        expect(
+          yield* hooked(pull({ ref: "renovate/toolchain", label: "renovate/toolchain" })),
+        ).toMatchObject({
           run: [{ trust: "pr", fork: 1, status: "passed" }],
           jobs: [
             { job: "plan", pool: "fork" },
@@ -188,7 +192,7 @@ describe("Gitea's webhook of a pull request", () => {
 
   it.live("from another branch is a same-repo pull request's", () =>
     Effect.gen(function* () {
-      expect(yield* hooked(pull({ ref: "feature" }))).toMatchObject({
+      expect(yield* hooked(pull({ ref: "feature", label: "feature" }))).toMatchObject({
         run: [{ trust: "pr", fork: 0, status: "passed" }],
         jobs: [
           { job: "plan", pool: "pr" },
@@ -200,13 +204,16 @@ describe("Gitea's webhook of a pull request", () => {
     }),
   );
 
-  // Anyone who may open a pull request may push one with Gitea's AGit flow, under a head they name.
+  // Anyone who may open a pull request may push one with Gitea's AGit flow, under a topic they name.
+  // Gitea blanks its label, and its list of pull requests names a branch the topic shares a name with.
   it.live("whose head is no branch, as with Gitea's AGit flow, is a fork's", () =>
     Effect.gen(function* () {
-      expect(yield* hooked(pull({ ref: "refs/pull/7/head" }))).toMatchObject({
-        run: [{ trust: "pr", fork: 1 }],
-        event: { fork: true },
-      });
+      for (const ref of ["refs/pull/7/head", "feature"]) {
+        expect(yield* hooked(pull({ ref, label: "" }))).toMatchObject({
+          run: [{ trust: "pr", fork: 1 }],
+          event: { head: "refs/pull/7/head", fork: true },
+        });
+      }
     }),
   );
 
@@ -257,6 +264,66 @@ describe("the worker's plan of a push the controller doesn't trust", () => {
         ),
       });
       expect(yield* planned("trusted")).toMatchObject({ _tag: "Planned" });
+    }),
+  );
+});
+
+describe("a run of renovate's branch that Calder trusted before untrustedBranches named it", () => {
+  const renovate = { _tag: "Push", branch: "renovate/toolchain" } as const;
+
+  it.live("is cancelled when the controller starts, rather than run on as trusted", () =>
+    Effect.gen(function* () {
+      const { status, handed } = yield* drive({
+        steps: [task("qa", [])],
+        event: renovate,
+        untrustedBranches: ["renovate/**"],
+      });
+
+      expect(status).toBe("cancelled");
+      expect(handed.filter((h) => h.run === "app-2")).toEqual([]);
+    }),
+  );
+
+  it.live("runs again as a new run like a fork's, not in place", () =>
+    Effect.gen(function* () {
+      const { read, handed } = yield* drive({
+        steps: [task("qa", [])],
+        untrustedBranches: ["renovate/**"],
+        seed: Effect.gen(function* () {
+          yield* insertRun("app-9", {
+            at: 3,
+            event: JSON.stringify(renovate),
+            branch: "renovate/toolchain",
+            sha: "sha",
+            status: "failed",
+          });
+          yield* insertStep("app-9", "qa", { status: "failed" });
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`insert into counters (name, value) values ('run:app', 9)`;
+        }),
+        meanwhile: Effect.gen(function* () {
+          yield* (yield* Runs).rerun("app-9");
+
+          yield* Rows.loadRun("app-10").pipe(
+            Effect.repeat({
+              until: (r) => r !== undefined && Domain.ended.has(r.status),
+              schedule: Schedule.spaced("10 millis"),
+            }),
+            Effect.timeout("5 seconds"),
+          );
+        }).pipe(Effect.orDie),
+        read: Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) =>
+            sql`select id, trust, fork, status from runs where id in ('app-9', 'app-10') order by number`,
+        ),
+      });
+
+      expect(read).toEqual([
+        { id: "app-9", trust: "trusted", fork: 0, status: "failed" },
+        { id: "app-10", trust: "pr", fork: 1, status: "passed" },
+      ]);
+      expect(handed.filter((h) => h.run === "app-9")).toEqual([]);
     }),
   );
 });

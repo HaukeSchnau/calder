@@ -316,8 +316,11 @@ pull request: a push, a pull request from it, a closed pull request into it and 
 the fork pool, no `secrets` or `defaultBranchSecrets`, no deploy lease and no previews; its plan refuses
 steps with grants or secrets, as a pull request's does; it records nothing, and no other run takes its
 results or plan. So does a pull request whose head is no branch of the repository, such as one pushed with
-Gitea's AGit flow, which anyone who may open a pull request can. A rule that doesn't parse, or that a
-JavaScript regexp can't read as Go's does, makes every branch but the default one the bot's. The default
+Gitea's AGit flow, which anyone who may open a pull request can, and whose `label` Gitea leaves blank. A
+rule that doesn't parse, or that a JavaScript regexp can't read as Go's does, makes every branch but the
+default one the bot's; in a plain name, a character other than ASCII matches any. A run Calder trusted
+when it started but no longer would, such as one from before `untrustedBranches` named its branch, is
+cancelled when the controller starts, and running it again starts a new run like a fork's. The default
 branch is never the bot's. Every other branch is trusted, so the repository's branch protection must let
 the bot push only the branches `untrustedBranches` names, and only the trusted push every other branch.
 The controller logs each run it doesn't trust.

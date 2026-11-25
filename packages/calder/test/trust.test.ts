@@ -1,6 +1,6 @@
 import type { Domain } from "@calder-ci/api";
 import { describe, expect, it } from "@effect/vitest";
-import { matcher, untrusted } from "../src/controller/Trust.ts";
+import { head, matcher, untrusted } from "../src/controller/Trust.ts";
 
 describe("a rule of Gitea's branch protection", () => {
   // As Gitea v28.3.0 matches them (models/git/protected_branch.go `Match`).
@@ -34,6 +34,9 @@ describe("a rule of Gitea's branch protection", () => {
     ["renovate/**", "renovate/a\u2028b", true],
     ["main", "MAIN", true],
     ["main", "main2", false],
+    // Go's strings.EqualFold folds ſ to s.
+    ["deps", "dep\u017f", true],
+    ["deps", "dep", false],
     ["release-1.0", "release-1x0", false],
   ];
 
@@ -58,6 +61,11 @@ describe("a rule of Gitea's branch protection", () => {
       expect(matcher(rule)).toBeUndefined();
     });
   }
+
+  it("doesn't parse beyond 255 characters, which Go's regexp may nest too deep to compile", () => {
+    expect(matcher(`${"{".repeat(300)}a${"}".repeat(300)}`)).toBeUndefined();
+    expect(matcher(`${"{".repeat(100)}a${"}".repeat(100)}`)?.("a")).toBe(true);
+  });
 });
 
 describe("a run's code is a bot's", () => {
@@ -90,5 +98,14 @@ describe("a run's code is a bot's", () => {
   it("when a pull request's head is no branch, as with Gitea's AGit flow", () => {
     expect(untrusted([], pull("refs/pull/7/head"), "refs/pull/7/head", "main")).toBe(true);
     expect(untrusted([], pull("feature"), "feature", "main")).toBe(false);
+  });
+});
+
+describe("a pull request's head", () => {
+  it("is its branch, or its ref when Gitea blanks the label, as for an AGit pull request", () => {
+    expect(head(7, { ref: "feature", label: "feature" })).toBe("feature");
+    expect(head(7, { ref: "feature", label: "" })).toBe("refs/pull/7/head");
+    expect(head(7, { ref: "feature" })).toBe("refs/pull/7/head");
+    expect(head(7, undefined)).toBe("refs/pull/7/head");
   });
 });

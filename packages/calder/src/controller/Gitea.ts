@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Config } from "./Config.ts";
+import * as Trust from "./Trust.ts";
 
 export type StatusState = "pending" | "success" | "error" | "failure" | "warning";
 
@@ -19,6 +20,7 @@ const OpenPull = Schema.Struct({
   number: Schema.Number,
   head: Schema.Struct({
     ref: Schema.String,
+    label: Schema.optional(Schema.String),
     sha: Schema.String,
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
   }),
@@ -148,6 +150,7 @@ export class Gitea extends Context.Service<
       ReadonlyArray<{
         readonly number: number;
         readonly base: string;
+        /** The head branch, or `refs/pull/<n>/head` when no branch holds it (Trust.ts `head`). */
         readonly head: string;
         readonly sha: string;
         /** The head lives in another repository. */
@@ -292,7 +295,7 @@ export const layer = Layer.effect(Gitea)(
             pulls.map((p) => ({
               number: p.number,
               base: p.base.ref,
-              head: p.head.ref,
+              head: Trust.head(p.number, p.head),
               sha: p.head.sha,
               fork: p.head.repo?.full_name !== p.base.repo?.full_name,
             })),

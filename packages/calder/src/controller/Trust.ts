@@ -6,12 +6,17 @@ import type { Domain } from "@calder-ci/api";
  * that branch regardless of case, a glob as Gitea compiles it with `/` as the separator. `*` and `?`
  * stop at `/`, `**` doesn't, `[a-z]` and `[!a-z]` are character classes, `{a,b}` is either, `\` escapes
  * the next character. Undefined for a glob Gitea doesn't compile or that this doesn't translate exactly,
- * such as a POSIX class `[[:alpha:]]` or an escape `\d` that Go's regexp reads as a class.
+ * such as a POSIX class `[[:alpha:]]`, an escape `\d` that Go's regexp reads as a class, or one longer
+ * than 255 characters, which could nest deeper than Go's regexp allows.
  */
 export const matcher = (rule: string): ((branch: string) => boolean) | undefined => {
-  if (!/[*?\\[\]{}]/.test(rule)) return (branch) => branch.toLowerCase() === rule.toLowerCase();
-  // By code point, as Gitea's compiler walks Go's runes.
-  const source = translate(Array.from(rule));
+  // By code point, as Gitea walks Go's runes.
+  const chars = Array.from(rule);
+
+  if (!/[*?\\[\]{}]/.test(rule)) return (branch) => folded(chars, Array.from(branch));
+
+  if (chars.length > 255) return undefined;
+  const source = translate(chars);
 
   if (source === undefined) return undefined;
 
@@ -24,6 +29,24 @@ export const matcher = (rule: string): ((branch: string) => boolean) | undefined
     return undefined;
   }
 };
+
+/**
+ * Whether a plain rule matches a branch as Go's `strings.EqualFold` does, rune by rune. Its folding of
+ * other characters than ASCII, such as `ſ` to `s`, JavaScript can't do, so a non-ASCII rune counts as a
+ * match, which errs towards a bot's branch.
+ */
+const folded = (rule: ReadonlyArray<string>, branch: ReadonlyArray<string>) =>
+  rule.length === branch.length &&
+  rule.every((r, i) => {
+    const b = branch[i]!;
+
+    return (
+      r === b ||
+      !/^[\0-\x7f]$/.test(r) ||
+      !/^[\0-\x7f]$/.test(b) ||
+      r.toLowerCase() === b.toLowerCase()
+    );
+  });
 
 // Characters a regexp with the `u` flag reads as syntax outside a character class, and inside one.
 const syntax = new Set("^$\\.*+?()[]{}|/");
@@ -113,8 +136,7 @@ const translate = (chars: ReadonlyArray<string>) => {
  * the rest. A run of a branch one of them matches runs like a fork's pull request: a push's, a pull
  * request's of its head and a closed pull request's of its base, also a manual run's. The default branch
  * is never the bot's. A rule that doesn't parse makes every other branch the bot's, and so does a pull
- * request whose head is no branch of the repository, such as Gitea's AGit flow, where anyone who may
- * open a pull request names it (`refs/pull/<n>/head`).
+ * request whose head is no branch of the repository (`head`).
  */
 export const untrusted = (
   untrustedBranches: ReadonlyArray<string>,
@@ -128,3 +150,17 @@ export const untrusted = (
 
   return untrustedBranches.some((rule) => matcher(rule)?.(branch) ?? true);
 };
+
+/**
+ * The head of pull request `number` as Calder judges it: its branch, or Gitea's `refs/pull/<n>/head` when
+ * no branch holds it. That is an AGit pull request, which anyone who may open one pushes to
+ * `refs/for/<base>/<topic>`. Gitea blanks its `label`, and where a branch is named like the topic, its
+ * list of pull requests gives that branch as `ref` beside the pull request's own `sha`.
+ */
+export const head = (
+  number: number,
+  given: { readonly ref?: string | undefined; readonly label?: string | undefined } | undefined,
+) =>
+  given?.ref === undefined || given.label === undefined || given.label === ""
+    ? `refs/pull/${number}/head`
+    : given.ref;
