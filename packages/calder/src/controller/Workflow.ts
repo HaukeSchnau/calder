@@ -272,7 +272,8 @@ export const layer = Layer.effect(Runs)(
 
     yield* Effect.forEach(unfinished, (r) => start(r.id), { discard: true });
 
-    const create: Runs["Service"]["create"] = (input) =>
+    /** `create`, for a caller that holds the revision's lock (`exclusive`). */
+    const createHeld: Runs["Service"]["create"] = (input) =>
       Effect.gen(function* () {
         const project = projects.get(input.project);
 
@@ -330,16 +331,20 @@ export const layer = Layer.effect(Runs)(
         return run;
       });
 
-    // Per project and revision, so the catch-up's run and a webhook's that overrules it never start side by
-    // side, while runs of other revisions start meanwhile.
-    const ensuring = new Map<string, { readonly lock: Semaphore.Semaphore; users: number }>();
+    // Per project and revision, so a run never starts beside the webhook's or the catch-up's `ensure` that
+    // judges it, while runs of other revisions start meanwhile.
+    const ensuring = new Map<
+      string,
+      { readonly key: string; readonly lock: Semaphore.Semaphore; users: number }
+    >();
 
     const exclusive =
-      (key: string) =>
+      (input: RunInput) =>
       <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         Effect.acquireUseRelease(
           Effect.sync(() => {
-            const entry = ensuring.get(key) ?? { lock: Semaphore.makeUnsafe(1), users: 0 };
+            const key = `${input.project}|${input.sha}`;
+            const entry = ensuring.get(key) ?? { key, lock: Semaphore.makeUnsafe(1), users: 0 };
             entry.users++;
             ensuring.set(key, entry);
 
@@ -350,9 +355,11 @@ export const layer = Layer.effect(Runs)(
             Effect.sync(() => {
               entry.users--;
 
-              if (entry.users === 0) ensuring.delete(key);
+              if (entry.users === 0) ensuring.delete(entry.key);
             }),
         );
+
+    const create: Runs["Service"]["create"] = (input) => exclusive(input)(createHeld(input));
 
     /** What starts a run like `row` again; null for a run whose trust no webhook changes. */
     const again = (row: Rows.RunRow): RunInput | null => {
@@ -368,33 +375,35 @@ export const layer = Layer.effect(Runs)(
       };
     };
 
+    /** Why `row`'s run trusts its code otherwise than a run `again` starts now would, null when it doesn't. */
+    const stale = (row: Rows.RunRow) =>
+      Effect.gen(function* () {
+        const of = again(row);
+        const defaultBranch = projects.get(row.project)?.defaultBranch;
+
+        if (of === null || defaultBranch === undefined) return null;
+        const fork = yield* db(untrusted(of, defaultBranch));
+
+        return row.fork === (fork ? 1 : 0)
+          ? null
+          : `a webhook said who pushed ${row.sha.slice(0, 12)}, so it runs again ${fork ? "like a fork's pull request" : "as trusted"}`;
+      });
+
     const ensure: Runs["Service"]["ensure"] = (input) =>
-      exclusive(`${input.project}|${input.sha}`)(
+      exclusive(input)(
         Effect.gen(function* () {
-          const defaultBranch = projects.get(input.project)?.defaultBranch;
-
-          if (defaultBranch === undefined) return yield* create(input);
           const event = JSON.stringify(input.event);
-
-          /** Whether `row` trusts the code otherwise than `create` of `of` would now. */
-          const stale = (row: Rows.RunRow, of: RunInput) =>
-            Effect.map(db(untrusted(of, defaultBranch)), (fork) =>
-              row.fork === (fork ? 1 : 0)
-                ? null
-                : `a webhook said who pushed ${input.sha.slice(0, 12)}, so it runs again ${fork ? "like a fork's pull request" : "as trusted"}`,
-            );
 
           const running =
             yield* db(sql<Rows.RunRow>`select * from runs where project = ${input.project}
           and sha = ${input.sha} and event != ${event} and status in ('queued', 'planning', 'running') order by number`);
 
           for (const row of running) {
-            const of = again(row);
-            const reason = of === null ? null : yield* stale(row, of);
+            const reason = yield* stale(row);
 
-            if (of === null || reason === null) continue;
+            if (reason === null) continue;
             yield* core.cancel(row.id, reason);
-            yield* create(of).pipe(
+            yield* createHeld(again(row)!).pipe(
               Effect.catch((e) => Effect.logError(`starting ${row.id} again failed`, e)),
             );
           }
@@ -406,13 +415,13 @@ export const layer = Layer.effect(Runs)(
 
           const found = existing[0];
 
-          if (found === undefined) return yield* create(input);
-          const reason = yield* stale(found, input);
+          if (found === undefined) return yield* createHeld(input);
+          const reason = yield* stale(found);
 
           if (reason === null) return Rows.run(found);
           yield* core.cancel(found.id, reason);
 
-          return yield* create(input);
+          return yield* createHeld(input);
         }),
       );
 
@@ -436,8 +445,16 @@ export const layer = Layer.effect(Runs)(
           const row = yield* db(Rows.loadRun(runId));
 
           if (row === undefined) return yield* RunError.make({ message: `no run ${runId}` });
+          // A run whose trust webhooks changed since doesn't run again as it was, nor gives a new run what
+          // it passed: a new run with the trust the revision has now runs everything.
+          const changed = (yield* stale(row)) !== null;
 
-          if (options.force !== true && row.plan !== null && row.status !== "cancelled") {
+          if (
+            !changed &&
+            options.force !== true &&
+            row.plan !== null &&
+            row.status !== "cancelled"
+          ) {
             const reason = options.reason ?? "calder rerun";
 
             // The steps it reset run again even when the caller goes away, such as a CLI interrupted while
@@ -468,11 +485,13 @@ export const layer = Layer.effect(Runs)(
           }
 
           return yield* create({
-            project: row.project,
-            event: JSON.parse(row.event) as Domain.Event,
-            sha: row.sha,
-            fork: row.fork === 1,
-            ...(options.force === true ? {} : { rerunOf: runId }),
+            ...(again(row) ?? {
+              project: row.project,
+              event: JSON.parse(row.event) as Domain.Event,
+              sha: row.sha,
+              fork: row.fork === 1,
+            }),
+            ...(options.force === true || changed ? {} : { rerunOf: runId }),
           });
         }),
     };

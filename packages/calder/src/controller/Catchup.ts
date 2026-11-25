@@ -35,11 +35,11 @@ export const make = Effect.gen(function* () {
       const key = `${project}|${sha}|${JSON.stringify(run.event)}|${pushed}`;
 
       if (seen.has(key)) return;
-      seen.add(key);
       yield* mirror.fetch(project);
 
-      if (!(yield* mirror.hasPipeline(project, sha))) return;
-      yield* runs.ensure(run);
+      if (yield* mirror.hasPipeline(project, sha)) yield* runs.ensure(run);
+      // Once it has its run, so the next pass tries one that failed again.
+      seen.add(key);
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning(`catching up on ${project}@${sha.slice(0, 12)} failed`, cause),

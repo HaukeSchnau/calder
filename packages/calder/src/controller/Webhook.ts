@@ -184,7 +184,9 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
 
       // `sender` pushed `after`. Calder's own push there merged the default branch into the head it moved
       // from (Merges.ts `update`), which Gitea's merge commit names first and the default branch's revision
-      // second; the mirror, fetched by now, knows them.
+      // second; the mirror, fetched by now, knows them. Gitea says so to every pull request of the branch,
+      // also one into the default branch when Calder merged another base, so the revision must be the
+      // default branch's.
       const vouch =
         !fork && synchronized && payload.after !== undefined
           ? Effect.gen(function* () {
@@ -193,7 +195,15 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
                 .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
 
               const merged =
-                parents.length === 2 && parents[0] === payload.before ? parents[1]! : null;
+                parents.length === 2 &&
+                parents[0] === payload.before &&
+                (yield* mirror.contains(
+                  project,
+                  `refs/heads/${enrolled.defaultBranch}`,
+                  parents[1]!,
+                ))
+                  ? parents[1]!
+                  : null;
 
               const trusted = Trust.update(
                 yield* whom,

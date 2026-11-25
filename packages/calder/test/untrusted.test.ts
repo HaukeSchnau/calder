@@ -1,6 +1,6 @@
 import { Domain } from "@calder-ci/api";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Schedule } from "effect";
+import { Deferred, Effect, Fiber, Layer, Schedule } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { createHmac } from "node:crypto";
@@ -16,7 +16,7 @@ import { type Project, Projects } from "../src/controller/Projects.ts";
 import * as Rows from "../src/controller/Rows.ts";
 import { RunsCore } from "../src/controller/Runs.ts";
 import * as Webhook from "../src/controller/Webhook.ts";
-import { type RunInput, Runs, untrusted } from "../src/controller/Workflow.ts";
+import { RunError, type RunInput, Runs, untrusted } from "../src/controller/Workflow.ts";
 import type { PlannedStep } from "../src/Protocol.ts";
 import { config } from "./config.ts";
 import { type Drive, drive, step, unused } from "./drive.ts";
@@ -46,7 +46,8 @@ const merged = "m".repeat(40);
 /**
  * The webhook, the catch-up and the closings in front of a Gitea whose open pull requests are `open`, with
  * the controller's `trustedPushers`. Gitea names Calder's user by `self`, and the mirror a revision's
- * `parents`, by default those of main merged into `older`. Returns the runs they asked for.
+ * `parents`, by default those of main merged into `older`, and finds the second `onMain`. Returns the runs
+ * they asked for.
  */
 const world = (
   options: {
@@ -54,6 +55,10 @@ const world = (
     readonly trustedPushers?: ReadonlyArray<string>;
     readonly self?: Effect.Effect<string, string>;
     readonly parents?: ReadonlyArray<string>;
+    /** Whether the mirror finds a revision in main's history. */
+    readonly onMain?: boolean;
+    /** How many of the runs asked for fail to start, the first. */
+    readonly failing?: number;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -75,7 +80,7 @@ const world = (
         pipelineTree: unused,
         commit: unused,
         between: unused,
-        contains: unused,
+        contains: () => Effect.succeed(options.onMain ?? true),
         parents: () => Effect.succeed(options.parents ?? [older, merged]),
         pipelineDir: unused,
         flake: () => "",
@@ -88,7 +93,13 @@ const world = (
         create: (input) =>
           Effect.sync(() => void asked.push({ input })).pipe(Effect.as({} as never)),
         ensure: (input) =>
-          Effect.sync(() => void asked.push({ input })).pipe(Effect.as({} as never)),
+          Effect.suspend(() => {
+            asked.push({ input });
+
+            return asked.length <= (options.failing ?? 0)
+              ? Effect.fail(RunError.make({ message: "Gitea is down" }))
+              : Effect.succeed({} as never);
+          }),
         cancel: () => Effect.void,
         rerun: unused,
         audit: unused,
@@ -278,7 +289,15 @@ describe("a webhook says who pushed a revision", () => {
   );
 
   const pulls: ReadonlyArray<
-    [string, Seed, string, string, object, boolean | undefined, ReadonlyArray<string>?]
+    [
+      string,
+      Seed,
+      string,
+      string,
+      object,
+      boolean | undefined,
+      { readonly parents?: ReadonlyArray<string>; readonly onMain?: boolean }?,
+    ]
   > = [
     ["the owner pushed to a pull request", Effect.void, "synchronized", "schnau", {}, true],
     ["renovate pushed to one", Effect.void, "synchronized", "renovate", {}, false],
@@ -324,7 +343,17 @@ describe("a webhook says who pushed a revision", () => {
       "calder",
       {},
       false,
-      [older],
+      { parents: [older] },
+    ],
+    // Gitea says so to each pull request of the branch, also one into main when Calder merged another base.
+    [
+      "Calder merged another branch into one the owner pushed, which a pull request into main shares",
+      pushed(older, true),
+      "synchronized",
+      "calder",
+      {},
+      false,
+      { onMain: false },
     ],
     [
       "Calder merged main into one renovate pushed",
@@ -353,13 +382,13 @@ describe("a webhook says who pushed a revision", () => {
     ],
   ];
 
-  for (const [what, seed, action, sender, options, trusted, parents] of pulls) {
+  for (const [what, seed, action, sender, options, trusted, mirror = {}] of pulls) {
     it.live(
       `when ${what}: ${trusted === undefined ? "nothing" : trusted ? "trusted" : "not trusted"}`,
       () =>
         Effect.gen(function* () {
           yield* seed;
-          const { runs, layer } = yield* world(parents === undefined ? {} : { parents });
+          const { runs, layer } = yield* world(mirror);
           yield* pull(action, sender, options).pipe(Effect.provide(layer));
 
           // The event stays the pull request's, so the catch-up finds the run.
@@ -516,6 +545,23 @@ describe("the catch-up", () => {
         ]);
       }).pipe(Effect.provide(sqlite)),
   );
+
+  it.live("looks at a head again whose run failed to start", () =>
+    Effect.gen(function* () {
+      const { runs, layer } = yield* world({ failing: 1 });
+
+      yield* Effect.gen(function* () {
+        const sweep = yield* Catchup.make;
+        yield* sweep;
+        yield* sweep;
+      }).pipe(Effect.provide(layer));
+
+      expect((yield* runs(2)).map((r) => [r.input.event._tag, r.input.sha])).toEqual([
+        ["Push", "main-head"],
+        ["Push", "main-head"],
+      ]);
+    }).pipe(Effect.provide(sqlite)),
+  );
 });
 
 const file = (name: string, value: string) => {
@@ -545,6 +591,17 @@ const task = (name: string, secrets: ReadonlyArray<string>, lease = false): Plan
     ...(lease ? { lease } : {}),
   },
 });
+
+/** Waits until the run `id` ended. */
+const ended = (id: string) =>
+  Rows.loadRun(id).pipe(
+    Effect.repeat({
+      until: (r) => r !== undefined && Domain.ended.has(r.status),
+      schedule: Schedule.spaced("10 millis"),
+    }),
+    Effect.timeout("5 seconds"),
+    Effect.orDie,
+  );
 
 /** Reads what the database holds once the run's steps settled. */
 const reading = <A>(query: (sql: SqlClient.SqlClient) => Effect.Effect<A, unknown>) =>
@@ -640,6 +697,16 @@ describe("a push to main", () => {
     }),
   );
 
+  it.live(
+    "leaves the schedules as they were once a webhook said renovate pushed it while it planned",
+    () =>
+      Effect.gen(function* () {
+        expect(yield* schedules({ planning: Rows.pushed("app", "sha", false) })).toEqual([
+          { cron: "0 4 * * *" },
+        ]);
+      }),
+  );
+
   it.live("cancelled while it planned leaves the schedules as they were", () =>
     Effect.gen(function* () {
       // As `cancel` does once the plan job answered, too late to stop it.
@@ -656,21 +723,41 @@ describe("a push to main", () => {
       const { read } = yield* drive({
         steps: [task("qa", [])],
         untrusted: true,
-        seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
+        seed: Effect.andThen(
+          reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
+          Rows.pushed("app", "sha", false),
+        ),
         meanwhile: Effect.gen(function* () {
-          yield* Rows.loadRun("app-2").pipe(
-            Effect.repeat({
-              until: (r) => r?.status === "passed",
-              schedule: Schedule.spaced("10 millis"),
-            }),
-            Effect.orDie,
-          );
+          yield* ended("app-2");
           yield* (yield* Runs).rerun("app-2", { force: true }).pipe(Effect.orDie);
         }),
         read: reading((sql) => sql`select trust, fork from runs where id = 'app-3'`),
       });
 
       expect(read).toEqual([{ trust: "pr", fork: 1 }]);
+    }),
+  );
+
+  it.live("isn't run again in place as trusted once a webhook said renovate pushed it", () =>
+    Effect.gen(function* () {
+      const { read } = yield* drive({
+        steps: [task("qa", [])],
+        result: () => ({ _tag: "Failed", tag: "TaskFailed", message: "", error: null, key: null }),
+        seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
+        meanwhile: Effect.gen(function* () {
+          yield* ended("app-2");
+          yield* Rows.pushed("app", "sha", false);
+
+          // As the controller's retry of a failed deploy (Delivery.ts `converge`) would.
+          expect((yield* (yield* Runs).rerun("app-2").pipe(Effect.orDie)).id).toBe("app-3");
+        }),
+        read: reading((sql) => sql`select id, trust, fork from runs where sha = 'sha' order by id`),
+      });
+
+      expect(read).toEqual([
+        { id: "app-2", trust: "trusted", fork: 0 },
+        { id: "app-3", trust: "pr", fork: 1 },
+      ]);
     }),
   );
 
@@ -740,6 +827,62 @@ describe("a push to main", () => {
       }),
   );
 
+  it.live(
+    "by renovate starts a closed pull request's run of it again like a fork's, which judged it as the webhook came",
+    () =>
+      Effect.gen(function* () {
+        const asked = Deferred.makeUnsafe<void>();
+        const answer = Deferred.makeUnsafe<void>();
+
+        const closed = {
+          _tag: "PullRequestClosed",
+          number: 7,
+          base: "main",
+          head: "feature",
+        } as const;
+
+        const { read } = yield* drive({
+          steps: [task("qa", [])],
+          // Still running when the webhook judges the revision.
+          work: () => Effect.sleep("300 millis"),
+          seed: reading((sql) => sql`insert into counters (name, value) values ('run:app', 2)`),
+          // Gitea answers for the title once the push's webhook judged the revision.
+          pullTitle: Deferred.succeed(asked, undefined).pipe(
+            Effect.andThen(Deferred.await(answer)),
+            Effect.as("title"),
+          ),
+          meanwhile: Effect.gen(function* () {
+            const runs = yield* Runs;
+
+            const closing = yield* Effect.forkChild(
+              runs.create({ project: "app", event: closed, sha: "next" }).pipe(Effect.orDie),
+            );
+
+            yield* Deferred.await(asked);
+            yield* Rows.pushed("app", "next", false);
+
+            const webhook = yield* Effect.forkChild(
+              runs.ensure({ ...input, sha: "next" }).pipe(Effect.orDie),
+            );
+
+            yield* Effect.sleep("50 millis");
+            yield* Deferred.succeed(answer, undefined);
+            yield* Fiber.join(closing);
+            yield* Fiber.join(webhook);
+          }),
+          read: reading(
+            (sql) => sql`select id, event, trust, fork from runs where sha = 'next' order by id`,
+          ),
+        });
+
+        expect(read).toEqual([
+          { id: "app-3", event: JSON.stringify(closed), trust: "trusted", fork: 0 },
+          { id: "app-4", event: JSON.stringify(closed), trust: "pr", fork: 1 },
+          { id: "app-5", event: JSON.stringify(input.event), trust: "pr", fork: 1 },
+        ]);
+      }),
+  );
+
   it.live("takes the newest of its runs, also one that started in the same millisecond", () =>
     Effect.gen(function* () {
       const { read } = yield* drive({
@@ -789,14 +932,7 @@ describe("a push to main", () => {
           }).pipe(Effect.provideService(Closes, { close: unused, catchUp: unused }));
 
           // The webhook starts its run in the background.
-          yield* Rows.loadRun("app-3").pipe(
-            Effect.repeat({
-              until: (r) => r !== undefined && Domain.ended.has(r.status),
-              schedule: Schedule.spaced("10 millis"),
-            }),
-            Effect.timeout("5 seconds"),
-            Effect.orDie,
-          );
+          yield* ended("app-3");
         }),
         read: reading(
           (sql) =>
@@ -846,49 +982,45 @@ describe("a push to main", () => {
 });
 
 describe("the nightly audit", () => {
-  /** The pools the audit of main's head `head` planned in. */
-  const audited = (seed: Seed) =>
+  /** The pools the audit of main's head planned in, and the records it noted wrong. */
+  const audit = (options: Partial<Drive> = {}) =>
     Effect.map(
       drive({
         steps: [task("qa", [])],
         head: "head",
-        seed,
+        plan: { mismatches: [{ attr: "app", recorded: null, evaluated: null, missed: [] }] },
         meanwhile: Effect.gen(function* () {
           yield* (yield* RunsCore).audit("app");
         }),
+        read: reading((sql) => sql`select attr from audit_mismatches`),
+        ...options,
       }),
-      (r) => r.handed.filter((h) => h.job === "plan").map((h) => h.pool),
+      (r) => ({
+        pools: r.handed.filter((h) => h.job === "plan").map((h) => h.pool),
+        wrong: r.read,
+      }),
     );
 
   it.live("plans main's head in the trusted pool", () =>
     Effect.gen(function* () {
-      expect(yield* audited(Effect.void)).toEqual(["trusted"]);
+      expect(yield* audit()).toEqual({ pools: ["trusted"], wrong: [{ attr: "app" }] });
     }),
   );
 
   it.live("but not a head renovate pushed past its protection", () =>
     Effect.gen(function* () {
-      expect(yield* audited(Rows.pushed("app", "head", false))).toEqual([]);
+      expect(yield* audit({ seed: Rows.pushed("app", "head", false) })).toEqual({
+        pools: [],
+        wrong: [],
+      });
     }),
   );
-});
 
-describe("a pull request that runs like a fork's", () => {
-  it.live("is a fork's to its plan, which so leaves out the previews", () =>
+  it.live("nor keeps what it found once a webhook said so while it planned", () =>
     Effect.gen(function* () {
-      const { planJob } = yield* drive({
-        steps: [task("qa", [])],
-        event: { _tag: "PullRequest", number: 7, base: "main", head: "feature", fork: false },
-        untrusted: true,
-        unplanned: true,
-      });
-
-      expect(planJob?.run.event).toEqual({
-        _tag: "PullRequest",
-        number: 7,
-        base: "main",
-        head: "feature",
-        fork: true,
+      expect(yield* audit({ planning: Rows.pushed("app", "head", false) })).toEqual({
+        pools: ["trusted"],
+        wrong: [],
       });
     }),
   );

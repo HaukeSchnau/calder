@@ -866,8 +866,8 @@ export const layerCore = Layer.effect(RunsCore)(
           yield* rememberPushes(run, tree, spec.pushes);
 
         // The default branch's plan says which schedules exist, even when its push runs nothing. Code Calder
-        // doesn't trust planned an untrusted push's, so it says nothing, nor does a run cancelled meanwhile,
-        // such as one a webhook said that of (Workflow.ts `ensure`).
+        // doesn't trust planned an untrusted push's, so it says nothing, nor does a run cancelled meanwhile
+        // or whose revision a webhook said someone else pushed before `ensure` cancels it.
         if (
           run.trust === "trusted" &&
           event._tag === "Push" &&
@@ -877,7 +877,9 @@ export const layerCore = Layer.effect(RunsCore)(
             sql.withTransaction(
               Effect.gen(function* () {
                 const planning =
-                  yield* sql`select id from runs where id = ${runId} and status = 'planning'`;
+                  yield* sql`select id from runs where id = ${runId} and status = 'planning'
+                  and not exists (select 1 from pushed where pushed.project = runs.project and pushed.sha = runs.sha
+                    and pushed.trusted = 0)`;
 
                 if (planning.length === 0) return;
                 yield* sql`delete from schedules where project = ${run.project}`;
@@ -3896,15 +3898,16 @@ export const layerCore = Layer.effect(RunsCore)(
         const branch = p.defaultBranch;
         const sha = yield* gitea.head(p.repo, branch);
 
-        // Its ci.ts would plan in the trusted pool, and its records count as trusted: so not a head a webhook
-        // said someone Calder doesn't trust pushed (Workflow.ts `untrusted`).
-        if ((yield* db(Rows.pushedTrusted(project, sha))) === false) {
+        // Its ci.ts plans in the trusted pool, and what it finds changes trusted records: so not of a head a
+        // webhook said someone Calder doesn't trust pushed (Workflow.ts `untrusted`), also while it waited.
+        const revoked = Effect.gen(function* () {
+          if ((yield* db(Rows.pushedTrusted(project, sha))) !== false) return false;
           yield* Effect.logWarning(
             `the audit of ${project} skipped ${sha.slice(0, 12)}: someone Calder doesn't trust pushed it`,
           );
 
-          return [];
-        }
+          return true;
+        });
 
         yield* mirror.fetch(project);
         const dir = yield* mirror.pipelineDir(project, sha);
@@ -3942,10 +3945,17 @@ export const layerCore = Layer.effect(RunsCore)(
           label: `${project}'s audit`,
         };
 
-        const { result } = yield* slots.plans.with(
+        const ran = yield* slots.plans.with(
           claim,
-          jobs.run(job, { pool: "trusted", onEvent: () => Effect.void }),
+          Effect.gen(function* () {
+            if (yield* revoked) return null;
+
+            return yield* jobs.run(job, { pool: "trusted", onEvent: () => Effect.void });
+          }),
         );
+
+        if (ran === null || (yield* revoked)) return [];
+        const { result } = ran;
 
         if (result._tag !== "Planned") {
           yield* Effect.logWarning(

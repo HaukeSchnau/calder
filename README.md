@@ -326,9 +326,10 @@ default branch's head, which branch protection leaves to the trusted, is trusted
 else pushed it, and so are its schedules, its nightly audit and the closed runs of pull requests into it; an
 untrusted push's plan doesn't change the schedules, and its head isn't audited. Manual runs stay trusted. When a
 webhook says otherwise of a revision than one of its runs assumed, Calder cancels that run and starts another:
-the push's or pull request's run, and any other of the revision still running, such as a schedule's. The
-catch-up does the same from what the webhooks said, and looks at a head again once a webhook said who pushed
-it. The controller logs each run it doesn't trust.
+the push's or pull request's run, and any other of the revision still running, such as a schedule's. Running
+such a run again (`calder rerun`, or Calder retrying a failed deploy) starts a new run with the trust the
+revision has now, which takes nothing the old one passed. The catch-up does the same from what the webhooks
+said, and looks at a head again once a webhook said who pushed it. The controller logs each run it doesn't trust.
 
 `On.preview` rules run next to the pull-request rules, but only for pull requests from a branch of the
 same repository that Calder trusts, never for forks, what runs like one or `calder check`. Their tasks may

@@ -99,6 +99,8 @@ export interface Drive {
   readonly planning?: Effect.Effect<void, never, SqlClient.SqlClient>;
   /** The head Gitea names of each branch, such as the one the nightly audit plans. */
   readonly head?: string;
+  /** How Gitea answers for a pull request's title. */
+  readonly pullTitle?: Effect.Effect<string>;
   /** How long Gitea takes to take a commit status, none by default. */
   readonly statusDelay?: (
     context: string,
@@ -167,6 +169,7 @@ export const drive = ({
   meanwhile = Effect.void,
   planning = Effect.void,
   head,
+  pullTitle,
   requisites,
   rerunOf,
   placementKey,
@@ -476,7 +479,7 @@ export const drive = ({
         },
         requiredChecks: () => Effect.succeed([]),
         head: head === undefined ? unused : () => Effect.succeed(head),
-        pullTitle: unused,
+        pullTitle: pullTitle === undefined ? unused : () => pullTitle,
         comment: unused,
         dispatch: unused,
         repos: unused,
