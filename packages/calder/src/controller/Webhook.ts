@@ -14,7 +14,7 @@ interface Payload {
   readonly after?: string;
   readonly action?: string;
   readonly number?: number;
-  readonly repository?: { readonly full_name?: string; readonly default_branch?: string };
+  readonly repository?: { readonly full_name?: string };
   readonly pull_request?: {
     readonly closed_at?: string | null;
     readonly head?: {
@@ -63,9 +63,9 @@ export const handle = (request: HttpServerRequest.HttpServerRequest) =>
 
     const head = event === "push" ? payload.after : payload.pull_request?.head?.sha;
 
+    // Not the payload's default branch: whose runs get the default branch's pool is Gitea's to say.
     const enrolled = yield* projects.byRepo(payload.repository?.full_name ?? "", {
       sha: head === undefined || zero.test(head) ? undefined : head,
-      defaultBranch: payload.repository?.default_branch,
     });
 
     if (enrolled === undefined) return HttpServerResponse.text("not enrolled");

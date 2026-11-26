@@ -57,7 +57,8 @@ export interface Options {
   readonly units: string | null;
   /**
    * Runs pull requests' jobs through this command instead of systemd's units (`Sandbox`), for hosts
-   * without systemd. Trusted jobs stay child processes. Needs `units` for the jobs' directories.
+   * without systemd. Default-branch jobs stay child processes, as the agent's own user, and such a host
+   * takes no other branch's trusted jobs. Needs `units` for the jobs' directories.
    */
   readonly sandbox: string | null;
   /** The pools whose jobs it takes; null takes those the host has a group `calder-<pool>` of, or only trusted ones without `units`. */
@@ -138,27 +139,34 @@ export const startSandbox = (command: string, calder: ReadonlyArray<string>) =>
 
 /** The pools an agent takes jobs of (`Options.pools`), or why it can't take any. */
 export const poolsOf = (
-  options: Pick<Options, "units" | "pools">,
+  options: Pick<Options, "units" | "pools" | "sandbox">,
   hasGroup: (pool: Pool) => boolean = (pool) => groupId(`calder-${pool}`) !== undefined,
 ): ReadonlyArray<Pool> | string => {
+  // Without units every job runs as the agent's user, which only trusted jobs may.
   if (options.units === null) {
-    return options.pools === null || options.pools.every((pool) => !sandboxed(pool))
+    return options.pools === null || options.pools.every((pool) => pool === "trusted")
       ? ["trusted"]
-      : "pull requests' pools need --units, where their jobs get their directories";
+      : "other pools than trusted need --units, where their jobs get their directories and users";
   }
 
   const pools = options.pools ?? unitPools.filter(hasGroup);
 
-  return pools.length > 0
-    ? pools
-    : "--units needs the host's calder-pr, calder-fork or calder-trusted group, or --pools";
+  if (pools.length === 0)
+    return "--units needs the host's calder-pr, calder-fork, calder-trusted or calder-default-branch group, or --pools";
+
+  // `sandbox` runs other pools' jobs as the agent's user, the user of the steps with the default branch's
+  // secrets, so other branches' trusted code may not run there.
+  if (options.sandbox !== null && pools.includes("trusted"))
+    return "--sandbox runs trusted jobs as the agent's user, beside the default branch's: take default-branch instead of trusted";
+
+  return pools;
 };
 
 /** The host's unit that runs a job of `pool` (`calder agent --units`), like the controller's. */
 export const unitOf = (pool: Pool, job: string) => `calder-job-${pool}@${job}.service`;
 
 /** The pools an agent may have units for; it runs those whose group, `calder-<pool>`, its host has. */
-const unitPools: ReadonlyArray<Pool> = ["pr", "fork", "trusted"];
+const unitPools: ReadonlyArray<Pool> = ["pr", "fork", "trusted", "default-branch"];
 
 const systemctl = (args: ReadonlyArray<string>) => Exec.exec(["systemctl", ...args]);
 

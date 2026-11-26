@@ -38,7 +38,7 @@ const agent = (
   platform: string,
   slots: number,
   portableOnly = false,
-  pools: AgentUsage["pools"] = ["trusted"],
+  pools: AgentUsage["pools"] = ["trusted", "default-branch"],
 ): AgentUsage => ({
   name,
   platform,
@@ -232,7 +232,7 @@ const pullRequest = {
 } as const;
 
 /** The pools of an agent that starts each job in its host's unit of the job's pool (`calder agent --units`). */
-const units: AgentUsage["pools"] = ["pr", "fork", "trusted"];
+const units: AgentUsage["pools"] = ["pr", "fork", "trusted", "default-branch"];
 
 describe("a pull request's task", () => {
   it.live(
