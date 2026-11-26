@@ -23,6 +23,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -527,17 +528,24 @@ const lockedNixpkgs = (workspace: string) =>
  * again. The derivation took 0.5 s on srv-2 where the flake took 3.2 s. `nix develop` takes bash from the
  * registry's nixpkgs for a derivation and from the flake's own for a flake, so the flake's stands in for
  * the registry's. An agent's store lacks the controller's derivations, so it evaluates the flake.
+ *
+ * The shell's environment is the profile `profile`, a garbage collector root while it exists: `nix develop`
+ * keeps it alive only through its `NIX_GCROOT` variable, which Nix finds in `/proc/<pid>/environ` on Linux
+ * but not on macOS, where it reads only open files. m1's store runs below `min-free`, so every Nix command
+ * there collects garbage, and studienbuch-1649's archive lost its shell's Node halfway through.
  */
 export const inShell = (
   job: StepJob,
   workspace: string,
   shell: Flake.FlakeRef | undefined,
   argv: ReadonlyArray<string>,
+  profile: string,
 ) =>
   Effect.gen(function* () {
     if (shell === undefined) return argv;
     const attr = Flake.attrPath(shell, job.run.system);
     const drv = job.shells?.[attr];
+    const rooted = ["--profile", profile, "--command", ...argv];
 
     if (drv !== undefined && existsSync(drv)) {
       const nixpkgs = yield* lockedNixpkgs(workspace);
@@ -547,8 +555,7 @@ export const inShell = (
         "develop",
         `${drv}^*`,
         ...(nixpkgs === undefined ? [] : ["--override-flake", "nixpkgs", nixpkgs]),
-        "--command",
-        ...argv,
+        ...rooted,
       ];
     }
 
@@ -558,7 +565,7 @@ export const inShell = (
         ? `git+file://${workspace}?rev=${job.run.revision}&shallow=1`
         : job.run.flake;
 
-    return ["nix", "develop", `${flake}#${attr}`, "--command", ...argv];
+    return ["nix", "develop", `${flake}#${attr}`, ...rooted];
   });
 
 /**
@@ -590,6 +597,7 @@ const prepare = (
     const workspace = slot.src;
     yield* checkout(job, workspace, setup === undefined ? preserved(workspace) : setup.keep);
     const tmp = freshTmp(slot.root);
+    const profile = join(yield* shellRoots(slot.root), "shell");
 
     const prelude = [
       "set -euo pipefail",
@@ -625,13 +633,13 @@ const prepare = (
       const last = lastWords(redact);
 
       const exitCode = yield* Exec.stream(
-        yield* inShell(job, workspace, setup === undefined ? legacyShell : setup.shell, [
-          "bash",
-          "-c",
-          `${prelude}; exec "$@"`,
-          "calder-setup",
-          ...command,
-        ]),
+        yield* inShell(
+          job,
+          workspace,
+          setup === undefined ? legacyShell : setup.shell,
+          ["bash", "-c", `${prelude}; exec "$@"`, "calder-setup", ...command],
+          profile,
+        ),
         { cwd: workspace, env: env(job.run, name, extraEnv) },
         (stream, line) => log(stream, last.see(line)),
       );
@@ -659,8 +667,30 @@ const prepare = (
       workspace,
       prelude,
       extraEnv,
+      profile,
       fresh: slot.fresh && command !== null,
     } as const;
+  });
+
+/**
+ * A directory of the job's own for its shell's profile (`inShell`), removed when the job ends. It sits
+ * beside the slot, where the host's Nix daemon finds it: a unit's TMPDIR is in its private /tmp, which the
+ * daemon doesn't see, so it would drop the root as stale. One a job of this slot left when its worker died
+ * goes when the next one opens the slot, which no other job holds meanwhile.
+ */
+export const shellRoots = (slot: string) =>
+  Effect.gen(function* () {
+    const shells = join(dirname(slot), ".shells");
+    const prefix = `${basename(slot)}-`;
+    mkdirSync(shells, { recursive: true });
+
+    for (const left of readdirSync(shells))
+      if (left.startsWith(prefix)) rmSync(join(shells, left), { recursive: true, force: true });
+
+    return yield* Effect.acquireRelease(
+      Effect.sync(() => mkdtempSync(join(shells, prefix))),
+      (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+    );
   });
 
 /**
@@ -694,7 +724,7 @@ export const setup = (job: StepJob, step: Step.Any) =>
     if (prepared._tag === "Failed") return prepared.result;
 
     return toResult(Exit.succeed({ fresh: prepared.fresh }), { key: job.deps });
-  });
+  }).pipe(Effect.scoped);
 
 const shardFiles = (files: ReadonlyArray<string>, index: number, count: number) =>
   [...files].toSorted().filter((_, i) => i % count === index - 1);
@@ -873,7 +903,7 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
     const prepared = yield* prepare(job, step.name, setup, def.shell);
 
     if (prepared._tag === "Failed") return prepared.result;
-    const { workspace, prelude, extraEnv } = prepared;
+    const { workspace, prelude, extraEnv, profile } = prepared;
 
     if (remote !== null) yield* fetchInputs(self, values);
 
@@ -919,13 +949,13 @@ export const task = (job: StepJob, step: Step.Any, values: Record<string, unknow
         artifactPaths(def, values).map(([, path]) => path),
       );
 
-    const full = yield* inShell(job, workspace, def.shell, [
-      "bash",
-      "-c",
-      `${prelude}; exec "$@"`,
-      "calder-task",
-      ...argv,
-    ]);
+    const full = yield* inShell(
+      job,
+      workspace,
+      def.shell,
+      ["bash", "-c", `${prelude}; exec "$@"`, "calder-task", ...argv],
+      profile,
+    );
 
     const taskEnv = env(job.run, step.name, {
       ...goMemLimit(),
