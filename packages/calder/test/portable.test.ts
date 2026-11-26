@@ -107,6 +107,63 @@ describe("a task that may run on another Linux system", () => {
     }),
   );
 
+  it.live("that the agent refused when it was offloaded goes to the agent once it frees up", () =>
+    Effect.gen(function* () {
+      // All three start at once and see the agent's one free slot, so each is offloaded, and the agent
+      // takes only the first. Of the two it refused, one takes the controller's one task slot and waits
+      // for the other, which would never run if it waited for that slot.
+      let busy = 0;
+      let refused = 0;
+      let asked = 0;
+      const agentJobs = new Set<string>();
+      const ran = new Set<string>();
+
+      const { status, placements } = yield* drive({
+        steps: [
+          task("a", ["aarch64-linux"]),
+          task("b", ["aarch64-linux"]),
+          task("c", ["aarch64-linux"]),
+        ],
+        agents: () => [{ ...agent("m1-linux", "aarch64-linux", 1), running: busy, free: 1 - busy }],
+        // The agent decides once all three reached it, as Agents assigns a job only after the controller
+        // placed it, by which time it had placed the other two.
+        takes: (name) =>
+          Effect.sync(() => asked++).pipe(
+            Effect.andThen(until(() => asked >= 3)),
+            Effect.andThen(
+              Effect.sync(() => {
+                if (busy > 0) {
+                  refused++;
+
+                  return false;
+                }
+
+                busy++;
+                agentJobs.add(name);
+
+                return true;
+              }),
+            ),
+          ),
+        work: (name) =>
+          Effect.gen(function* () {
+            ran.add(name);
+
+            if (agentJobs.has(name)) {
+              yield* Effect.sleep("100 millis");
+              busy--;
+            } else {
+              yield* until(() => ran.size === 3);
+            }
+          }),
+      });
+
+      expect(status).toBe("passed");
+      expect(refused).toBe(2);
+      expect([...placements.values()].map((p) => p.remote).toSorted()).toEqual([false, true, true]);
+    }),
+  );
+
   it.live(
     "goes to an agent that takes only other systems' tasks, which gets none of this system's",
     () =>

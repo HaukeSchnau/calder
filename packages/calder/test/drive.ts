@@ -118,6 +118,11 @@ export interface Drive {
   readonly evaluator?: boolean;
   /** The agents that take tasks, read anew whenever the controller looks; none by default. */
   readonly agents?: () => ReadonlyArray<AgentUsage>;
+  /**
+   * Whether an agent takes a step's job that was offloaded to it. One it doesn't take ends `Lost` without
+   * starting, as Jobs reports a job no agent had a free slot for. Every one is taken by default.
+   */
+  readonly takes?: (step: string) => Effect.Effect<boolean>;
   /** RouseAfterStart: none, unless a test asks for the controller's hold. */
   readonly rouseAfterStart?: Duration.Input;
   /**
@@ -170,6 +175,7 @@ export const drive = ({
   statusDelay = () => undefined,
   evaluator = false,
   agents: taskAgents = () => [],
+  takes = () => Effect.succeed(true),
   rouseAfterStart = "0 millis",
   adoptedEvaluations = [],
   valid,
@@ -484,6 +490,14 @@ export const drive = ({
       Layer.succeed(Jobs)({
         run: (job, options) =>
           Effect.gen(function* () {
+            if (job._tag === "Step" && options.offload === true && !(yield* takes(job.step))) {
+              return {
+                result: { _tag: "Lost", message: "no agent had a free slot" },
+                usage: { cpuSeconds: null, memoryPeakBytes: null },
+                id: "job-refused",
+              };
+            }
+
             handed.push({
               run: job.run.id,
               job: job._tag === "Step" ? job.step : job.rules === true ? "rules" : "plan",

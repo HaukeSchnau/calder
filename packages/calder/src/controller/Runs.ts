@@ -1299,7 +1299,7 @@ export const layerCore = Layer.effect(RunsCore)(
      * of another platform needs an agent of it. Other jobs go to a connected agent with a free slot that
      * runs their pool's jobs, which is there to take load off this host, unless they are to run `here`:
      * one of this platform, or of the other `systems` the task may run on. A job that waits here for a slot
-     * may still go to such an agent once one has a free slot (`spill`).
+     * may still go to such an agent once one has a free slot (`spill`). Without `offloads`, it waits here.
      */
     const place = (
       run: Rows.RunRow,
@@ -1307,6 +1307,7 @@ export const layerCore = Layer.effect(RunsCore)(
       platform: string | null,
       here = false,
       systems: ReadonlyArray<string> = [],
+      offloads = true,
     ) => {
       const foreign = platform !== null && platform !== config.system;
       const spills = !foreign && !here;
@@ -1315,6 +1316,7 @@ export const layerCore = Layer.effect(RunsCore)(
 
       const offload =
         spills &&
+        offloads &&
         helpers().some(
           (a) =>
             a.pools.includes(pool) &&
@@ -1348,10 +1350,17 @@ export const layerCore = Layer.effect(RunsCore)(
 
     type Placement = ReturnType<typeof place>;
 
+    /** An offloaded job that no agent took (Jobs reports it `Lost` before it started). */
+    const refused = (
+      placement: Placement,
+      r: { readonly result: JobResult; readonly startedAt: number | null },
+    ) => placement.offload && r.startedAt === null && r.result._tag === "Lost";
+
     /**
      * Runs a job where `place` puts it. A job runs once more, here unless its platform needs an agent,
-     * when an agent lost it or none took it, when its worker died on an agent (which can't always reach
-     * this host), and for setups, when it failed on an agent it was only offloaded to.
+     * when an agent lost it, when its worker died on an agent (which can't always reach this host), and for
+     * setups, when it failed on an agent it was only offloaded to. One that no agent took when it was
+     * offloaded never started, and waits here.
      */
     const placed = <
       R extends { readonly result: JobResult; readonly startedAt: number | null },
@@ -1374,9 +1383,12 @@ export const layerCore = Layer.effect(RunsCore)(
         let placement = place(run, info, platform, options.here, options.systems);
         let first = yield* attempt(placement);
 
-        // An agent took it from the queue here: it runs there now.
-        while ("spilled" in first) {
-          placement = place(run, info, platform, options.here, options.systems);
+        // An agent took it from the queue here: it runs there now. Or no agent took it when it was offloaded,
+        // since others placed at the same moment took the free slots: it waits here, where an agent that
+        // frees up may still take it. Running only here, t3code-1299's tasks waited up to 79 minutes for
+        // this host's two slots while the agents stood idle.
+        while ("spilled" in first || refused(placement, first)) {
+          placement = place(run, info, platform, options.here, options.systems, "spilled" in first);
           first = yield* attempt(placement);
         }
 
@@ -1393,7 +1405,7 @@ export const layerCore = Layer.effect(RunsCore)(
 
         if (why === null) return first;
 
-        // An offloaded job no agent took never started; it simply runs here.
+        // Only a job that started has a log that needs to say why it runs again.
         if (first.startedAt !== null) {
           yield* logTo(
             run,
