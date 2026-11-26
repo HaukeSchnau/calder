@@ -71,7 +71,7 @@ const sleeping = (wake: Effect.Effect<unknown, { readonly message: string }>) =>
     wake: Effect.suspend(() => (woken.count++, wake)),
   };
 
-  return { agents: Agents.make("secret", 1, [tower]), woken };
+  return { agents: Agents.make("secret", 1, [tower], null, { tower: "tower" }), woken };
 };
 
 /** A job that waits for an x86_64-linux agent, with what it was told it waits for and its log. */
@@ -824,7 +824,7 @@ describe("host deploys", () => {
     "go only to the agent that deploys the host, without a slot, and leave its slots to other jobs",
     () =>
       Effect.gen(function* () {
-        const agents = Agents.make("secret", 1);
+        const agents = Agents.make("secret", 1, [], null, { tower: "tower", dev: "dev" });
         const reasons: Array<string> = [];
 
         const deploy = yield* Effect.forkChild(
@@ -870,7 +870,7 @@ describe("host deploys", () => {
 
   it.effect("a running deploy takes none of the agent's slots", () =>
     Effect.gen(function* () {
-      const agents = Agents.make("secret", 1);
+      const agents = Agents.make("secret", 1, [], null, { tower: "tower" });
 
       const tower = yield* connect(agents, {
         name: "tower",
@@ -910,6 +910,73 @@ describe("host deploys", () => {
         expect(tower.orders).toEqual([
           { _tag: "Start", job: "d", token: "td", pool: "trusted", deploy: true },
         ]);
+        yield* agents.exited({ ...auth, name: "tower" }, "d", 0);
+        expect(yield* Fiber.join(deploy)).toBe(0);
+      }),
+  );
+
+  it.effect("go to the agent the controller's config names, whatever another agent announces", () =>
+    Effect.gen(function* () {
+      const agents = Agents.make("secret", 1, [], null, { tower: "tower" });
+      yield* Effect.forkChild(
+        agents.run({ id: "d", token: "td" }, "x86_64-linux", { host: "tower" }),
+      );
+      yield* ticks;
+
+      const impostor = yield* connect(agents, {
+        name: "m1",
+        platform: "x86_64-linux",
+        deploys: "tower",
+      });
+
+      expect(impostor.orders).toEqual([]);
+      expect(agents.usage().find((a) => a.name === "m1")?.deploys).toBe(null);
+
+      const tower = yield* connect(agents, {
+        name: "tower",
+        platform: "x86_64-linux",
+        deploys: "tower",
+      });
+
+      expect(tower.orders).toEqual([
+        { _tag: "Start", job: "d", token: "td", pool: "trusted", deploy: true },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "outlast their agent's absence longer than other jobs, since a switch may cut the host off",
+    () =>
+      Effect.gen(function* () {
+        const agents = Agents.make("secret", 1, [], null, { tower: "tower" });
+
+        const deploy = yield* Effect.forkChild(
+          agents.run({ id: "d", token: "td" }, "x86_64-linux", { host: "tower" }),
+        );
+
+        const task = yield* Effect.forkChild(agents.run({ id: "t", token: "tt" }, "x86_64-linux"));
+
+        const tower = yield* connect(agents, {
+          name: "tower",
+          platform: "x86_64-linux",
+          deploys: "tower",
+        });
+
+        yield* Fiber.interrupt(tower.fiber);
+
+        yield* later("6 minutes");
+        expect(yield* Fiber.join(task)).toBe(-1);
+        expect(deploy.pollUnsafe()).toBeUndefined();
+
+        // The agent comes back with the deploy's worker still running, and the deploy goes on.
+        yield* connect(agents, {
+          name: "tower",
+          platform: "x86_64-linux",
+          deploys: "tower",
+          running: ["d"],
+        });
+        yield* later("40 minutes");
+        expect(deploy.pollUnsafe()).toBeUndefined();
         yield* agents.exited({ ...auth, name: "tower" }, "d", 0);
         expect(yield* Fiber.join(deploy)).toBe(0);
       }),

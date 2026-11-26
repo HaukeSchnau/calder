@@ -101,6 +101,10 @@ export interface Drive {
    * fetched (`ancestors`); `app-2`'s commit by default.
    */
   readonly defaultBranch?: { readonly head: string; readonly ancestors?: ReadonlyArray<string> };
+  /** The controller's `agents.deploys`: who deploys each host, and which projects may. None by default. */
+  readonly deploys?: Readonly<
+    Record<string, { readonly agent: string; readonly projects: ReadonlyArray<string> }>
+  >;
   /** The controller's `untrustedBranches`, none by default. */
   readonly untrustedBranches?: ReadonlyArray<string>;
   /** How long Gitea takes to take a commit status, none by default. */
@@ -174,6 +178,7 @@ export const drive = ({
   project: configured = {},
   meanwhile = Effect.void,
   untrustedBranches,
+  deploys,
   defaultBranch,
   requisites,
   rerunOf,
@@ -322,6 +327,7 @@ export const drive = ({
 
     const services = Layer.mergeAll(
       config({
+        ...(deploys === undefined ? {} : { agents: { tokenFile: "", wake: [], deploys } }),
         ...(placementKey === undefined ? {} : { placementKey }),
         ...(untrustedBranches === undefined ? {} : { untrustedBranches }),
         ...(stateDir === undefined ? {} : { stateDir }),
