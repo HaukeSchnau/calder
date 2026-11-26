@@ -38,7 +38,7 @@ import * as Rows from "./Rows.ts";
 import * as Slots from "./Slots.ts";
 import * as Telemetry from "./Telemetry.ts";
 import * as Tests from "./Tests.ts";
-import { leaseOf } from "./WorkerServer.ts";
+import { hostLeaseOf, leaseOf } from "./WorkerServer.ts";
 
 const activeStatuses = ["queued", "planning", "running"] as const;
 
@@ -261,6 +261,9 @@ export const layerCore = Layer.effect(RunsCore)(
       actions: Slots.make({ capacity: config.jobs.slots.actions, lane }),
       // Agents limit themselves; this only orders their jobs.
       agents: Slots.make({ capacity: 64 }),
+      // Host deploys wait for their host's agent, which takes them without a slot, and each host's lease
+      // lets one through at a time; this only orders them.
+      deploys: Slots.make({ capacity: 64 }),
     };
 
     /** Every pool, the remote builds' of each system included. */
@@ -272,6 +275,7 @@ export const layerCore = Layer.effect(RunsCore)(
       slots.tasks,
       slots.actions,
       slots.agents,
+      slots.deploys,
     ];
 
     const cancels = new Map<string, Deferred.Deferred<string>>();
@@ -1559,6 +1563,8 @@ export const layerCore = Layer.effect(RunsCore)(
         readonly evaluates?: boolean;
         /** A build evaluation for an evaluator agent (Jobs `evaluation`). */
         readonly evaluation?: boolean;
+        /** A deploy of this host, for the agent that deploys it (Jobs `host`). */
+        readonly host?: string;
       },
       collect: {
         tests: Array<Extract<JobEvent, { _tag: "Tests" }>["results"][number]>;
@@ -1661,6 +1667,7 @@ export const layerCore = Layer.effect(RunsCore)(
               offload: options.offload === true,
               systems: options.systems ?? [],
               evaluation: options.evaluation === true,
+              ...(options.host === undefined ? {} : { host: options.host }),
               adoptable: !options.action,
               onWaiting: (reason) => waiting(run.id, row.name, reason),
             });
@@ -2384,6 +2391,8 @@ export const layerCore = Layer.effect(RunsCore)(
         readonly secrets: Record<string, string>;
         /** The step's deploy lease, if it takes one (WorkerServer.ts `leaseOf`). */
         readonly lease: string | undefined;
+        /** The step as the lease knows it, when it isn't `name` (WorkerServer.ts `hostLeaseOf`). */
+        readonly leaseStep?: string;
       },
     ) =>
       Effect.gen(function* () {
@@ -2422,7 +2431,7 @@ export const layerCore = Layer.effect(RunsCore)(
           const [newest] = yield* db(
             sql<{
               run: number;
-            }>`select run from lease_steps where project = ${granted.lease} and step = ${name}`,
+            }>`select run from lease_steps where project = ${granted.lease} and step = ${granted.leaseStep ?? name}`,
           );
 
           const deployed = yield* db(Rows.loadRun(origin));
@@ -2908,6 +2917,96 @@ export const layerCore = Layer.effect(RunsCore)(
             },
             collect,
           );
+
+          return yield* settle(
+            run,
+            row,
+            fromResult(r.result, r.usage, { attempts: collect.attempts }),
+          );
+        }
+
+        if (spec.deploy !== undefined && spec.deploy !== null) {
+          const deploy = spec.deploy;
+          const system = inputs[deploy.system];
+          const path = system?._tag === "Passed" ? system.value : null;
+
+          if (typeof path !== "string")
+            return yield* settle(run, row, {
+              status: "died",
+              error: {
+                tag: "Died",
+                message: `${deploy.system} has no store path for ${deploy.host}`,
+                json: null,
+              },
+            });
+
+          const lease = hostLeaseOf(info, deploy.host, name);
+
+          const again = yield* fromRerun(
+            run,
+            name,
+            { inputs },
+            { secrets: {}, lease: lease.key, leaseStep: lease.step },
+          );
+
+          if (again !== undefined) return yield* settle(run, row, again);
+          const built = byName.get(deploy.system);
+
+          const platform =
+            (built === undefined ? null : Rows.spec(built).build?.system) ?? config.system;
+
+          // The host's agent fetches what local workers read from disk, like any agent's worker.
+          const where = {
+            ...info,
+            flake: "",
+            mirror: `${config.url.replace(/\/$/, "")}/git/${run.project}.git`,
+            mirrors: {},
+            pipelineDir: "",
+            system: platform,
+          };
+
+          const once = execute(
+            run,
+            row,
+            () =>
+              stepJob({
+                run: where,
+                deploy: { host: deploy.host, system: path, probes: deploy.probes },
+              }),
+            {
+              slots: slots.deploys,
+              what: "a deploy slot",
+              expected,
+              action: false,
+              shard: null,
+              workspace: false,
+              platform,
+              remote: true,
+              host: deploy.host,
+            },
+            collect,
+          );
+
+          let r = yield* once;
+
+          // An agent that lost its deploy, such as one that restarted in it, left the host as its switch left
+          // it. The deploy runs again, and finds what the host runs then.
+          for (let lost = 1; !stopped(r) && r.result._tag === "Lost" && lost < 3; lost++) {
+            yield* logTo(
+              run,
+              name,
+              row.span_id,
+              null,
+            )({
+              _tag: "Log",
+              stream: "calder",
+              text: `${r.result.message}, so the deploy runs again`,
+              timestamp: Date.now(),
+            });
+            r = yield* once;
+          }
+
+          if (stopped(r)) return yield* settle(run, row, { status: "cancelled" });
 
           return yield* settle(
             run,

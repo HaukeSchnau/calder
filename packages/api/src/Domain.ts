@@ -43,7 +43,7 @@ export const StepStatus = Schema.Literals([
 
 export type StepStatus = typeof StepStatus.Type;
 
-export const StepKind = Schema.Literals(["build", "setup", "task", "action", "output"]);
+export const StepKind = Schema.Literals(["build", "setup", "task", "action", "output", "deploy"]);
 
 export type StepKind = typeof StepKind.Type;
 

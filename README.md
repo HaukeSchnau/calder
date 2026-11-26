@@ -186,6 +186,34 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   body reads, `after` the steps that must pass first, `grants` what it may do (`deploy`, `secrets`).
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`calder/<step>`).
+- **deploy** (`Deploy.host`): makes a host run the output of a build, such as its NixOS toplevel, through
+  the agent on that host. The controller hands the step only to the agent that deploys the host
+  (`calder agent --deploys <host> --switch <command>`), in no slot of the agent's, and while that agent is
+  away the step waits without waking its host, so a laptop or a sleeping desktop deploys once it is up.
+  The agent's worker runs as the agent's user, runs no `.calder/` code and gets everything with its job.
+  It takes the host's deploy lease, `host:<host>`, which every project's deploys of the host share, so one
+  switch runs at a time (latest wins per step and project, as for other leases), and refuses a fence older
+  than the newest the host deployed with. Then it puts the system in the binary cache, unless the host is
+  the controller's, looks at the branch's head once more, realises the system with a garbage collector
+  root under `<workspaces>/.deploys`, and runs `<command> <system>`. The command makes the host run the
+  system and exits 0, or 4 when it does but some units failed, as NixOS's `switch-to-configuration` does;
+  it must finish the switch when the worker goes away, so on NixOS it starts a unit that switches. Then
+  the probes run: `units` must be active and `urls` answer 2xx, within `within` (3 minutes by default).
+  A switch that exits otherwise, or a probe that still fails at its deadline, sends the host back to the
+  system it ran, through the same command. Units the switch left failed that no probe names don't fail
+  the deploy; the step's value (`Deployed`) lists them with the previous and current system, and a
+  failure (`DeployFailed`) says what failed and whether the host went back. A host that already runs the
+  system only runs the probes. Pull-request rules refuse deploys.
+
+  ```ts
+  const tower = Nix.build(Flake.attr("checks.x86_64-linux.tower"), { name: "tower" });
+  const deploy = Deploy.host({
+    host: "tower",
+    system: tower,
+    after: checks,
+    probes: { units: ["calder-agent.service"] },
+  });
+  ```
 
 Steps wait for a slot of their kind: plans, builds, tasks and actions each have a number the controller's
 `jobs.slots` sets. The waiting step expected to finish soonest goes first, minus the time it has waited, in
@@ -619,6 +647,7 @@ calder worker <job>                    # started by the controller in a systemd 
 calder agent --url <controller> --token-file <f> --name <n> --workspaces <dir> [--slots n] [--admission cmd]
   [--evaluator <store>]              # with --evaluator, evaluates builds for the controller instead
   [--units <dir> [--sandbox <cmd>] [--pools pr,trusted]]  # also pull requests' jobs, sandboxed
+  [--deploys <host> --switch <cmd>]  # also this host's deploys (Deploy.host); --slots 0 only deploys
                                      # runs the controller's jobs for this host's platform
 ```
 

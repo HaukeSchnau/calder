@@ -138,31 +138,49 @@ const agent = Command.make(
       ),
       Flag.optional,
     ),
+    deploys: Flag.String("deploys").pipe(
+      Flag.withDescription(
+        "Deploy this host, by the name pipelines' Deploy.host steps give it; its deploys take no slot, so with --slots 0 the agent only deploys. Needs --switch",
+      ),
+      Flag.optional,
+    ),
+    switch: Flag.String("switch").pipe(
+      Flag.withDescription(
+        "The host's command that switches it: `<command> <system>` makes the host run the system, exits 0, or 4 when some units failed, and finishes even when the worker that ran it stops",
+      ),
+      Flag.optional,
+    ),
   },
   (flags) => {
     const pools = Option.getOrNull(flags.pools)?.split(",") ?? null;
 
-    return Option.isSome(flags.units) && Option.isSome(flags.evaluator)
-      ? Effect.die(
-          new Error(
-            "an evaluator agent runs its workers itself: --units and --evaluator don't go together",
-          ),
-        )
-      : Option.isSome(flags.sandbox) && Option.isNone(flags.units)
-        ? Effect.die(new Error("--sandbox needs --units, where its jobs get their directories"))
-        : pools !== null && !pools.every(Schema.is(Pool))
-          ? Effect.die(new Error(`--pools names a pool other than ${Pool.literals.join(", ")}`))
-          : Agent.run({
-              ...flags,
-              platform: system,
-              calder: [process.argv[0]!, process.argv[1]!],
-              slotsFile: Option.getOrNull(flags.slotsFile),
-              admission: Option.getOrNull(flags.admission),
-              evaluator: Option.getOrNull(flags.evaluator),
-              units: Option.getOrNull(flags.units),
-              sandbox: Option.getOrNull(flags.sandbox),
-              pools,
-            });
+    return Option.isSome(flags.deploys) !== Option.isSome(flags.switch)
+      ? Effect.die(new Error("--deploys and --switch go together"))
+      : Option.isSome(flags.units) && Option.isSome(flags.evaluator)
+        ? Effect.die(
+            new Error(
+              "an evaluator agent runs its workers itself: --units and --evaluator don't go together",
+            ),
+          )
+        : Option.isSome(flags.sandbox) && Option.isNone(flags.units)
+          ? Effect.die(new Error("--sandbox needs --units, where its jobs get their directories"))
+          : pools !== null && !pools.every(Schema.is(Pool))
+            ? Effect.die(new Error(`--pools names a pool other than ${Pool.literals.join(", ")}`))
+            : Agent.run({
+                ...flags,
+                platform: system,
+                calder: [process.argv[0]!, process.argv[1]!],
+                slotsFile: Option.getOrNull(flags.slotsFile),
+                admission: Option.getOrNull(flags.admission),
+                evaluator: Option.getOrNull(flags.evaluator),
+                units: Option.getOrNull(flags.units),
+                sandbox: Option.getOrNull(flags.sandbox),
+                pools,
+                deploys:
+                  Option.isSome(flags.deploys) && Option.isSome(flags.switch)
+                    ? { host: flags.deploys.value, switch: flags.switch.value }
+                    : null,
+              });
   },
 ).pipe(Command.withDescription("Run the controller's jobs for this host's platform"));
 

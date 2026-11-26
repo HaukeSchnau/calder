@@ -1080,6 +1080,7 @@ function valueOf(world: World, run: SimRun, s: SimStep): Domain.Value | null {
     }
 
     case "setup":
+    case "deploy":
       return null;
     case "task": {
       const counts = testCounts(run, s);

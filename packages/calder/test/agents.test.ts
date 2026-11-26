@@ -20,7 +20,9 @@ const connect = (
     evaluator = false,
     portableOnly = false,
     pools,
+    deploys = null,
   }: {
+    deploys?: string | null;
     evaluator?: boolean;
     portableOnly?: boolean;
     pools?: ReadonlyArray<Pool>;
@@ -46,6 +48,7 @@ const connect = (
           evaluator,
           portableOnly,
           ...(pools === undefined ? {} : { pools }),
+          deploys,
         },
       )
       .pipe(
@@ -143,6 +146,7 @@ describe("Agents", () => {
           evaluator: false,
           portableOnly: false,
           pools: ["trusted"],
+          deploys: null,
           free: 0,
         },
       ]);
@@ -812,5 +816,102 @@ describe("Agents", () => {
 
       expect(refused._tag).toBe("Unauthorized");
     }),
+  );
+});
+
+describe("host deploys", () => {
+  it.effect(
+    "go only to the agent that deploys the host, without a slot, and leave its slots to other jobs",
+    () =>
+      Effect.gen(function* () {
+        const agents = Agents.make("secret", 1);
+        const reasons: Array<string> = [];
+
+        const deploy = yield* Effect.forkChild(
+          agents.run({ id: "d", token: "td" }, "x86_64-linux", {
+            host: "tower",
+            onWaiting: (reason) => Effect.sync(() => void reasons.push(reason)),
+          }),
+        );
+
+        yield* ticks;
+
+        // An agent of the platform with a free slot that deploys another host doesn't take it.
+        const other = yield* connect(agents, {
+          name: "dev",
+          platform: "x86_64-linux",
+          deploys: "dev",
+        });
+
+        expect(other.orders).toEqual([]);
+        expect(reasons).toEqual(["tower's agent to connect"]);
+
+        // A deploy-only agent, with no slots, takes it and still offers its slots to nothing.
+        const tower = yield* connect(agents, {
+          name: "tower",
+          platform: "x86_64-linux",
+          slots: 0,
+          deploys: "tower",
+        });
+
+        expect(tower.orders).toEqual([
+          { _tag: "Start", job: "d", token: "td", pool: "trusted", deploy: true },
+        ]);
+        expect(agents.usage().find((a) => a.name === "tower")).toMatchObject({
+          deploys: "tower",
+          running: 1,
+          free: 0,
+        });
+
+        yield* agents.exited({ ...auth, name: "tower" }, "d", 0);
+        expect(yield* Fiber.join(deploy)).toBe(0);
+      }),
+  );
+
+  it.effect("a running deploy takes none of the agent's slots", () =>
+    Effect.gen(function* () {
+      const agents = Agents.make("secret", 1);
+
+      const tower = yield* connect(agents, {
+        name: "tower",
+        platform: "x86_64-linux",
+        deploys: "tower",
+      });
+
+      yield* Effect.forkChild(
+        agents.run({ id: "d", token: "td" }, "x86_64-linux", { host: "tower" }),
+      );
+      yield* Effect.forkChild(agents.run({ id: "t", token: "tt" }, "x86_64-linux"));
+      yield* ticks;
+
+      expect(tower.orders.map((o) => (o._tag === "Start" ? o.job : o._tag))).toEqual(["d", "t"]);
+    }),
+  );
+
+  it.effect(
+    "waits while the host sleeps without waking it, and deploys once its agent connects",
+    () =>
+      Effect.gen(function* () {
+        const { agents, woken } = sleeping(Effect.void);
+
+        const deploy = yield* Effect.forkChild(
+          agents.run({ id: "d", token: "td" }, "x86_64-linux", { host: "tower" }),
+        );
+
+        yield* later("10 minutes");
+        expect(woken.count).toBe(0);
+
+        const tower = yield* connect(agents, {
+          name: "tower",
+          platform: "x86_64-linux",
+          deploys: "tower",
+        });
+
+        expect(tower.orders).toEqual([
+          { _tag: "Start", job: "d", token: "td", pool: "trusted", deploy: true },
+        ]);
+        yield* agents.exited({ ...auth, name: "tower" }, "d", 0);
+        expect(yield* Fiber.join(deploy)).toBe(0);
+      }),
   );
 });

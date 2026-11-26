@@ -3,6 +3,7 @@ import { Effect, Exit, Schema } from "effect";
 import {
   Action,
   Cmd,
+  Deploy,
   Event,
   Files,
   Calder,
@@ -275,6 +276,33 @@ describe("Calder.plan", () => {
       expect(names(plan).indexOf("deploy-srv-2")).toBe(names(plan).length - 1);
       // Pulled in like `after`, so the run deploys every host.
       expect(plan.runs(others[0]!)).toBe(true);
+    }),
+  );
+
+  it.effect("a host deploy reads its system's build and runs only in trusted runs", () =>
+    Effect.gen(function* () {
+      const tower = Nix.build(flake.packages.projectRelease, { name: "tower" });
+
+      const deploy = Deploy.host({
+        host: "tower",
+        system: tower,
+        after: [qa],
+        probes: { units: ["sshd.service"] },
+      });
+
+      const pipeline = Calder.project({
+        rules: [On.push("main", [deploy]), On.pullRequest([deploy])],
+      });
+
+      const plan = yield* Calder.plan(pipeline, Event.push("main"));
+
+      expect(plan.get(deploy)).toMatchObject({ kind: "deploy", needs: ["tower"], after: ["qa"] });
+      expect(deploy.name).toBe("deploy-tower");
+
+      const exit = yield* Effect.exit(Calder.plan(pipeline, Event.pullRequest({ number: 4 })));
+      expect(String(exit)).toContain(
+        `don't run steps with grants or secrets, but "deploy-tower" has them`,
+      );
     }),
   );
 

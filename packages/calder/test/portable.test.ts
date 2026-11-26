@@ -51,6 +51,7 @@ const agent = (
   evaluator: false,
   portableOnly,
   pools,
+  deploys: null,
   free: slots,
 });
 
