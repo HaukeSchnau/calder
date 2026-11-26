@@ -33,7 +33,7 @@ const [a, b] = [
 
 describe("a task's dev shell", () => {
   it.live.skipIf(spawnSync("nix", ["--version"]).status !== 0)(
-    "is the plan's derivation with bash from the flake's own nixpkgs, or the flake where the store lacks it",
+    "is the plan's derivation with bash from the flake's own nixpkgs, or the flake where the store lacks it, rooted by a profile",
     () =>
       Effect.gen(function* () {
         const workspace = mkdtempSync(join(tmpdir(), "calder-devshell-"));
@@ -71,7 +71,8 @@ describe("a task's dev shell", () => {
           shells: { "devShells.x86_64-linux.ci": drv },
         } as unknown as Extract<JobSpec, { _tag: "Step" }>;
 
-        const command = (j = job) => inShell(j, workspace, shell, ["bash", "-c", "true"]);
+        const profile = join(workspace, ".calder-shell");
+        const command = (j = job) => inShell(j, workspace, shell, ["bash", "-c", "true"], profile);
 
         lock("nixpkgs");
         expect(yield* command()).toEqual([
@@ -81,6 +82,8 @@ describe("a task's dev shell", () => {
           "--override-flake",
           "nixpkgs",
           expect.stringMatching(new RegExp(`^github:NixOS/nixpkgs/${a}\\?`)),
+          "--profile",
+          profile,
           "--command",
           "bash",
           "-c",
@@ -102,6 +105,8 @@ describe("a task's dev shell", () => {
           "nix",
           "develop",
           "git+file:///mirror?rev=abc#devShells.x86_64-linux.ci",
+          "--profile",
+          profile,
           "--command",
           "bash",
           "-c",
