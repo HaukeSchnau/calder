@@ -113,6 +113,24 @@ describe("resolve", () => {
   );
 
   it.effect(
+    "a task's noRetryCode reaches the controller in its plan, without changing its key",
+    () =>
+      Effect.gen(function* () {
+        const play = (noRetryCode: number | undefined) =>
+          Task.make("play", {
+            run: cmd`play`,
+            ...(noRetryCode === undefined ? {} : { noRetryCode }),
+          });
+
+        const plain = task(yield* plan(app, [play(undefined)]), "play");
+        const refusing = task(yield* plan(app, [play(6)]), "play");
+        expect(plain).not.toHaveProperty("noRetryCode");
+        expect(refusing.noRetryCode).toBe(6);
+        expect(refusing.keyBase).toBe(plain.keyBase);
+      }),
+  );
+
+  it.effect(
     "a task's gates reach the controller as the part of its after on its critical path",
     () =>
       Effect.gen(function* () {

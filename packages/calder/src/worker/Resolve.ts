@@ -2543,6 +2543,7 @@ export const resolve = (
                       }),
                   preview: p.preview,
                   lease: def.lease ?? false,
+                  ...(def.noRetryCode === undefined ? {} : { noRetryCode: def.noRetryCode }),
                 },
               };
             }

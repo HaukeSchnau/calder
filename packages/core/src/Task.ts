@@ -89,6 +89,12 @@ export interface Options<R, O extends { readonly [name: string]: string }, A = v
    * host that is offline. The step ends as skipped, with the last line the command printed as the reason.
    */
   readonly skipCode?: number;
+  /**
+   * An exit code that means the task failed in a way no rerun fixes until someone acts, such as a store
+   * that refuses a release for a setting in its console. The step fails as any other, but it starts no
+   * rerun of the deploy; a rerun that another failed step starts, or `calder rerun`, runs it again.
+   */
+  readonly noRetryCode?: number;
 }
 
 /** What a task with `each` shares by default: the root manifest and lockfiles. */
@@ -139,4 +145,5 @@ export const make = <R = never, const O extends { readonly [name: string]: strin
     lease: options.lease,
     artifacts: options.artifacts ?? {},
     skipCode: options.skipCode,
+    noRetryCode: options.noRetryCode,
   }) as Step<A, TaskFailed, R, O>;
