@@ -432,6 +432,13 @@ export interface PlayOptions extends StoreBuildOptions {
   readonly password: string;
   /** The project's secret with the JSON key of a Play Console service account that may release. */
   readonly serviceAccount: string;
+  /**
+   * Commits the release without sending the app's queued changes to Google's review, which then wait
+   * until someone sends them from the Play Console. Play requires this while the app has a rejected
+   * change and refuses it when changes go to review automatically. The step then ends once Play took
+   * the commit, since a release held back from review may never show on the track that `--wait` polls.
+   */
+  readonly changesNotSentForReview?: boolean;
 }
 
 /**
@@ -451,9 +458,10 @@ const sdkInit = `allprojects {
 /**
  * `$1` is the app's directory and `$2` the runtime version CI computed. The package comes from the
  * Expo config's `android.package`. Gradle takes the upload key from `android.injected.signing.*`
- * properties, which go into the generated gradle.properties rather than onto a command line.
+ * properties, which go into the generated gradle.properties rather than onto a command line. The
+ * script is the step's cache key, so its text without the review flag stays what it was.
  */
-const playScript = `set -euo pipefail
+const playScript = (changesNotSentForReview: boolean) => `set -euo pipefail
 expected=$2
 pnpm install --frozen-lockfile
 ${enter}
@@ -493,7 +501,7 @@ aab=android/app/build/outputs/bundle/release/app-release.aab
 # Updates for this commit go to the runtime version CI computed, so the build must report the same one.
 embedded=$(unzip -p "$aab" base/assets/fingerprint)
 same_runtime "the build" "$embedded" "$expected"
-gplay release --package "$package" --track internal --bundle "$aab" --wait`;
+gplay release --package "$package" --track internal --bundle "$aab" ${changesNotSentForReview ? "--changes-not-sent-for-review" : "--wait"}`;
 
 /**
  * Builds a release bundle with a fresh versionCode, signed with the Play upload key, and releases it to
@@ -513,5 +521,5 @@ export const playInternal = (options: PlayOptions) =>
       UPLOAD_KEYSTORE_PASSWORD: Secret.file(options.password),
       GPLAY_SERVICE_ACCOUNT_JSON: Secret.file(options.serviceAccount),
     },
-    run: cmd`bash -c ${playScript} calder-expo ${options.dir ?? "."} ${options.runtime}`,
+    run: cmd`bash -c ${playScript(options.changesNotSentForReview === true)} calder-expo ${options.dir ?? "."} ${options.runtime}`,
   });

@@ -436,12 +436,14 @@ describe("Expo.testflight", scripts, () => {
 });
 
 describe("Expo.playInternal", scripts, () => {
-  const step = Expo.playInternal({
+  const options = {
     runtime: android,
     keystore: "keystore",
     password: "password",
     serviceAccount: "play",
-  });
+  };
+
+  const step = Expo.playInternal(options);
 
   it("signs with the upload key, releases to the internal track and leaves no key behind", () => {
     const ran = run(step, { values });
@@ -458,6 +460,14 @@ describe("Expo.playInternal", scripts, () => {
       "gplay / release --package dev.example.hop --track internal --bundle android/app/build/outputs/bundle/release/app-release.aab --wait",
     );
     expect(ran.read(".fake/gplay-account")).toBe(`${ran.repo}/.fake/secret-play`);
+  });
+
+  it("commits without sending the app's changes to review when asked", () => {
+    const ran = run(Expo.playInternal({ ...options, changesNotSentForReview: true }), { values });
+    expect(ran.status).toBe(0);
+    expect(ran.calls.at(-1)).toBe(
+      "gplay / release --package dev.example.hop --track internal --bundle android/app/build/outputs/bundle/release/app-release.aab --changes-not-sent-for-review",
+    );
   });
 
   it("gives Gradle a versionCode in minutes since 1970", () => {
