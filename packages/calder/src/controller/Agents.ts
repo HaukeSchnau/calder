@@ -135,6 +135,12 @@ export const evaluatorGrace = "30 seconds";
 const reconnectGrace = "5 minutes";
 
 /**
+ * How long a deploy's agent may stay away before the deploy counts as lost: a switch may cut the host off
+ * for minutes, and the deploy's worker, which goes back to the previous system then, outlives that.
+ */
+const deployGrace = "30 minutes";
+
+/**
  * Agents on other hosts (`calder agent`) that start workers for their platform. A job waits until an
  * agent of its platform has a free slot; its worker then talks to the controller like a local one.
  */
@@ -219,6 +225,8 @@ export const make = (
   version: number = compatibility,
   sleepers: ReadonlyArray<Sleeper> = [],
   egress: EgressPolicy | null = null,
+  /** The agent that deploys each host (Config `agents.deploys`): only it gets the host's deploys. */
+  deployers: Readonly<Record<string, string>> = {},
 ): Agents["Service"] => {
   const connections = new Map<string, Connection>();
   const placed = new Map<string, Placed>();
@@ -578,7 +586,16 @@ export const make = (
               const evaluator = agent.evaluator === true;
               const portableOnly = agent.portableOnly === true;
               const pools = agent.pools ?? ["trusted"];
-              const deploys = agent.deploys ?? null;
+              // Agents share one token, so the controller's config, not the agent, says who deploys a host.
+              const announced = agent.deploys ?? null;
+
+              const deploys =
+                announced !== null && deployers[announced] === auth.name ? announced : null;
+
+              if (announced !== null && deploys === null)
+                yield* Effect.logWarning(
+                  `agent ${auth.name} says it deploys ${announced}, which the controller's config gives ${deployers[announced] ?? "no agent"}: it gets none of its deploys`,
+                );
 
               const connection: Connection = {
                 name: auth.name,
@@ -682,15 +699,20 @@ export const make = (
                     );
                   }
 
-                  yield* Effect.sleep(reconnectGrace).pipe(
-                    Effect.andThen(
-                      Effect.gen(function* () {
-                        if (generations.get(auth.name) !== generation) return;
+                  const lose = (deploys: boolean) =>
+                    Effect.gen(function* () {
+                      if (generations.get(auth.name) !== generation) return;
 
-                        for (const [job, p] of placed)
-                          if (p.agent === auth.name) yield* finish(job, -1);
-                      }),
-                    ),
+                      for (const [job, p] of Array.from(placed))
+                        if (p.agent === auth.name && p.deploy === deploys) yield* finish(job, -1);
+                    });
+
+                  yield* Effect.sleep(reconnectGrace).pipe(
+                    Effect.andThen(lose(false)),
+                    Effect.forkDetach,
+                  );
+                  yield* Effect.sleep(deployGrace).pipe(
+                    Effect.andThen(lose(true)),
                     Effect.forkDetach,
                   );
                 }),
@@ -754,6 +776,7 @@ export const layer = Layer.effect(Agents)(
       compatibility,
       sleepers,
       config.egress,
+      Object.fromEntries(Object.entries(config.agents.deploys).map(([host, d]) => [host, d.agent])),
     );
   }),
 );

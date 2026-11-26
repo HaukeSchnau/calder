@@ -1,6 +1,6 @@
 import { Deploy } from "@calder-ci/core";
 import { Cause, Clock, Effect, Exit } from "effect";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as Exec from "../Exec.ts";
 import type { Job as JobSpec, JobResult, Probes } from "../Protocol.ts";
@@ -29,6 +29,11 @@ export interface Host {
   readonly active: (unit: string) => Effect.Effect<boolean, never, Exec.Spawner>;
   /** Whether `url` answers with a 2xx status. */
   readonly answers: (url: string) => Effect.Effect<boolean>;
+  /**
+   * Whether the controller answers this host, which a switch may cut it off from: its /health, not a job
+   * call, since a controller that restarted meanwhile no longer knows the job though the host reaches it.
+   */
+  readonly reaches: Effect.Effect<boolean>;
 }
 
 /** The host the agent that started this worker deploys, from what it handed the worker, or why there is none. */
@@ -36,9 +41,21 @@ export const thisHost = (env: NodeJS.ProcessEnv = process.env): Host | string =>
   const name = env.CALDER_DEPLOYS;
   const command = env.CALDER_SWITCH;
   const workspaces = env.CALDER_WORKSPACES;
+  const controller = env.CALDER_URL;
 
-  if (name === undefined || command === undefined || workspaces === undefined)
+  if (
+    name === undefined ||
+    command === undefined ||
+    workspaces === undefined ||
+    controller === undefined
+  )
     return "only an agent that deploys a host (calder agent --deploys --switch) runs host deploys";
+
+  const answers = (url: string) =>
+    Effect.tryPromise(() => fetch(url, { signal: AbortSignal.timeout(10_000) })).pipe(
+      Effect.map((response) => response.ok),
+      Effect.orElseSucceed(() => false),
+    );
 
   return {
     name,
@@ -71,11 +88,8 @@ export const thisHost = (env: NodeJS.ProcessEnv = process.env): Host | string =>
         Effect.map((r) => r.exitCode === 0),
         Effect.orElseSucceed(() => false),
       ),
-    answers: (url) =>
-      Effect.tryPromise(() => fetch(url, { signal: AbortSignal.timeout(10_000) })).pipe(
-        Effect.map((response) => response.ok),
-        Effect.orElseSucceed(() => false),
-      ),
+    answers,
+    reaches: answers(`${controller.replace(/\/$/, "")}/health`),
   };
 };
 
@@ -90,9 +104,14 @@ export const failedUnits = (line: string): ReadonlyArray<string> => {
 
 /**
  * What of `probes` still fails once they all passed or `withinMs` ran out: each unit that isn't active and
- * each URL that doesn't answer 2xx, asked again every 2 seconds.
+ * each URL that doesn't answer 2xx, asked again every 2 seconds. After a switch the controller must answer
+ * too (`reaches`), as deploy-rs required SSH to: a switch that cuts the host off from the controller goes back.
  */
-export const probe = (host: Host, probes: Probes) =>
+export const probe = (
+  host: Host,
+  probes: Probes,
+  reaches: Effect.Effect<boolean> = Effect.succeed(true),
+) =>
   Effect.gen(function* () {
     const deadline = (yield* Clock.currentTimeMillis) + probes.withinMs;
 
@@ -108,6 +127,15 @@ export const probe = (host: Host, probes: Probes) =>
       const failing = [
         ...units.map((unit) => `${unit} isn't active`),
         ...urls.map((url) => `${url} doesn't answer 2xx`),
+        ...((yield* reaches.pipe(
+          // Up to 10 seconds a try, and no longer than the probes have left.
+          Effect.timeout(
+            Math.max(1_000, Math.min(10_000, deadline - (yield* Clock.currentTimeMillis))),
+          ),
+          Effect.orElseSucceed(() => false),
+        ))
+          ? []
+          : ["the controller doesn't answer"]),
       ];
 
       const left = deadline - (yield* Clock.currentTimeMillis);
@@ -193,7 +221,32 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
         );
     }
 
-    const previous = on.running();
+    // An earlier attempt at a deploy that didn't end, such as one whose agent restarted in its switch, left
+    // the system the host ran before it: going back goes there, whatever the host runs now.
+    const pendingFile = join(on.state, "pending");
+
+    // A record counts only while the host runs one of its two systems: after a deploy by other means it
+    // says nothing about what the host ran.
+    const pending = (() => {
+      try {
+        const [system, previous] = readFileSync(pendingFile, "utf8").split("\n");
+        const runs = on.running();
+
+        return storePath.test(previous ?? "") && (runs === system || runs === previous)
+          ? { system, previous: previous! }
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+
+    const previous = pending?.previous ?? on.running();
+    const settled = Effect.sync(() => rmSync(pendingFile, { force: true }));
+
+    if (pending !== undefined)
+      yield* log(
+        `an earlier deploy of ${pending.system} didn't end; going back goes to ${previous}`,
+      );
 
     const passed = (failed: ReadonlyArray<string>) =>
       ({
@@ -239,7 +292,7 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
       return yield* probe(on, deploy.probes);
     });
 
-    if (previous === deploy.system) {
+    if (pending === undefined && previous === deploy.system) {
       yield* log(`${deploy.host} already runs ${deploy.system}`);
       const failing = yield* probed;
 
@@ -281,12 +334,27 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
         if (previous === "") return failed(`${reason}; ${deploy.host} ran no system before`, false);
         const undone = yield* switchTo(previous);
 
-        return undone.runs && (undone.code === 0 || undone.code === 4)
-          ? failed(reason, true)
-          : failed(`${reason}; going back exited with ${undone.code}`, false);
+        // Unless the host is back, the record stays, so the next deploy goes back there too.
+        if (!undone.runs || (undone.code !== 0 && undone.code !== 4))
+          return failed(`${reason}; going back exited with ${undone.code}`, false);
+        yield* settled;
+
+        return failed(reason, true);
       });
 
-    yield* log(`${deploy.host} runs ${previous}; switching to ${deploy.system}`);
+    yield* log(`${deploy.host} runs ${on.running()}; switching to ${deploy.system}`);
+
+    // The system to go back to keeps a root while the record names it, so no collection takes it.
+    if (previous !== "") {
+      const rooted = yield* Effect.exit(on.realise(previous, join(on.state, "previous")));
+
+      if (Exit.isFailure(rooted))
+        return died(
+          `${previous}, the system to go back to, couldn't be rooted: ${Cause.squash(rooted.cause)}`,
+        );
+    }
+
+    writeFileSync(pendingFile, `${deploy.system}\n${previous}`);
     const switched = yield* switchTo(deploy.system);
 
     if (switched.code !== 0 && switched.code !== 4)
@@ -302,9 +370,13 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
         `the switch left ${switched.units.join(", ")} failed; only the probes decide whether the deploy stands`,
       );
 
-    const failing = yield* probed;
+    yield* log(
+      `probing ${[...deploy.probes.units, ...deploy.probes.urls, "the controller"].join(", ")} for up to ${Math.round(deploy.probes.withinMs / 1000)} s`,
+    );
+    const failing = yield* probe(on, deploy.probes, on.reaches);
 
     if (failing.length > 0) return yield* back(failing.join("; "));
+    yield* settled;
     yield* log(`${deploy.host} runs ${deploy.system}`);
 
     return passed(switched.units.filter((unit) => !deploy.probes.units.includes(unit)));

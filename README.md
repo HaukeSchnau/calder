@@ -187,9 +187,14 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   Pull-request rules refuse steps with grants. Actions with grants also wait for the checks branch
   protection requires (`calder/<step>`).
 - **deploy** (`Deploy.host`): makes a host run the output of a build, such as its NixOS toplevel, through
-  the agent on that host. The controller hands the step only to the agent that deploys the host
-  (`calder agent --deploys <host> --switch <command>`), in no slot of the agent's, and while that agent is
-  away the step waits without waking its host, so a laptop or a sleeping desktop deploys once it is up.
+  the agent on that host. The controller's config (`agents.deploys`) names, per host, the agent that
+  deploys it and the projects that may; only their default branch's runs deploy, and a deploy of any
+  other host, project or branch dies before it starts, since the host runs the system it gets as root.
+  The controller hands the step only to that agent (`calder agent --deploys <host> --switch <command>`;
+  an agent of another name that says it deploys the host gets nothing), in no slot of the agent's, and
+  while the agent is away the step waits without waking its host, so a laptop or a sleeping desktop
+  deploys once it is up. A deploy outlasts 30 minutes of its agent's absence, a switch that cuts the host
+  off for a while among them; other jobs count as lost after 5.
   The agent's worker runs as the agent's user, runs no `.calder/` code and gets everything with its job.
   It takes the host's deploy lease, `host:<host>`, which every project's deploys of the host share, so one
   switch runs at a time (latest wins per step and project, as for other leases), and refuses a fence older
@@ -198,9 +203,14 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   root under `<workspaces>/.deploys`, and runs `<command> <system>`. The command makes the host run the
   system and exits 0, or 4 when it does but some units failed, as NixOS's `switch-to-configuration` does;
   it must finish the switch when the worker goes away, so on NixOS it starts a unit that switches. Then
-  the probes run: `units` must be active and `urls` answer 2xx, within `within` (3 minutes by default).
-  A switch that exits otherwise, or a probe that still fails at its deadline, sends the host back to the
-  system it ran, through the same command. Units the switch left failed that no probe names don't fail
+  the probes run: `units` must be active and `urls` answer 2xx, within `within` (3 minutes by default),
+  and the controller's `/health` must answer the host, as deploy-rs required SSH to answer. A switch that exits
+  otherwise, or a probe that still fails at its deadline, sends the host back to the system it ran,
+  through the same command. Before it switches, the worker roots the system the host ran and records it in
+  `<workspaces>/.deploys/pending` until the deploy stood or the host went back, so a later attempt after
+  one that didn't end, such as one whose agent restarted in its switch, goes back there too, while the host
+  runs one of the two systems the record names. A deploy the controller refuses fails with
+  `DeployRefused`, and like `DeployFailed` it starts no automatic rerun. Units the switch left failed that no probe names don't fail
   the deploy; the step's value (`Deployed`) lists them with the previous and current system, and a
   failure (`DeployFailed`) says what failed and whether the host went back. A host that already runs the
   system only runs the probes. Pull-request rules refuse deploys.

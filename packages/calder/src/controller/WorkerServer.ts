@@ -63,6 +63,25 @@ export const hostLeaseOf = (
   current: run.branch === null ? null : { branch: run.branch },
 });
 
+/**
+ * Why a run may not deploy `host`, or undefined when it may: only the projects the controller's config
+ * lists for the host (`agents.deploys`) may, and only from their default branch, the runs that get its
+ * secrets. A host deploy runs the system it names as root, so another branch's pipeline must not name one.
+ */
+export const deployRefusal = (
+  deploys: Readonly<Record<string, { readonly projects: ReadonlyArray<string> }>>,
+  run: { readonly project: string; readonly event: Domain.Event },
+  host: string,
+  defaultBranch: string | undefined,
+) =>
+  deploys[host] === undefined
+    ? `the controller's config lists no agent that deploys ${host}`
+    : !deploys[host].projects.includes(run.project)
+      ? `${run.project} may not deploy ${host} (agents.deploys in the controller's config)`
+      : !Rows.ofDefaultBranch(run.event, defaultBranch)
+        ? `only ${run.project}'s default branch deploys ${host}`
+        : undefined;
+
 /** Why a preview of `revision` no longer deploys: its pull request closed, or moved on to another head. */
 export const pullRequestStale = (
   number: number,
@@ -313,6 +332,18 @@ export const handlers = WorkerRpcs.toLayer(
 
           const task =
             host !== null || Rows.leased(row === undefined ? undefined : Rows.spec(row).task);
+
+          const refused =
+            host === null
+              ? undefined
+              : deployRefusal(
+                  config.agents?.deploys ?? {},
+                  run,
+                  host.host,
+                  projects.get(project)?.defaultBranch,
+                );
+
+          if (refused !== undefined) return yield* refuse(refused);
 
           const { key, current, ...named } =
             host === null ? leaseOf(run, lease) : hostLeaseOf(run, host.host, step);

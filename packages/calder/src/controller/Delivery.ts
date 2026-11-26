@@ -59,8 +59,8 @@ export const backoff = (attempt: number) =>
  * head is ahead, and whether the head's push run ended without deploying it. While it failed on its deploy's critical path, it
  * reruns that run once its backoff passed, unless the project opts out; a failed check isn't retried, and
  * a step that exited with its `noRetryCode` starts no rerun, though one another step starts repeats it. Nor
- * does a host deploy whose switch or probes failed (`DeployFailed`): a rerun would switch the host to the same
- * system and back again.
+ * does a host deploy whose switch or probes failed (`DeployFailed`), since a rerun would switch the host to
+ * the same system and back again, or that the controller refused (`DeployRefused`).
  */
 export const converge = (project: Project, now: number) =>
   Effect.gen(function* () {
@@ -72,7 +72,7 @@ export const converge = (project: Project, now: number) =>
 
     /**
      * Whether the run has a step on a deploy's critical path, with `failing` one that failed or died other
-     * than with its task's `noRetryCode` or a host deploy's `DeployFailed`.
+     * than with its task's `noRetryCode` or a host deploy's `DeployFailed` or `DeployRefused`.
      */
     const critical = (run: string, failing = false) =>
       Effect.map(
@@ -81,7 +81,7 @@ export const converge = (project: Project, now: number) =>
           failing
             ? sql`and status in ('failed', 'died')
               and coalesce(json_extract(error_json, '$.value.exitCode') = json_extract(spec, '$.task.noRetryCode'), 0) = 0
-              and coalesce(error_tag, '') != 'DeployFailed'`
+              and coalesce(error_tag, '') not in ('DeployFailed', 'DeployRefused')`
             : sql``
         } limit 1`,
         (rows) => rows.length > 0,

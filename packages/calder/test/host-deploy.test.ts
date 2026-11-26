@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   readlinkSync,
@@ -39,6 +40,10 @@ const tower = (options: {
   readonly fence?: number;
   readonly runs?: string;
   readonly realise?: Effect.Effect<void, string>;
+  /** Whether the controller answers the worker, by the systems the switch got so far. */
+  readonly reaches?: (calls: ReadonlyArray<string>) => boolean;
+  /** What an earlier attempt that didn't end recorded: the system it deployed and the one before. */
+  readonly pending?: readonly [string, string];
 }) => {
   const dir = mkdtempSync(join(tmpdir(), "calder-host-deploy-"));
   const link = join(dir, "current");
@@ -76,6 +81,10 @@ exit "$code"
 
   if (options.fence !== undefined) writeFileSync(join(dir, "fence"), String(options.fence));
 
+  if (options.pending !== undefined)
+    writeFileSync(join(dir, "pending"), options.pending.join("\n"));
+  let pendingLeft = false;
+
   const host: Deploy.Host = {
     name: "tower",
     switch: script,
@@ -84,6 +93,7 @@ exit "$code"
     realise: () => options.realise ?? Effect.void,
     active: (unit) => Effect.succeed((options.active ?? []).includes(unit)),
     answers: (url) => Effect.succeed((options.answering?.(switched()) ?? []).includes(url)),
+    reaches: Effect.sync(() => options.reaches === undefined || options.reaches(switched())),
   };
 
   const rpc: Array<string> = [];
@@ -134,12 +144,13 @@ exit "$code"
       Effect.ensuring(
         Effect.sync(() => {
           kept = switched();
+          pendingLeft = existsSync(join(dir, "pending"));
           rmSync(dir, { recursive: true, force: true });
         }),
       ),
     );
 
-  return { deploy, calls, rpc, log };
+  return { deploy, calls, rpc, log, pendingLeft: () => pendingLeft };
 };
 
 const value = (result: JobResult) =>
@@ -286,6 +297,66 @@ describe("a host deploy on the host's agent", () => {
         message: `${next} couldn't be realised from the binary cache: unable to download`,
       });
       expect(t.calls()).toEqual([]);
+    }),
+  );
+});
+
+describe("a host deploy that loses the controller or an earlier attempt", () => {
+  it.live(
+    "goes back when the controller doesn't answer after the switch, as deploy-rs did for SSH",
+    () =>
+      Effect.gen(function* () {
+        const t = tower({ reaches: (calls) => calls.at(-1) !== next });
+        const result = yield* t.deploy();
+
+        expect(value(result)).toMatchObject({
+          reason: "the controller doesn't answer",
+          current: old,
+          rolledBack: true,
+        });
+        expect(t.calls()).toEqual([next, old]);
+      }),
+  );
+
+  it.live(
+    "goes back to what an earlier attempt switched from, though the host runs the system",
+    () =>
+      Effect.gen(function* () {
+        const before = `/nix/store/${"f".repeat(32)}-nixos-system-tower-fst`;
+        const t = tower({ runs: next, pending: [next, before], active: [] });
+        const result = yield* t.deploy({ units: ["calder-agent.service"] });
+
+        expect(value(result)).toMatchObject({
+          previous: before,
+          current: before,
+          rolledBack: true,
+        });
+        expect(t.calls()).toEqual([next, before]);
+        expect(t.pendingLeft()).toBe(false);
+      }),
+  );
+
+  it.live("ignores a record of systems the host runs neither of, as after a deploy by hand", () =>
+    Effect.gen(function* () {
+      const a = `/nix/store/${"g".repeat(32)}-nixos-system-tower-aaa`;
+      const b = `/nix/store/${"h".repeat(32)}-nixos-system-tower-bbb`;
+      const t = tower({ pending: [a, b], reaches: (calls) => calls.at(-1) !== next });
+      const result = yield* t.deploy();
+
+      expect(value(result)).toMatchObject({ previous: old, current: old, rolledBack: true });
+      expect(t.calls()).toEqual([next, old]);
+    }),
+  );
+
+  it.live("keeps the record while going back failed, and drops it once a deploy stands", () =>
+    Effect.gen(function* () {
+      const failing = tower({ codes: { [next]: 1, [old]: 1 } });
+      yield* failing.deploy();
+      expect(failing.pendingLeft()).toBe(true);
+
+      const passing = tower({});
+      expect((yield* passing.deploy())._tag).toBe("Passed");
+      expect(passing.pendingLeft()).toBe(false);
     }),
   );
 });

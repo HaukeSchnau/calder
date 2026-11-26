@@ -38,7 +38,7 @@ import * as Rows from "./Rows.ts";
 import * as Slots from "./Slots.ts";
 import * as Telemetry from "./Telemetry.ts";
 import * as Tests from "./Tests.ts";
-import { hostLeaseOf, leaseOf } from "./WorkerServer.ts";
+import { deployRefusal, hostLeaseOf, leaseOf } from "./WorkerServer.ts";
 
 const activeStatuses = ["queued", "planning", "running"] as const;
 
@@ -2930,14 +2930,21 @@ export const layerCore = Layer.effect(RunsCore)(
           const system = inputs[deploy.system];
           const path = system?._tag === "Passed" ? system.value : null;
 
-          if (typeof path !== "string")
+          const refused =
+            typeof path !== "string"
+              ? `${deploy.system} has no store path for ${deploy.host}`
+              : deployRefusal(
+                  config.agents?.deploys ?? {},
+                  { project: run.project, event: JSON.parse(run.event) as Domain.Event },
+                  deploy.host,
+                  projects.get(run.project)?.defaultBranch,
+                );
+
+          // A refusal needs the pipeline or the controller's config changed, so no rerun retries it (Delivery).
+          if (refused !== undefined || typeof path !== "string")
             return yield* settle(run, row, {
-              status: "died",
-              error: {
-                tag: "Died",
-                message: `${deploy.system} has no store path for ${deploy.host}`,
-                json: null,
-              },
+              status: "failed",
+              error: { tag: "DeployRefused", message: refused ?? "", json: null },
             });
 
           const lease = hostLeaseOf(info, deploy.host, name);

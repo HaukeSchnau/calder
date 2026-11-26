@@ -395,15 +395,16 @@ describe("converge", () => {
     },
   );
 
-  it.effect("leaves a host deploy whose switch or probes failed to people", () => {
-    const { reruns, services } = fakes();
+  for (const tag of ["DeployFailed", "DeployRefused"])
+    it.effect(`leaves a host deploy that ended with ${tag} to people`, () => {
+      const { reruns, services } = fakes();
 
-    return Effect.gen(function* () {
-      yield* failedHead({ errorTag: "DeployFailed" });
-      expect(yield* converge(project, 10 * hour)).toMatchObject({ stalled: true, retry: null });
-      expect(reruns).toEqual([]);
-    }).pipe(Effect.provide(Layer.merge(layer, services)));
-  });
+      return Effect.gen(function* () {
+        yield* failedHead({ errorTag: tag });
+        expect(yield* converge(project, 10 * hour)).toMatchObject({ stalled: true, retry: null });
+        expect(reruns).toEqual([]);
+      }).pipe(Effect.provide(Layer.merge(layer, services)));
+    });
 
   it.effect("counts a nightly that passed at the head as deployed only when it deploys", () => {
     const { services } = fakes();

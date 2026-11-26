@@ -152,6 +152,15 @@ export const ConfigSchema = Schema.Struct({
           command: Schema.NonEmptyArray(Schema.String),
         }),
       ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+      /**
+       * The hosts agents deploy (`Deploy.host`), by the name pipelines give each: the agent that deploys
+       * it and the projects whose default branch may. Another agent that says it deploys the host gets
+       * none of its deploys, and a deploy of a host not listed, or from another project or branch, fails.
+       */
+      deploys: Schema.Record(
+        Schema.String,
+        Schema.Struct({ agent: Schema.String, projects: Schema.Array(Schema.String) }),
+      ).pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
     }),
   ),
   projects: Schema.Record(Schema.String, ProjectConfig),
