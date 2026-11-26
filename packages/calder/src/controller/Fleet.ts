@@ -45,7 +45,7 @@ export interface DeployTarget {
   readonly system: string;
 }
 
-/** The hosts' promotion endpoints (`app-deployments` in nix-infra-modules). */
+/** The hosts' promotion endpoints (`app-deployments` in projects-sdk). */
 export class Fleet extends Context.Service<
   Fleet,
   {
