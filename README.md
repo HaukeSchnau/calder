@@ -173,7 +173,8 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   with which a task says it didn't do its work and that's no failure, such as a deploy to a host that is
   offline: the step is skipped, with the last line the command printed as the reason. A skipped step
   doesn't fail its run, but it isn't green either: its commit status is a warning, and the steps after it
-  are skipped too. A task's `afterEnded` lists steps it runs after only for the order: once they ended,
+  are skipped too. `noRetryCode: n` marks the exit code with which a task says its failure needs a person,
+  so it starts no rerun of the deploy (see below). A task's `afterEnded` lists steps it runs after only for the order: once they ended,
   whether they passed, were reused, skipped, failed, died or were blocked, it runs, neither skipped nor
   blocked by them; only cancelling the run cancels it. Like `after`, it pulls them into the run and leaves them out of its key. infra's deploy
   of srv-2, which restarts Calder, goes after the other hosts' deploys that way, also when a host was
@@ -769,7 +770,9 @@ ahead of it. When the head's push run failed at a step on a deploy's critical pa
 it ships, the controller reruns that run, which repeats only what didn't pass: 10 minutes after the first failure,
 then after twice the wait of the last, up to 6 hours, until it passes or the head moves on. Each rerun of a run in
 place counts as a failure of its own. A failed check isn't
-retried. `retryDeploys: false` in a project's configuration turns the reruns off.
+retried, and a task that exited with its `noRetryCode`, such as a store build the store refused for a setting
+only a person changes, starts no rerun either; a rerun that another failed step starts runs it again too.
+`retryDeploys: false` in a project's configuration turns the reruns off.
 
 ## Layout
 

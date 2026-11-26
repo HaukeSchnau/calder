@@ -1,8 +1,10 @@
+import { Calder } from "@calder-ci/core";
 import { Effect, Layer, Semaphore, Stream } from "effect";
 import * as Reactivity from "effect/reactivity/Reactivity";
 import { Migrator, SqlClient, SqlError, Statement } from "effect/sql";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { migrations } from "../src/controller/Db.ts";
+import * as Values from "../src/Values.ts";
 
 /**
  * A fresh in-memory database without a schema. Vitest runs on Node, so this goes through node:sqlite where
@@ -105,11 +107,28 @@ export const insertStep = (
     readonly error?: string;
     /** On a deploy's critical path (Rows.criticalPath). */
     readonly critical?: boolean;
+    /** The task's `noRetryCode`, in its plan. */
+    readonly noRetryCode?: number;
+    /** The exit code it failed with, journaled as the worker reports a task's failure. */
+    readonly exitCode?: number;
   } = {},
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at, finished_at, key, reused_from, error_message)
-      values (${runId}, ${name}, 'task', ${options.status ?? "passed"}, ${options.critical === true ? '{"critical":true}' : "{}"}, 0, 's', ${options.started ?? null},
-        ${options.finished ?? null}, ${options.key ?? null}, ${options.reusedFrom ?? null}, ${options.error ?? null})`;
+
+    const spec = {
+      ...(options.critical === true ? { critical: true } : {}),
+      ...(options.noRetryCode === undefined ? {} : { task: { noRetryCode: options.noRetryCode } }),
+    };
+
+    const error =
+      options.exitCode === undefined
+        ? null
+        : JSON.stringify(
+            Values.encode(Calder.TaskFailed.make({ exitCode: options.exitCode, failures: [] })),
+          );
+
+    yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at, finished_at, key, reused_from, error_message, error_json)
+      values (${runId}, ${name}, 'task', ${options.status ?? "passed"}, ${JSON.stringify(spec)}, 0, 's', ${options.started ?? null},
+        ${options.finished ?? null}, ${options.key ?? null}, ${options.reusedFrom ?? null}, ${options.error ?? null}, ${error})`;
   });

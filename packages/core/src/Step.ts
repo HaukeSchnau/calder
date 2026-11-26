@@ -154,6 +154,7 @@ export type Def =
       readonly lease: true | string | undefined;
       readonly artifacts: { readonly [env: string]: Step.Any };
       readonly skipCode: number | undefined;
+      readonly noRetryCode: number | undefined;
     }
   | {
       readonly _tag: "Action";

@@ -34,6 +34,8 @@ interface World {
   };
   /** Whether the app has eas-cli installed. */
   readonly eas?: boolean;
+  /** How gplay exits, 0 unless given. */
+  readonly gplay?: number;
 }
 
 const config = {
@@ -72,7 +74,8 @@ fi`,
 if [ "$1" = versions ]; then cat "$FAKE/versions.json"; fi`,
   unzip: `cat "$FAKE/embedded-android"`,
   keytool: `echo "Owner: CN=upload"; echo "SHA256: AA:BB"`,
-  gplay: `echo "$GPLAY_SERVICE_ACCOUNT_JSON" > "$FAKE/gplay-account"`,
+  gplay: `echo "$GPLAY_SERVICE_ACCOUNT_JSON" > "$FAKE/gplay-account"
+exit "$(cat "$FAKE/gplay-exit")"`,
   git: `echo "feat: a change"`,
   pnpm: "true",
   eas: `echo "$EXPO_TOKEN" > "$FAKE/expo-token"
@@ -147,6 +150,7 @@ const run = (
   );
   writeFileSync(join(fake, "embedded-ios"), world.embedded?.ios ?? "rv-ios");
   writeFileSync(join(fake, "embedded-android"), world.embedded?.android ?? "rv-android");
+  writeFileSync(join(fake, "gplay-exit"), String(world.gplay ?? 0));
   writeFileSync(
     join(fake, "versions.json"),
     JSON.stringify({ data: (world.versions ?? []).map((attributes) => ({ attributes })) }),
@@ -468,6 +472,13 @@ describe("Expo.playInternal", scripts, () => {
     expect(ran.calls.at(-1)).toBe(
       "gplay / release --package dev.example.hop --track internal --bundle android/app/build/outputs/bundle/release/app-release.aab --changes-not-sent-for-review",
     );
+  });
+
+  it("fails with its noRetryCode when gplay says Play refused the commit for the Console's state", () => {
+    const ran = run(step, { values, world: { gplay: 6 } });
+    expect(task(step).noRetryCode).toBe(6);
+    expect(ran.status).toBe(6);
+    expect(run(step, { values, world: { gplay: 10 } }).status).toBe(10);
   });
 
   it("gives Gradle a versionCode in minutes since 1970", () => {

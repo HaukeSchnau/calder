@@ -57,7 +57,8 @@ export const backoff = (attempt: number) =>
 /**
  * Where a project whose pushes deploy stands, null for one whose don't: what is deployed and how far the
  * head is ahead, and whether the head's push run ended without deploying it. While it failed on its deploy's critical path, it
- * reruns that run once its backoff passed, unless the project opts out; a failed check isn't retried.
+ * reruns that run once its backoff passed, unless the project opts out; a failed check isn't retried, and
+ * a step that exited with its `noRetryCode` starts no rerun, though one another step starts repeats it.
  */
 export const converge = (project: Project, now: number) =>
   Effect.gen(function* () {
@@ -67,11 +68,19 @@ export const converge = (project: Project, now: number) =>
     const runs = yield* Runs;
     const pushes = sql`project = ${project.name} and branch = ${project.defaultBranch} and trust = 'trusted' and event like ${'{"_tag":"Push"%'}`;
 
-    /** Whether the run has a step on a deploy's critical path, one that ended `failing` if given. */
+    /**
+     * Whether the run has a step on a deploy's critical path, with `failing` one that failed or died other
+     * than with its task's `noRetryCode`.
+     */
     const critical = (run: string, failing = false) =>
       Effect.map(
         sql`select 1 from steps where run_id = ${run} and json_extract(spec, '$.critical') = 1
-        ${failing ? sql`and status in ('failed', 'died')` : sql``} limit 1`,
+        ${
+          failing
+            ? sql`and status in ('failed', 'died')
+              and coalesce(json_extract(error_json, '$.value.exitCode') = json_extract(spec, '$.task.noRetryCode'), 0) = 0`
+            : sql``
+        } limit 1`,
         (rows) => rows.length > 0,
       );
 

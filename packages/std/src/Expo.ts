@@ -508,7 +508,8 @@ gplay release --package "$package" --track internal --bundle "$aab" ${changesNot
  * Google Play's internal testing track once Play processed it. Named `play`. The host provides the
  * Android SDK and a JDK (`ANDROID_HOME`, `JAVA_HOME`), `unzip` and `gplay`; the step brings the upload
  * key and the service account, as `UPLOAD_KEYSTORE`, `UPLOAD_KEYSTORE_PASSWORD` and
- * `GPLAY_SERVICE_ACCOUNT_JSON`.
+ * `GPLAY_SERVICE_ACCOUNT_JSON`. When Play refuses the commit because `changesNotSentForReview` doesn't
+ * fit the app's state in the Console, the step fails saying so, and Calder doesn't retry it.
  */
 export const playInternal = (options: PlayOptions) =>
   Task.make(options.name ?? "play", {
@@ -522,4 +523,7 @@ export const playInternal = (options: PlayOptions) =>
       GPLAY_SERVICE_ACCOUNT_JSON: Secret.file(options.serviceAccount),
     },
     run: cmd`bash -c ${playScript(options.changesNotSentForReview === true)} calder-expo ${options.dir ?? "."} ${options.runtime}`,
+    // infra's gplay exits with 6 when Play refuses the commit for the app's review state in the Console:
+    // a rejected change without `changesNotSentForReview`, or the flag with none. A person decides.
+    noRetryCode: 6,
   });

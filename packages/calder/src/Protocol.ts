@@ -79,6 +79,8 @@ export const PlannedStep = Schema.Struct({
        * Older plans lack it.
        */
       lease: Schema.optional(Schema.Union([Schema.Boolean, Schema.String])),
+      /** The task's `noRetryCode`, which the controller compares with a failure's exit code. Older plans lack it. */
+      noRetryCode: Schema.optional(Schema.Number),
     }),
   ),
   action: Schema.NullOr(

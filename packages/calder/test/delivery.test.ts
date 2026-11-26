@@ -185,8 +185,17 @@ describe("delivery", () => {
 describe("converge", () => {
   const hour = 3_600_000;
 
-  /** m1 deployed by p-1; m2, the head, failed in p-2 at a deploy (or, with `check`, a check). */
-  const failedHead = (options: { readonly check?: boolean } = {}) =>
+  /**
+   * m1 deployed by p-1; m2, the head, failed in p-2 at a deploy (or, with `check`, a check), with
+   * `exitCode` if given, which may be the deploy's `noRetryCode`.
+   */
+  const failedHead = (
+    options: {
+      readonly check?: boolean;
+      readonly exitCode?: number;
+      readonly noRetryCode?: number;
+    } = {},
+  ) =>
     Effect.gen(function* () {
       yield* insertRun("p-1", { at: 1, branch: "main", sha: "m1", planned: true });
       yield* insertStep("p-1", "deploy", { critical: true });
@@ -200,6 +209,8 @@ describe("converge", () => {
       yield* insertStep("p-2", "deploy", {
         critical: true,
         status: options.check === true ? "blocked" : "failed",
+        ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
+        ...(options.noRetryCode === undefined ? {} : { noRetryCode: options.noRetryCode }),
       });
       yield* insertStep("p-2", "test", { status: options.check === true ? "failed" : "passed" });
     });
@@ -355,6 +366,32 @@ describe("converge", () => {
       expect(reruns).toEqual([]);
     }).pipe(Effect.provide(Layer.merge(layer, services)));
   });
+
+  it.effect(
+    "leaves a deploy that failed with its noRetryCode to people, unless another deploy step failed otherwise",
+    () => {
+      const { reruns, services } = fakes();
+
+      /** What converge says once the head's deploy failed with `exitCode`, and with `other` another deploy step too. */
+      const after = (exitCode: number, other = false) =>
+        Effect.gen(function* () {
+          yield* failedHead({ exitCode, noRetryCode: 6 });
+
+          if (other)
+            yield* insertStep("p-2", "play", { critical: true, status: "failed", exitCode: 1 });
+
+          return yield* converge(project, 10 * hour);
+        }).pipe(Effect.provide(Layer.merge(layer, services)));
+
+      return Effect.gen(function* () {
+        expect(yield* after(6)).toMatchObject({ stalled: true, retry: null });
+        expect(reruns).toEqual([]);
+        expect(yield* after(10)).toMatchObject({ retry: null });
+        expect(yield* after(6, true)).toMatchObject({ retry: null });
+        expect(reruns).toEqual(["p-2", "p-2"]);
+      });
+    },
+  );
 
   it.effect("counts a nightly that passed at the head as deployed only when it deploys", () => {
     const { services } = fakes();
