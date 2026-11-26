@@ -1,7 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { SqlClient } from "effect/sql";
 import { vi } from "vite-plus/test";
-import { anchored, lastPassed, load, type Streak, streaks } from "../src/controller/Health.ts";
+import {
+  anchored,
+  failing,
+  lastPassed,
+  load,
+  type Streak,
+  streaks,
+} from "../src/controller/Health.ts";
 import { insertRun, insertStep, layer } from "./sqlite.ts";
 
 vi.mock("@effect/sql-sqlite-bun", () => ({}));
@@ -148,6 +156,116 @@ describe("streaks", () => {
         expect(yield* keep({ ...failing, since: 90, firstRun: "p-9", settled: false })).toEqual([
           { ...failing, since: 90, firstRun: "p-9", settled: false },
         ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  /** p-1's testflight passed and p-2's failed; `tick` is one export of the gauge, `set` changes a run's testflight. */
+  const rerun = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* insertRun("p-1", { at: 1, branch: "main", planned: true });
+    yield* insertStep("p-1", "testflight", { status: "passed", finished: 1 });
+    yield* insertRun("p-2", { at: 2, branch: "main", planned: true });
+    yield* insertStep("p-2", "testflight", { status: "failed", finished: 2 });
+
+    return {
+      tick: failing("p", "main", 0, 100),
+      set: (run: string, status: string, finished: number | null) =>
+        sql`update steps set status = ${status}, finished_at = ${finished} where run_id = ${run} and name = 'testflight'`,
+      first: { step: "testflight", firstRun: "p-2", since: 2, settled: true },
+    };
+  });
+
+  it.effect("keeps a streak's labels while its first failed step is rerun and fails again", () =>
+    Effect.gen(function* () {
+      const { tick, set, first } = yield* rerun;
+      expect(yield* tick).toEqual([{ ...first, runs: 1, endedAt: null }]);
+
+      // While the rerun waits or runs, a newer run's failure doesn't start the streak over.
+      yield* set("p-2", "pending", null);
+      yield* insertRun("p-3", { at: 3, branch: "main", planned: true });
+      yield* insertStep("p-3", "testflight", { status: "failed", finished: 3 });
+      expect(yield* tick).toEqual([{ ...first, runs: 2, endedAt: null }]);
+
+      // The rerun fails later than the first attempt did.
+      yield* set("p-2", "failed", 5);
+      expect(yield* tick).toEqual([{ ...first, runs: 2, endedAt: null }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("ends a streak under its labels when a rerun of its only failure passes", () =>
+    Effect.gen(function* () {
+      const { tick, set, first } = yield* rerun;
+      expect(yield* tick).toEqual([{ ...first, runs: 1, endedAt: null }]);
+      yield* set("p-2", "pending", null);
+      expect(yield* tick).toEqual([{ ...first, runs: 1, endedAt: null }]);
+      yield* set("p-2", "passed", 6);
+      const recovered = { ...first, runs: 0, endedAt: 100 };
+      expect(yield* tick).toEqual([recovered]);
+      // Its 0 holds while a recovered streak is exported, though no run shows the failure any more.
+      expect(yield* tick).toEqual([recovered]);
+
+      // A failure after that pass is a streak of its own, even in the same run.
+      yield* set("p-2", "failed", 8);
+      expect(yield* tick).toEqual([{ ...first, since: 8, runs: 1, endedAt: null }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps a recovered streak's labels when its first failure is rerun", () =>
+    Effect.gen(function* () {
+      const { tick, set, first } = yield* rerun;
+      yield* insertRun("p-3", { at: 3, branch: "main", planned: true });
+      yield* insertStep("p-3", "testflight", { status: "passed", finished: 3 });
+      const recovered = { ...first, runs: 1, endedAt: 3 };
+      expect(yield* tick).toEqual([recovered]);
+      yield* set("p-2", "pending", null);
+      expect(yield* tick).toEqual([{ ...recovered, runs: 0 }]);
+      yield* set("p-2", "passed", 6);
+      expect(yield* tick).toEqual([{ ...recovered, runs: 0 }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps a recovered streak's labels when a rerun moves its first failure", () =>
+    Effect.gen(function* () {
+      const { tick, set, first } = yield* rerun;
+
+      for (const [i, status] of [
+        [3, "failed"],
+        [4, "passed"],
+      ] as const) {
+        yield* insertRun(`p-${i}`, { at: i, branch: "main", planned: true });
+        yield* insertStep(`p-${i}`, "testflight", { status, finished: i });
+      }
+
+      expect(yield* tick).toEqual([{ ...first, runs: 2, endedAt: 4 }]);
+      yield* set("p-2", "pending", null);
+      expect(yield* tick).toEqual([{ ...first, runs: 1, endedAt: 4 }]);
+      yield* set("p-2", "failed", 9);
+      expect(yield* tick).toEqual([{ ...first, runs: 2, endedAt: 4 }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "ends the newest streak under its labels when a rerun passes it, though an older one shows again",
+    () =>
+      Effect.gen(function* () {
+        const { tick, set } = yield* rerun;
+
+        // Runs overlap: p-3's testflight passed after p-4's failed.
+        for (const [i, status, finished] of [
+          [3, "passed", 5],
+          [4, "failed", 4],
+        ] as const) {
+          yield* insertRun(`p-${i}`, { at: i, branch: "main", planned: true });
+          yield* insertStep(`p-${i}`, "testflight", { status, finished });
+        }
+
+        const newest = { step: "testflight", firstRun: "p-4", since: 4, settled: true };
+        expect(yield* tick).toEqual([{ ...newest, runs: 1, endedAt: null }]);
+        yield* set("p-4", "pending", null);
+        expect(yield* tick).toEqual([{ ...newest, runs: 1, endedAt: null }]);
+        yield* set("p-4", "passed", 9);
+        expect(yield* tick).toEqual([{ ...newest, runs: 0, endedAt: 100 }]);
+        expect(yield* tick).toEqual([{ ...newest, runs: 0, endedAt: 100 }]);
       }).pipe(Effect.provide(layer)),
   );
 

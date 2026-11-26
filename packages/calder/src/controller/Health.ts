@@ -45,14 +45,22 @@ const outcomeOf = (status: string) =>
 
 /**
  * Each step's newest streak of failures over the runs of a default branch. Skipped and blocked steps
- * neither fail nor pass, so a deploy blocked by a failed build counts the build only.
+ * neither fail nor pass, so a deploy blocked by a failed build counts the build only. `open` names the
+ * run each recorded open streak started in: a rerun of the step there has no outcome until it ends, so
+ * the failure it had stands until then.
  */
-export const streaks = (runs: ReadonlyArray<RunOutcomes>): ReadonlyArray<Streak> => {
+export const streaks = (
+  runs: ReadonlyArray<RunOutcomes>,
+  open: ReadonlyMap<string, string> = new Map(),
+): ReadonlyArray<Streak> => {
   const current = new Map<string, Streak & { readonly tag: string }>();
   const passed = new Set<string>();
 
   for (const run of runs) {
-    const outcomes = [...run.steps].map(([step, s]) => [step, s.outcome, s.at ?? run.at] as const);
+    const outcomes = [...run.steps].map(
+      ([step, s]) =>
+        [step, s.outcome ?? (open.get(step) === run.id ? "failed" : null), s.at ?? run.at] as const,
+    );
 
     if (run.plan !== "pending")
       outcomes.push([planStep, run.plan === "planned" ? "passed" : "failed", run.at]);
@@ -201,7 +209,8 @@ export const load = (
 
 /**
  * Gives each streak the start recorded for its step while the runs read can't tell where it started, so
- * a streak older than retention keeps its labels, and records each streak's start and end. Open streaks
+ * a streak older than retention keeps its labels, or while it started in the same run, so a rerun of its
+ * first failed step doesn't make it a second alert. Records each streak's start and end. Open streaks
  * that `list` lacks, whose step had no outcome in the runs read, end at `now`.
  */
 export const anchored = (project: string, list: ReadonlyArray<Streak>, now: number) =>
@@ -218,15 +227,33 @@ export const anchored = (project: string, list: ReadonlyArray<Streak>, now: numb
 
     const stored = new Map(rows.map((row) => [row.step, row]));
 
-    const result = yield* Effect.forEach(list, (streak) =>
+    // An ended streak that started in an older run than the recorded one is an older streak, which the runs
+    // show again once a rerun passed the recorded one's failures: the record stays, and ends below if it
+    // was open. Runs' steps finish out of order, so their runs' numbers (Workflow `create`) tell which is older.
+    const number = (run: string) => Number(run.slice(run.lastIndexOf("-") + 1));
+
+    const newer = list.filter((streak) => {
+      const row = stored.get(streak.step);
+
+      return (
+        row === undefined ||
+        streak.endedAt === null ||
+        number(streak.firstRun) >= number(row.first_run)
+      );
+    });
+
+    const result = yield* Effect.forEach(newer, (streak) =>
       Effect.gen(function* () {
         const row = stored.get(streak.step);
 
-        // A row of a streak that ended before this one started says nothing about this one.
+        // An open row is this streak if it started in the same run, even when a rerun of the step moved its
+        // finish, or if the runs read can't tell where this one started. An ended one is if it ended at the
+        // same pass, even when a rerun moved its first failure.
         const same =
           row !== undefined &&
-          !streak.settled &&
-          (row.ended_at === null || row.ended_at === streak.endedAt);
+          (row.ended_at === null
+            ? row.first_run === streak.firstRun || !streak.settled
+            : row.ended_at === streak.endedAt);
 
         const start = same
           ? { firstRun: row.first_run, since: row.since }
@@ -242,7 +269,7 @@ export const anchored = (project: string, list: ReadonlyArray<Streak>, now: numb
       }),
     );
 
-    const listed = new Set(list.map((s) => s.step));
+    const listed = new Set(newer.map((s) => s.step));
 
     const lost = rows
       .filter((row) => row.ended_at === null && !listed.has(row.step))
@@ -282,6 +309,59 @@ export const lastPassed = (project: string, branch: string, from: number) =>
 /** A recovered streak's series stays at 0 this long, so the alert resolves even if a scrape missed the change. */
 const keepRecovered = 86_400_000;
 
+/**
+ * Each step's streak over the trusted runs of the default branch since `from`, with the labels it keeps,
+ * and each recorded one that recovered within `keepRecovered`, which the runs may no longer show: a
+ * rerun that passed its only failure, or runs past the ones read.
+ */
+export const failing = (project: string, branch: string, from: number, now: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    const open = yield* sql<{
+      step: string;
+      first_run: string;
+    }>`select step, first_run from streak_starts where project = ${project} and ended_at is null`;
+
+    const runs = yield* load(
+      project,
+      branch,
+      from,
+      30,
+      open.map((row) => row.step),
+    );
+
+    const list = yield* anchored(
+      project,
+      streaks(runs, new Map(open.map((row) => [row.step, row.first_run]))),
+      now,
+    );
+
+    const listed = new Set(list.map((streak) => streak.step));
+
+    const recovered = yield* sql<{
+      step: string;
+      first_run: string;
+      since: number;
+      ended_at: number;
+    }>`select step, first_run, since, ended_at from streak_starts
+      where project = ${project} and ended_at > ${now - keepRecovered}`;
+
+    return [
+      ...list,
+      ...recovered
+        .filter((row) => !listed.has(row.step))
+        .map((row): Streak => ({
+          step: row.step,
+          since: row.since,
+          firstRun: row.first_run,
+          runs: 0,
+          settled: true,
+          endedAt: row.ended_at,
+        })),
+    ];
+  });
+
 const when = new Intl.DateTimeFormat("en-GB", {
   weekday: "short",
   day: "numeric",
@@ -309,20 +389,9 @@ export const layer = Layer.effectDiscard(
       const passes = [];
 
       for (const project of projects.all()) {
-        const open = yield* sql<{
-          step: string;
-        }>`select step from streak_starts where project = ${project.name} and ended_at is null`;
-
         const from = now - config.retention.days * 86_400_000;
 
-        const list = yield* load(
-          project.name,
-          project.defaultBranch,
-          from,
-          30,
-          open.map((row) => row.step),
-        ).pipe(
-          Effect.flatMap((runs) => anchored(project.name, streaks(runs), now)),
+        const list = yield* failing(project.name, project.defaultBranch, from, now).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
 
