@@ -32,7 +32,8 @@ export class Projects extends Context.Service<
     readonly all: () => ReadonlyArray<Project>;
     /**
      * The project of a repository. One of an allowed owner is enrolled when the revision `sha` or its
-     * default branch carries `.calder/ci.ts`.
+     * default branch carries `.calder/ci.ts`. Its default branch is `defaultBranch`, from Gitea's list of the
+     * owner's repositories, or Gitea's answer.
      */
     readonly byRepo: (
       repo: string,
@@ -97,7 +98,11 @@ export const layer = Layer.effect(Projects)(
         const project: Project = {
           name: name.toLowerCase(),
           repo,
-          defaultBranch: at.defaultBranch ?? "main",
+          defaultBranch:
+            at.defaultBranch ??
+            (yield* gitea.repos(owner)).find((r) => r.repo.toLowerCase() === repo.toLowerCase())
+              ?.defaultBranch ??
+            "main",
           targets: null,
           secrets: {},
         };
@@ -147,6 +152,19 @@ export const layer = Layer.effect(Projects)(
                 if (known === undefined) return byRepo(repo, { defaultBranch });
 
                 if (branchFromRepo.has(known.name)) add({ ...known, defaultBranch });
+
+                // One that enrolled itself kept the default branch its first webhook named, before Calder
+                // asked Gitea, and whose runs are the default branch's is Gitea's to say.
+                if (
+                  config.projects[known.name] === undefined &&
+                  known.defaultBranch !== defaultBranch
+                ) {
+                  add({ ...known, defaultBranch });
+
+                  return sql`update projects set default_branch = ${defaultBranch} where name = ${known.name}`.pipe(
+                    Effect.orDie,
+                  );
+                }
 
                 return Effect.void;
               },

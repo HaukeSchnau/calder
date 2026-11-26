@@ -16,7 +16,7 @@ import * as Exec from "../Exec.ts";
 import { groupId } from "../Groups.ts";
 import { sha256 } from "../Keys.ts";
 import type { Job, JobEvent, JobResult, Pool } from "../Protocol.ts";
-import { compatibility, Unauthorized } from "../Protocol.ts";
+import { compatibility, sandboxed, Unauthorized } from "../Protocol.ts";
 import { Agents } from "./Agents.ts";
 import { Config } from "./Config.ts";
 
@@ -260,7 +260,7 @@ export const layer = Layer.effect(Jobs)(
       Exec.exec(argv).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
 
     const templateOf = (pool: Pool, large: boolean) =>
-      `calder-job-${pool}${large && pool !== "trusted" ? "-large" : ""}`;
+      `calder-job-${pool}${large && sandboxed(pool) ? "-large" : ""}`;
 
     const unit = (template: string, id: string) => `${template}@${id}.service`;
 
@@ -446,6 +446,7 @@ export const layer = Layer.effect(Jobs)(
         "calder-job-fork@*.service",
         "calder-job-fork-large@*.service",
         "calder-job-trusted@*.service",
+        "calder-job-default-branch@*.service",
       ]);
 
       const kept = new Set(

@@ -7,7 +7,7 @@ import * as Counters from "./Counters.ts";
 import { Gitea } from "./Gitea.ts";
 import { Live } from "./Live.ts";
 import { Mirror } from "./Mirror.ts";
-import { Projects } from "./Projects.ts";
+import { type Project, Projects } from "./Projects.ts";
 import * as Rows from "./Rows.ts";
 import { RunsCore } from "./Runs.ts";
 import * as Telemetry from "./Telemetry.ts";
@@ -235,6 +235,41 @@ export const layer = Layer.effect(Runs)(
       });
 
     /**
+     * Why a run of the default branch at `sha` isn't one, null when it is or when `event` isn't of that branch.
+     * A run of the default branch may get its secrets and runs in its pool, so its commit must be the branch's
+     * head at Gitea or one it descends from, not only where a webhook says: one signed with a leaked secret
+     * could name any commit.
+     */
+    const offDefaultBranch = (project: Project, event: Domain.Event, sha: string) =>
+      Effect.gen(function* () {
+        if (!Rows.ofDefaultBranch(event, project.defaultBranch)) return null;
+
+        // A ref, or in a SHA-1 repository a longer name of hex digits, could name another commit by the time
+        // the run plans than the one checked here; git reads 40 hex digits as a commit, never as a ref.
+        if (!/^[0-9a-f]{40}$/.test(sha)) return `${sha} is no full commit id`;
+        const head = yield* gitea.head(project.repo, project.defaultBranch);
+        const contains = mirror.contains(project.name, head, sha);
+
+        const on =
+          head === sha ||
+          (yield* contains) ||
+          (yield* mirror.fetch(project.name).pipe(
+            Effect.andThen(contains),
+            Effect.orElseSucceed(() => false),
+          ));
+
+        return on
+          ? null
+          : `${Event.describe(event)} of ${project.name} names ${sha.slice(0, 12)}, which isn't on ${project.defaultBranch} at Gitea (its head is ${head.slice(0, 12)})`;
+      }).pipe(
+        Effect.catchCause(() =>
+          Effect.succeed(
+            `Calder couldn't ask Gitea whether ${sha.slice(0, 12)} is on ${project.defaultBranch}`,
+          ),
+        ),
+      );
+
+    /**
      * Why Calder wouldn't trust a run it trusted when it started (`create`), such as a run of renovate's
      * branch from before `untrustedBranches` named it; null when it still would.
      */
@@ -251,19 +286,26 @@ export const layer = Layer.effect(Runs)(
     };
 
     // A restart interrupted these; their steps that were running start over, unless Calder no longer
-    // trusts the run's code. Cancelled ones only finish.
+    // trusts the run's code, or its commit isn't on the default branch it claims, as a run from before Calder
+    // checked that might not be. Cancelled ones only finish.
     const unfinished = yield* db(sql<Rows.RunRow>`select * from runs
     where status in ('queued', 'planning', 'running') or (status = 'cancelled' and finished_at is null) order by created_at`);
 
     yield* Effect.forEach(
       unfinished,
-      (r) => {
-        const why = distrusted(r);
+      (r) =>
+        Effect.gen(function* () {
+          const project = projects.get(r.project);
 
-        return (why === null ? Effect.void : core.cancel(r.id, why)).pipe(
-          Effect.andThen(start(r.id)),
-        );
-      },
+          const why =
+            distrusted(r) ??
+            (r.status === "cancelled" || r.trust !== "trusted" || project === undefined
+              ? null
+              : yield* offDefaultBranch(project, JSON.parse(r.event) as Domain.Event, r.sha));
+
+          if (why !== null) yield* core.cancel(r.id, why);
+          yield* start(r.id);
+        }),
       { discard: true },
     );
 
@@ -287,6 +329,10 @@ export const layer = Layer.effect(Runs)(
 
         const event = input.event;
         const branch = branchOf(event, project.defaultBranch);
+
+        const off = yield* offDefaultBranch(project, event, input.sha);
+
+        if (off !== null) return yield* RunError.make({ message: off });
 
         const fork =
           input.fork === true ||
@@ -369,6 +415,18 @@ export const layer = Layer.effect(Runs)(
           const row = yield* db(Rows.loadRun(runId));
 
           if (row === undefined) return yield* RunError.make({ message: `no run ${runId}` });
+          const project = projects.get(row.project);
+
+          // Also a retry in place, which `create` doesn't see.
+          if (row.trust === "trusted" && project !== undefined) {
+            const off = yield* offDefaultBranch(
+              project,
+              JSON.parse(row.event) as Domain.Event,
+              row.sha,
+            );
+
+            if (off !== null) return yield* RunError.make({ message: off });
+          }
 
           // A run whose code Calder no longer trusts doesn't run again as it was: a new run of it does.
           if (

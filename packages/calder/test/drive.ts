@@ -36,6 +36,9 @@ import { insertRun, insertStep, layer as sqlite } from "./sqlite.ts";
 
 export const unused = () => Effect.die(new Error("not used by these tests"));
 
+/** `app-2`'s commit. */
+export const sha = "5".repeat(40);
+
 /** The fields every planned step of these tests shares. */
 export const step = {
   exits: [],
@@ -93,6 +96,11 @@ export interface Drive {
     never,
     RunsCore | Workflow.Runs | SqlClient.SqlClient | Config | Mirror | Projects | Gitea
   >;
+  /**
+   * Gitea's head of the default branch, with the commits it descends from as the mirror knows them once it
+   * fetched (`ancestors`); `app-2`'s commit by default.
+   */
+  readonly defaultBranch?: { readonly head: string; readonly ancestors?: ReadonlyArray<string> };
   /** The controller's `untrustedBranches`, none by default. */
   readonly untrustedBranches?: ReadonlyArray<string>;
   /** How long Gitea takes to take a commit status, none by default. */
@@ -166,6 +174,7 @@ export const drive = ({
   project: configured = {},
   meanwhile = Effect.void,
   untrustedBranches,
+  defaultBranch,
   requisites,
   rerunOf,
   placementKey,
@@ -218,7 +227,7 @@ export const drive = ({
     const fork = event._tag === "PullRequest" && event.fork ? 1 : 0;
     yield* sql`insert into runs (id, project, number, event, sha, branch, pr, commit_title, author, commit_time, trust, status, created_at,
         started_at, trace_id, span_id, rerun_of, fork)
-      values ('app-2', 'app', ${number}, ${JSON.stringify(event)}, 'sha', 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
+      values ('app-2', 'app', ${number}, ${JSON.stringify(event)}, ${sha}, 'main', ${pr}, 'title', 'hauke', 2, ${trust}, ${unplanned ? "queued" : "running"},
         2, 2, 't', 's', ${rerunOf === undefined ? null : "app-1"}, ${fork})`;
 
     if (!unplanned)
@@ -293,6 +302,11 @@ export const drive = ({
     const roused: Array<string> = [];
     /** Every commit status Calder reported, in order, as `context: state: description`. */
     const history: Array<string> = [];
+
+    const main = { head: defaultBranch?.head ?? sha, ancestors: defaultBranch?.ancestors ?? [] };
+
+    /** Whether the mirror fetched, which shows it the default branch's history. */
+    let fetched = false;
 
     const project: Project = {
       name: "app",
@@ -433,7 +447,7 @@ export const drive = ({
       }),
       Layer.succeed(Mirror)({
         path: () => "/mirror",
-        fetch: () => Effect.void,
+        fetch: () => Effect.sync(() => void (fetched = true)),
         hasPipeline: () => Effect.succeed(true),
         pipelineTree: () => Effect.succeed("tree"),
         commit: (_project, sha) =>
@@ -446,7 +460,11 @@ export const drive = ({
             tree: "tree",
           }),
         between: unused,
-        contains: unused,
+        contains: (_project, revision, commit) =>
+          Effect.succeed(
+            revision === main.head &&
+              (commit === revision || (fetched && main.ancestors.includes(commit))),
+          ),
         pipelineDir: () => Effect.succeed("/calder"),
         flake: () => "git+file:///mirror",
         byUrl: () => ({ "ssh://git@gitea.test/schnau/lib.git": "/state/mirrors/lib.git" }),
@@ -474,7 +492,7 @@ export const drive = ({
           return delay === undefined ? record : Effect.sleep(delay).pipe(Effect.andThen(record));
         },
         requiredChecks: () => Effect.succeed([]),
-        head: unused,
+        head: () => Effect.succeed(main.head),
         pullTitle: () => Effect.succeed("title"),
         comment: unused,
         dispatch: unused,

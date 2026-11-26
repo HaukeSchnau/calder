@@ -464,18 +464,20 @@ export class WorkerRpcs extends RpcGroup.make(
  * controller computes every key. Changes an older worker only fails on, such as a ci.ts that needs a
  * newer SDK, need no bump: failed steps are not reused.
  */
-export const compatibility = 7;
+export const compatibility = 8;
 
 /**
  * Who a job runs as. Forks' pull requests get a pool of their own, so nothing a fork's job leaves in its
- * home or workspaces reaches a same-repo pull request's job, whose plan the default branch may take.
+ * home or workspaces reaches a same-repo pull request's job, whose plan the default branch may take. Runs
+ * of the default branch, the only ones that get its secrets (Config's `defaultBranchSecrets`), get one too,
+ * so nothing another branch's trusted job or a pull request's preview leaves reaches a step with them.
  */
-export const Pool = Schema.Literals(["pr", "fork", "trusted"]);
+export const Pool = Schema.Literals(["pr", "fork", "trusted", "default-branch"]);
 
 export type Pool = typeof Pool.Type;
 
 /** Pools whose workers reach the network only through an egress proxy with this allowlist (`Egress.admit`). */
-export const sandboxed = (pool: Pool) => pool !== "trusted";
+export const sandboxed = (pool: Pool) => pool === "pr" || pool === "fork";
 
 export const EgressPolicy = Schema.Struct({
   allow: Schema.Array(Schema.String),

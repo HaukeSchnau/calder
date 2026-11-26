@@ -119,7 +119,12 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   There a pull request's job runs as its pool's user in the host's unit template for it, `calder-job-pr@`, with
   its own home and workspaces, apart from trusted jobs' `calder-job-trusted@`. A fork's pull request has a pool
   of its own, `calder-job-fork@`, so nothing a fork's job leaves behind reaches a same-repo pull request's job,
-  whose plan the default branch may take. Runs of a bot's branches run there too (see below). A host that defines no unit for a pool fails its jobs, saying so.
+  whose plan the default branch may take. Runs of a bot's branches run there too (see below). Runs of the
+  default branch have one too, `calder-job-default-branch@`, so nothing another branch's trusted job or a
+  preview leaves behind reaches a step with the default branch's secrets. A host with `--sandbox` runs
+  default-branch jobs as the agent's own user, so it takes no trusted ones, as m1 takes `pr,default-branch`
+  by its groups; another branch's step of a platform whose agents take no trusted jobs dies saying so
+  instead of waiting, while a default-branch step waits for an agent that takes it. A host that defines no unit for a pool fails its jobs, saying so.
   Tasks get `GOMEMLIMIT` at 90% of their worker's memory limit, so Go tools such as tsgo collect
   garbage before the limit throttles them; a task's own `env` overrides it.
   Pull-request tasks reach the network only through the controller's egress allowlist. Their commands get
@@ -131,7 +136,11 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   secret the project doesn't configure dies saying so. A secret in the project's `defaultBranchSecrets`
   instead of `secrets`, such as an app store key, goes only to runs of the default branch (its pushes,
   schedules and manual runs), which run its head's ci.ts; a step that names one in another run, a pull
-  request's preview included, dies before it runs, saying so. A project with them names its `defaultBranch`,
+  request's preview included, dies before it runs, saying so. A run of the default branch is one of a commit
+  on it: before Calder starts one, the commit (a full commit id) must be the branch's head at Gitea or one it
+  descends from, so a webhook signed with a leaked secret can't start one for another branch's commit. A
+  restart cancels an unfinished one whose commit isn't, and a rerun of one is refused. A repository Calder
+  enrols by itself takes its default branch from Gitea, not from the webhook. A project with them names its `defaultBranch`,
   since Calder otherwise takes it to be `main` until Gitea told it. The worker replaces the job's secrets and its token
   with `***` in what leaves it, also where JSON, a URL, a form or base64 encodes them: logs, test messages,
   pull-request comments, dispatch inputs and why a step failed or was skipped. A secret counts from 4

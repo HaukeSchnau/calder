@@ -11,8 +11,11 @@ vi.mock("@effect/sql-sqlite-bun", () => ({}));
 
 const unused = () => Effect.die("unused");
 
-/** Gitea where `files` lists the `repo@ref:path` that exist. */
-const gitea = (files: ReadonlyArray<string>) =>
+/** Gitea where `files` lists the `repo@ref:path` that exist, and `repos` the owner's repositories. */
+const gitea = (
+  files: ReadonlyArray<string>,
+  repos: ReadonlyArray<{ readonly repo: string; readonly defaultBranch: string }> = [],
+) =>
   Layer.succeed(Gitea)({
     status: unused,
     requiredChecks: unused,
@@ -20,7 +23,7 @@ const gitea = (files: ReadonlyArray<string>) =>
     pullTitle: unused,
     comment: unused,
     dispatch: unused,
-    repos: () => Effect.succeed([]),
+    repos: () => Effect.succeed(repos),
     hasFile: (repo, ref, path) => Effect.succeed(files.includes(`${repo}@${ref}:${path}`)),
     pull: unused,
     updatePull: unused,
@@ -30,10 +33,13 @@ const gitea = (files: ReadonlyArray<string>) =>
     closedPulls: unused,
   });
 
-const projects = (files: ReadonlyArray<string>) =>
+const projects = (
+  files: ReadonlyArray<string>,
+  repos?: ReadonlyArray<{ readonly repo: string; readonly defaultBranch: string }>,
+) =>
   Projects.layer.pipe(
     Layer.provide([
-      gitea(files),
+      gitea(files, repos),
       config({ owners: ["schnau"], projects: { configured: { repo: "schnau/configured" } } }),
     ]),
   );
@@ -42,6 +48,56 @@ const projects = (files: ReadonlyArray<string>) =>
 const scanned = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }));
 
 describe("Projects", () => {
+  it.effect(
+    "takes the default branch of a repository a webhook enrols from Gitea, which the webhook can't say",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Effect.gen(function* () {
+          const p = yield* Projects.Projects;
+          yield* scanned;
+
+          return yield* p.byRepo("schnau/pushed", { sha: "abc" });
+        }).pipe(
+          Effect.provide(
+            projects(
+              ["schnau/pushed@abc:.calder/ci.ts"],
+              [{ repo: "schnau/pushed", defaultBranch: "trunk" }],
+            ),
+          ),
+        );
+
+        expect(project?.defaultBranch).toBe("trunk");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("takes an enrolled repository's default branch from Gitea when it starts", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // From before Calder asked Gitea, when its first webhook named main. It ran, so Calder keeps it.
+      yield* sql`insert into projects (name, repo, default_branch, created_at) values ('old', 'schnau/old', 'main', 0)`;
+      yield* insertRun("old-1", { at: 1 });
+
+      const branch = yield* Effect.gen(function* () {
+        const p = yield* Projects.Projects;
+        yield* scanned;
+
+        return p.get("old")?.defaultBranch;
+      }).pipe(
+        Effect.provide(
+          projects(
+            ["schnau/old@trunk:.calder/ci.ts"],
+            [{ repo: "schnau/old", defaultBranch: "trunk" }],
+          ),
+        ),
+      );
+
+      expect(branch).toBe("trunk");
+      expect(yield* sql`select default_branch from projects where name = 'old'`).toEqual([
+        { default_branch: "trunk" },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "enrols a repository once the pushed revision or its default branch carries ci.ts",
     () =>

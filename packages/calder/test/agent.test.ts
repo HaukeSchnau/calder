@@ -50,18 +50,36 @@ describe("Agent", () => {
       (pool: string) =>
         pools.includes(pool);
 
-    expect(Agent.poolsOf({ units: "/run/jobs", pools: ["pr", "trusted"] }, groups())).toEqual([
-      "pr",
+    expect(
+      Agent.poolsOf({ units: "/run/jobs", sandbox: null, pools: ["pr", "trusted"] }, groups()),
+    ).toEqual(["pr", "trusted"]);
+    expect(
+      Agent.poolsOf({ units: "/run/jobs", sandbox: null, pools: null }, groups("pr", "trusted")),
+    ).toEqual(["pr", "trusted"]);
+    expect(Agent.poolsOf({ units: "/run/jobs", sandbox: null, pools: null }, groups())).toContain(
+      "--units needs",
+    );
+    expect(Agent.poolsOf({ units: null, sandbox: null, pools: null }, groups("pr"))).toEqual([
       "trusted",
     ]);
-    expect(Agent.poolsOf({ units: "/run/jobs", pools: null }, groups("pr", "trusted"))).toEqual([
+    expect(
+      Agent.poolsOf({ units: null, sandbox: null, pools: ["pr", "trusted"] }, groups()),
+    ).toContain("need --units");
+    expect(
+      Agent.poolsOf({ units: null, sandbox: null, pools: ["default-branch"] }, groups()),
+    ).toContain("need --units");
+    // m1 runs both trusted pools' jobs as Hauke, so it takes the default branch's only.
+    const m1 = { units: "/run/jobs", sandbox: "calder-job" };
+    expect(Agent.poolsOf({ ...m1, pools: ["pr", "default-branch"] }, groups())).toEqual([
       "pr",
-      "trusted",
+      "default-branch",
     ]);
-    expect(Agent.poolsOf({ units: "/run/jobs", pools: null }, groups())).toContain("--units needs");
-    expect(Agent.poolsOf({ units: null, pools: null }, groups("pr"))).toEqual(["trusted"]);
-    expect(Agent.poolsOf({ units: null, pools: ["pr", "trusted"] }, groups())).toContain(
-      "need --units",
+    // Its start script from before, which a Calder that knows the pool must not run.
+    expect(Agent.poolsOf({ ...m1, pools: ["pr", "trusted"] }, groups())).toContain(
+      "take default-branch instead of trusted",
+    );
+    expect(Agent.poolsOf({ ...m1, pools: null }, groups("pr", "trusted"))).toContain(
+      "take default-branch instead of trusted",
     );
   });
 

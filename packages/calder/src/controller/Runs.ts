@@ -20,6 +20,7 @@ import type {
   Records,
   RunInfo,
 } from "../Protocol.ts";
+import { sandboxed } from "../Protocol.ts";
 import { Agents } from "./Agents.ts";
 import { Cache, hashOf } from "./Cache.ts";
 import { Comments } from "./Comments.ts";
@@ -432,8 +433,18 @@ export const layerCore = Layer.effect(RunsCore)(
     const repoOf = (project: string) => projects.get(project)!.repo;
     const link = (runId: string) => `${config.publicUrl.replace(/\/$/, "")}/#/run/${runId}`;
 
+    /** Who a run's jobs run as. A run of the default branch is one of a commit on it (Workflow `create`). */
     const poolOf = (run: Rows.RunRow): Pool =>
-      run.trust === "trusted" ? "trusted" : run.fork === 1 ? "fork" : "pr";
+      run.trust === "trusted"
+        ? Rows.ofDefaultBranch(
+            JSON.parse(run.event) as Domain.Event,
+            projects.get(run.project)?.defaultBranch,
+          )
+          ? "default-branch"
+          : "trusted"
+        : run.fork === 1
+          ? "fork"
+          : "pr";
 
     /** A background check's run: its jobs take only slots nothing else wants (Slots `background`). */
     const backgroundOf = (run: Rows.RunRow) => {
@@ -1269,27 +1280,29 @@ export const layerCore = Layer.effect(RunsCore)(
     };
 
     /**
-     * A step of another platform runs on an agent of it. A pull request's needs one that runs pull
-     * requests' jobs in its host's sandbox (`calder agent --units`), like this host's: an agent that runs
-     * its workers itself does so as one user, without the egress allowlist, private network and private /tmp.
-     * A trusted run's waits for any agent of the platform, which a sleeping one's host is woken for.
+     * A step of another platform runs on an agent of it that runs its pool's jobs. A pull request's needs one
+     * that runs pull requests' jobs in its host's sandbox (`calder agent --units`), like this host's: an agent
+     * that runs its workers itself does so as one user, without the egress allowlist, private network and
+     * private /tmp. A trusted run's waits for an agent of the platform, which a sleeping one's host is woken
+     * for. One of another branch than the default one doesn't when those it knows take no trusted jobs, as m1
+     * takes only the default branch's, whose jobs run as Hauke's user there; the default branch's always
+     * waits, as while an agent still runs with its old pools.
      */
-    const refuses = (run: Rows.RunRow, platform: string | null) =>
-      platform !== null &&
-      platform !== config.system &&
-      poolOf(run) !== "trusted" &&
+    const refuses = (run: Rows.RunRow, platform: string | null) => {
+      if (platform === null || platform === config.system) return false;
+      const pool = poolOf(run);
+
       // As Agents `takes` places it: a portable-only agent takes no job of its own platform, and one of
       // another compatibility version none at all.
-      !agents
+      const theirs = agents
         .usage()
-        .some(
-          (a) =>
-            a.platform === platform &&
-            a.current &&
-            !a.evaluator &&
-            !a.portableOnly &&
-            a.pools.includes(poolOf(run)),
-        );
+        .filter((a) => a.platform === platform && a.current && !a.evaluator && !a.portableOnly);
+
+      return (
+        (sandboxed(pool) || (pool === "trusted" && theirs.length > 0)) &&
+        !theirs.some((a) => a.pools.includes(pool))
+      );
+    };
 
     /** Agents that take load off this host: connected, current, and not only for evaluations. */
     const helpers = () => agents.usage().filter((a) => a.connected && a.current && !a.evaluator);
@@ -1423,11 +1436,13 @@ export const layerCore = Layer.effect(RunsCore)(
         return yield* attempt(place(run, info, platform, true));
       });
 
-    const agentsRefuse = (platform: string | null): Settled => ({
+    const agentsRefuse = (run: Rows.RunRow, platform: string | null): Settled => ({
       status: "died",
       error: {
         tag: "Died",
-        message: `${platform} steps of pull requests need an agent that sandboxes them, and none of ${platform} does`,
+        message: sandboxed(poolOf(run))
+          ? `${platform} steps of pull requests need an agent that sandboxes them, and none of ${platform} does`
+          : `no agent of ${platform} takes jobs of the ${poolOf(run)} pool, which this ${Event.describe(JSON.parse(run.event) as Domain.Event)} runs in`,
         json: null,
       },
     });
@@ -2799,7 +2814,7 @@ export const layerCore = Layer.effect(RunsCore)(
         if (spec.setup !== null) {
           const { deps, platform } = spec.setup;
 
-          if (refuses(run, platform)) return yield* settle(run, row, agentsRefuse(platform));
+          if (refuses(run, platform)) return yield* settle(run, row, agentsRefuse(run, platform));
 
           const executed = yield* placed(
             run,
@@ -3011,7 +3026,7 @@ export const layerCore = Layer.effect(RunsCore)(
         }
 
         if (refuses(run, task.platform))
-          return yield* settle(run, row, agentsRefuse(task.platform));
+          return yield* settle(run, row, agentsRefuse(run, task.platform));
         const sharded = count > 1;
 
         // Shards that passed with the same key before don't run again.
@@ -3291,7 +3306,7 @@ export const layerCore = Layer.effect(RunsCore)(
         }
 
         if (refuses(run, task.platform))
-          return yield* settle(run, row, agentsRefuse(task.platform));
+          return yield* settle(run, row, agentsRefuse(run, task.platform));
         const instead = yield* context.prepared;
 
         if (instead !== null) return yield* settle(run, row, instead);
@@ -3935,7 +3950,7 @@ export const layerCore = Layer.effect(RunsCore)(
 
         const { result } = yield* slots.plans.with(
           claim,
-          jobs.run(job, { pool: "trusted", onEvent: () => Effect.void }),
+          jobs.run(job, { pool: "default-branch", onEvent: () => Effect.void }),
         );
 
         if (result._tag !== "Planned") {
