@@ -293,6 +293,7 @@ export const leased = (task: PlannedStep["task"] | undefined) => (task?.lease ??
 
 /** Whether a step deploys: holds a lease, has a deploy grant, or is a preview's. */
 export const deploys = (step: PlannedStep) =>
+  (step.deploy ?? null) !== null ||
   leased(step.task) ||
   step.task?.preview === true ||
   step.action?.deploy === true ||

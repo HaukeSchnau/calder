@@ -49,6 +49,20 @@ export const leaseOf = (
   return { key, current: run.branch === null ? null : { branch: run.branch } };
 };
 
+/**
+ * A host deploy's lease (`Deploy.host`): the host's own, which every project's deploys of the host share, so
+ * one host switches once at a time. Latest wins per step and project, since run numbers are a project's.
+ */
+export const hostLeaseOf = (
+  run: Pick<RunInfo, "project" | "branch">,
+  host: string,
+  step: string,
+) => ({
+  key: `host:${host}`,
+  step: `${run.project}/${step}`,
+  current: run.branch === null ? null : { branch: run.branch },
+});
+
 /** Why a preview of `revision` no longer deploys: its pull request closed, or moved on to another head. */
 export const pullRequestStale = (
   number: number,
@@ -110,7 +124,11 @@ export const handlers = WorkerRpcs.toLayer(
         const row = yield* db(Rows.loadStep(active.spec.run.id, active.spec.step));
         const spec = row === undefined ? undefined : Rows.spec(row);
 
-        if (spec?.action?.deploy !== true && !Rows.leased(spec?.task))
+        if (
+          spec?.action?.deploy !== true &&
+          !Rows.leased(spec?.task) &&
+          (spec?.deploy ?? null) === null
+        )
           return yield* refuse(`${active.spec.step} has no deploy grant`);
 
         return active;
@@ -198,6 +216,17 @@ export const handlers = WorkerRpcs.toLayer(
             return yield* refuse(
               "publishing a release needs the project's lease (Fleet.deploying)",
             );
+
+          // A host deploy publishes its system, which the controller's own host already has.
+          const deploy = active.spec.deploy;
+
+          if (deploy !== undefined) {
+            if (path !== deploy.system)
+              return yield* refuse(`a deploy of ${deploy.host} publishes only its system`);
+
+            if (deploy.host === config.host) return;
+          }
+
           // A task's stack decides where it deploys, so the artifacts it declares always go to the cache,
           // each kept as that artifact's release of the step; a pull request's previews keep none. A
           // promotion's targets say whether a host other than this one substitutes the release.
@@ -280,8 +309,15 @@ export const handlers = WorkerRpcs.toLayer(
             return yield* refuse(`a run of ${run.project} can't deploy ${project}`);
           const row = yield* db(Rows.loadStep(run.id, step));
           const lease = row === undefined ? undefined : Rows.spec(row).task?.lease;
-          const task = Rows.leased(row === undefined ? undefined : Rows.spec(row).task);
-          const { key, current } = leaseOf(run, lease);
+          const host = row === undefined ? null : (Rows.spec(row).deploy ?? null);
+
+          const task =
+            host !== null || Rows.leased(row === undefined ? undefined : Rows.spec(row).task);
+
+          const { key, current, ...named } =
+            host === null ? leaseOf(run, lease) : hostLeaseOf(run, host.host, step);
+
+          const leaseStep = "step" in named ? named.step : step;
           const repo = projects.get(project)!.repo;
 
           // Why the run no longer deploys what it was for; Leases treats a slow or failing Gitea as current.
@@ -323,7 +359,7 @@ export const handlers = WorkerRpcs.toLayer(
               leases.acquire(key, {
                 job: active.id,
                 run: run.number,
-                step,
+                step: leaseStep,
                 ...(stale === undefined ? {} : { stale }),
               }),
             ).pipe(

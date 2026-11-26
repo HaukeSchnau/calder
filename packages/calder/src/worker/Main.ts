@@ -6,6 +6,7 @@ import * as Exec from "../Exec.ts";
 import { link, sdkPath } from "../Gen.ts";
 import type { Job as JobSpec, JobResult, PlanSpec } from "../Protocol.ts";
 import * as Client from "./Client.ts";
+import * as Deploy from "./Deploy.ts";
 import * as Egress from "./Egress.ts";
 import * as Load from "./Load.ts";
 import * as Redact from "./Redact.ts";
@@ -156,6 +157,10 @@ export const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
       );
     }
 
+    // A host deploy runs Calder's own code as the agent's user, which may switch the host, so it never
+    // loads the pipeline: everything it needs comes with the job.
+    if (spec.deploy !== undefined) return yield* Deploy.host(spec, spec.deploy);
+
     const project = yield* Load.project(yield* pipelineDir(spec).pipe(Effect.orDie));
     const step = yield* Load.step(project, spec.step);
     const def = step.def;
@@ -177,6 +182,11 @@ export const step = (spec: Extract<JobSpec, { readonly _tag: "Step" }>) =>
         return {
           _tag: "Died",
           message: "outputs are resolved by the controller",
+        } satisfies JobResult;
+      case "Deploy":
+        return {
+          _tag: "Died",
+          message: "a host deploy runs on the host's agent, which the controller sends it to",
         } satisfies JobResult;
     }
   }).pipe(

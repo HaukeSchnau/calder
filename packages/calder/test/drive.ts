@@ -294,6 +294,9 @@ export const drive = ({
         readonly remote: boolean;
         readonly offload: boolean;
         readonly systems: ReadonlyArray<string>;
+        /** The host whose agent a host deploy went to, and what it got. */
+        readonly host?: string;
+        readonly deploy?: Extract<Job, { _tag: "Step" }>["deploy"];
       }
     >();
 
@@ -352,6 +355,7 @@ export const drive = ({
                   evaluator: true,
                   portableOnly: false,
                   pools: ["trusted" as const],
+                  deploys: null,
                   free: 2,
                 },
               ]
@@ -546,6 +550,7 @@ export const drive = ({
                 remote: options.agent === true,
                 offload: options.offload === true,
                 systems: options.systems ?? [],
+                ...(options.host === undefined ? {} : { host: options.host, deploy: job.deploy }),
               });
             }
 

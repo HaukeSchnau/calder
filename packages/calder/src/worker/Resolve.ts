@@ -11,7 +11,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Cmd, Event, Files, Flake, Calder, Step } from "@calder-ci/core";
-import { Context, type Duration, Effect, Option, Schedule, Schema } from "effect";
+import { Context, Duration, Effect, Option, Schedule, Schema } from "effect";
 import { randomBytes } from "node:crypto";
 import * as Exec from "../Exec.ts";
 import { sha256 } from "../Keys.ts";
@@ -2447,6 +2447,21 @@ export const resolve = (
                 ...base,
                 detail: `${def.task.name}.outputs.${def.output}`,
                 output: { task: def.task.name, output: def.output },
+              };
+            case "Deploy":
+              return {
+                ...base,
+                neverReuse: true,
+                detail: `${def.host} from ${def.system.name}`,
+                deploy: {
+                  host: def.host,
+                  system: def.system.name,
+                  probes: {
+                    units: [...def.probes.units],
+                    urls: [...def.probes.urls],
+                    withinMs: Duration.toMillis(def.probes.within),
+                  },
+                },
               };
             case "Action":
               return {

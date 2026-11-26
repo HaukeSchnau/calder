@@ -32,6 +32,8 @@ interface Connection {
   readonly portableOnly: boolean;
   /** Whose jobs it runs (`calder agent --units`); older agents run trusted jobs only. */
   readonly pools: ReadonlyArray<Pool>;
+  /** The host whose deploys it runs (`calder agent --deploys`). */
+  readonly deploys: string | null;
   readonly orders: Queue.Queue<AgentOrder, Cause.Done>;
 }
 
@@ -40,6 +42,8 @@ interface Placed {
   readonly exited: Deferred.Deferred<number>;
   /** When the agent got the job. */
   readonly at: number;
+  /** A host deploy, which takes none of the agent's slots. */
+  readonly deploy: boolean;
   /**
    * The controller wants the worker gone: it stopped the job, or never knew it (the worker ran across
    * a restart). Its workspace may belong to another job already, so its agent gets no new jobs until
@@ -59,6 +63,8 @@ interface Waiter {
   readonly assigned: (agent: { readonly name: string; readonly platform: string }) => void;
   /** An evaluation job, which only evaluator agents take, whatever their platform. */
   readonly evaluation: boolean;
+  /** A host deploy, which only the agent that deploys this host takes. */
+  readonly host: string | null;
   readonly placed: Deferred.Deferred<Placed>;
   /** Completes when the job stops waiting without an agent: the last evaluator agent left. */
   readonly abandoned: Deferred.Deferred<void>;
@@ -113,6 +119,8 @@ export interface AgentUsage {
   readonly portableOnly: boolean;
   /** Whose jobs it runs (`calder agent --units`). */
   readonly pools: ReadonlyArray<Pool>;
+  /** The host whose deploys it runs (`calder agent --deploys`). */
+  readonly deploys: string | null;
   /** How many jobs it would take right now: none while it is away, behind or stopping a worker. */
   readonly free: number;
 }
@@ -161,6 +169,11 @@ export class Agents extends Context.Service<
          * name the agent's system before its worker reads it.
          */
         readonly assigned?: (agent: { readonly name: string; readonly platform: string }) => void;
+        /**
+         * A deploy of this host: only the agent that deploys it takes the job, without a slot, and while
+         * that agent is away the job waits without waking its host.
+         */
+        readonly host?: string;
       },
     ) => Effect.Effect<number>;
     readonly stop: (job: string) => Effect.Effect<void>;
@@ -175,6 +188,7 @@ export class Agents extends Context.Service<
         readonly evaluator?: boolean;
         readonly portableOnly?: boolean;
         readonly pools?: ReadonlyArray<Pool>;
+        readonly deploys?: string | null;
       },
     ) => Stream.Stream<AgentOrder, Unauthorized>;
     readonly exited: (
@@ -226,6 +240,7 @@ export const make = (
       readonly evaluator: boolean;
       readonly portableOnly: boolean;
       readonly pools: ReadonlyArray<Pool>;
+      readonly deploys: string | null;
     }
   >();
 
@@ -259,11 +274,19 @@ export const make = (
 
   const on = (agent: string) => [...placed.values()].filter((p) => p.agent === agent);
 
+  /** The jobs that take the agent's slots: all but deploys. */
+  const slotted = (agent: string) => on(agent).filter((p) => !p.deploy);
+
   const takes = (
     c: Connection,
-    waiter: Pick<Waiter, "platform" | "also" | "evaluation" | "pool">,
+    waiter: Pick<Waiter, "platform" | "also" | "evaluation" | "pool" | "host">,
   ) => {
     const jobs = on(c.name);
+
+    if (waiter.host !== null)
+      return (
+        c.deploys === waiter.host && c.compatibility === version && !jobs.some((p) => p.stopping)
+      );
 
     const kind = waiter.evaluation
       ? c.evaluator
@@ -272,7 +295,10 @@ export const make = (
         (c.portableOnly ? waiter.also : [waiter.platform, ...waiter.also]).includes(c.platform);
 
     return (
-      kind && c.compatibility === version && jobs.length < c.slots && !jobs.some((p) => p.stopping)
+      kind &&
+      c.compatibility === version &&
+      slotted(c.name).length < c.slots &&
+      !jobs.some((p) => p.stopping)
     );
   };
 
@@ -296,6 +322,7 @@ export const make = (
         agent: agent.name,
         exited: Deferred.makeUnsafe<number>(),
         at: yield* Clock.currentTimeMillis,
+        deploy: waiter.host !== null,
         stopping: false,
       };
 
@@ -306,6 +333,7 @@ export const make = (
         token: waiter.job.token,
         pool: waiter.pool,
         ...(sandboxed(waiter.pool) ? { egress: egress ?? { allow: [], allowPrivate: [] } } : {}),
+        ...(waiter.host === null ? {} : { deploy: true }),
       });
       yield* Deferred.succeed(waiter.placed, p);
     }
@@ -336,10 +364,21 @@ export const make = (
           }),
         ].join("; ");
 
+  /** What a deploy of `host` waits for: its agent, as it is now. */
+  const hostReason = (host: string) => {
+    const agent = [...connections.values()].find((c) => c.deploys === host);
+
+    if (agent === undefined) return `${host}'s agent to connect`;
+
+    return agent.compatibility !== version
+      ? `${host}'s agent, which has compatibility version ${agent.compatibility}, not ${version}`
+      : `${host}'s agent to stop a worker the controller doesn't know`;
+  };
+
   /** Tells the jobs that wait for `platform` what happened, and what they wait for now. */
   const tell = (platform: string, text: string) =>
     Effect.forEach(
-      waiters.filter((w) => w.platform === platform && !w.evaluation),
+      waiters.filter((w) => w.platform === platform && !w.evaluation && w.host === null),
       (w) =>
         Effect.suspend(() =>
           // A job an agent took meanwhile no longer waits.
@@ -425,6 +464,7 @@ export const make = (
           also: options?.also ?? [],
           assigned: options?.assigned ?? (() => {}),
           evaluation: options?.evaluation === true,
+          host: options?.host ?? null,
           placed: Deferred.makeUnsafe<Placed>(),
           abandoned: Deferred.makeUnsafe<void>(),
           onWaiting: options?.onWaiting ?? (() => Effect.void),
@@ -448,12 +488,17 @@ export const make = (
           return -2;
         }
 
-        if (waits) yield* waiter.onWaiting(reason(platform, waiter.evaluation));
+        if (waits)
+          yield* waiter.onWaiting(
+            waiter.host === null ? reason(platform, waiter.evaluation) : hostReason(waiter.host),
+          );
 
-        // While the job waits, no connected agent of its platform has a free slot. Sleepers take no evaluations.
-        const rousing = waiter.evaluation
-          ? Effect.never
-          : rouse(platform).pipe(Effect.andThen(Effect.sleep(wakeCheck)), Effect.forever);
+        // While the job waits, no connected agent of its platform has a free slot. Sleepers take no
+        // evaluations, and a deploy waits for its host to wake by itself: it deploys once the host is up.
+        const rousing =
+          waiter.evaluation || waiter.host !== null
+            ? Effect.never
+            : rouse(platform).pipe(Effect.andThen(Effect.sleep(wakeCheck)), Effect.forever);
 
         // An evaluation gives up only once the evaluators stalled for `within`: none runs a job, such as
         // one that offers no slots. Behind a busy one it waits, since its own turn there comes sooner than
@@ -533,6 +578,7 @@ export const make = (
               const evaluator = agent.evaluator === true;
               const portableOnly = agent.portableOnly === true;
               const pools = agent.pools ?? ["trusted"];
+              const deploys = agent.deploys ?? null;
 
               const connection: Connection = {
                 name: auth.name,
@@ -542,6 +588,7 @@ export const make = (
                 evaluator,
                 portableOnly,
                 pools,
+                deploys,
                 orders,
               };
 
@@ -556,6 +603,7 @@ export const make = (
                 evaluator,
                 portableOnly,
                 pools,
+                deploys,
               });
               const unknown = agent.running.filter((job) => !placed.has(job));
 
@@ -564,6 +612,7 @@ export const make = (
                   agent: auth.name,
                   exited: Deferred.makeUnsafe<number>(),
                   at: 0,
+                  deploy: false,
                   stopping: true,
                 });
 
@@ -579,7 +628,7 @@ export const make = (
               yield* Effect.logInfo(
                 `agent ${auth.name} (${agent.platform}, ${agent.slots} slots${evaluator ? ", evaluations only" : portableOnly ? ", other systems' tasks only" : ""}${
                   pools.some(sandboxed) ? ", pull requests sandboxed" : ""
-                }) connected`,
+                }${deploys === null ? "" : `, deploys ${deploys}`}) connected`,
               );
               const woken = wakes.get(auth.name);
 
@@ -670,6 +719,7 @@ export const make = (
     usage: () =>
       [...seen].map(([name, a]) => {
         const jobs = on(name);
+        const slots = slotted(name);
 
         const taking =
           connections.has(name) && a.compatibility === version && !jobs.some((p) => p.stopping);
@@ -680,7 +730,7 @@ export const make = (
           running: jobs.length,
           connected: connections.has(name),
           current: a.compatibility === version,
-          free: taking ? Math.max(0, a.slots - jobs.length) : 0,
+          free: taking ? Math.max(0, a.slots - slots.length) : 0,
         };
       }),
     rouse,

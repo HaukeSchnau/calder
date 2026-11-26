@@ -223,6 +223,7 @@ const mac: AgentUsage = {
   evaluator: false,
   portableOnly: false,
   pools: ["pr", "default-branch"],
+  deploys: null,
   free: 1,
 };
 

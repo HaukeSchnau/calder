@@ -10,6 +10,22 @@ import { Rpc, RpcGroup } from "effect/rpc";
 
 export const Reuse = Schema.Literals(["all", "builds", "none"]);
 
+/** What a host must show after its switch (`Deploy.host`'s probes). */
+export const Probes = Schema.Struct({
+  units: Schema.Array(Schema.String),
+  urls: Schema.Array(Schema.String),
+  withinMs: Schema.Number,
+});
+
+export type Probes = typeof Probes.Type;
+
+export const DeploySpec = Schema.Struct({
+  host: Schema.String,
+  /** The step whose value is the system's store path. */
+  system: Schema.String,
+  probes: Probes,
+});
+
 export const PlannedStep = Schema.Struct({
   name: Schema.String,
   kind: Domain.StepKind,
@@ -92,6 +108,8 @@ export const PlannedStep = Schema.Struct({
     }),
   ),
   output: Schema.NullOr(Schema.Struct({ task: Schema.String, output: Schema.String })),
+  /** A host deploy (`Deploy.host`): the host, the build whose output it switches to, and its probes. Older plans lack it. */
+  deploy: Schema.optional(Schema.NullOr(DeploySpec)),
 });
 
 export type PlannedStep = typeof PlannedStep.Type;
@@ -270,6 +288,13 @@ export const StepJob = Schema.TaggedStruct("Step", {
   deps: Schema.NullOr(Schema.String),
   /** For a task with `each`: the files this job checks. */
   files: Schema.NullOr(Schema.Array(Schema.String)),
+  /**
+   * For a host deploy: the host, the system's store path and the probes. Only the agent that deploys the
+   * host gets the job, and its worker runs it without the pipeline.
+   */
+  deploy: Schema.optional(
+    Schema.Struct({ host: Schema.String, system: Schema.String, probes: Probes }),
+  ),
   /**
    * For the first build the plan left unevaluated: instead of building, evaluates every such build of the
    * run together, and finds which builds use which, among them and the `planned` ones.
@@ -499,6 +524,8 @@ export const AgentOrder = Schema.Union([
     token: Schema.String,
     pool: Schema.optional(Pool),
     egress: Schema.optional(EgressPolicy),
+    /** A host deploy, whose worker the agent runs as its own user, the one its host lets switch. */
+    deploy: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("Stop", { job: Schema.String }),
 ]);
@@ -535,6 +562,13 @@ export class AgentRpcs extends RpcGroup.make(
        */
       pools: Schema.Array(Pool).pipe(
         Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<Pool>>(["trusted"])),
+      ),
+      /**
+       * The host whose deploys it runs (`calder agent --deploys`), which no other agent gets, whatever its
+       * slots. Older agents send none and deploy nothing.
+       */
+      deploys: Schema.NullOr(Schema.String).pipe(
+        Schema.withDecodingDefaultKey(Effect.succeed<string | null>(null)),
       ),
     },
     success: AgentOrder,

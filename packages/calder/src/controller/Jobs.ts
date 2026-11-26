@@ -126,6 +126,11 @@ export class Jobs extends Context.Service<
          * runs no ci.ts, only Calder's evaluator and pure `nix eval`, so a same-repo pull request's may go too.
          */
         readonly evaluation?: boolean;
+        /**
+         * A deploy of this host, which only the agent that deploys it takes (Agents `host`): it waits for
+         * that agent, however long the host is away.
+         */
+        readonly host?: string;
         /** Hears what a job that waits for an agent waits for, whenever that changes. */
         readonly onWaiting?: (reason: string) => Effect.Effect<void>;
         /** A local step that may outlive a restart of the controller, which adopts it instead of stopping it. */
@@ -484,7 +489,10 @@ export const layer = Layer.effect(Jobs)(
         const platform = options.platform ?? config.system;
 
         const remote =
-          options.agent === true || options.evaluation === true || platform !== config.system;
+          options.agent === true ||
+          options.evaluation === true ||
+          options.host !== undefined ||
+          platform !== config.system;
 
         if (remote && refusedOnAgents(options)) {
           const refused: JobResult = {
@@ -620,7 +628,8 @@ export const layer = Layer.effect(Jobs)(
             options.onEvent({ _tag: "Log", stream: "calder", text, timestamp: Date.now() });
 
           // An offloaded job never waits: no agent takes it, and it runs here.
-          if (options.offload !== true) {
+          if (options.host !== undefined) yield* log(`waiting for ${options.host}'s agent`);
+          else if (options.offload !== true) {
             const evaluation = options.evaluation === true;
 
             const stale = agents
@@ -650,18 +659,21 @@ export const layer = Layer.effect(Jobs)(
                   job.spec = { ...job.spec, run: { ...job.spec.run, system: agent.platform } };
               },
               evaluation: options.evaluation === true,
+              ...(options.host === undefined ? {} : { host: options.host }),
               // The controller evaluates what no evaluator agent takes soon, as it did without one.
               ...(options.evaluation === true ? { within: evaluatorWait } : {}),
               onPlaced: (agent) =>
                 Effect.sync(() => (job.running = true)).pipe(
                   Effect.andThen(
-                    options.evaluation === true
-                      ? log(`evaluating on ${agent}`)
-                      : job.spec.run.system !== platform
-                        ? log(
-                            `running on ${agent}, a ${job.spec.run.system} agent, in its dev shell`,
-                          )
-                        : Effect.void,
+                    options.host !== undefined
+                      ? log(`deploying through ${agent}`)
+                      : options.evaluation === true
+                        ? log(`evaluating on ${agent}`)
+                        : job.spec.run.system !== platform
+                          ? log(
+                              `running on ${agent}, a ${job.spec.run.system} agent, in its dev shell`,
+                            )
+                          : Effect.void,
                   ),
                   Effect.andThen(onStart),
                 ),

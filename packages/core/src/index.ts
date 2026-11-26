@@ -2,6 +2,8 @@ export * as Action from "./Action.ts";
 
 export * as Cmd from "./Cmd.ts";
 
+export * as Deploy from "./Deploy.ts";
+
 export { cmd } from "./Cmd.ts";
 
 export * as Event from "./Event.ts";

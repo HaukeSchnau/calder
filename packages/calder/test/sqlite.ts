@@ -111,6 +111,8 @@ export const insertStep = (
     readonly noRetryCode?: number;
     /** The exit code it failed with, journaled as the worker reports a task's failure. */
     readonly exitCode?: number;
+    /** Its failure's tag, such as a host deploy's `DeployFailed`. */
+    readonly errorTag?: string;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -128,7 +130,7 @@ export const insertStep = (
             Values.encode(Calder.TaskFailed.make({ exitCode: options.exitCode, failures: [] })),
           );
 
-    yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at, finished_at, key, reused_from, error_message, error_json)
+    yield* sql`insert into steps (run_id, name, kind, status, spec, position, span_id, started_at, finished_at, key, reused_from, error_message, error_json, error_tag)
       values (${runId}, ${name}, 'task', ${options.status ?? "passed"}, ${JSON.stringify(spec)}, 0, 's', ${options.started ?? null},
-        ${options.finished ?? null}, ${options.key ?? null}, ${options.reusedFrom ?? null}, ${options.error ?? null}, ${error})`;
+        ${options.finished ?? null}, ${options.key ?? null}, ${options.reusedFrom ?? null}, ${options.error ?? null}, ${error}, ${options.errorTag ?? null})`;
   });

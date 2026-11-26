@@ -194,6 +194,7 @@ describe("converge", () => {
       readonly check?: boolean;
       readonly exitCode?: number;
       readonly noRetryCode?: number;
+      readonly errorTag?: string;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -211,6 +212,7 @@ describe("converge", () => {
         status: options.check === true ? "blocked" : "failed",
         ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
         ...(options.noRetryCode === undefined ? {} : { noRetryCode: options.noRetryCode }),
+        ...(options.errorTag === undefined ? {} : { errorTag: options.errorTag }),
       });
       yield* insertStep("p-2", "test", { status: options.check === true ? "failed" : "passed" });
     });
@@ -392,6 +394,16 @@ describe("converge", () => {
       });
     },
   );
+
+  it.effect("leaves a host deploy whose switch or probes failed to people", () => {
+    const { reruns, services } = fakes();
+
+    return Effect.gen(function* () {
+      yield* failedHead({ errorTag: "DeployFailed" });
+      expect(yield* converge(project, 10 * hour)).toMatchObject({ stalled: true, retry: null });
+      expect(reruns).toEqual([]);
+    }).pipe(Effect.provide(Layer.merge(layer, services)));
+  });
 
   it.effect("counts a nightly that passed at the head as deployed only when it deploys", () => {
     const { services } = fakes();

@@ -63,6 +63,12 @@ export interface Options {
   readonly sandbox: string | null;
   /** The pools whose jobs it takes; null takes those the host has a group `calder-<pool>` of, or only trusted ones without `units`. */
   readonly pools: ReadonlyArray<Pool> | null;
+  /**
+   * Deploys this host (`Deploy.host`): `host` is the name pipelines deploy it under, and `switch` the
+   * host's command that switches it (worker/Deploy.ts `Host`). Deploys take no slot, so an agent with
+   * none deploys only.
+   */
+  readonly deploys: { readonly host: string; readonly switch: string } | null;
 }
 
 /**
@@ -434,9 +440,18 @@ export const run = (options: Options) =>
         Effect.gen(function* () {
           const job = order.job;
 
-          if (options.admission !== null) yield* admitted(options.admission);
+          if (order.deploy === true && options.deploys === null)
+            return yield* Effect.die(new Error("this agent deploys no host"));
 
-          if (options.units !== null && (host === null || sandboxed(order.pool ?? "trusted"))) {
+          // A deploy runs Calder's own code, as this agent's user, whom the host lets switch it.
+          if (options.admission !== null && order.deploy !== true)
+            yield* admitted(options.admission);
+
+          if (
+            order.deploy !== true &&
+            options.units !== null &&
+            (host === null || sandboxed(order.pool ?? "trusted"))
+          ) {
             return yield* runInUnit(
               { units: options.units, url: options.url, sandbox: host },
               order,
@@ -458,6 +473,9 @@ export const run = (options: Options) =>
                 ...(options.evaluator === null
                   ? {}
                   : { CALDER_EVALUATOR_STORE: options.evaluator }),
+                ...(order.deploy === true && options.deploys !== null
+                  ? { CALDER_DEPLOYS: options.deploys.host, CALDER_SWITCH: options.deploys.switch }
+                  : {}),
               },
               extendEnv: true,
               stdin: "ignore",
@@ -513,9 +531,12 @@ export const run = (options: Options) =>
     }
 
     yield* Effect.logInfo(
-      options.evaluator === null
+      (options.evaluator === null
         ? `agent ${options.name} serving ${options.platform} jobs from ${options.url}${options.units === null ? "" : host === null ? `, each in its pool's unit` : `, pull requests' through ${host.command}`}`
-        : `agent ${options.name} evaluating for ${options.url}, pushing derivations to ${options.evaluator}`,
+        : `agent ${options.name} evaluating for ${options.url}, pushing derivations to ${options.evaluator}`) +
+        (options.deploys === null
+          ? ""
+          : `, deploying ${options.deploys.host} with ${options.deploys.switch}`),
     );
 
     return yield* Effect.suspend(() => {
@@ -532,6 +553,7 @@ export const run = (options: Options) =>
           evaluator: options.evaluator !== null,
           portableOnly: options.portableOnly,
           pools,
+          deploys: options.deploys?.host ?? null,
         })
         .pipe(Stream.runForEach(obey));
     }).pipe(

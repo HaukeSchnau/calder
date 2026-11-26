@@ -488,6 +488,8 @@ function spanKind(s: Domain.Span): SpanKind {
 
   if (kind === "build" || kind === "task" || kind === "action") return kind;
 
+  if (kind === "deploy") return "action";
+
   if (kind === "setup") return "task";
 
   if (s.attributes["http.status"] !== undefined) return "http";

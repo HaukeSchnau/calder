@@ -8,7 +8,7 @@ import type { SecretRef } from "./Secret.ts";
 
 export const TypeId = "~@calder-ci/core/Step" as const;
 
-export type Kind = "build" | "setup" | "task" | "action" | "output";
+export type Kind = "build" | "setup" | "task" | "action" | "output" | "deploy";
 
 export type Platform = "aarch64-linux" | "x86_64-linux" | "aarch64-darwin";
 
@@ -163,7 +163,27 @@ export type Def =
       readonly grants: Grants;
       readonly body: (inputs: any) => Generator<any>;
     }
-  | { readonly _tag: "Output"; readonly task: Step.Any; readonly output: string };
+  | { readonly _tag: "Output"; readonly task: Step.Any; readonly output: string }
+  | {
+      readonly _tag: "Deploy";
+      /** The host whose agent deploys it, by the name the agent announces (`calder agent --deploys`). */
+      readonly host: string;
+      /** The build whose output is the host's system. */
+      readonly system: Step.Any;
+      readonly probes: Probes;
+      readonly after: ReadonlyArray<Step.Any>;
+      readonly afterEnded: ReadonlyArray<Step.Any>;
+    };
+
+/**
+ * What a host must show once it switched, or it goes back to the system it ran: each unit active (systemd
+ * hosts), each URL answering 2xx, all `within` the time.
+ */
+export interface Probes {
+  readonly units: ReadonlyArray<string>;
+  readonly urls: ReadonlyArray<string>;
+  readonly within: Duration.Duration;
+}
 
 const variance = {
   _A: (_: never) => _,
@@ -281,6 +301,13 @@ export const dependencies = (step: Step.Any): ReadonlyArray<Dependency> => {
         ...def.afterEnded.map((s): Dependency => ({ step: s, via: "exit" })),
       ];
     }
+
+    case "Deploy":
+      return [
+        { step: def.system, via: "needs" },
+        ...def.after.map((s): Dependency => ({ step: s, via: "after" })),
+        ...def.afterEnded.map((s): Dependency => ({ step: s, via: "exit" })),
+      ];
 
     case "Action":
       return [
