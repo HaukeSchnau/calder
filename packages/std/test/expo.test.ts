@@ -191,6 +191,8 @@ const run = (
         Object.entries(def.secrets).map(([env, ref]) => [env, secrets[ref.name]!]),
       ),
       PATH: `${bin}:${process.env.PATH}`,
+      // A host's own JDK would run its real keytool on the stand-in bundle instead of the stand-in.
+      JAVA_HOME: "",
       FAKE: fake,
       REPO: repo,
     },
