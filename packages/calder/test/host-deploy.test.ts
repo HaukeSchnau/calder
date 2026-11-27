@@ -44,10 +44,14 @@ const tower = (options: {
   readonly reaches?: (calls: ReadonlyArray<string>) => boolean;
   /** What an earlier attempt that didn't end recorded: the system it deployed and the one before. */
   readonly pending?: readonly [string, string];
+  /** What the system profile names at first, when it isn't what the host runs. */
+  readonly profile?: string;
 }) => {
   const dir = mkdtempSync(join(tmpdir(), "calder-host-deploy-"));
   const link = join(dir, "current");
+  const profile = join(dir, "profile");
   symlinkSync(options.runs ?? old, link);
+  symlinkSync(options.profile ?? options.runs ?? old, profile);
 
   for (const [system, code] of Object.entries(options.codes ?? {}))
     writeFileSync(join(dir, `code-${system.slice(-3)}`), String(code));
@@ -59,6 +63,7 @@ const tower = (options: {
     `#!/bin/sh
 echo "$1" >> ${dir}/calls
 ln -sfn "$1" ${link}
+ln -sfn "$1" ${profile}
 echo "activating $1"
 code=$(cat ${dir}/code-$(printf %s "$1" | tail -c 3) 2>/dev/null || echo 0)
 if [ "$code" = 4 ]; then echo "warning: the following units failed: backup.service, fleet-links.service" >&2; fi
@@ -89,6 +94,7 @@ exit "$code"
     name: "tower",
     switch: script,
     running: () => readlinkSync(link),
+    profile: () => readlinkSync(profile),
     state: dir,
     realise: () => options.realise ?? Effect.void,
     active: (unit) => Effect.succeed((options.active ?? []).includes(unit)),
@@ -258,6 +264,18 @@ describe("a host deploy on the host's agent", () => {
       });
       expect(t.calls()).toEqual([]);
     }),
+  );
+
+  it.live(
+    "switches a host that runs the system while its profile names another, as a reboot would undo",
+    () =>
+      Effect.gen(function* () {
+        const t = tower({ runs: next, profile: old });
+        const result = yield* t.deploy();
+
+        expect(value(result)).toMatchObject({ current: next, healthy: true });
+        expect(t.calls()).toEqual([next]);
+      }),
   );
 
   it.live("doesn't deploy once a newer run took the host's lease", () =>

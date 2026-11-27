@@ -213,7 +213,9 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   `DeployRefused`, and like `DeployFailed` it starts no automatic rerun. Units the switch left failed that no probe names don't fail
   the deploy; the step's value (`Deployed`) lists them with the previous and current system, and a
   failure (`DeployFailed`) says what failed and whether the host went back. A host that already runs the
-  system only runs the probes. Pull-request rules refuse deploys.
+  system, which `/run/current-system` and the system profile both name, only runs the probes; one whose
+  profile names another system switches again, since a reboot would undo the deploy, and a switch counts
+  only once both name the system. Pull-request rules refuse deploys.
 
   ```ts
   const tower = Nix.build(Flake.attr("checks.x86_64-linux.tower"), { name: "tower" });
