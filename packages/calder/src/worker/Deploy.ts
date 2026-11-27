@@ -338,9 +338,17 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
 
     const back = (reason: string) =>
       Effect.gen(function* () {
-        yield* log(`${reason}; ${deploy.host} goes back to ${previous}`);
-
         if (previous === "") return failed(`${reason}; ${deploy.host} ran no system before`, false);
+
+        // A switch that failed before the host left its system, such as one whose switch daemon never
+        // took the request, leaves nothing to undo.
+        if (on.running() === previous && on.profile() === previous) {
+          yield* settled;
+
+          return failed(reason, false);
+        }
+
+        yield* log(`${reason}; ${deploy.host} goes back to ${previous}`);
         const undone = yield* switchTo(previous);
 
         // Unless the host is back, the record stays, so the next deploy goes back there too.
