@@ -145,6 +145,22 @@ export const StepError = Schema.Struct({
 
 export type StepError = typeof StepError.Type;
 
+/** A worker that runs one of a step's jobs right now. */
+export const Worker = Schema.Struct({
+  job: Schema.String,
+  /** Whether an agent runs it rather than the controller's host. */
+  agent: Schema.Boolean,
+  /** The agent's name, or the controller's host name. */
+  on: Schema.String,
+  /** The systemd unit of a worker on the controller's host, such as `calder-job-pr@dd11110ebd63d712.service`. */
+  unit: Schema.NullOr(Schema.String),
+  shard: Schema.NullOr(Schema.Number),
+  /** When the worker wrote the latest log line it sent; null before its first. */
+  said: Schema.NullOr(Schema.Number),
+});
+
+export type Worker = typeof Worker.Type;
+
 export const StepRun = Schema.Struct({
   runId: Schema.String,
   name: Schema.String,
@@ -209,6 +225,8 @@ export const StepRun = Schema.Struct({
    * an agent or the deploy lease. Absent from controllers before it was added.
    */
   waiting: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  /** The workers of a step that hasn't ended, in a run's detail. Absent from controllers before it was added. */
+  workers: Schema.optionalKey(Schema.Array(Worker)),
   /** On a deploy's or a preview's critical path, so it takes the latency lane. */
   critical: Schema.optionalKey(Schema.Boolean),
 });

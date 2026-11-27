@@ -340,6 +340,11 @@ export const migrations = {
     yield* sql`insert into pull_closes (project, pr, settled)
       select distinct project, pr, (select max(created_at) from runs) from runs where pr is not null`;
   }),
+  "0029_job_said": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // When a persisted worker wrote its latest log line, which the controller that adopts it shows (Jobs.ts `said`).
+    yield* sql`alter table jobs add column said integer`;
+  }),
 };
 
 /**

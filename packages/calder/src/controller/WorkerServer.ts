@@ -196,7 +196,24 @@ export const handlers = WorkerRpcs.toLayer(
                 active.batch = batch;
               }
 
+              const before = active.said;
+
+              for (const event of events)
+                if (event._tag === "Log")
+                  active.said = Math.max(active.said ?? event.timestamp, event.timestamp);
+
+              const minute = (at: number | undefined) =>
+                at === undefined ? -1 : Math.floor(at / 60_000);
+
               yield* Effect.forEach(events, active.onEvent, { discard: true });
+
+              // A persisted worker's journal row keeps its latest line to the minute, for the controller
+              // that adopts it however this one stops: srv-2's controller has run until systemd's SIGKILL.
+              if (active.persisted && minute(active.said) !== minute(before))
+                yield* sql`update jobs set said = ${active.said!} where id = ${job}`.pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.ignore,
+                );
             }),
           );
         }),

@@ -207,6 +207,8 @@ export class Agents extends Context.Service<
       slots: number,
     ) => Effect.Effect<void, Unauthorized>;
     readonly usage: () => ReadonlyArray<AgentUsage>;
+    /** The agent that took the job, until its worker exited or was lost. */
+    readonly agentOf: (job: string) => string | undefined;
     /**
      * Wakes the hosts of `platform`'s sleepers that are away, as a job waiting for an agent of it does,
      * for work that waits here but an agent of it could take (Runs `spill`).
@@ -755,6 +757,7 @@ export const make = (
           free: taking ? Math.max(0, a.slots - slots.length) : 0,
         };
       }),
+    agentOf: (job) => placed.get(job)?.agent,
     rouse,
   };
 };

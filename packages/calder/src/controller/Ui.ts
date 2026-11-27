@@ -1,13 +1,14 @@
 import { Domain, NotFound, Refused, UiRpcs } from "@calder-ci/api";
 import { Effect, Stream } from "effect";
 import { SqlClient } from "effect/sql";
+import { hostname } from "node:os";
 import type { Mismatch } from "../Protocol.ts";
 import { Agents } from "./Agents.ts";
 import { Config } from "./Config.ts";
 import { Delivery } from "./Delivery.ts";
 import * as Fleet from "./Fleet.ts";
 import { Gitea } from "./Gitea.ts";
-import { Jobs } from "./Jobs.ts";
+import { type ActiveJob, Jobs, unitOf } from "./Jobs.ts";
 import { Leases } from "./Leases.ts";
 import { combine, Live } from "./Live.ts";
 import { Merges } from "./Merges.ts";
@@ -22,6 +23,46 @@ const unknownRun = (id: string) =>
   NotFound.make({
     what: /-\d+$/.test(id) ? `run ${id}` : `run ${id} (run ids look like ${id}-12)`,
   });
+
+/**
+ * The workers that run the run's steps right now, by step: on the agent that took the job, or on `host`,
+ * the controller's, in the job's systemd unit when `units`.
+ */
+export const workersOf = (
+  runId: string,
+  active: ReadonlyArray<ActiveJob>,
+  agentOf: (job: string) => string | undefined,
+  host: string,
+  units: boolean,
+) => {
+  const byStep = new Map<string, Array<Domain.Worker>>();
+
+  for (const job of active) {
+    if (
+      job.spec._tag !== "Step" ||
+      job.spec.run.id !== runId ||
+      !job.running ||
+      job.starting === true
+    )
+      continue;
+    const agent = job.remote ? agentOf(job.id) : undefined;
+
+    // An agent's job without its agent was just lost, and ends within a second.
+    if (job.remote && agent === undefined) continue;
+    const workers = byStep.get(job.spec.step) ?? [];
+    byStep.set(job.spec.step, workers);
+    workers.push({
+      job: job.id,
+      agent: job.remote,
+      on: agent ?? host,
+      unit: !job.remote && units ? unitOf(job.template, job.id) : null,
+      shard: job.spec.shard?.index ?? null,
+      said: job.said ?? null,
+    });
+  }
+
+  return byStep;
+};
 
 export const handlers = UiRpcs.toLayer(
   Effect.gen(function* () {
@@ -192,9 +233,21 @@ export const handlers = UiRpcs.toLayer(
         const [run] = yield* db(Rows.runsWithCounts([row]));
         const expected = yield* estimates.steps(row.project);
 
+        const workers = workersOf(
+          id,
+          jobs.active(),
+          agents.agentOf,
+          hostname(),
+          config.jobs.mode === "systemd",
+        );
+
         const steps = Rows.withReasons(
           (yield* db(Rows.loadSteps(id))).map((s) => Rows.step(s, expected.get(s.name) ?? null)),
-        );
+        ).map((s) => {
+          const running = workers.get(s.name);
+
+          return running === undefined || Rows.terminal(s.status) ? s : { ...s, workers: running };
+        });
 
         const failing =
           yield* db(sql<Rows.TestRow>`select * from tests where run_id = ${id} and status in ('failed', 'timeout')
