@@ -122,8 +122,27 @@ export const took = (ms: number) => {
 };
 
 /**
+ * Where a running step's workers run and how long ago each wrote its latest log line, such as
+ * `on srv-2 in calder-job-pr@dd11110ebd63d712.service, last line 41 s ago`.
+ */
+export const whereRuns = (workers: ReadonlyArray<Domain.Worker>, now: number) =>
+  workers
+    .map((w) =>
+      [
+        w.shard === null ? null : `#${w.shard}`,
+        w.agent
+          ? `on agent ${w.on} as job ${w.job},`
+          : `on ${w.on} in ${w.unit ?? `job ${w.job}`},`,
+        w.said === null ? "no line yet" : `last line ${took(now - w.said)} ago`,
+      ]
+        .filter((part) => part !== null)
+        .join(" "),
+    )
+    .join("; ");
+
+/**
  * A run's steps as rows of a table: status, name, how long it waited for a slot and how long it ran, and
- * what it waits for or why it failed. `·` marks steps on a deploy's or a preview's critical path.
+ * what it waits for, where it runs or why it failed. `·` marks steps on a deploy's or a preview's critical path.
  */
 export const timings = (steps: ReadonlyArray<Domain.StepRun>, now: number) =>
   steps
@@ -141,9 +160,11 @@ export const timings = (steps: ReadonlyArray<Domain.StepRun>, now: number) =>
         ? s.waiting === null || s.waiting === undefined
           ? ""
           : `waits for ${s.waiting}`
-        : s.error !== null && s.status !== "passed"
-          ? s.error.message.split("\n")[0]!
-          : "",
+        : s.status === "running" && (s.workers?.length ?? 0) > 0
+          ? whereRuns(s.workers!, now)
+          : s.error !== null && s.status !== "passed"
+            ? s.error.message.split("\n")[0]!
+            : "",
     ]);
 
 /** The steps that made a run fail: those that failed or died, not those blocked behind them. */

@@ -63,6 +63,10 @@ export interface ActiveJob {
   lease: Lease | undefined;
   /** The number of the last batch of events the RPC server took from the worker. */
   batch?: number;
+  /** When the worker wrote the latest log line the RPC server took from it. */
+  said?: number;
+  /** A local worker that hasn't started yet, such as one whose unit waits to start again. */
+  starting?: boolean;
 }
 
 export interface Usage {
@@ -158,6 +162,9 @@ export class Jobs extends Context.Service<
  */
 export const workersGroup = (mode: "systemd" | "process") =>
   mode === "systemd" ? groupId("calder-workers") : undefined;
+
+/** The systemd unit a local worker runs in. */
+export const unitOf = (template: string, id: string) => `${template}@${id}.service`;
 
 /** How often a worker's unit may time out starting before its job dies. */
 const startAttempts = 4;
@@ -267,12 +274,10 @@ export const layer = Layer.effect(Jobs)(
     const templateOf = (pool: Pool, large: boolean) =>
       `calder-job-${pool}${large && sandboxed(pool) ? "-large" : ""}`;
 
-    const unit = (template: string, id: string) => `${template}@${id}.service`;
-
     const groupOf = (pool: Pool) => groupId(`calder-${pool}`);
 
     const cgroupOf = (template: string, id: string) =>
-      exec(["systemctl", "show", "-p", "ControlGroup", "--value", unit(template, id)]).pipe(
+      exec(["systemctl", "show", "-p", "ControlGroup", "--value", unitOf(template, id)]).pipe(
         Effect.map((r) =>
           r.stdout.trim() === "" ? undefined : join("/sys/fs/cgroup", r.stdout.trim()),
         ),
@@ -280,7 +285,7 @@ export const layer = Layer.effect(Jobs)(
 
     /** Whether the unit is still alive, and why it died if not. */
     const unitState = (template: string, id: string) =>
-      exec(["systemctl", "show", "-p", "ActiveState", "-p", "Result", unit(template, id)]).pipe(
+      exec(["systemctl", "show", "-p", "ActiveState", "-p", "Result", unitOf(template, id)]).pipe(
         Effect.map((r) => {
           const props = Object.fromEntries(
             r.stdout
@@ -367,7 +372,7 @@ export const layer = Layer.effect(Jobs)(
       });
 
     const stopUnit = (template: string, id: string) =>
-      exec(["systemctl", "stop", unit(template, id)]).pipe(Effect.ignore);
+      exec(["systemctl", "stop", unitOf(template, id)]).pipe(Effect.ignore);
 
     // Workers the last controller left running: adopt those whose units still run, stop the rest.
     const adoptable = new Map<string, Adopted>();
@@ -402,6 +407,7 @@ export const layer = Layer.effect(Jobs)(
           template: string | null;
           spec: string;
           created_at: number;
+          said: number | null;
         }>`select * from jobs`,
       );
 
@@ -437,6 +443,7 @@ export const layer = Layer.effect(Jobs)(
           samples: [],
           scope: yield* Scope.make(),
           lease: undefined,
+          ...(row.said === null ? {} : { said: row.said }),
         });
       }
 
@@ -455,7 +462,7 @@ export const layer = Layer.effect(Jobs)(
       ]);
 
       const kept = new Set(
-        [...adoptable.values()].map((a) => unit(jobs.get(a.id)!.template, a.id)),
+        [...adoptable.values()].map((a) => unitOf(jobs.get(a.id)!.template, a.id)),
       );
 
       const orphans = listed.stdout
@@ -518,6 +525,7 @@ export const layer = Layer.effect(Jobs)(
           remote,
           persisted,
           running: !remote,
+          starting: !remote,
           onEvent: options.onEvent,
           result,
           samples: [],
@@ -568,10 +576,12 @@ export const layer = Layer.effect(Jobs)(
           const unitResult = Effect.map(unitState(job.template, id), (state) => state.result);
 
           const failed = yield* startUnit(
-            exec(["systemctl", "start", unit(job.template, id)]),
+            exec(["systemctl", "start", unitOf(job.template, id)]),
             unitResult,
             log,
           );
+
+          job.starting = false;
 
           if (failed !== undefined)
             return {
@@ -601,6 +611,8 @@ export const layer = Layer.effect(Jobs)(
               forceKillAfter: "10 seconds",
             }),
           );
+
+          job.starting = false;
 
           const exited = yield* handle.exitCode.pipe(
             Effect.flatMap((code) =>

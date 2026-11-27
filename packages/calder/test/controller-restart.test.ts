@@ -260,6 +260,12 @@ const restarted = Effect.gen(function* () {
     Effect.forkChild,
   );
 
+  // Its latest log line before the restart, which `calder status` still shows after it.
+  yield* client.events({
+    ...auth(srv2),
+    events: [{ _tag: "Log", stream: "stdout", text: "building", timestamp: 1_000 }],
+  });
+
   yield* Effect.yieldNow;
   process.emit("SIGTERM");
   // The stop leaves every worker to the next controller instead of waiting for systemd.
@@ -315,6 +321,14 @@ describe("a controller restart", () => {
         expect((yield* Fiber.join(waiting))._tag).toBe("Held");
         expect(after.leases.holder("app")?.job).toBe(srv1);
       }).pipe(Effect.provide(sqlite), Effect.scoped),
+  );
+
+  it.effect("keeps when an adopted worker wrote its latest log line", () =>
+    Effect.gen(function* () {
+      const { srv1, srv2, after } = yield* restarted;
+      expect(after.jobs.get(srv2)?.said).toBe(1_000);
+      expect(after.jobs.get(srv1)?.said).toBeUndefined();
+    }).pipe(Effect.provide(sqlite), Effect.scoped),
   );
 
   it.effect("logs a batch of events that the worker sent again once", () =>
