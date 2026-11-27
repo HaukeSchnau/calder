@@ -62,10 +62,12 @@ const tower = (options: {
     script,
     `#!/bin/sh
 echo "$1" >> ${dir}/calls
+code=$(cat ${dir}/code-$(printf %s "$1" | tail -c 3) 2>/dev/null || echo 0)
+# 2 stands for a switch that fails before it changes anything.
+if [ "$code" = 2 ]; then exit 2; fi
 ln -sfn "$1" ${link}
 ln -sfn "$1" ${profile}
 echo "activating $1"
-code=$(cat ${dir}/code-$(printf %s "$1" | tail -c 3) 2>/dev/null || echo 0)
 if [ "$code" = 4 ]; then echo "warning: the following units failed: backup.service, fleet-links.service" >&2; fi
 exit "$code"
 `,
@@ -238,6 +240,21 @@ describe("a host deploy on the host's agent", () => {
         rolledBack: true,
       });
       expect(t.calls()).toEqual([next, old]);
+    }),
+  );
+
+  it.live("doesn't go back from a switch that failed before the host left its system", () =>
+    Effect.gen(function* () {
+      const t = tower({ codes: { [next]: 2 } });
+      const result = yield* t.deploy();
+
+      expect(value(result)).toMatchObject({
+        reason: "the switch exited with 2",
+        current: old,
+        rolledBack: false,
+      });
+      expect(t.calls()).toEqual([next]);
+      expect(t.pendingLeft()).toBe(false);
     }),
   );
 
