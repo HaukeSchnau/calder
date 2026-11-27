@@ -103,8 +103,11 @@ that is a `Calder.project({ rules: [...] })` of the steps below (see `@calder-ci
   for checks of the machine rather than the code. When a task's outcome differs from an earlier one
   with the same key, the UI and `calder status` flag it: the key misses an input, or the task is flaky.
   The paths a task names in `outputs` go to the Nix store, also when the task fails, and the UI and
-  `calder status` link to them; a failed task's outputs are never reused. `value: { path, schema }`
-  gives a task a value like an action's: the JSON file the command wrote at `path`, decoded with
+  `calder status` link to them; a failed task's outputs are never reused. The controller serves them at
+  `/outputs/<run>/<step>/<output>/`, and `<project>-latest` in place of the run stands for the newest
+  passed run of the project's default branch, within retention, whose step kept that output, so
+  `/outputs/fleet-latest/pages/explorer/index.html` is main's newest page, its relative links included.
+  `value: { path, schema }` gives a task a value like an action's: the JSON file the command wrote at `path`, decoded with
   `schema` once it passed. Only what the schema decodes reaches the journal and the file never enters
   the store, so it may hold secrets the schema leaves out. A task with another `platform`
   than the controller's runs on an agent of that platform (`calder agent`, trusted runs only). An agent of
