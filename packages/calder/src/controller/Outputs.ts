@@ -17,6 +17,7 @@ import { basename, join } from "node:path";
 import * as Exec from "../Exec.ts";
 import { only } from "../StorePaths.ts";
 import { hashOf } from "./Cache.ts";
+import { Projects } from "./Projects.ts";
 import * as Rows from "./Rows.ts";
 
 const roots = (stateDir: string) => join(stateDir, "gcroots");
@@ -283,16 +284,83 @@ export const below = (root: string, parts: ReadonlyArray<string>) => {
   return real === root || real.startsWith(`${root}/`) ? real : null;
 };
 
-/** A step's output at `Domain.outputPath`: a file as it is, a directory as a list of links. */
+/**
+ * The run `<project>-latest` stands for in an output's URL: the newest passed run of the project's default
+ * branch whose `step` kept the output `name`.
+ */
+export const latestRun = (project: string, defaultBranch: string, step: string, name: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows = yield* sql<{
+      id: string;
+    }>`select runs.id from runs join steps on steps.run_id = runs.id
+      where runs.project = ${project} and runs.branch = ${defaultBranch} and runs.pr is null and runs.status = 'passed'
+        and steps.name = ${step} and steps.status in ('passed', 'reused')
+        and exists (select 1 from json_each(steps.outputs) where key = ${name})
+      order by runs.created_at desc limit 1`;
+
+    return rows[0]?.id;
+  }).pipe(Effect.orDie);
+
+/**
+ * A step's output at `Domain.outputPath`: a file as it is, a directory as a list of links. The run
+ * `<project>-latest` is `latestRun`'s, a link that shows what the default branch kept last, with
+ * relative links inside the output resolving under it too.
+ */
 export const serve = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     const url = new URL(request.url, "http://calder");
 
-    const [runId = "", step = "", name = "", ...rest] = url.pathname
+    const [run = "", step = "", name = "", ...rest] = url.pathname
       .split("/")
       .slice(2)
       .map(decodeURIComponent);
 
+    const latest = /^(.+)-latest$/.exec(run)?.[1];
+
+    if (latest === undefined) return yield* serveOf(url, run, step, name, rest);
+
+    // Store files are all from 1970, and from that Last-Modified browsers would keep them for years
+    // without asking, while what this URL serves changes.
+    return HttpServerResponse.setHeader(
+      yield* serveLatest(url, latest, step, name, rest),
+      "cache-control",
+      "no-cache",
+    );
+  }).pipe(Effect.orDie);
+
+const serveLatest = (
+  url: URL,
+  name: string,
+  step: string,
+  output: string,
+  rest: ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
+    const project = (yield* Projects).get(name);
+
+    if (project === undefined)
+      return HttpServerResponse.text(`there is no project ${name}`, { status: 404 });
+    const runId = yield* latestRun(name, project.defaultBranch, step, output);
+
+    if (runId === undefined)
+      return HttpServerResponse.text(
+        `no passed run of ${name}'s ${project.defaultBranch} kept ${step}'s output ${output}`,
+        { status: 404 },
+      );
+
+    return yield* serveOf(url, runId, step, output, rest);
+  });
+
+const serveOf = (
+  url: URL,
+  runId: string,
+  step: string,
+  name: string,
+  rest: ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
     const row = yield* Rows.loadStep(runId, step);
     const root = (JSON.parse(row?.outputs ?? "{}") as Record<string, string>)[name];
 
@@ -328,4 +396,4 @@ export const serve = (request: HttpServerRequest.HttpServerRequest) =>
         contentType: "text/html; charset=utf-8",
       },
     );
-  }).pipe(Effect.orDie);
+  });
