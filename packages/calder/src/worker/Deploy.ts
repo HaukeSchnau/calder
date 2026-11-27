@@ -22,6 +22,11 @@ export interface Host {
   readonly switch: string;
   /** The system the host runs, or "" when it runs none. */
   readonly running: () => string;
+  /**
+   * The system the host's system profile names, which it boots: a host runs a system only while both
+   * name it, or a reboot undoes the deploy.
+   */
+  readonly profile: () => string;
   /** Where the agent keeps the root of the system it deploys and the last fence it deployed with. */
   readonly state: string;
   /** Makes `system` valid in this host's store, from the binary cache, with a garbage collector root at `root`. */
@@ -60,13 +65,8 @@ export const thisHost = (env: NodeJS.ProcessEnv = process.env): Host | string =>
   return {
     name,
     switch: command,
-    running: () => {
-      try {
-        return realpathSync("/run/current-system");
-      } catch {
-        return "";
-      }
-    },
+    running: () => resolved("/run/current-system"),
+    profile: () => resolved("/nix/var/nix/profiles/system"),
     state: join(workspaces, ".deploys"),
     realise: (system, root) =>
       Exec.exec(["nix-store", "--realise", system, "--add-root", root]).pipe(
@@ -94,6 +94,15 @@ export const thisHost = (env: NodeJS.ProcessEnv = process.env): Host | string =>
 };
 
 const storePath = /^\/nix\/store\/[a-z0-9]{32}-[^/]+$/;
+
+/** Where a link leads, or "" when it leads nowhere. */
+const resolved = (link: string) => {
+  try {
+    return realpathSync(link);
+  } catch {
+    return "";
+  }
+};
 
 /** Units a switch says it left failed: switch-to-configuration's `warning: the following units failed: a, b`. */
 export const failedUnits = (line: string): ReadonlyArray<string> => {
@@ -292,7 +301,7 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
       return yield* probe(on, deploy.probes);
     });
 
-    if (pending === undefined && previous === deploy.system) {
+    if (pending === undefined && previous === deploy.system && on.profile() === deploy.system) {
       yield* log(`${deploy.host} already runs ${deploy.system}`);
       const failing = yield* probed;
 
@@ -324,7 +333,7 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
           ),
         );
 
-        return { code, units, runs: on.running() === system };
+        return { code, units, runs: on.running() === system && on.profile() === system };
       });
 
     const back = (reason: string) =>
@@ -362,7 +371,7 @@ export const host = (job: StepJob, deploy: Spec, on: Host | string = thisHost())
 
     if (!switched.runs)
       return yield* back(
-        `the switch exited with ${switched.code}, but ${deploy.host} runs ${on.running()}`,
+        `the switch exited with ${switched.code}, but ${deploy.host} runs ${on.running()} and its profile names ${on.profile()}`,
       );
 
     if (switched.units.length > 0)
