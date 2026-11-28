@@ -8,7 +8,7 @@
     "test": "vp test run"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.73.4",
+    "@effect/tsgo": "0.74.1",
     "@effect/vitest": "4.0.0",
     "@oxlint/plugins": "1.94.0",
     "@schnau/tsconfig": "^0.1.1",
